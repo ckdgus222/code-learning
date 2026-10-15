@@ -115,6 +115,20 @@
 
 검증(마지막 앱 코드 변경 이후 실행): `npm run typecheck` 종료 0, `npm test` **10파일 177개** 통과(새 런타임 검사 2개: codex에만 앱 전용 `CODEX_HOME`·허용 목록 환경·0700 생성·기존 폴더 chmod, 준비 실패·링크면 codex 미실행). `npm run package` 종료 0, `npm run test:electron` **18개**, `npm run test:packaged` **8항목**, `npm run test:ai-sandbox` 통과. `npm run test:codex-live`는 로그인 전 실행에서 설치·로그인 없음·C05·취소 통과(정상 답변은 로그인 대기로 실패, 예상), 로그인 뒤 5개 모두 통과.
 
+### Antigravity(agy) 앱 전용 HOME (사용자 선택 A안)
+
+agy 1.3.5에는 설정 위치를 바꾸는 공식 옵션이 없다(공식 CLI reference·install 문서, 도움말 확인). 설정·`GEMINI.md`·MCP·플러그인·훅이 `~/.gemini` 아래에 있고 로그인은 OS 키체인을 쓴다고 문서에 적혀 있다. 사용자가 2026-10-15 A안을 골랐다: agy를 켤 때 `HOME`을 앱 전용 폴더(`<userData>/agy-home`)로 바꾼다. **공식 기능이 아니므로 agy 업데이트로 깨질 수 있다.** 구현 기획은 Codex plan 리뷰 4차에 통과했다.
+
+- `LocalAiRuntime`이 앱 전용 agy 홈을 두 번째 인자로 받고, Codex 홈과 같은 준비(생성·링크 거절·0700, 실패 시 미실행)를 한 뒤 agy 자식 환경에만 `HOME=<agy-home>`을 준다. claude-code에는 바꾸지 않는다.
+- **실행 인자 교정**: 기존 후보 `-p --model …`는 agy 1.3.5에서 종료 코드 2로 실패했다("-p took --model as its prompt"). `-p`는 바로 뒤 글을 질문으로 받기 때문에, 코드를 명령줄에 넣지 않도록(16.4절) 공식 headless 문서의 `--input-format stream-json --output-format stream-json`으로 바꾸고 질문을 표준입력 한 줄(`{"event":"user",…}`)로 보낸다. 최종 인자: `--input-format stream-json --output-format stream-json --model gemini-3.8-flash-high --mode plan --sandbox --print-timeout 2m`.
+- **형식 강제 제거(사용자 선택 1번)**: `--json-schema`를 주면 agy가 답을 쓴 뒤 내부 완료 도구를 강제로 한 번 더 불러(로그 `Hit 0th forced invocation`) `step_type: tool`이 생기고 2턴·약 86초·약 5만 토큰이 들었다. 도구 금지 규칙에 예외를 만들지 않고, schema를 표준입력 프롬프트에 글로 붙인 뒤 앱의 Zod·근거 검사로 확인한다. 응답 해석기는 `init`·`step_update`·`result` 이벤트를 읽고, 도구 단계가 하나라도 있거나 모델이 다르거나 결과가 실패면 거절한다.
+- 로그인: 앱 전용 HOME에서는 개인 로그인을 찾지 못해 `authentication required`였다. 사용자가 터미널에서 `HOME="$HOME/Library/Application Support/Code Learning/agy-home" ~/.local/bin/agy`로 한 번 로그인했다(Interactions data 수집 동의는 사용자 선택). 키체인을 직접 읽거나 복사하지 않았다.
+- 실제 시험(`npm run test:agy-live`, 비밀 없는 시험 코드): **A1 설치 통과(1.3.5), A2 정상 답변 통과 — 앱 `explanationSchema` 통과, 응답 모델 `gemini-3.8-flash-high`, 도구 단계 없음, 21초**, A3 앱 전용 HOME 아래에 새 로그 생성 통과(로그에 개인 `~/.gemini` 경로 없음), A4 취소·프로세스 그룹 정리 통과(형식 강제 제거 직전 실행, 취소 동작은 인자와 무관). 계정 요청은 정상 답변 2건(형식 강제 있을 때 1건 거절, 제거 뒤 1건 통과)과 취소 1건이다.
+- **C05(개인 설정 상속)는 Antigravity에서 미검증이다.** 로그 위치가 HOME을 따르고 로그에 개인 경로가 없다는 것은 참고 근거일 뿐, 설정·지시문·MCP·플러그인·훅을 어디서 읽는지는 직접 관찰하지 못했다.
+- 후속 확인: agy도 앱 전용 HOME에 대화 기록(conversations DB)·로그를 남긴다. 보관·삭제 방식은 Codex 기록 파일과 함께 확인할 과제다.
+
+검증(마지막 앱 코드 변경 이후 실행): `npm run typecheck` 종료 0, `npm test` **10파일 181개** 통과(agy stream-json 해석 검사로 교체·추가, 질문을 명령줄이 아닌 표준입력으로 보내고 `--json-schema`를 쓰지 않는 검사). `npm run package` 종료 0, `npm run test:electron` **18개**, `npm run test:packaged` **8항목**, `npm run test:ai-sandbox` 통과.
+
 ## 실행한 검증
 
 ### UI 인계 후 정리
@@ -149,13 +163,13 @@
 - reviewer가 발견한 등록 근거의 오래된 순서 제거 문제는 최근 사용 순서 갱신으로 수정했다. 같은 선택 근거로 관련 파일 4개씩 20회 수집해도 현재 근거가 유지되고 목록은 64개 이하인 회귀 검사를 추가했다. 후속 질문은 지난 2회 답변에만 포함됐던 파일까지 각 모델 단계 전·최종 게시 전에 재검사한다. watcher가 변경을 놓친 가정도 검사했다.
 - 최종 변경의 reviewer 검토에 미해결 P0–P2는 없었다. 프로젝트 밖 읽기·제외 파일·링크·중간 변경·취소·원본 내용/mtime/ctime 유지 검사는 실제 임시 파일을 사용했다. 실제 모델·온라인 계정 인증·실제 CLI 도구 제한·Finder·키보드 전체 동선은 미검증이다.
 
-아래 표는 최신 검사와 기존 검증을 포함한다. `npm test`·`test:electron`·`test:packaged`·`test:ai-sandbox` 행은 2026-10-15 앱 전용 Codex 홈 작업 뒤 다시 실행한 결과다. 개발 모드 `npm start`, audit, 서명·배포물 검사는 관련 파일 작업과 흐름 작업에서 재실행하지 않았다.
+아래 표는 최신 검사와 기존 검증을 포함한다. `npm test`·`test:electron`·`test:packaged`·`test:ai-sandbox` 행은 2026-10-15 Antigravity 앱 전용 HOME 작업 뒤 다시 실행한 결과다. 개발 모드 `npm start`, audit, 서명·배포물 검사는 관련 파일 작업과 흐름 작업에서 재실행하지 않았다.
 
 | 명령/검사 | 관찰 결과 | 한계 |
 |---|---|---|
 | `npm run typecheck` | 종료 0 | 타입 검사 |
 | `npm start` | 개발 서버·Electron 창 정상 시작, 개발 모드에서도 10개 Electron 동선 통과 | 확인 후 개발 프로세스 종료 |
-| `npm test` | 10파일, 177개 통과·종료 0 | 기존 42·프로세스 9·가짜 워커 44·연결/파서 17·컨텍스트 17·흐름용 구문 8·`.gitignore` 재포함 1·export 판정 1·개요 12·비밀값 19·가림 흐름 1·런타임 실행 방법 4·앱 전용 Codex 홈 2. 실제 AI를 시험하지 않음 |
+| `npm test` | 10파일, 181개 통과·종료 0 | 기존 42·프로세스 9·가짜 워커 44·연결/파서 17·컨텍스트 17·흐름용 구문 8·`.gitignore` 재포함 1·export 판정 1·개요 12·비밀값 19·가림 흐름 1·런타임 실행 방법 4·앱 전용 Codex 홈 2·agy 실행·해석 4. 실제 AI를 시험하지 않음 |
 | `npm run package` | 종료 0, `.app` 생성 | 로컬 arm64 환경만 확인 |
 | `npm run test:electron` | Electron 18개 검사 통과·종료 0 | 15개 실제 기능/차단 검사(흐름 따라가기·한눈에 보기 각 1개 포함) + 3개 가짜 AI IPC UI 검사. 프로그램에 테스트용 경로·gate 우회 API를 넣지 않음 |
 | `npm run test:packaged` | 패키징 앱 시작·SQLite·worker native 분석·근거 이동·원본 보존·CSP·로컬 AI 설치/차단·취소 8항목 통과·종료 0 | 격리 프로필·고정 시험 자료, Finder 수동 조작·실제 AI 검수와 구분 |
@@ -192,11 +206,11 @@
 
 | 항목 | 상태·이유 |
 |---|---|
-| C01 앱 spawn 인증 | Antigravity: 실패 — 사용자 승인 후 외부 접속 허용·질문 없는 제한 부팅 3회 모두 authentication required. 정상 CLI 자체의 로그인 유무는 미판정. Codex: 2026-10-15 Finder PATH 조건에서 설치·기존 로그인·로그인 없음 구분 통과(위 ‘Codex 실제 연결 시험’) |
-| C02 실제 JSON·오류 형태 | Antigravity: 미실행. Codex: 앱 전용 홈 적용 뒤 작업 정리 단계 정상 답변이 앱 스키마 통과·오류 항목 없음(2026-10-15). 코드 대조 단계·잘린 출력·시간 초과는 실제 CLI로 미시험 |
-| C03 AI 하위 프로세스 취소 | Codex: 실제 CLI 사용자 취소·프로세스 그룹 정리 통과. 그 밖의 조건과 Antigravity는 가짜 실행·Node 시험 프로세스로만 검사, 그룹 밖 데몬은 미검증 |
+| C01 앱 spawn 인증 | Antigravity: 2026-10-14 제한 부팅 3회는 authentication required. 2026-10-15 앱 전용 HOME에 별도 로그인 뒤 Finder PATH 조건에서 설치·정상 요청 통과(위 ‘Antigravity 앱 전용 HOME’). Codex: 2026-10-15 Finder PATH 조건에서 설치·기존 로그인·로그인 없음 구분 통과(위 ‘Codex 실제 연결 시험’) |
+| C02 실제 JSON·오류 형태 | Antigravity: 2026-10-15 설명 단계 정상 답변이 앱 스키마 통과·모델 일치·도구 단계 없음(형식 강제 없이). 실패 출력 형태는 로그인 전 `result` 이벤트의 ERROR만 관찰. Codex: 앱 전용 홈 적용 뒤 작업 정리 단계 정상 답변이 앱 스키마 통과·오류 항목 없음(2026-10-15). 코드 대조 단계·잘린 출력·시간 초과는 실제 CLI로 미시험 |
+| C03 AI 하위 프로세스 취소 | Codex·Antigravity: 실제 CLI 사용자 취소·프로세스 그룹 정리 통과(2026-10-15). 프로젝트 전환·앱 종료·시간 초과는 가짜 실행·Node 시험 프로세스로만 검사, 그룹 밖 데몬은 미검증 |
 | C04 범위 밖 파일·셸·웹·MCP 차단 | 일부 로컬 검사 — 앱 중개 읽기와 임시 파일 OS 쓰기 제한은 검증. 실제 AI 프로세스 전체 제한은 미검증 |
-| C05 전역 MCP·플러그인·훅 상속 차단 | Codex: 처음엔 실패 — `--ignore-user-config`에도 전역 `~/.codex/agents`를 읽음. 앱 전용 `CODEX_HOME` 적용 뒤 대조 시험으로 전역 agents 미열람 확인(2026-10-15). MCP·스킬·훅 등 다른 전역 확장은 미검증. Antigravity: 미검증 — 기존 전역 설정·인증을 건드리지 않는 앱 전용 제한 방법을 확보하지 못함 |
+| C05 전역 MCP·플러그인·훅 상속 차단 | Codex: 처음엔 실패 — `--ignore-user-config`에도 전역 `~/.codex/agents`를 읽음. 앱 전용 `CODEX_HOME` 적용 뒤 대조 시험으로 전역 agents 미열람 확인(2026-10-15). MCP·스킬·훅 등 다른 전역 확장은 미검증. Antigravity: 미검증 — 앱 전용 HOME을 적용했고 로그 위치가 그 HOME을 따르며 로그에 개인 `~/.gemini` 경로가 없지만, 설정·확장을 어디서 읽는지는 직접 관찰하지 못함 |
 
 확인한 `agy 1.3.4`의 도움말에는 앱별 설정 경로·전역 확장 일괄 비활성화 옵션이 없었다. 공식 권한 문서의 deny 규칙은 정책 후보이며 적용하거나 통과 시험한 상태가 아니다. `codex-cli 0.162.1`의 `--ignore-user-config` 등의 부분 제한 옵션도 전체 격리의 증거로 쓰지 않았다.
 

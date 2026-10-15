@@ -65,13 +65,23 @@ function reportModel(value: unknown): string | null {
 export function parseStageOutput(provider: 'codex' | 'antigravity', stdout: string, exitCode: number): StageResponse {
   if (exitCode !== 0) throw new AppError('AI_UNAVAILABLE', 'AI 실행에 실패했습니다. 공식 프로그램에서 로그인·이용 한도를 확인해 주세요.');
   if (provider === 'antigravity') {
-    const envelope = object(json(stdout));
-    if (envelope.status !== 'SUCCESS' || envelope.error || envelope.tool_errors || envelope.errors) {
-      throw new AppError('AI_RESPONSE', 'Gemini 워커가 정상적인 설명을 반환하지 않았습니다.');
-    }
-    const reportedModel = reportModel(envelope.model);
+    // agy stream-json: an `init` event, `step_update` events, then a final `result`. A body may sit
+    // under a key named after the event (`{"event":"init","init":{…}}`), so both shapes are read.
+    const events = stdout.split('\n').filter(line => line.trim()).map(line => object(json(line)));
+    const body = (event: Record<string, unknown>) => {
+      const nested = event[String(event.event)];
+      return nested && typeof nested === 'object' && !Array.isArray(nested) ? nested as Record<string, unknown> : event;
+    };
+    const init = events.find(event => event.event === 'init');
+    if (!init) throw new AppError('AI_RESPONSE', 'Gemini 워커의 시작 정보가 없습니다.');
+    const reportedModel = reportModel(body(init).model);
     if (reportedModel && reportedModel !== GEMINI_MODEL) throw new AppError('AI_RESPONSE', 'Gemini 응답 모델이 요청 모델과 다릅니다.');
-    const value = envelope.structured_output ?? (typeof envelope.response === 'string' ? json(envelope.response) : undefined);
+    if (events.some(event => event.event === 'step_update' && body(event).step_type === 'tool')) {
+      throw new AppError('AI_RESPONSE', 'Gemini 워커가 허용하지 않은 도구 작업을 보고했습니다.');
+    }
+    const result = events.filter(event => event.event === 'result').map(body).at(-1);
+    if (!result || result.status !== 'SUCCESS' || result.error) throw new AppError('AI_RESPONSE', 'Gemini 워커가 정상적인 설명을 반환하지 않았습니다.');
+    const value = result.structured_output ?? (typeof result.response === 'string' ? json(result.response) : undefined);
     if (!value) throw new AppError('AI_RESPONSE', 'Gemini 워커의 설명이 비어 있습니다.');
     return { value, reportedModel };
   }
@@ -99,25 +109,29 @@ export function parseStageOutput(provider: 'codex' | 'antigravity', stdout: stri
 export class LocalAiRuntime {
   private launches = new Map<ProviderId, Launch>();
   /**
-   * `codexHome` is the app's own Codex home. Even with `--ignore-user-config`, codex-cli 0.162.1
-   * read the user's global `~/.codex/agents`, so every codex run gets this folder as CODEX_HOME,
-   * with its own one-time official login, and never the user's global Codex folder.
+   * App-only folders keep the user's own AI settings out of app runs.
+   * `codexHome`: even with `--ignore-user-config`, codex-cli 0.162.1 read the user's global
+   * `~/.codex/agents`, so every codex run gets this folder as CODEX_HOME, with its own one-time
+   * official login. `antigravityHome`: agy has no setting for its folder (its settings, GEMINI.md,
+   * MCP, plugins and hooks live under `~/.gemini`), so it is started with this folder as HOME.
+   * That is not an official agy feature and is checked by `npm run test:agy-live`.
    */
-  constructor(private readonly codexHome: string) {}
+  constructor(private readonly codexHome: string, private readonly antigravityHome: string) {}
 
   private async environment(provider: ProviderId): Promise<NodeJS.ProcessEnv | undefined> {
-    if (provider !== 'codex') return undefined;
+    const home = provider === 'codex' ? this.codexHome : provider === 'antigravity' ? this.antigravityHome : undefined;
+    if (!home) return undefined;
     try {
-      await mkdir(this.codexHome, { recursive: true, mode: 0o700 });
-      // A link could point back at the user's global ~/.codex, so only a real folder is used,
+      await mkdir(home, { recursive: true, mode: 0o700 });
+      // A link could point back at the user's own folder, so only a real folder is used,
       // and an existing one is made private too (mkdir's mode only applies to new folders).
-      const info = await lstat(this.codexHome);
+      const info = await lstat(home);
       if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('not a private folder');
-      await chmod(this.codexHome, 0o700);
+      await chmod(home, 0o700);
     } catch {
-      throw new AppError('AI_UNAVAILABLE', '앱 전용 Codex 위치를 준비하지 못했습니다. 폴더 권한을 확인해 주세요.');
+      throw new AppError('AI_UNAVAILABLE', `앱 전용 ${provider === 'codex' ? 'Codex' : 'Antigravity'} 위치를 준비하지 못했습니다. 폴더 권한을 확인해 주세요.`);
     }
-    return { ...localProcessEnv(), CODEX_HOME: this.codexHome };
+    return provider === 'codex' ? { ...localProcessEnv(), CODEX_HOME: home } : { ...localProcessEnv(), HOME: home };
   }
   private inspection?: { controller: AbortController; done: Promise<ConnectionReport> };
 
@@ -201,8 +215,16 @@ export class LocalAiRuntime {
           '--disable', 'hooks', '--disable', 'shell_tool', '--disable', 'multi_agent',
           '-c', 'web_search="disabled"', '-c', 'project_doc_max_bytes=0', '-c', 'approval_policy="never"',
           '--json', '--color', 'never', '--output-schema', schema, '-']
-        : ['-p', '--model', GEMINI_MODEL, '--mode', 'plan', '--sandbox', '--output-format', 'json', '--json-schema', schema, '--print-timeout', '2m'];
-      const output = await runProcess({ executable: launch.executable, args: [...launch.prefix, ...args], stdin: request.prompt, cwd: directory,
+        // `-p` takes the prompt as its own argument; code must not go on the command line, so agy
+        // reads one stream-json user message from stdin and exits once stdin closes (headless docs).
+        // No --json-schema: agy 1.3.5 then forces an extra internal tool call to shape the answer,
+        // which the no-tools rule rejects. The schema goes into the prompt and the app checks the JSON.
+        : ['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', GEMINI_MODEL, '--mode', 'plan', '--sandbox',
+          '--print-timeout', '2m'];
+      const stdin = request.provider === 'codex' ? request.prompt : `${JSON.stringify({ event: 'user', message: {
+        content: `${request.prompt}\n\n응답은 아래 JSON schema를 따르는 JSON 하나만 출력한다. 코드 울타리나 다른 글을 붙이지 않는다.\n${JSON.stringify(request.schema)}`,
+      } })}\n`;
+      const output = await runProcess({ executable: launch.executable, args: [...launch.prefix, ...args], stdin, cwd: directory,
         signal: request.signal, env: await this.environment(request.provider) });
       // Stderr can contain provider/native paths; never return it to the renderer.
       if (/denied|permission|not allowed|unauthorized|authentication required|rate.limit|quota/i.test(output.stderr)) {

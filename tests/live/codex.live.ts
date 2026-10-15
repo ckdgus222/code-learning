@@ -63,7 +63,8 @@ vi.mock('node:child_process', async original => {
 // The same app-only Codex home the packaged app uses; the user logs in to it once with
 // `CODEX_HOME="<this folder>" codex login`. The user's global ~/.codex is never used.
 const appCodexHome = path.join(os.homedir(), 'Library/Application Support/Code Learning/codex-home');
-const runtime = new LocalAiRuntime(appCodexHome);
+const appAgyHome = path.join(os.homedir(), 'Library/Application Support/Code Learning/agy-home');
+const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
 const runStage = (request: StageRequest, on = runtime): Promise<StageResponse> =>
   (on as unknown as { executeVerifiedStage(request: StageRequest): Promise<StageResponse> }).executeVerifiedStage(request);
 const evidenceId = randomUUID();
@@ -145,7 +146,7 @@ describe('Codex connection through the app runtime (real account, non-secret fix
     groups.length = 0;
     // The user's global ~/.codex has a login; failing here shows that CODEX_HOME is what codex reads.
     const emptyHome = await mkdtemp(path.join(os.tmpdir(), 'codex-live-home-'));
-    const anonymous = new LocalAiRuntime(emptyHome);
+    const anonymous = new LocalAiRuntime(emptyHome, appAgyHome);
     try {
       await anonymous.checkConnections();
       // AI_UNAVAILABLE alone also covers bad flags and start failures, so the stderr kind is
@@ -172,7 +173,7 @@ describe('Codex connection through the app runtime (real account, non-secret fix
     const warningsFrom = async (home: string) => {
       stderrTail = '';
       stdoutText = '';
-      const probe = new LocalAiRuntime(home);
+      const probe = new LocalAiRuntime(home, appAgyHome);
       await probe.checkConnections();
       await runStage(stage(new AbortController().signal), probe).catch(() => undefined);
       return errorItemMessages(stdoutText);
