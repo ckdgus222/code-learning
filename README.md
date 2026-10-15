@@ -49,7 +49,7 @@ npm run test:packaged
 npm run test:ai-sandbox
 ```
 
-앱은 Codex를 개인 설정(`~/.codex`)과 분리된 앱 전용 위치(`~/Library/Application Support/Code Learning/codex-home`)로 실행합니다. 처음 한 번 `CODEX_HOME="$HOME/Library/Application Support/Code Learning/codex-home" codex login`으로 로그인해야 합니다.
+앱은 Codex를 개인 설정(`~/.codex`)과 분리된 앱 전용 위치(`~/Library/Application Support/Code Learning/codex-home`)로 실행합니다. 처음 한 번 `CODEX_HOME="$HOME/Library/Application Support/Code Learning/codex-home" codex login`으로 로그인해야 합니다. Antigravity(agy)는 설정 위치 옵션이 없어 앱 전용 폴더를 `HOME`으로 주어 실행하며(공식 기능 아님), 처음 한 번 터미널에서 `HOME="$HOME/Library/Application Support/Code Learning/agy-home" ~/.local/bin/agy`로 로그인합니다. `npm run test:agy-live`는 agy 연결 시험입니다.
 
 `npm run test:codex-live`는 사용자 Codex 계정으로 비밀 없는 작은 시험 코드를 실제로 보내는 연결 시험(C01~C03 일부)이라 위 목록과 `npm test`에 포함하지 않습니다. 앱의 질문 전송 차단은 그대로 둔 채 실행 코드만 시험하며, 결과는 `test-results/codex-live.json`에 통과 여부·분류만 남깁니다.
 

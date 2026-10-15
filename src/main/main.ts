@@ -20,8 +20,8 @@ let opening = false;
 let quitting = false;
 let projectRevision = 0;
 let aiContext: ProjectAiContext | undefined;
-// The app's own Codex home keeps the user's global Codex agents and settings out of app runs.
-const aiRuntime = new LocalAiRuntime(path.join(app.getPath('userData'), 'codex-home'));
+// App-only Codex and Antigravity folders keep the user's own AI settings out of app runs.
+const aiRuntime = new LocalAiRuntime(path.join(app.getPath('userData'), 'codex-home'), path.join(app.getPath('userData'), 'agy-home'));
 const learning = new LocalWorkerWorkflow({
   assertReady: mode => aiRuntime.assertReady(mode),
   capture: async (request, signal) => {

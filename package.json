@@ -13,7 +13,8 @@
     "test:electron": "node scripts/electron-smoke.mjs",
     "test:packaged": "node scripts/packaged-smoke.mjs",
     "test:ai-sandbox": "node scripts/ai-sandbox-smoke.mjs",
-    "test:codex-live": "vitest run --config vitest.live.config.ts"
+    "test:codex-live": "vitest run --config vitest.live.config.ts tests/live/codex.live.ts",
+    "test:agy-live": "vitest run --config vitest.live.config.ts tests/live/antigravity.live.ts"
   },
   "devDependencies": {
     "@electron-forge/cli": "8.0.1",
