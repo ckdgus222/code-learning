@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AGY_NO_TOOLS_REASON } from '../src/core/ai/runtime';
+import { AppError } from '../src/shared/errors';
+import { recordedFailure } from './live/records';
 import { agyStepOutcome, categoryOfTool, codexAttempts, placedVerdicts, targetOf, verdicts, type Attempt, type Category, type Place } from './live/isolation';
 
 // The C04 verdict rules used by the live runner checks; no runner or network is involved here.
@@ -27,6 +29,13 @@ describe('C04 verdicts', () => {
     expect(result.read).toBe('not-attempted');
     // A runner that reports no tool list (Codex) cannot show a block without an attempt.
     expect(verdicts(true, none, [], null).web).toBe('not-attempted');
+  });
+
+  it('does not count a tool as left out when the list has a tool whose name does not say what it does', () => {
+    const refusedShell: Attempt[] = [{ category: 'shell', name: 'run_command', outcome: 'policy-refused' }];
+    const result = verdicts(true, none, refusedShell, ['run_command', 'mystery_tool']);
+    expect(result.shell).toBe('blocked');
+    for (const category of ['read', 'edit', 'web', 'mcp'] as const) expect(result[category], category).toBe('not-attempted');
   });
 
   describe('from Codex events', () => {
@@ -95,6 +104,8 @@ describe('C04 verdicts', () => {
       expect(targetOf({ TargetFile: '/var/folders/x/live-outside-2/created.txt', CodeContent: 'inside-canary.txt' }, folders)).toBe('outside');
       expect(targetOf({ Paths: ['inside-created.txt', '/var/folders/x/live-outside-2/created.txt'] }, folders)).toBeUndefined();
       expect(targetOf({ query: 'weather' }, folders)).toBeUndefined();
+      // File content is not a path, even under a key that mentions a file.
+      expect(targetOf({ file_contents: 'inside-canary.txt' }, folders)).toBeUndefined();
     });
   });
 
@@ -123,5 +134,19 @@ describe('C04 verdicts', () => {
     ['browser_click_element', 'web'], ['call_mcp_tool', 'mcp'],
   ])('classifies the agy tool %s as %s', (name, category) => {
     expect(categoryOfTool(name)).toBe(category);
+  });
+});
+
+describe('what a live check records from a failure', () => {
+  it('keeps the message of an app error or an assertion only', async () => {
+    expect(recordedFailure(new AppError('AI_RESPONSE', 'fixed wording'))).toEqual({ code: 'AI_RESPONSE', errorName: 'Error', message: 'fixed wording' });
+    const assertion = (() => { try { expect(1).toBe(2); } catch (error) { return error; } })();
+    expect(recordedFailure(assertion).message).toContain('expected 1 to be 2');
+  });
+  it('drops the message of a file error or a JSON parse error, which can quote a path or input', async () => {
+    const fileError = await import('node:fs/promises').then(fs => fs.readFile('/nonexistent/PRIVATE_PATH/file.txt')).catch(error => error);
+    expect(recordedFailure(fileError)).toEqual({ code: 'ENOENT', errorName: 'Error', message: undefined });
+    const parseError = (() => { try { JSON.parse('{"key": PRIVATE_VALUE}'); } catch (error) { return error; } })();
+    expect(JSON.stringify(recordedFailure(parseError))).not.toContain('PRIVATE');
   });
 });

@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { LocalAiRuntime } from '../../src/core/ai/runtime';
 import type { StageRequest, StageResponse } from '../../src/core/ai/workflow';
 import { GEMINI_MODEL, explanationSchema } from '../../src/shared/ai';
+import { recordedFailure } from './records';
 import { agyStepOutcome, categories, categoryOfTool, isolationFixture, placedKinds, placedVerdicts, targetOf, verdicts, type Attempt } from './isolation';
 
 // Keep the process group of every child, and its output for diagnosing a failure on this machine.
@@ -31,11 +32,13 @@ function bodyOf(event: AgyEvent): Record<string, any> {
   const nested = event[String(event.event)];
   return nested && typeof nested === 'object' && !Array.isArray(nested) ? nested as Record<string, any> : event;
 }
-/** Names of the tools agy offered the model, from its init event; null when it does not say. */
+/** Names of the tools agy offered the model, from its init event; null when it does not say or a tool has no name. */
 function offeredTools(events: AgyEvent[]): string[] | null {
   const init = events.find(event => event.event === 'init');
   const tools = init ? bodyOf(init).tools : undefined;
-  return Array.isArray(tools) ? tools.map(tool => typeof tool === 'string' ? tool : String(tool?.name ?? tool?.tool_name ?? 'unknown')) : null;
+  if (!Array.isArray(tools)) return null;
+  const names = tools.map(tool => typeof tool === 'string' ? tool : tool?.name ?? tool?.tool_name);
+  return names.every(name => typeof name === 'string') ? names : null;
 }
 /** Tool steps agy reported, the last update of each; with the test folders, also where each pointed. */
 function agyAttempts(events: AgyEvent[], folders?: { inside: string | null; outside: string }): Attempt[] {
@@ -120,8 +123,7 @@ async function record<T>(name: string, action: () => Promise<T>, summarize: (val
     results[name] = { passed: true, seconds: (Date.now() - begin) / 1000, ...summary };
     return value;
   } catch (error) {
-    const { code, message } = error as { code?: string; message?: string };
-    results[name] = { passed: false, seconds: (Date.now() - begin) / 1000, ...summary, code, message, failure: classify(output), exit: lastExit };
+    results[name] = { passed: false, seconds: (Date.now() - begin) / 1000, ...summary, ...recordedFailure(error), failure: classify(output), exit: lastExit };
     console.error(`[${name}] agy exit ${JSON.stringify(lastExit)}, output tail (local only):\n${output.slice(-3000)}`);
     throw error;
   }

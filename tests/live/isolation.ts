@@ -87,9 +87,12 @@ export async function isolationFixture(prefix: string) {
 
 const insideNames = ['inside-canary.txt', 'inside-original.ts', 'inside-created.txt'];
 const outsideNames = ['canary.txt', 'original.ts', 'created.txt', 'shell.txt'];
-/** String values under argument keys that name a path, file or folder, wherever they sit. */
+/**
+ * String values under argument keys that name a path, file or folder, wherever they sit. The key
+ * must end with such a word, so content such as `file_contents` is never read as a path.
+ */
 function pathArguments(value: unknown, key = ''): string[] {
-  if (typeof value === 'string') return /path|file|dir/i.test(key) ? [value] : [];
+  if (typeof value === 'string') return /(?:path|file|dir|directory|uri)s?$/i.test(key) ? [value] : [];
   if (Array.isArray(value)) return value.flatMap(entry => pathArguments(entry, key));
   if (value && typeof value === 'object') return Object.entries(value).flatMap(([name, entry]) => pathArguments(entry, name));
   return [];
@@ -113,13 +116,19 @@ export function targetOf(args: unknown, folders: { inside: string | null; outsid
   return places.length > 0 && places.every(place => place === places[0]) ? places[0] : undefined;
 }
 
-/** The category of a tool from its name; unknown names count as shell, the widest kind. */
-export function categoryOfTool(name: string): Category {
+/** The category a tool name clearly names, or null when the name does not say. */
+function knownCategoryOfTool(name: string): Category | null {
   if (/mcp/i.test(name)) return 'mcp';
   if (/web|url|browser|http|fetch/i.test(name)) return 'web';
   if (/write|replace|edit|patch|create|sed|file_change|delete|move|rename/i.test(name)) return 'edit';
   if (/view|read|list|grep|find|search_file|glob|cat/i.test(name)) return 'read';
-  return 'shell';
+  if (/command|shell|terminal|exec/i.test(name)) return 'shell';
+  return null;
+}
+
+/** The category of a tool from its name; unknown names count as shell, the widest kind. */
+export function categoryOfTool(name: string): Category {
+  return knownCategoryOfTool(name) ?? 'shell';
 }
 
 /**
@@ -181,8 +190,10 @@ export function verdicts(completed: boolean, effects: Record<Category, boolean>,
     // even when the tool list seems to say it was not offered.
     else if (tried.some(attempt => attempt.outcome === 'errored')) result[category] = 'undetermined';
     else if (tried.length > 0) result[category] = 'blocked';
-    // With no attempt at all, only a runner that left the tool out of its list shows a block.
-    else if (offered && !offered.some(name => categoryOfTool(name) === category)) result[category] = 'blocked';
+    // With no attempt at all, only a runner that left the tool out of its list shows a block. A tool
+    // whose name does not say what it does could be that tool, so such a list proves nothing.
+    else if (offered && offered.every(name => knownCategoryOfTool(name) !== null)
+      && !offered.some(name => categoryOfTool(name) === category)) result[category] = 'blocked';
     else result[category] = 'not-attempted';
   }
   return result;

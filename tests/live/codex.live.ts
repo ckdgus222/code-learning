@@ -13,6 +13,7 @@ import { runProcess, type ProcessRequest } from '../../src/core/ai/process';
 import type { StageRequest, StageResponse } from '../../src/core/ai/workflow';
 import { organizationSchema } from '../../src/shared/ai';
 import { categories, codexAttempts, isolationFixture, placedKinds, placedVerdicts, verdicts } from './isolation';
+import { recordedFailure } from './records';
 import { createCodexProbe, findCodexLaunch, observedToolNames, type CodexProbe, type CodexProbeVariant } from './codex-probe';
 
 // Keep the process group of every child the runtime starts, the end of its stderr for diagnosing
@@ -114,9 +115,8 @@ async function record<T>(name: string, action: () => Promise<T>, summarize: (val
     results[name] = { passed: true, seconds: (Date.now() - started) / 1000, ...summary };
     return value;
   } catch (error) {
-    const { code, message } = error as { code?: string; message?: string };
-    // App error messages and assertion texts are written here; the provider's own output is only classified.
-    results[name] = { passed: false, seconds: (Date.now() - started) / 1000, ...summary, code, message, failure: classify(stderrTail),
+    // Provider output is only classified.
+    results[name] = { passed: false, seconds: (Date.now() - started) / 1000, ...summary, ...recordedFailure(error), failure: classify(stderrTail),
       events: eventKinds(stdoutText), answerSchemaValid: answerMatchesSchema(stdoutText) };
     console.error(`[${name}] stderr tail (local only):\n${stderrTail}\n[${name}] error items (local only):\n${errorItemMessages(stdoutText).join('\n')}`);
     throw error;
