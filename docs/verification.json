@@ -1,0 +1,113 @@
+{
+  "date": "2026-10-14",
+  "typecheck": "exit 0",
+  "vitest": {
+    "files": 4,
+    "passed": 42,
+    "exit": 0
+  },
+  "package": "exit 0",
+  "electron": {
+    "passed": [
+      "SQLite uses isolated profile; renderer is sandboxed",
+      "Open a real folder; secret filenames excluded",
+      "Function → branch → exact original code range (CRLF/emoji/BOM)",
+      "Source cannot be edited; malicious text is not executed",
+      "Changed source clears evidence and requires a new read",
+      "IPC rejects path injection and another window",
+      "Late cancellation cannot overwrite a new open in the UI",
+      "Old project IDs cannot read after project switch",
+      "Cancel while resolving folder does not resurrect a session",
+      "Cancel while closing previous worker does not reopen a project"
+    ],
+    "errors": []
+  },
+  "packaged": {
+    "passed": true,
+    "checks": [
+      "packaged app startup",
+      "isolated SQLite write/read",
+      "native parser in packaged worker",
+      "code evidence navigation",
+      "source unchanged",
+      "packaged CSP",
+      "cancel"
+    ],
+    "state": {
+      "packaged": true,
+      "appPath": "/Users/choechanghyeon/Desktop/universal-code-learning/out/Code Learning-darwin-arm64/Code Learning.app/Contents/Resources/app.asar",
+      "userData": "/private/tmp/code-learning-package-8tiOc1/profile",
+      "versions": {
+        "node": "24.21.0",
+        "acorn": "8.18.0",
+        "ada": "4.0.0",
+        "amaro": "1.1.11",
+        "ares": "1.34.8",
+        "brotli": "1.2.0",
+        "cldr": "48.0",
+        "icu": "78.2",
+        "llhttp": "9.4.3",
+        "merve": "1.2.2",
+        "modules": "149",
+        "napi": "10",
+        "nbytes": "0.1.4",
+        "ncrypto": "0.0.1",
+        "nghttp2": "1.70.0",
+        "nghttp3": "",
+        "ngtcp2": "",
+        "openssl": "0.0.0",
+        "simdjson": "4.6.7",
+        "simdutf": "7.7.0",
+        "sqlite": "3.53.4",
+        "tz": "2026d",
+        "undici": "7.29.1",
+        "unicode": "17.0",
+        "uv": "1.52.1",
+        "uvwasi": "0.0.23",
+        "v8": "15.2.124.37-electron.0",
+        "zlib": "1.3.2.1-motley",
+        "zstd": "1.6.0",
+        "electron": "44.7.2",
+        "chrome": "152.0.7977.149"
+      }
+    }
+  },
+  "audit": {
+    "info": 0,
+    "low": 0,
+    "moderate": 0,
+    "high": 0,
+    "critical": 0,
+    "total": 0
+  },
+  "sha256": {
+    "forge.config.ts": "7357a4920d91ef90da34cd90b7891aaeea2ceda063a2d30700d8ad5bcaa37293",
+    "package-lock.json": "fd99125a0800d4ee974ce2cbf138fefefadd00d626843cd9ec119ef759a857d8",
+    "package.json": "1e396a944c832ccc6f90f725cbb0c0c5b6c5c93f38d638a5aa5c69e888287e82",
+    "scripts/electron-smoke.mjs": "c38feb356faaf1e639e989075da118c9c0e020254139e5ffadd58dbe2745a55c",
+    "scripts/packaged-smoke.mjs": "f98d6137e8bde78675e56568a4ac51867aa657fd71a1973b4846f18927835e05",
+    "src/core/analysis/syntax.ts": "810c349fb821c14f22eca4373ce503a966c7b9099b852321de96b2084a5cd2c4",
+    "src/core/project/files.ts": "86ea636eebf5a93786a575386eb1a502b714a615216d98f319cde4e2fc107824",
+    "src/core/storage/projects.ts": "4380e34a1d03ec79d915f4f172051260066999f016ce9e16ae2c2c2721252bc7",
+    "src/env.d.ts": "3c3f7e021aef8bad5ebff3c6322f732fa60bb4a10c7095f6f0b25f636351db5c",
+    "src/main/main.ts": "ab0a5796c0c03996446c7e5f5359b0eb1393ea7a20b9852b43cb45d68e29a87e",
+    "src/main/project-session.ts": "362cb2ab53fd8ec01bdeaded51256b316d4ce081c9e5ea390f190061dfb3eeb0",
+    "src/preload/preload.ts": "a73912b7c9ee0d0f592ba4b88f7f541b749486303f8f100c379ff7c0f39fb2d1",
+    "src/renderer/main.tsx": "1281c4568cd8875e2eb669e01d4061c42994a35d883def0ac1be544dbaa53cd7",
+    "src/renderer/reader.tsx": "c7b6fa3e5de3b0638b17e0847d4249c461f89b488c1cdceef7e873cbb09c3369",
+    "src/renderer/selection.ts": "510850eadd7359d98590f28299e3f7c0b0e596407c205ad9cb1d4df6587b5063",
+    "src/renderer/styles.css": "7cef5f7586c76a22aa82085c4accc6f4261534a56b4c9e8b1242c64b858caf31",
+    "src/shared/contracts.ts": "0cf7d1f5cb6b229c310fadb7cef4ce58e5bad626dc0a40cee5713934253bfceb",
+    "src/shared/errors.ts": "c520c67d66fc819735a80490247f22b7ea3e529c759c8e4278da1aeed489b887",
+    "src/workers/analysis.ts": "ca2e863b3dd82cfedd7fead6ef05463efc43d8c6d6b9dd3e63245eea015f0ea6",
+    "tests/contracts.test.ts": "2852915e0564f3553ec0389daccbaad392120d713e332995cd272f9ce99d0a48",
+    "tests/files.test.ts": "40cef3d3874a2b812877c56cd60a3b0f8b2b38517c12e10d3973318e3d8cf473",
+    "tests/storage.test.ts": "5a1553919995bab694bb457206eefba0716c78165c2f777f8215312b05a218c7",
+    "tests/syntax.test.ts": "1a3512c8b9aab357863d20768f29e815a2a3de1a1cfb31c82185e12d8f133c5c",
+    "vite.main.config.ts": "cd7dff9aa03c97d044023c89313fc7f1c1d3f9a6631a6854e99ca715f8618ffd",
+    "vite.preload.config.ts": "96515456b0c8776b5cc4e5519dd8bb5fe04dd5160ce37cb3b1ffac9cb60cf997",
+    "vite.renderer.config.ts": "771086ad4c6697e25de9092b77848fb9b37e9e03beb73a801931aa8ec71abf18",
+    "vitest.config.ts": "1ba6d2b5cb75229fd46a6b773c71d06ae1e9e55bb479def43674174b1c6c1456"
+  },
+  "appAsarSha256": "256991ce7fa3caf5b310fc7d054ff79b0c83857c683ed2028fd90895c9db9f1f"
+}

@@ -1,0 +1,159 @@
+{
+  "date": "2026-10-14",
+  "dependencies": [
+    {
+      "name": "@codemirror/lang-javascript",
+      "version": "6.2.5",
+      "license": "MIT",
+      "scope": "runtime"
+    },
+    {
+      "name": "@codemirror/state",
+      "version": "6.7.6",
+      "license": "MIT",
+      "scope": "runtime"
+    },
+    {
+      "name": "@codemirror/view",
+      "version": "6.43.14",
+      "license": "MIT",
+      "scope": "runtime"
+    },
+    {
+      "name": "chokidar",
+      "version": "5.0.0",
+      "license": "MIT",
+      "scope": "runtime"
+    },
+    {
+      "name": "ignore",
+      "version": "7.0.12",
+      "license": "MIT",
+      "scope": "runtime"
+    },
+    {
+      "name": "react",
+      "version": "19.3.0",
+      "license": "MIT",
+      "scope": "runtime"
+    },
+    {
+      "name": "react-dom",
+      "version": "19.3.0",
+      "license": "MIT",
+      "scope": "runtime"
+    },
+    {
+      "name": "tree-sitter",
+      "version": "0.21.1",
+      "license": "MIT",
+      "scope": "runtime"
+    },
+    {
+      "name": "tree-sitter-javascript",
+      "version": "0.21.4",
+      "license": "MIT",
+      "scope": "runtime"
+    },
+    {
+      "name": "tree-sitter-typescript",
+      "version": "0.23.2",
+      "license": "MIT",
+      "scope": "runtime"
+    },
+    {
+      "name": "zod",
+      "version": "4.6.7",
+      "license": "MIT",
+      "scope": "runtime"
+    },
+    {
+      "name": "zustand",
+      "version": "5.0.15",
+      "license": "MIT",
+      "scope": "runtime"
+    },
+    {
+      "name": "@electron-forge/cli",
+      "version": "8.0.1",
+      "license": "MIT",
+      "scope": "development"
+    },
+    {
+      "name": "@electron-forge/plugin-vite",
+      "version": "8.0.1",
+      "license": "MIT",
+      "scope": "development"
+    },
+    {
+      "name": "@types/node",
+      "version": "26.6.5",
+      "license": "MIT",
+      "scope": "development"
+    },
+    {
+      "name": "@types/react",
+      "version": "19.3.0",
+      "license": "MIT",
+      "scope": "development"
+    },
+    {
+      "name": "@types/react-dom",
+      "version": "19.3.0",
+      "license": "MIT",
+      "scope": "development"
+    },
+    {
+      "name": "electron",
+      "version": "44.7.2",
+      "license": "MIT",
+      "scope": "development"
+    },
+    {
+      "name": "playwright",
+      "version": "1.64.0",
+      "license": "Apache-2.0",
+      "scope": "development"
+    },
+    {
+      "name": "typescript",
+      "version": "7.0.2",
+      "license": "Apache-2.0",
+      "scope": "development"
+    },
+    {
+      "name": "vite",
+      "version": "8.3.4",
+      "license": "MIT",
+      "scope": "development"
+    },
+    {
+      "name": "vitest",
+      "version": "5.0.4",
+      "license": "MIT",
+      "scope": "development"
+    }
+  ],
+  "audit": {
+    "vulnerabilities": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "dependencies": {
+      "prod": 32,
+      "dev": 212,
+      "optional": 48,
+      "peer": 0,
+      "peerOptional": 0,
+      "total": 243
+    }
+  },
+  "notes": [
+    "Package metadata inventory only; not a full legal review of transitive notices.",
+    "Darwin arm64 only; pinned N-API prebuilts are tested in the packaged Electron worker."
+  ]
+}
