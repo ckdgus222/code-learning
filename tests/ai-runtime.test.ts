@@ -9,19 +9,25 @@ vi.mock('node:fs/promises', () => ({
   realpath: vi.fn(async (name: string) => name), access: vi.fn(async () => undefined),
   stat: vi.fn(async () => ({ isFile: () => true })), mkdtemp: vi.fn(async () => '/private/tmp/ai-runtime-fixture'),
   rm: vi.fn(async () => undefined), writeFile: vi.fn(async () => undefined), open: vi.fn(), mkdir: vi.fn(async () => undefined),
+  readFile: vi.fn(async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); }),
   lstat: vi.fn(async () => ({ isDirectory: () => true, isSymbolicLink: () => false })), chmod: vi.fn(async () => undefined),
 }));
 const appCodexHome = '/private/tmp/app-data/codex-home';
 const appAgyHome = '/private/tmp/app-data/agy-home';
 // The first bytes each fake file starts with; unknown files look like a native executable.
 let heads: Record<string, string> = {};
+// What the runtime wrote through a file handle, by file name.
+let written: Record<string, string> = {};
 beforeEach(() => {
   vi.clearAllMocks();
   heads = {};
+  written = {};
   vi.mocked(realpath).mockImplementation(async (name: unknown) => String(name));
   vi.mocked(access).mockResolvedValue(undefined);
   vi.mocked(open).mockImplementation((async (name: string) => ({
     read: async (buffer: Buffer) => ({ buffer, bytesRead: buffer.write(heads[name] ?? '\xCF\xFA\xED\xFE', 'latin1') }),
+    chmod: async () => undefined,
+    writeFile: async (text: string) => { written[name] = text; },
     close: async () => undefined,
   })) as unknown as typeof open);
   vi.mocked(runProcess).mockResolvedValue({ stdout: 'codex-cli 1.2.3\n', stderr: '', exitCode: 0 });
@@ -102,6 +108,9 @@ describe('local connection readiness', () => {
         // An existing folder is made private as well.
         expect(chmod).toHaveBeenCalledWith(home, 0o700);
       }
+      // agy's app-only settings get the deny rules before agy starts.
+      expect(written[`${appAgyHome}/.gemini/antigravity-cli/settings.json`]).toContain('"command(*)"');
+      expect(written[`${appAgyHome}/.gemini/config/hooks.json`]).toContain('"decision\\":\\"deny');
     } finally {
       if (before === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = before;
     }
@@ -184,6 +193,19 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     expect(message.event).toBe('user');
     expect(message.message.content.startsWith(prompt)).toBe(true);
     expect(message.message.content).toContain(JSON.stringify(schema));
+  });
+  it('starts Codex without shell, hooks, sub-agents, web search, account-linked apps or plugins', async () => {
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
+    await runtime.checkConnections();
+    vi.mocked(runProcess).mockClear();
+    const events = [{ type: 'item.completed', item: { type: 'agent_message', text: '{"summary":"example"}' } }, { type: 'turn.completed' }];
+    vi.mocked(runProcess).mockResolvedValue({ stdout: events.map(event => JSON.stringify(event)).join('\n'), stderr: '', exitCode: 0 });
+    await (runtime as unknown as { executeVerifiedStage(request: object): Promise<unknown> })
+      .executeVerifiedStage({ stage: 'organizing', provider: 'codex', prompt: 'PROMPT', schema: {}, signal: new AbortController().signal });
+    const args = vi.mocked(runProcess).mock.calls[0][0].args.join(' ');
+    for (const feature of ['hooks', 'shell_tool', 'multi_agent', 'apps', 'plugins']) expect(args).toContain(`--disable ${feature}`);
+    expect(args).toContain('--sandbox read-only');
+    expect(args).toContain('web_search="disabled"');
   });
   it('requires completed Codex turns and extracts the final structured message', () => {
     const events = [{ type: 'thread.started', thread_id: 'example' },

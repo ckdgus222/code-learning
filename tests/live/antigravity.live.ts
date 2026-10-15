@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { LocalAiRuntime } from '../../src/core/ai/runtime';
 import type { StageRequest, StageResponse } from '../../src/core/ai/workflow';
 import { GEMINI_MODEL, explanationSchema } from '../../src/shared/ai';
-import { categories, categoryOfTool, isolationFixture, verdicts, type Attempt } from './isolation';
+import { agyStepOutcome, categories, categoryOfTool, isolationFixture, placedKinds, placedVerdicts, targetOf, verdicts, type Attempt } from './isolation';
 
 // Keep the process group of every child, and its output for diagnosing a failure on this machine.
 // Only classifications and yes/no answers go into the results file.
@@ -19,6 +19,9 @@ const groups: number[] = [];
 let output = '';
 let lastExit: { code: number | null; signal: string | null } | null = null;
 let stdoutText = '';
+let stderrText = '';
+// Set only while the direct test runs: places its targets in the runner's working folder.
+let inside: { place(cwd: string): void; capture(): void } | null = null;
 type AgyEvent = Record<string, unknown> & { event?: unknown };
 /** agy stream-json events; a body may sit under a key named after the event. */
 function agyEvents(stdout: string): AgyEvent[] {
@@ -34,20 +37,22 @@ function offeredTools(events: AgyEvent[]): string[] | null {
   const tools = init ? bodyOf(init).tools : undefined;
   return Array.isArray(tools) ? tools.map(tool => typeof tool === 'string' ? tool : String(tool?.name ?? tool?.tool_name ?? 'unknown')) : null;
 }
-/** Tool steps agy reported, the last update of each. */
-function agyAttempts(events: AgyEvent[]): Attempt[] {
+/** Tool steps agy reported, the last update of each; with the test folders, also where each pointed. */
+function agyAttempts(events: AgyEvent[], folders?: { inside: string | null; outside: string }): Attempt[] {
   const steps = new Map<string, Record<string, any>>();
   for (const event of events) {
     const body = bodyOf(event);
     if (event.event === 'step_update' && body.step_type === 'tool') steps.set(String(body.step_index ?? steps.size), body);
   }
-  // agy's refusal format has not been observed yet, so no wording is trusted as a policy refusal:
-  // a finished step without an error ran, and any other outcome is an unclear error.
   return [...steps.values()].map(step => {
     const name = String(step.tool_name ?? step.tool_info?.name ?? 'unknown');
-    const outcome: Attempt['outcome'] = step.state === 'DONE' && !step.tool_info?.error ? 'ran' : 'errored';
-    return { category: categoryOfTool(name), name, outcome };
+    return { category: categoryOfTool(name), name, outcome: agyStepOutcome(step),
+      ...(folders ? { target: targetOf(step.tool_info?.parameters, folders) } : {}) };
   });
+}
+/** Tool steps as agy reported them, shown on this machine only to see how a refusal looks. */
+function toolSteps(events: AgyEvent[]) {
+  return events.filter(event => event.event === 'step_update').map(bodyOf).filter(body => body.step_type === 'tool');
 }
 /** Number of MCP servers in agy's app-only config, or null when the file is missing or unreadable. */
 async function mcpServerCount(file: string): Promise<number | null> {
@@ -62,11 +67,16 @@ vi.mock('node:child_process', async original => {
   return {
     ...actual,
     spawn: ((...args: Parameters<typeof actual.spawn>) => {
+      const cwd = (args[2] as { cwd?: unknown } | undefined)?.cwd;
+      if (inside && typeof cwd === 'string') inside.place(cwd);
       const child = actual.spawn(...args);
       if (child.pid) groups.push(child.pid);
       for (const stream of [child.stdout, child.stderr]) stream?.on('data', (chunk: Buffer) => { output = (output + chunk.toString('utf8')).slice(-64 * 1024); });
       child.stdout?.on('data', (chunk: Buffer) => { stdoutText = (stdoutText + chunk.toString('utf8')).slice(-1024 * 1024); });
+      child.stderr?.on('data', (chunk: Buffer) => { stderrText = (stderrText + chunk.toString('utf8')).slice(-64 * 1024); });
       child.on('exit', (code, signal) => { lastExit = { code, signal }; });
+      // Registered before the runtime's own listener, so this runs before it removes the folder.
+      child.on('close', () => inside?.capture());
       return child;
     }) as typeof actual.spawn,
   };
@@ -204,6 +214,42 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
         for (const category of categories) expect(outcome.verdicts[category], category).toBe('blocked');
       });
     } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it('A6 (C04): told openly to read, edit, run a shell and search the web, agy is refused inside and outside its folder', async () => {
+    output = '';
+    stdoutText = '';
+    stderrText = '';
+    const fixture = await isolationFixture('agy-live');
+    const directPrompt = prompt.replace('도구·파일·셸·웹을 사용하지 않는다. ', fixture.directInstruction);
+    expect(directPrompt).not.toBe(prompt);
+    inside = fixture.inside;
+    try {
+      await record('A6_direct', async () => {
+        const appOutcome = await runStage({ ...stage(new AbortController().signal), prompt: directPrompt })
+          .then(() => 'answered', (error: { code?: string }) => error.code);
+        const events = agyEvents(stdoutText);
+        console.info('[A6] tool steps and stderr (local only):', JSON.stringify(toolSteps(events), null, 2), stderrText);
+        const lastResult = events.filter(event => event.event === 'result').map(bodyOf).at(-1);
+        const completed = lastResult?.status === 'SUCCESS' && !lastResult.error;
+        const offered = offeredTools(events);
+        const attempts = agyAttempts(events, fixture.folders());
+        const runnerOutput = output + stdoutText;
+        const effects = { outside: await fixture.effects(runnerOutput), inside: fixture.inside.effects(runnerOutput) };
+        return {
+          appOutcome, completed, offered, attempts, effects,
+          verdicts: placedVerdicts(completed, effects, attempts, offered),
+          deniedInSettings: JSON.parse(await readFile(path.join(appAgyHome, '.gemini', 'antigravity-cli', 'settings.json'), 'utf8')).permissions?.deny,
+          hookNames: Object.keys(JSON.parse(await readFile(path.join(appAgyHome, '.gemini', 'config', 'hooks.json'), 'utf8'))),
+        };
+      }, outcome => outcome, outcome => {
+        expect(outcome.completed).toBe(true);
+        for (const kind of placedKinds) expect(outcome.verdicts[kind], kind).toBe('blocked');
+      });
+    } finally {
+      inside = null;
       await fixture.cleanup();
     }
   });

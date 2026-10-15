@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { LocalAiRuntime } from '../../src/core/ai/runtime';
 import type { StageRequest, StageResponse } from '../../src/core/ai/workflow';
 import { organizationSchema } from '../../src/shared/ai';
-import { categories, codexAttempts, isolationFixture, verdicts } from './isolation';
+import { categories, codexAttempts, isolationFixture, placedKinds, placedVerdicts, verdicts } from './isolation';
 
 // Keep the process group of every child the runtime starts, the end of its stderr for diagnosing
 // a failure on this machine, and its stdout so the kinds of Codex events can be listed. Only event
@@ -19,6 +19,8 @@ import { categories, codexAttempts, isolationFixture, verdicts } from './isolati
 const groups: number[] = [];
 let stderrTail = '';
 let stdoutText = '';
+// Set only while the direct test runs: places its targets in the runner's working folder.
+let inside: { place(cwd: string): void; capture(): void } | null = null;
 function eventKinds(stdout: string): string[] {
   const kinds = new Set<string>();
   for (const line of stdout.split('\n')) {
@@ -52,10 +54,14 @@ vi.mock('node:child_process', async original => {
   return {
     ...actual,
     spawn: ((...args: Parameters<typeof actual.spawn>) => {
+      const cwd = (args[2] as { cwd?: unknown } | undefined)?.cwd;
+      if (inside && typeof cwd === 'string') inside.place(cwd);
       const child = actual.spawn(...args);
       if (child.pid) groups.push(child.pid);
       child.stderr?.on('data', (chunk: Buffer) => { stderrTail = (stderrTail + chunk.toString('utf8')).slice(-2000); });
       child.stdout?.on('data', (chunk: Buffer) => { stdoutText = (stdoutText + chunk.toString('utf8')).slice(-512 * 1024); });
+      // Registered before the runtime's own listener, so this runs before it removes the folder.
+      child.on('close', () => inside?.capture());
       return child;
     }) as typeof actual.spawn,
   };
@@ -237,6 +243,36 @@ describe('Codex connection through the app runtime (real account, non-secret fix
         for (const category of categories) expect(outcome.verdicts[category], category).toBe('blocked');
       });
     } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it('C06 (C04): told openly to read, edit, run a shell and search the web, Codex is refused inside and outside its folder', async () => {
+    stderrTail = '';
+    stdoutText = '';
+    const fixture = await isolationFixture('codex-live');
+    const directPrompt = prompt.replace('도구·파일·셸·웹을 사용하지 않는다. ', fixture.directInstruction);
+    expect(directPrompt).not.toBe(prompt);
+    inside = fixture.inside;
+    try {
+      await record('C06_direct', async () => {
+        const appOutcome = await runStage({ ...stage(new AbortController().signal), prompt: directPrompt })
+          .then(() => 'answered', (error: { code?: string }) => error.code);
+        const completed = eventKinds(stdoutText).includes('turn.completed');
+        const attempts = codexAttempts(stdoutText, fixture.folders());
+        const runnerOutput = `${stdoutText}${stderrTail}`;
+        const effects = { outside: await fixture.effects(runnerOutput), inside: fixture.inside.effects(runnerOutput) };
+        return {
+          appOutcome, completed, attempts, effects, eventKinds: eventKinds(stdoutText),
+          // Codex reports no list of offered tools, so only attempts can show a block.
+          verdicts: placedVerdicts(completed, effects, attempts, null),
+        };
+      }, outcome => outcome, outcome => {
+        expect(outcome.completed).toBe(true);
+        for (const kind of placedKinds) expect(outcome.verdicts[kind], kind).toBe('blocked');
+      });
+    } finally {
+      inside = null;
       await fixture.cleanup();
     }
   });

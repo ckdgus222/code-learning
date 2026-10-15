@@ -1,6 +1,6 @@
 import path from 'node:path';
 import os from 'node:os';
-import { access, realpath, stat, mkdtemp, writeFile, rm, open, mkdir, lstat, chmod } from 'node:fs/promises';
+import { access, realpath, stat, mkdtemp, readFile, writeFile, rm, open, mkdir, lstat, chmod } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { GEMINI_MODEL, type ConnectionReport, type LearningMode, type ProviderConnection, type ProviderId } from '../../shared/ai';
 import { AppError } from '../../shared/errors';
@@ -48,6 +48,75 @@ export async function resolveLaunch(target: string, home = os.homedir()): Promis
     if (node) return { executable: node, prefix: [target] };
   }
   return undefined;
+}
+
+/**
+ * What agy may never do in an app run: the app puts the code a question needs into the prompt.
+ * Without these, plan mode with --sandbox still offered file, shell, web and MCP tools (C04 step 1),
+ * and agy allows file access inside its working folder by default (official headless docs).
+ */
+export const AGY_DENY_RULES = ['read_file(*)', 'write_file(*)', 'read_url(*)', 'execute_url(*)', 'command(*)', 'unsandboxed(*)', 'mcp(*)'];
+/**
+ * A PreToolUse hook that refuses every tool (official hooks docs: matcher "*", decision "deny").
+ * The deny rules do not cover every tool: search_web still ran with them (C04 step 2).
+ */
+export const AGY_NO_TOOLS_REASON = 'Code Learning runs agy without tools';
+export const AGY_NO_TOOLS_HOOK = {
+  'code-learning-no-tools': { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command',
+    command: `echo '${JSON.stringify({ decision: 'deny', reason: AGY_NO_TOOLS_REASON })}'`, timeout: 5 }] }] },
+};
+const NO_FOLLOW_WRITE = constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW;
+
+/** Makes each level under `home` a private folder, refusing a link at any level. */
+async function privateFolder(home: string, parts: string[]): Promise<string> {
+  let folder = home;
+  for (const part of parts) {
+    folder = path.join(folder, part);
+    // A link could lead to the user's own ~/.gemini. mkdir does not follow an existing link, so
+    // nothing is made inside a link's target before this check.
+    await mkdir(folder, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'EEXIST') throw error; });
+    const info = await lstat(folder);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('not a private folder');
+    await chmod(folder, 0o700);
+  }
+  return folder;
+}
+
+/** Writes a file without following a link at its name, and makes an existing one private too. */
+async function writePrivateFile(file: string, text: string): Promise<void> {
+  const handle = await open(file, NO_FOLLOW_WRITE, 0o600);
+  try {
+    await handle.chmod(0o600);
+    await handle.writeFile(text);
+  } finally { await handle.close(); }
+}
+
+/**
+ * Restricts agy under the app-only HOME before every run, so the restrictions hold even if agy
+ * rewrites its files. settings.json gets the deny rules (deny outranks ask and allow, official
+ * permissions docs) and loses any hooks, since a hook runs commands; other keys agy wrote there
+ * itself, such as trusted folders, are kept. hooks.json then holds only the app's hook.
+ */
+export async function restrictAgy(home: string): Promise<void> {
+  const settingsFile = path.join(await privateFolder(home, ['.gemini', 'antigravity-cli']), 'settings.json');
+  let settings: Record<string, unknown> = {};
+  try {
+    settings = JSON.parse(await readFile(settingsFile, { encoding: 'utf8', flag: constants.O_RDONLY | constants.O_NOFOLLOW }));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  // Anything but the expected shapes is left as it is, and agy is not started.
+  const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+  if (!isObject(settings)) throw new Error('unexpected settings');
+  const permissions = settings.permissions ?? {};
+  if (!isObject(permissions)) throw new Error('unexpected settings');
+  const deny = permissions.deny ?? [];
+  if (!Array.isArray(deny)) throw new Error('unexpected settings');
+  const updated: Record<string, unknown> = { ...settings, permissions: { ...permissions, deny: [...new Set([...deny, ...AGY_DENY_RULES])] } };
+  delete updated.hooks;
+  await writePrivateFile(settingsFile, `${JSON.stringify(updated, null, 2)}\n`);
+  const hooksFile = path.join(await privateFolder(home, ['.gemini', 'config']), 'hooks.json');
+  await writePrivateFile(hooksFile, `${JSON.stringify(AGY_NO_TOOLS_HOOK, null, 2)}\n`);
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -128,8 +197,9 @@ export class LocalAiRuntime {
       const info = await lstat(home);
       if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('not a private folder');
       await chmod(home, 0o700);
+      if (provider === 'antigravity') await restrictAgy(home);
     } catch {
-      throw new AppError('AI_UNAVAILABLE', `앱 전용 ${provider === 'codex' ? 'Codex' : 'Antigravity'} 위치를 준비하지 못했습니다. 폴더 권한을 확인해 주세요.`);
+      throw new AppError('AI_UNAVAILABLE', `앱 전용 ${provider === 'codex' ? 'Codex' : 'Antigravity'} 위치를 준비하지 못했습니다. 폴더 권한${provider === 'antigravity' ? '과 설정 파일(settings.json, hooks.json)' : ''}을 확인해 주세요.`);
     }
     return provider === 'codex' ? { ...localProcessEnv(), CODEX_HOME: home } : { ...localProcessEnv(), HOME: home };
   }
@@ -213,6 +283,9 @@ export class LocalAiRuntime {
       const args = request.provider === 'codex'
         ? ['exec', '--ignore-user-config', '--ignore-rules', '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only',
           '--disable', 'hooks', '--disable', 'shell_tool', '--disable', 'multi_agent',
+          // With a ChatGPT login, apps linked to the account (GitHub and others) are installed into
+          // the app-only CODEX_HOME and offered as MCP tools; Codex called them in C04 step 2.
+          '--disable', 'apps', '--disable', 'plugins',
           '-c', 'web_search="disabled"', '-c', 'project_doc_max_bytes=0', '-c', 'approval_policy="never"',
           '--json', '--color', 'never', '--output-schema', schema, '-']
         // `-p` takes the prompt as its own argument; code must not go on the command line, so agy
