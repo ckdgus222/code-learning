@@ -1,6 +1,6 @@
 import path from 'node:path';
 import os from 'node:os';
-import { access, realpath, stat, mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { access, realpath, stat, mkdtemp, writeFile, rm, open } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { GEMINI_MODEL, type ConnectionReport, type LearningMode, type ProviderConnection, type ProviderId } from '../../shared/ai';
 import { AppError } from '../../shared/errors';
@@ -16,6 +16,38 @@ const providers: { provider: ProviderId; binary: string }[] = [
 export function executableCandidates(binary: string, home = os.homedir()): string[] {
   return [path.join(home, '.local/bin', binary), path.join(home, '.npm-global/bin', binary),
     path.join('/opt/homebrew/bin', binary), path.join('/usr/local/bin', binary)];
+}
+
+/** How to start a provider: the executable plus any arguments that come before the CLI's own. */
+export interface Launch { executable: string; prefix: string[] }
+
+async function usableFile(candidate: string): Promise<string | undefined> {
+  try {
+    const target = await realpath(candidate);
+    if (!(await stat(target)).isFile()) return undefined;
+    await access(target, constants.X_OK);
+    return target;
+  } catch { return undefined; }
+}
+
+/**
+ * npm installs Codex as a Node script (`#!/usr/bin/env node`). An app opened from Finder gets
+ * PATH=/usr/bin:/bin:/usr/sbin:/sbin, where `env node` fails, so a Node script is started with a
+ * node from the same fixed install locations instead. Anything else is started as it is.
+ */
+export async function resolveLaunch(target: string, home = os.homedir()): Promise<Launch | undefined> {
+  const handle = await open(target, 'r');
+  let head: string;
+  try {
+    const { buffer, bytesRead } = await handle.read(Buffer.alloc(128), 0, 128, 0);
+    head = buffer.subarray(0, bytesRead).toString('utf8');
+  } finally { await handle.close(); }
+  if (!head.startsWith('#!') || !/\bnode\b/.test(head.split('\n')[0])) return { executable: target, prefix: [] };
+  for (const candidate of executableCandidates('node', home)) {
+    const node = await usableFile(candidate);
+    if (node) return { executable: node, prefix: [target] };
+  }
+  return undefined;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -53,6 +85,9 @@ export function parseStageOutput(provider: 'codex' | 'antigravity', stdout: stri
     reportedModel = reportModel(event.model) ?? reportedModel;
     if (event.type === 'item.completed' || event.type === 'item.started') {
       const item = object(event.item);
+      // Codex also reports problems such as unreadable global config as `error` items; they are
+      // not tool use, but the run is still not accepted as clean.
+      if (item.type === 'error') throw new AppError('AI_RESPONSE', 'Codex가 실행 중 오류를 보고했습니다. 공식 프로그램의 설정을 확인해 주세요.');
       if (item.type !== 'agent_message' && item.type !== 'reasoning') throw new AppError('AI_RESPONSE', 'Codex가 허용하지 않은 도구 작업을 보고했습니다.');
       if (event.type === 'item.completed' && item.type === 'agent_message' && typeof item.text === 'string') answer = item.text;
     }
@@ -62,7 +97,7 @@ export function parseStageOutput(provider: 'codex' | 'antigravity', stdout: stri
 }
 
 export class LocalAiRuntime {
-  private binaries = new Map<ProviderId, string>();
+  private launches = new Map<ProviderId, Launch>();
   private inspection?: { controller: AbortController; done: Promise<ConnectionReport> };
 
   checkConnections(): Promise<ConnectionReport> {
@@ -75,30 +110,31 @@ export class LocalAiRuntime {
   private async inspect(signal: AbortSignal): Promise<ConnectionReport> {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'code-learning-check-'));
     const connections: ProviderConnection[] = [];
-    this.binaries.clear();
+    this.launches.clear();
     try {
       for (const { provider, binary } of providers) {
         if (signal.aborted) throw new AppError('CANCELLED', '연결 확인을 취소했습니다.');
         let executable: string | undefined;
+        // Try the official/common installation locations in order.
         for (const candidate of executableCandidates(binary)) {
-          try {
-            const target = await realpath(candidate);
-            if (!(await stat(target)).isFile()) continue;
-            await access(target, constants.X_OK);
-            executable = target;
-            break;
-          } catch { /* Try the next official/common installation location. */ }
+          executable = await usableFile(candidate);
+          if (executable) break;
         }
         const base = { provider, version: null, authentication: 'unchecked', isolation: 'unverified' } as const;
         if (!executable) {
           connections.push({ ...base, installation: 'missing', message: '기본 설치 위치에서 찾지 못했습니다. 공식 프로그램을 설치해 주세요.' });
           continue;
         }
+        const launch = await resolveLaunch(executable).catch(() => undefined);
+        if (!launch) {
+          connections.push({ ...base, installation: 'unusable', message: '실행에 필요한 Node를 기본 위치에서 찾지 못했습니다.' });
+          continue;
+        }
         try {
-          const output = await runProcess({ executable, args: ['--version'], cwd: directory, signal, timeoutMs: 8000, maxOutputBytes: 16 * 1024 });
+          const output = await runProcess({ executable: launch.executable, args: [...launch.prefix, '--version'], cwd: directory, signal, timeoutMs: 8000, maxOutputBytes: 16 * 1024 });
           const version = output.stdout.match(/(?:^|\s)(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)(?:\s|$)/)?.[1] ?? null;
           if (output.exitCode !== 0 || !version) throw new Error('unusable');
-          this.binaries.set(provider, executable);
+          this.launches.set(provider, launch);
           connections.push({ ...base, installation: 'found', version, message: '설치를 확인했습니다. 로그인·실제 응답·접근 제한은 아직 미검증입니다.' });
         } catch (error) {
           if (signal.aborted) throw new AppError('CANCELLED', '연결 확인을 취소했습니다.');
@@ -126,8 +162,8 @@ export class LocalAiRuntime {
   }
 
   private async executeVerifiedStage(request: StageRequest): Promise<StageResponse> {
-    const executable = this.binaries.get(request.provider);
-    if (!executable) throw new AppError('AI_UNAVAILABLE', '먼저 로컬 AI 설치 상태를 확인해 주세요.');
+    const launch = this.launches.get(request.provider);
+    if (!launch) throw new AppError('AI_UNAVAILABLE', '먼저 로컬 AI 설치 상태를 확인해 주세요.');
     const directory = await mkdtemp(path.join(os.tmpdir(), 'code-learning-ai-'));
     try {
       const schema = path.join(directory, 'response-schema.json');
@@ -138,7 +174,7 @@ export class LocalAiRuntime {
           '-c', 'web_search="disabled"', '-c', 'project_doc_max_bytes=0', '-c', 'approval_policy="never"',
           '--json', '--color', 'never', '--output-schema', schema, '-']
         : ['-p', '--model', GEMINI_MODEL, '--mode', 'plan', '--sandbox', '--output-format', 'json', '--json-schema', schema, '--print-timeout', '2m'];
-      const output = await runProcess({ executable, args, stdin: request.prompt, cwd: directory, signal: request.signal });
+      const output = await runProcess({ executable: launch.executable, args: [...launch.prefix, ...args], stdin: request.prompt, cwd: directory, signal: request.signal });
       // Stderr can contain provider/native paths; never return it to the renderer.
       if (/denied|permission|not allowed|unauthorized|authentication required|rate.limit|quota/i.test(output.stderr)) {
         throw new AppError('AI_UNAVAILABLE', 'AI 실행 중 인증·권한·이용 한도 오류가 발생했습니다.');
