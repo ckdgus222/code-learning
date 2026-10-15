@@ -1,18 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { LocalAiRuntime, executableCandidates, parseStageOutput } from '../src/core/ai/runtime';
+import { LocalAiRuntime, executableCandidates, parseStageOutput, resolveLaunch } from '../src/core/ai/runtime';
 import { GEMINI_MODEL } from '../src/shared/ai';
 import { runProcess } from '../src/core/ai/process';
-import { realpath, rm } from 'node:fs/promises';
+import { access, open, realpath, rm } from 'node:fs/promises';
 
 vi.mock('../src/core/ai/process', () => ({ runProcess: vi.fn() }));
 vi.mock('node:fs/promises', () => ({
   realpath: vi.fn(async (name: string) => name), access: vi.fn(async () => undefined),
   stat: vi.fn(async () => ({ isFile: () => true })), mkdtemp: vi.fn(async () => '/private/tmp/ai-runtime-fixture'),
-  rm: vi.fn(async () => undefined), writeFile: vi.fn(async () => undefined),
+  rm: vi.fn(async () => undefined), writeFile: vi.fn(async () => undefined), open: vi.fn(),
 }));
+// The first bytes each fake file starts with; unknown files look like a native executable.
+let heads: Record<string, string> = {};
 beforeEach(() => {
   vi.clearAllMocks();
+  heads = {};
   vi.mocked(realpath).mockImplementation(async (name: unknown) => String(name));
+  vi.mocked(access).mockResolvedValue(undefined);
+  vi.mocked(open).mockImplementation((async (name: string) => ({
+    read: async (buffer: Buffer) => ({ buffer, bytesRead: buffer.write(heads[name] ?? '\xCF\xFA\xED\xFE', 'latin1') }),
+    close: async () => undefined,
+  })) as unknown as typeof open);
   vi.mocked(runProcess).mockResolvedValue({ stdout: 'codex-cli 1.2.3\n', stderr: '', exitCode: 0 });
 });
 
@@ -44,6 +52,31 @@ describe('local connection readiness', () => {
     report = await new LocalAiRuntime().checkConnections();
     expect(report.providers.every(item => item.installation === 'unusable')).toBe(true);
     expect(JSON.stringify(report)).not.toContain('PRIVATE_');
+  });
+  it('starts a Node script with a node from the fixed locations, never from PATH', async () => {
+    heads['/Users/test/.npm-global/bin/codex'] = '#!/usr/bin/env node\n// launcher';
+    // Only Homebrew's node exists among the fixed node locations.
+    vi.mocked(access).mockImplementation(async name => {
+      if (String(name).endsWith('/node') && String(name) !== '/opt/homebrew/bin/node') throw new Error('missing');
+    });
+    expect(await resolveLaunch('/Users/test/.npm-global/bin/codex', '/Users/test'))
+      .toEqual({ executable: '/opt/homebrew/bin/node', prefix: ['/Users/test/.npm-global/bin/codex'] });
+    expect(await resolveLaunch('/Users/test/.local/bin/agy', '/Users/test')).toEqual({ executable: '/Users/test/.local/bin/agy', prefix: [] });
+  });
+  it('reports a Node script without a usable node as unusable, and starts other scripts as they are', async () => {
+    heads['/Users/test/.local/bin/codex'] = '#!/usr/bin/env node\n';
+    heads['/Users/test/.local/bin/tool'] = '#!/bin/sh\necho';
+    vi.mocked(access).mockImplementation(async name => { if (String(name).endsWith('/node')) throw new Error('missing'); });
+    expect(await resolveLaunch('/Users/test/.local/bin/codex', '/Users/test')).toBeUndefined();
+    expect(await resolveLaunch('/Users/test/.local/bin/tool', '/Users/test')).toEqual({ executable: '/Users/test/.local/bin/tool', prefix: [] });
+  });
+  it('uses the resolved launch for the version probe of a Node-script install', async () => {
+    const home = (await import('node:os')).homedir();
+    heads[`${home}/.local/bin/codex`] = '#!/usr/bin/env node\n';
+    const report = await new LocalAiRuntime().checkConnections();
+    expect(report.providers.find(item => item.provider === 'codex')?.installation).toBe('found');
+    const codexCall = vi.mocked(runProcess).mock.calls.find(([request]) => request.args[0] === `${home}/.local/bin/codex`);
+    expect(codexCall?.[0]).toMatchObject({ executable: `${home}/.local/bin/node`, args: [`${home}/.local/bin/codex`, '--version'] });
   });
   it('deduplicates simultaneous inspections', async () => {
     const runtime = new LocalAiRuntime();
@@ -86,7 +119,13 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     expect(() => parseStageOutput('codex', events.slice(0, -1).map(event => JSON.stringify(event)).join('\n'), 0)).toThrow();
   });
   it.each(['command_execution', 'mcp_tool_call', 'file_change'])('rejects unexpected Codex tool reports: %s', type => {
-    expect(() => parseStageOutput('codex', JSON.stringify({ type: 'item.started', item: { type } }), 0)).toThrow();
+    expect(() => parseStageOutput('codex', JSON.stringify({ type: 'item.started', item: { type } }), 0)).toThrow(/허용하지 않은 도구/);
+  });
+  it('rejects a Codex run that reported an error item, and says it was an error rather than tool use', () => {
+    // Shape seen from codex-cli 0.162.1 when global agent role files are malformed.
+    const events = [{ type: 'thread.started' }, { type: 'item.completed', item: { type: 'error', message: 'Ignoring malformed agent role definition' } },
+      { type: 'turn.started' }, { type: 'item.completed', item: { type: 'agent_message', text: '{"summary":"x"}' } }, { type: 'turn.completed' }];
+    expect(() => parseStageOutput('codex', events.map(event => JSON.stringify(event)).join('\n'), 0)).toThrow(/실행 중 오류를 보고/);
   });
   it('rejects malformed and failed processes without exposing provider output', () => {
     for (const provider of ['codex', 'antigravity'] as const) {
