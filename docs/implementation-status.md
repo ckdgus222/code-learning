@@ -173,6 +173,50 @@ agy 1.3.5에는 설정 위치를 바꾸는 공식 옵션이 없다(공식 CLI re
 
 검증(마지막 앱 코드 변경 이후 실행): `npm run typecheck` 종료 0, `npm test` **12파일 221개** 통과(agy 설정·훅 파일 실제 파일 검사 8개, Codex 실행 인자 검사, 위치별 판정·거절 형식 검사 추가), `npm run test:ai-sandbox` 통과, `npm run package` 종료 0, `npm run test:electron` **18개**, `npm run test:packaged` **8항목** 통과.
 
+### C04 3단계: 계정 없는 Codex 도구 목록 관찰과 C05 시험 자료 교체
+
+2026-10-15 인계 검토 뒤 사용자가 수정을 요청했다. 이 3단계 기록은 옵션 추가 승인 전 상태다. 당시 변경은 시험 코드와 사용 안내이며, 앱 실행 인자·7칸 판정·질문 보내기 잠금은 바꾸지 않았다. 이후 앱 인자 변경과 최신 결과는 아래 4단계에 기록했다.
+
+- `tests/live/codex-probe.ts`: 실제 앱의 stage 실행 인자를 복사하지 않고 그대로 받아, 인증 없는 로컬 Responses 제공자만 추가한다. 임시 HOME·CODEX_HOME·TMPDIR, 30초 제한, OS 격리를 적용한다. `sandbox-exec`로 지정한 로컬 포트 외 통신과 개인 `.codex`·`.gemini`·앱 인증 폴더·키체인 경로 접근을 차단한다. 격리를 적용할 수 없으면 실패하며 무보호 실행으로 넘어가지 않는다. 서버는 고정된 JSON 답변만 반환하고 도구 실행 지시는 만들지 않는다.
+- **C05 교체:** 실제 개인 `~/.codex/agents`를 링크하던 시험을 삭제했다. 가짜 HOME의 `.codex/agents/control.toml`과 별도 CODEX_HOME의 `agents/probe.toml`에 잘못된 형식의 시험 자료를 만든다. 대조군에서는 control 경고를, 별도 홈에서는 probe 경고와 control 경고 부재를 확인했다. 이 결과는 agents 위치 선택에 한정하며 다른 설정·플러그인·훅의 상속 차단을 증명하지 않는다.
+- **C07 관찰:** Codex 0.162.1, 요청 모델 식별자 `gpt-6.1-sol`에서 제공 도구 목록을 실제 HTTP 요청으로 확인했다. 실제 모델을 호출한 것은 아니다. 이 버전의 Responses Lite는 최상위 `tools` 대신 `input.additional_tools`를 쓴다([공식 버전 소스](https://raw.githubusercontent.com/openai/codex/rust-v0.162.1/codex-rs/core/src/client.rs)). Code Mode의 간접 도구는 `functions.exec` 설명 안의 선언에서 이름만 추출한다([공식 선언 생성 코드](https://raw.githubusercontent.com/openai/codex/rust-v0.162.1/codex-rs/code-mode-protocol/src/description.rs)). 일반 설명 속 호출 예시는 집계하지 않는다. 지연 도구가 설명에서 생략될 수 있으므로 `exhaustive: false`를 기록하며, 이름이 없다고 차단으로 판정하지 않는다.
+- 관찰된 직접 도구는 `functions.exec`, `functions.wait`, 질문 도구 2개, `clock.sleep`, `collaboration.*` 6개다. 간접 선언은 **`apply_patch`, `view_image`, `list_mcp_resource_templates`, `list_mcp_resources`, `read_mcp_resource`, `create_goal`, `get_goal`, `update_goal`, `clock__curr_time`** 9개다. 실행 가능 여부를 실제 호출로 시험한 것은 아니지만, 기존 옵션에서 도구가 전혀 없다는 가정은 성립하지 않는다.
+- 결과는 `codex-local-probe.json`과 실행별 사본으로 분리한다. 도구 이름·종류·정의 해시·요청 수·조건 차이·정리 결과만 남기고, 원문·인증 헤더는 저장하지 않는다. 목록 누락·알 수 없는 형식을 빈 목록으로 바꾸지 않는다. 정리 실패도 `passed: false`로 보고한다. 기존 Codex·agy 실계정 결과 파일의 SHA-256은 변경 전후 동일했다.
+- **C04 미통과 유지:** 사용자 지정 제공자·임시 홈·추가 OS 격리 조건은 실제 로그인 앱과 다르다. C07을 기존 C06 판정에 넣지 않았고, agy MCP와 개인 설정 상속의 미검증도 그대로다. agy의 이전 관찰은 **5종 도구의 8회 시도 차단**이며 모든 제공 도구의 실증적 차단을 뜻하지 않는다.
+
+검증: `npm run typecheck` 종료 0, `npm test` **13파일 230개 통과**, `npm run test:ai-sandbox` **11항목 통과**. 추가 검사에는 실제 자식 프로세스의 가짜 개인 파일 읽기 거부·지정 포트 연결 허용·다른 로컬 포트 연결 거부, 파서의 누락·잘못된 정의·중첩 정의·Code Mode 예시 배제, 임시 폴더 정리가 포함된다. `npm run test:codex-live -- -t 'C05 local|C07 local'`는 **2개 통과·6개 제외**, 마지막 실행은 로컬 HTTP 3건(C05 2건·C07 1건), 정리 완료다. 개발 중 Codex가 로컬 가짜 서버에 보낸 HTTP 요청은 오류 진단 포함 10건이며, **사용자 계정의 Codex·agy 모델 요청은 각각 0건**이다.
+
+초기 검사는 실행 환경의 로컬 포트 제한으로 실패했고, 승인된 권한에서 다시 검증했다. sandbox 주소 표현과 Responses Lite 형식의 초기 오류도 수정 후 위 검사로 확인했다. 생산 코드·의존성 변경이 없어 패키징·Electron·패키지 검사는 재실행하지 않았다. GitHub 활동 및 이전 정체불명 MCP 호출의 영향은 이번 작업에서 확인하지 않았다.
+
+### C04 4단계: 승인된 옵션 적용과 apply_patch·exec 공식 설정 비교
+
+2026-10-15 사용자가 이미지·협업 제한 옵션 3개를 승인하고, `apply_patch`와 `exec`도 공식 설정으로 끌 수 있는지 확인하도록 요청했다. **실제 계정 요청 없이** Codex 0.162.1·요청 모델 식별자 `gpt-6.1-sol`에서 로컬 C07을 비교했다.
+
+- 앱 실행 인자에 `--disable view_image`, `--disable multi_agent_v2`, `-c agents.enabled=false`를 추가했다. 기존 `multi_agent` 끄기만으로는 모델 정보의 V2 선택을 막지 못한다([공식 설정 처리](https://raw.githubusercontent.com/openai/codex/rust-v0.162.1/codex-rs/core/src/config/mod.rs)).
+- 앱에 `-c features.code_mode.excluded_tool_namespaces=["functions"]`도 추가했다. 현재 Code Mode의 간접 `apply_patch`·MCP 자료 조회·goal 선언을 제외한다. **모든 실행 모드의 전역 도구 금지나 exec 비활성화 설정은 아니다**([도구 구성 코드](https://raw.githubusercontent.com/openai/codex/rust-v0.162.1/codex-rs/core/src/tools/spec_plan.rs)).
+- `--disable code_mode --disable code_mode_only`는 시험에서만 추가했다. 현재 모델 정보의 `tool_mode`가 우선하므로 목록이 바뀌지 않았고, 효과 없는 옵션을 앱에 추가하지 않았다([우선순위 코드](https://raw.githubusercontent.com/openai/codex/rust-v0.162.1/codex-rs/core/src/tools/mod.rs)). `apply_patch_freeform`은 제거된 옵션이므로 비활성화 수단으로 사용하지 않았다([공식 기능 목록](https://raw.githubusercontent.com/openai/codex/rust-v0.162.1/codex-rs/features/src/lib.rs)).
+- **공식 `model_catalog_json` 경로는 exec·apply_patch를 함께 제거했다.** 동일 버전의 공개 [모델 목록](https://raw.githubusercontent.com/openai/codex/rust-v0.162.1/codex-rs/models-manager/models.json)에서 `gpt-6.1-sol` 항목 전체를 시험 자료로 보존하고, 임시 복사본에서 `tool_mode: "direct"`, `apply_patch_tool_type: null` 두 필드만 바꿨다. 모델 ID·기본 지침·Responses Lite·추론 설정은 원본과 같다. CLI 버전 불일치 시 시험을 거절하며, 두 필드 외 값 보존을 단위 검사한다. 원본 전체 파일의 SHA-256은 `943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b`이고 Apache 라이선스·NOTICE를 시험 자료와 함께 보존했다.
+
+| 조건 | 직접 제공 도구 | exec 설명의 간접 선언 |
+|---|---|---|
+| 승인 전 기준값 | exec·wait·질문 2개·clock.sleep·협업 6개 | apply_patch·view_image·MCP 자료 조회 3개·goal 3개·현재 시각 |
+| 옵션 3개만 적용 | exec·wait·질문 2개·clock.sleep | apply_patch·MCP 자료 조회 3개·goal 3개·현재 시각 |
+| 현재 앱: 옵션 3개 + functions 간접 도구 제외 | exec·wait·질문 2개·clock.sleep | 현재 시각만 관찰 |
+| 현재 앱 + code_mode·code_mode_only 끄기(시험용) | 현재 앱과 같음 | 현재 앱과 같음 |
+| 현재 앱 + direct·no-patch 모델 목록(시험용) | 질문 2개·goal 3개·시각·대기, 총 7개 | exec 없음 |
+
+카탈로그 교체는 **시험 전용**이다. 앱에 적용하면 모델을 `gpt-6.1-sol`로 고정하고 기본 지침·메타데이터의 버전 갱신까지 별도 관리해야 하므로, **사용자가 2026-10-15 앱에는 적용하지 않기로 결정했다**(exec로 닿는 간접 도구가 현재 시각뿐이라 얻는 효과에 비해 관리 비용이 큼). 현재 앱의 exec는 남아 있다. 또한 시험용 카탈로그에서도 도구가 0개가 된 것은 아니다. 지연 도구가 있을 수 있는 Code Mode 선언의 부재를 모든 경로의 실행 거부로 해석하지 않는다. **C04 7칸 기준과 질문 보내기 잠금은 그대로 유지한다.**
+
+검토에서 exec 설명 누락·미해석을 빈 간접 도구 목록으로 통과시킬 수 있는 P2를 발견해 수정했다. exec마다 대응 설명이 있고 모두 `parsed`일 때만 부재 검사를 허용한다. 회귀 검사에는 설명 없음·알 수 없는 형식·해석 결과 누락이 포함된다. 협업 도구도 직접 이름과 정규화한 간접 이름을 모두 검사한다. security·reviewer의 해당 지적 재검토와 catalog 시험 검토에 미해결 주요 문제는 없었다.
+
+최종 검증:
+
+- `npm run typecheck`: 종료 0. `npm test`: **13파일 232개 통과**, 종료 0.
+- `npm run test:codex-live -- -t 'C05 local|C07 local'`: **4개 통과·6개 제외**, 종료 0. C05 1개와 C07 3개 변형이며, 최종 실행의 로컬 HTTP는 5건(C05 2건·각 C07 1건), 임시 파일·서버 정리 완료다. 6개 실제 계정 시험은 사용자 요청에 따라 실행하지 않았다.
+- 이번 옵션 승인 후 조사·비교·재검증에서 **Codex → 로컬 가짜 서버 HTTP 총 16건**, stage 시작 16회·버전 확인 포함 CLI 시작 30회다. 앞선 3단계나 사용자의 별도 재실행은 합산하지 않았다. **실제 계정의 Codex·agy 모델 요청은 각각 0건**, 모델이 지시한 도구 호출도 0건이다.
+- 앱 인자가 바뀌어 `npm run package`를 재실행했고 종료 0이다. `npm run test:electron` **18개**, `npm run test:packaged` **8항목**, `npm run test:ai-sandbox` **11항목**이 통과했다. 이후 변경은 시험 코드·자료·문서뿐이며 앱 번들 변경은 없다. 기존 Vite 설정 로더 경고는 그대로다.
+- 기존 `codex-live.json`·`agy-live.json`의 SHA-256은 작업 전후 동일하다. 실제 로그인 환경의 도구 목록, C04 실제 차단, agy MCP와 확장 상속, GitHub의 이전 정체불명 MCP 호출 영향은 이번 작업에서 **미검증**이다. 커밋하지 않았다.
+
 
 ## 실행한 검증
 

@@ -53,6 +53,12 @@ npm run test:ai-sandbox
 
 `npm run test:codex-live`는 사용자 Codex 계정으로 비밀 없는 작은 시험 코드를 실제로 보내는 연결 시험(C01~C03 일부)이라 위 목록과 `npm test`에 포함하지 않습니다. 앱의 질문 전송 차단은 그대로 둔 채 실행 코드만 시험하며, 결과는 `test-results/codex-live.json`에 통과 여부·분류만 남깁니다.
 
+계정 요청 없이 Codex의 제공 도구와 agents 설정 위치만 확인하려면 `npm run test:codex-live -- -t 'C05 local|C07 local'`을 실행합니다. macOS `sandbox-exec`와 로컬 포트 열기가 필요하며, 임시 HOME·CODEX_HOME과 가짜 응답 서버만 사용합니다. 외부 통신·개인 설정·키체인 경로 접근을 차단하고, 도구 호출 응답은 만들지 않습니다. C05는 가짜 개인 홈의 agents 자료만 읽습니다. C07은 일반 `tools`와 Responses Lite의 `input.additional_tools`, Code Mode의 `exec` 설명에 있는 도구 선언을 수집합니다. 지연 제공되는 도구까지 모두 보인다는 보장은 없으며, 이 결과를 실제 로그인 조건의 C04 통과로 취급하지 않습니다.
+
+로컬 결과는 `test-results/codex-local-probe.json`과 실행별 `codex-local-probe-<ID>.json`에 도구 이름·종류·수치만 기록합니다. 프롬프트·응답·헤더 원문을 저장하지 않으며, 로컬 시험만 실행하면 기존 `codex-live.json`은 보존합니다.
+
+C07은 현재 앱 설정, `code_mode`·`code_mode_only` 끄기, 공식 `model_catalog_json`으로 직접 도구 모드·파일 편집 도구 없음 설정을 지정하는 세 조건을 비교합니다. 뒤의 두 조건은 시험에만 적용합니다. 카탈로그 시험은 공식 0.162.1의 `gpt-6.1-sol` 자료와 같은 CLI 버전만 허용하며, 원본에서 `tool_mode`·`apply_patch_tool_type` 두 필드만 바꿉니다. 시험 자료의 출처·해시는 `tests/fixtures/codex-model-0.162.1.json`, 라이선스·고지는 같은 폴더의 `codex-model-LICENSE.txt`·`codex-model-NOTICE.txt`에 있습니다. 앱은 이미지·협업 끄기와 Code Mode의 `functions` 간접 도구 제외를 적용했지만 `exec` 자체는 남아 있어 질문 보내기 잠금을 유지합니다.
+
 화면 자동검사는 서로의 창 포커스에 영향을 줄 수 있으므로 순서대로 실행합니다. 테스트는 자체 임시 프로젝트와 별도 앱 데이터 경로를 사용하며 외부 AI를 호출하지 않습니다. 작은 탐색 예제는 `fixtures/small-ts`입니다.
 
 ## 개발 역할과 화면 연결 기준
