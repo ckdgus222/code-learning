@@ -3,15 +3,17 @@
 // `npm test` and runs only through `npm run test:codex-live`. The app's send gate stays closed:
 // the checks call the runtime's stage executor directly, from this test only.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { LocalAiRuntime } from '../../src/core/ai/runtime';
+import { runProcess, type ProcessRequest } from '../../src/core/ai/process';
 import type { StageRequest, StageResponse } from '../../src/core/ai/workflow';
 import { organizationSchema } from '../../src/shared/ai';
 import { categories, codexAttempts, isolationFixture, placedKinds, placedVerdicts, verdicts } from './isolation';
+import { createCodexProbe, findCodexLaunch, observedToolNames, type CodexProbe, type CodexProbeVariant } from './codex-probe';
 
 // Keep the process group of every child the runtime starts, the end of its stderr for diagnosing
 // a failure on this machine, and its stdout so the kinds of Codex events can be listed. Only event
@@ -19,6 +21,13 @@ import { categories, codexAttempts, isolationFixture, placedKinds, placedVerdict
 const groups: number[] = [];
 let stderrTail = '';
 let stdoutText = '';
+// Only the local C05/C07 cases set this. Production runtime arguments stay unchanged.
+let localProbe: CodexProbe | null = null;
+const localResults: Record<string, unknown> = {};
+vi.mock('../../src/core/ai/process', async original => {
+  const actual = await original<typeof import('../../src/core/ai/process')>();
+  return { ...actual, runProcess: (request: ProcessRequest) => actual.runProcess(localProbe ? localProbe.wrap(request) : request) };
+});
 // Set only while the direct test runs: places its targets in the runner's working folder.
 let inside: { place(cwd: string): void; capture(): void } | null = null;
 function eventKinds(stdout: string): string[] {
@@ -124,8 +133,57 @@ afterAll(async () => {
   for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
   Object.assign(process.env, saved);
   await mkdir('test-results', { recursive: true });
-  await writeFile('test-results/codex-live.json', JSON.stringify(results, null, 2));
+  // A local-only filtered run must not erase the last real-account C04 evidence.
+  if (Object.keys(results).some(key => /^C\d/.test(key))) await writeFile('test-results/codex-live.json', JSON.stringify(results, null, 2));
+  if (Object.keys(localResults).length) await writeFile('test-results/codex-local-probe.json', JSON.stringify(localResults, null, 2));
 });
+
+/** Uses the app's actual stage executor, substituting only transport and test isolation. */
+async function withLocalProbe(name: string, action: (probe: CodexProbe, runtimeFor: (home: string) => LocalAiRuntime) => Promise<object>, variant: CodexProbeVariant = 'app') {
+  let probe: CodexProbe | undefined;
+  let version: string | null = null;
+  let details: object = {};
+  try {
+    probe = await createCodexProbe(variant);
+    localProbe = probe;
+    const launch = await findCodexLaunch();
+    const versionOutput = await runProcess({ ...launch, args: [...launch.prefix, '--version'], cwd: probe.root,
+      env: { CODEX_HOME: probe.codexHome }, signal: new AbortController().signal });
+    version = versionOutput.stdout.match(/(?:^|\s)(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)(?:\s|$)/)?.[1] ?? null;
+    expect(versionOutput.exitCode, versionOutput.stderr).toBe(0);
+    expect(version).not.toBeNull();
+    if (probe.catalogOverride) expect(version, 'The catalog fixture is specific to this CLI version').toBe(probe.catalogOverride.version);
+    const runtimeFor = (home: string) => {
+      const localRuntime = new LocalAiRuntime(home, probe!.agyHome);
+      // Install the launch resolved by the same app helpers, without running unrelated providers.
+      (localRuntime as unknown as { launches: Map<string, typeof launch> }).launches.set('codex', launch);
+      return localRuntime;
+    };
+    details = await action(probe, runtimeFor);
+    expect(probe.failures).toEqual([]);
+    expect(probe.inventories.length).toBeGreaterThan(0);
+    localResults[name] = { ...probe.summary(), version, ...details, passed: true };
+  } catch (error) {
+    localResults[name] = { ...probe?.summary(), version, ...details, passed: false, failure: classify(stderrTail), events: eventKinds(stdoutText) };
+    // Local diagnostics only. The JSON report never contains provider text or request contents.
+    console.error(`[${name}] local startup diagnostics:\n${stderrTail}\n${errorItemMessages(stdoutText).join('\n')}`);
+    throw error;
+  } finally {
+    localProbe = null;
+    try {
+      await probe?.close();
+      localResults[name] = { ...localResults[name] as object, cleanup: 'completed' };
+    } catch (error) {
+      localResults[name] = { ...localResults[name] as object, passed: false, cleanup: 'failed' };
+      throw error;
+    } finally {
+      // Keep each run's sanitized counts even when a later filtered run replaces the summary.
+      await mkdir('test-results', { recursive: true });
+      const runId = probe?.summary().runId ?? randomUUID();
+      await writeFile(`test-results/codex-local-probe-${runId}.json`, JSON.stringify({ [name]: localResults[name] }, null, 2));
+    }
+  }
+}
 
 describe('Codex connection through the app runtime (real account, non-secret fixture)', () => {
   it('C01: finds codex and the node it needs from a Finder-like environment', async () => {
@@ -170,53 +228,57 @@ describe('Codex connection through the app runtime (real account, non-secret fix
     }
   });
 
-  it('C05: reads agent definitions from its CODEX_HOME, not from the global ~/.codex', async () => {
-    // Codex warns with the path of each malformed agent file it reads, even without a login, so
-    // warnings show which folders it looked in. Both homes below have no login (no account use),
-    // and the user's own files are only read, never changed.
-    const globalAgents = path.join(os.homedir(), '.codex', 'agents');
-    // The warning codex-cli 0.162.1 gives for an agent file without a name.
-    const agentWarning = /malformed agent role definition/i;
-    const warningsFrom = async (home: string) => {
+  it('C05 local: selects agent definitions from temporary CODEX_HOME, using a synthetic global HOME', async () => {
+    await withLocalProbe('C05_agents', async (probe, runtimeFor) => {
+      const controlHome = path.join(probe.home, '.codex');
+      const controlFile = path.join(controlHome, 'agents', 'control.toml');
+      const probeFile = path.join(probe.codexHome, 'agents', 'probe.toml');
+      for (const file of [controlFile, probeFile]) {
+        await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+        await writeFile(file, 'description = "synthetic agent without a name"\n', { mode: 0o600 });
+      }
+      const warningsFrom = async (home: string) => {
+        stderrTail = '';
+        stdoutText = '';
+        await runStage(stage(new AbortController().signal), runtimeFor(home)).catch(() => undefined);
+        return errorItemMessages(stdoutText);
+      };
+      const control = await warningsFrom(controlHome);
+      const isolated = await warningsFrom(probe.codexHome);
+      const isWarning = (message: string, file: string) => /malformed agent role definition/i.test(message) && message.includes(file);
+      const outcome = {
+        controlWarned: control.some(message => isWarning(message, controlFile)),
+        selectedHomeWarned: isolated.some(message => isWarning(message, probeFile)),
+        syntheticGlobalMentioned: isolated.some(message => message.includes(controlHome)),
+      };
+      expect(outcome).toEqual({ controlWarned: true, selectedHomeWarned: true, syntheticGlobalMentioned: false });
+      return { ...outcome, scope: 'Agent definition selection with a synthetic HOME only; other extension inheritance remains unverified' };
+    });
+  });
+
+  it.each(['app', 'code-mode-flags-disabled', 'direct-no-patch-catalog'] as const)('C07 local (%s): captures offered tools without a login or an external model request', async variant => {
+    await withLocalProbe(variant === 'app' ? 'C07_tools' : `C07_${variant}`, async (probe, runtimeFor) => {
       stderrTail = '';
       stdoutText = '';
-      const probe = new LocalAiRuntime(home, appAgyHome);
-      await probe.checkConnections();
-      await runStage(stage(new AbortController().signal), probe).catch(() => undefined);
-      return errorItemMessages(stdoutText);
-    };
-    const controlHome = await mkdtemp(path.join(os.tmpdir(), 'codex-live-control-'));
-    const probeHome = await mkdtemp(path.join(os.tmpdir(), 'codex-live-probe-'));
-    try {
-      await record('C05_agents', async () => {
-        // Control: the user's global agent files, reached through a link, do warn when read. Without
-        // this, a quiet run could just mean those files are now valid.
-        await symlink(globalAgents, path.join(controlHome, 'agents'));
-        // A login failure is an `error` item too, so only agent-file warnings naming the folder count.
-        const controlPaths = [controlHome, await realpath(controlHome), await realpath(globalAgents)];
-        const control = (await warningsFrom(controlHome)).filter(message =>
-          agentWarning.test(message) && controlPaths.some(folder => message.includes(folder)));
-        // Probe: a home with only its own malformed file.
-        await mkdir(path.join(probeHome, 'agents'));
-        await writeFile(path.join(probeHome, 'agents', 'probe.toml'), 'description = "probe without a name"\n');
-        const probeHomes = [probeHome, await realpath(probeHome)];
-        const probe = await warningsFrom(probeHome);
-        return {
-          globalFilesWarnWhenRead: control.length > 0,
-          readsTestHome: probe.some(message => agentWarning.test(message) && probeHomes.some(home => message.includes(home))),
-          // Any mention of the global folder counts here, agent warning or not.
-          readsGlobalHome: probe.some(message => message.includes(path.join(os.homedir(), '.codex'))),
-        };
-      }, outcome => outcome, outcome => {
-        // Without a warning from the control, C05 stays undetermined rather than passed.
-        expect(outcome.globalFilesWarnWhenRead).toBe(true);
-        expect(outcome.readsTestHome).toBe(true);
-        expect(outcome.readsGlobalHome).toBe(false);
-      });
-    } finally {
-      await rm(controlHome, { recursive: true, force: true });
-      await rm(probeHome, { recursive: true, force: true });
-    }
+      const response = await runStage({ ...stage(new AbortController().signal), prompt: 'Return the JSON object {"probe":true}.',
+        schema: { type: 'object', properties: { probe: { type: 'boolean' } }, required: ['probe'], additionalProperties: false } }, runtimeFor(probe.codexHome));
+      expect(response.value).toEqual({ probe: true });
+      expect(eventKinds(stdoutText)).toContain('turn.completed');
+      expect(codexAttempts(stdoutText)).toEqual([]);
+      const observedNames = probe.inventories.flatMap(observedToolNames);
+      const isNamed = (observed: string, name: string) => observed === name || observed.endsWith(`.${name}`) || observed.endsWith(`__${name}`);
+      // The approved restrictions must remove these declarations in this observed environment.
+      // Absence from a Code Mode description is still not proof that every deferred tool is blocked.
+      expect(observedNames.some(name => /(?:^|[.])collaboration[._]/.test(name))).toBe(false);
+      for (const name of ['view_image', 'apply_patch', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource',
+        'followup_task', 'interrupt_agent', 'list_agents', 'send_message', 'spawn_agent', 'wait_agent']) {
+        expect(observedNames.some(observed => isNamed(observed, name)), name).toBe(false);
+      }
+      if (variant === 'direct-no-patch-catalog') {
+        for (const name of ['exec', 'wait']) expect(observedNames.some(observed => isNamed(observed, name)), name).toBe(false);
+      }
+      return { events: eventKinds(stdoutText), observedNames: [...new Set(observedNames)], c04Passed: false };
+    }, variant);
   });
 
   it('C04: an instruction hidden in the code cannot read or change outside files, run a shell, search the web or call MCP', async () => {

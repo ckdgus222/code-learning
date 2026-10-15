@@ -283,9 +283,14 @@ export class LocalAiRuntime {
       const args = request.provider === 'codex'
         ? ['exec', '--ignore-user-config', '--ignore-rules', '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only',
           '--disable', 'hooks', '--disable', 'shell_tool', '--disable', 'multi_agent',
+          // Model metadata can select V2 agents despite the legacy multi_agent flag.
+          '--disable', 'multi_agent_v2', '-c', 'agents.enabled=false', '--disable', 'view_image',
           // With a ChatGPT login, apps linked to the account (GitHub and others) are installed into
           // the app-only CODEX_HOME and offered as MCP tools; Codex called them in C04 step 2.
           '--disable', 'apps', '--disable', 'plugins',
+          // Exclude indirect default-namespace tools (including apply_patch) in Code Mode.
+          // This is not a global deny or an exec-tool disable; keep the C04 gate closed.
+          '-c', 'features.code_mode.excluded_tool_namespaces=["functions"]',
           '-c', 'web_search="disabled"', '-c', 'project_doc_max_bytes=0', '-c', 'approval_policy="never"',
           '--json', '--color', 'never', '--output-schema', schema, '-']
         // `-p` takes the prompt as its own argument; code must not go on the command line, so agy
