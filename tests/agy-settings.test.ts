@@ -75,7 +75,7 @@ describe('agy restrictions in the app-only HOME', () => {
     }
   });
 
-  it.each(['not json', '[]', '{"permissions": []}', '{"permissions": {"deny": "command(*)"}}'])('does not overwrite unexpected settings: %s', async content => {
+  it.each(['not json', '[]', '{"permissions": []}', '{"permissions": {"deny": "command(*)"}}', '{"permissions": {"deny": [null, 7, {}]}}'])('does not overwrite unexpected settings: %s', async content => {
     await mkdir(path.dirname(settingsFile()), { recursive: true });
     await writeFile(settingsFile(), content);
     await expect(restrictAgy(home)).rejects.toThrow();

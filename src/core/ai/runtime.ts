@@ -111,7 +111,7 @@ export async function restrictAgy(home: string): Promise<void> {
   const permissions = settings.permissions ?? {};
   if (!isObject(permissions)) throw new Error('unexpected settings');
   const deny = permissions.deny ?? [];
-  if (!Array.isArray(deny)) throw new Error('unexpected settings');
+  if (!Array.isArray(deny) || !deny.every(rule => typeof rule === 'string')) throw new Error('unexpected settings');
   const updated: Record<string, unknown> = { ...settings, permissions: { ...permissions, deny: [...new Set([...deny, ...AGY_DENY_RULES])] } };
   delete updated.hooks;
   await writePrivateFile(settingsFile, `${JSON.stringify(updated, null, 2)}\n`);
