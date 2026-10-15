@@ -49,6 +49,8 @@ npm run test:packaged
 npm run test:ai-sandbox
 ```
 
+앱은 Codex를 개인 설정(`~/.codex`)과 분리된 앱 전용 위치(`~/Library/Application Support/Code Learning/codex-home`)로 실행합니다. 처음 한 번 `CODEX_HOME="$HOME/Library/Application Support/Code Learning/codex-home" codex login`으로 로그인해야 합니다.
+
 `npm run test:codex-live`는 사용자 Codex 계정으로 비밀 없는 작은 시험 코드를 실제로 보내는 연결 시험(C01~C03 일부)이라 위 목록과 `npm test`에 포함하지 않습니다. 앱의 질문 전송 차단은 그대로 둔 채 실행 코드만 시험하며, 결과는 `test-results/codex-live.json`에 통과 여부·분류만 남깁니다.
 
 화면 자동검사는 서로의 창 포커스에 영향을 줄 수 있으므로 순서대로 실행합니다. 테스트는 자체 임시 프로젝트와 별도 앱 데이터 경로를 사용하며 외부 AI를 호출하지 않습니다. 작은 탐색 예제는 `fixtures/small-ts`입니다.
