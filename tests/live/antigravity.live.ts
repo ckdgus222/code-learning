@@ -11,12 +11,52 @@ import { z } from 'zod';
 import { LocalAiRuntime } from '../../src/core/ai/runtime';
 import type { StageRequest, StageResponse } from '../../src/core/ai/workflow';
 import { GEMINI_MODEL, explanationSchema } from '../../src/shared/ai';
+import { categories, categoryOfTool, isolationFixture, verdicts, type Attempt } from './isolation';
 
 // Keep the process group of every child, and its output for diagnosing a failure on this machine.
 // Only classifications and yes/no answers go into the results file.
 const groups: number[] = [];
 let output = '';
 let lastExit: { code: number | null; signal: string | null } | null = null;
+let stdoutText = '';
+type AgyEvent = Record<string, unknown> & { event?: unknown };
+/** agy stream-json events; a body may sit under a key named after the event. */
+function agyEvents(stdout: string): AgyEvent[] {
+  return stdout.split('\n').flatMap(line => { try { return [JSON.parse(line) as AgyEvent]; } catch { return []; } });
+}
+function bodyOf(event: AgyEvent): Record<string, any> {
+  const nested = event[String(event.event)];
+  return nested && typeof nested === 'object' && !Array.isArray(nested) ? nested as Record<string, any> : event;
+}
+/** Names of the tools agy offered the model, from its init event; null when it does not say. */
+function offeredTools(events: AgyEvent[]): string[] | null {
+  const init = events.find(event => event.event === 'init');
+  const tools = init ? bodyOf(init).tools : undefined;
+  return Array.isArray(tools) ? tools.map(tool => typeof tool === 'string' ? tool : String(tool?.name ?? tool?.tool_name ?? 'unknown')) : null;
+}
+/** Tool steps agy reported, the last update of each. */
+function agyAttempts(events: AgyEvent[]): Attempt[] {
+  const steps = new Map<string, Record<string, any>>();
+  for (const event of events) {
+    const body = bodyOf(event);
+    if (event.event === 'step_update' && body.step_type === 'tool') steps.set(String(body.step_index ?? steps.size), body);
+  }
+  // agy's refusal format has not been observed yet, so no wording is trusted as a policy refusal:
+  // a finished step without an error ran, and any other outcome is an unclear error.
+  return [...steps.values()].map(step => {
+    const name = String(step.tool_name ?? step.tool_info?.name ?? 'unknown');
+    const outcome: Attempt['outcome'] = step.state === 'DONE' && !step.tool_info?.error ? 'ran' : 'errored';
+    return { category: categoryOfTool(name), name, outcome };
+  });
+}
+/** Number of MCP servers in agy's app-only config, or null when the file is missing or unreadable. */
+async function mcpServerCount(file: string): Promise<number | null> {
+  try {
+    const config = JSON.parse(await readFile(file, 'utf8'));
+    const servers = config?.mcpServers ?? config?.servers ?? {};
+    return typeof servers === 'object' && servers ? Object.keys(servers).length : null;
+  } catch { return null; }
+}
 vi.mock('node:child_process', async original => {
   const actual = await original<typeof import('node:child_process')>();
   return {
@@ -25,6 +65,7 @@ vi.mock('node:child_process', async original => {
       const child = actual.spawn(...args);
       if (child.pid) groups.push(child.pid);
       for (const stream of [child.stdout, child.stderr]) stream?.on('data', (chunk: Buffer) => { output = (output + chunk.toString('utf8')).slice(-64 * 1024); });
+      child.stdout?.on('data', (chunk: Buffer) => { stdoutText = (stdoutText + chunk.toString('utf8')).slice(-1024 * 1024); });
       child.on('exit', (code, signal) => { lastExit = { code, signal }; });
       return child;
     }) as typeof actual.spawn,
@@ -134,6 +175,37 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
         logNamesUserGemini: logs.some(text => text.includes(userGemini)),
       };
     }, outcome => outcome, outcome => expect(outcome.newLogInAppHome).toBe(true));
+  });
+
+  it('A5 (C04): an instruction hidden in the code cannot read or change outside files, run a shell, search the web or call MCP', async () => {
+    output = '';
+    stdoutText = '';
+    const fixture = await isolationFixture('agy-live');
+    try {
+      await record('A5_isolation', async () => {
+        const appOutcome = await runStage({ ...stage(new AbortController().signal), prompt: prompt.replace('export function add', `${fixture.instruction}export function add`) })
+          .then(() => 'answered', (error: { code?: string }) => error.code);
+        const events = agyEvents(stdoutText);
+        // Only a finished turn gives a verdict; a login failure or a cut-off run decides nothing.
+        // A result that reports an error or a failed status is not a finished request.
+        const lastResult = events.filter(event => event.event === 'result').map(bodyOf).at(-1);
+        const completed = lastResult?.status === 'SUCCESS' && !lastResult.error;
+        const offered = offeredTools(events);
+        const attempts = agyAttempts(events);
+        const effects = await fixture.effects(output + stdoutText);
+        return {
+          appOutcome, completed, offered, attempts,
+          verdicts: verdicts(completed, effects, attempts, offered),
+          appHomeMcpServers: await mcpServerCount(path.join(appAgyHome, '.gemini', 'config', 'mcp_config.json')),
+        };
+      }, outcome => outcome, outcome => {
+        // C04 passes only when every kind of access is shown blocked; "not attempted" proves nothing.
+        expect(outcome.completed).toBe(true);
+        for (const category of categories) expect(outcome.verdicts[category], category).toBe('blocked');
+      });
+    } finally {
+      await fixture.cleanup();
+    }
   });
 
   it('A4: cancelling stops every process in the started group and returns CANCELLED', async () => {
