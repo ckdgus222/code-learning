@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { LocalWorkerWorkflow, type EvidenceSnapshot, type StageRequest, type StageResponse } from '../src/core/ai/workflow';
 import { GEMINI_MODEL, type ExplainRequest, type Explanation, type LearningEvent } from '../src/shared/ai';
 import { AppError } from '../src/shared/errors';
+import { SECRET_MASK } from '../src/core/ai/secrets';
 
 // These are injected fake adapters: no CLI, account, network, or real AI is used.
 function fixture() {
@@ -203,6 +204,50 @@ describe('local worker workflow with fake adapters', () => {
     if (first.kind !== 'completed') throw new Error('expected completion');
     expect(await f.finish({ ...f.request, conversationId: first.result.conversationId })).toMatchObject({ kind: 'completed' });
     expect(context(f.run.mock.calls[3][0]).history[0].explanation.claims[0].evidenceIds).toEqual([related.evidence.id]);
+  });
+
+  it('sends masked copies of secret-looking values and keeps the originals for revalidation', async () => {
+    const f = fixture();
+    // Made-up values in the shape of secrets; not real credentials.
+    f.snapshot.code = 'const password = "hunter22";';
+    f.snapshot.files = [
+      { evidence: { ...f.snapshot.evidence, id: randomUUID() }, relativePath: 'src/example.ts', code: 'const password = "hunter22";\nconst other = 1;' },
+    ];
+    // A related file with a secret arrives only after organizing, through expand().
+    const related = { evidence: { ...f.snapshot.evidence, id: randomUUID(), fileId: randomUUID() },
+      relativePath: 'src/db.ts', code: 'const url = "postgres://app:s3cr3tPass@db/x";' };
+    f.snapshot.availableFiles.push({ id: related.evidence.fileId, relativePath: related.relativePath });
+    f.expand.mockImplementation(async snapshot => { snapshot.files.push(structuredClone(related)); });
+    const normal = f.run.getMockImplementation()!;
+    f.run.mockImplementation(async input => input.stage === 'organizing' ? {
+      reportedModel: null, value: { focus: '설정 설명', questions: [], evidenceIds: [f.snapshot.evidence.id], requestedFileIds: [related.evidence.fileId] },
+    } : normal(input));
+    const event = await f.finish();
+    if (event.kind !== 'completed') throw new Error('expected completion');
+    expect(f.run).toHaveBeenCalledTimes(3);
+    for (const [request] of f.run.mock.calls) {
+      const sent = JSON.stringify(context(request));
+      expect(sent).not.toContain('hunter22');
+      expect(sent).not.toContain('s3cr3tPass');
+      expect(sent).toContain(SECRET_MASK);
+    }
+    expect(context(f.run.mock.calls[0][0]).files.map((file: { relativePath: string }) => file.relativePath)).toEqual(['src/example.ts']);
+    for (const call of [1, 2]) {
+      expect(context(f.run.mock.calls[call][0]).files.map((file: { code: string }) => file.code))
+        .toContain(`const url = "postgres://app:${SECRET_MASK}@db/x";`);
+    }
+    // One note per file, shown with the answer and sent to the model as a reading limit.
+    expect(event.result.limitations).toEqual([
+      'src/example.ts: 비밀값처럼 보이는 1곳을 가린 뒤 보냈어요. AI는 가린 내용을 보지 못했어요. 모든 비밀값을 찾아낸다고 보장하지는 않아요.',
+      'src/db.ts: 비밀값처럼 보이는 1곳을 가린 뒤 보냈어요. AI는 가린 내용을 보지 못했어요. 모든 비밀값을 찾아낸다고 보장하지는 않아요.',
+    ]);
+    expect(context(f.run.mock.calls[0][0]).limitations).toEqual([event.result.limitations[0]]);
+    expect(context(f.run.mock.calls[2][0]).limitations).toEqual(event.result.limitations);
+    // Revalidation still compares the untouched originals with the files on disk.
+    for (const [snapshot] of f.revalidate.mock.calls) {
+      expect(snapshot.code).toContain('hunter22');
+      expect(snapshot.files.map(file => file.code).join('\n')).toContain('s3cr3tPass');
+    }
   });
 
   it('stops before explanation when related file access is denied', async () => {

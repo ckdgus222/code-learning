@@ -135,7 +135,7 @@ export function AiPanel({ projectId, evidence, relativePath, stale, onEvidence }
     {!evidence && <p className="hint">함수나 구문을 선택하면 질문할 코드 범위가 정해집니다.</p>}
     {stale && <p className="hint">코드가 바뀌었습니다. 파일을 다시 읽고 근거를 선택해 주세요.</p>}
     <label className="ai-consent"><input type="checkbox" checked={consent} disabled={running || !ready?.ready}
-      onChange={event => setConsent(event.target.checked)} />선택한 코드·프로젝트 파일 목록·관련 파일(추가 최대 4개)·질문·최근 답변을 Codex와 Gemini에 보내는 데 동의합니다.</label>
+      onChange={event => setConsent(event.target.checked)} />선택한 코드·프로젝트 파일 목록·관련 파일(추가 최대 4개)·질문·최근 답변을 Codex와 Gemini에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.</label>
     <div className="ai-actions">
       <button className="btn btn--primary" onClick={ask} disabled={!ready?.ready || !evidence || stale || !consent || running || !question.trim()}>질문 보내기</button>
       {running && <button className="btn" onClick={cancel}>AI 작업 취소</button>}
