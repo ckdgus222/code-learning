@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Evidence, ProjectView, SourceView } from '../shared/contracts';
+import type { Evidence, ProjectView, SourceView, StartCandidate } from '../shared/contracts';
 import { useSelection, type View } from './selection';
 import { Reader } from './reader';
 import { AiPanel } from './ai-panel';
@@ -11,6 +11,12 @@ const views: { id: View; label: string }[] = [
   { id: 'overview', label: '한눈에 보기' }, { id: 'flow', label: '흐름 따라가기' },
   { id: 'code', label: '코드 읽기' }, { id: 'changes', label: '달라진 내용' },
 ];
+const candidateReasons: Record<StartCandidate['reason'], string> = {
+  'package-main': 'package.json의 main이 가리키는 파일',
+  'package-bin': 'package.json의 bin(명령)이 가리키는 파일',
+  'entry-name': '이름이 index·main·app인 파일',
+  exported: '다른 파일에서 쓰도록 내보낸(export) 함수',
+};
 
 function App() {
   const [project, setProject] = useState<ProjectView | null>(null);
@@ -22,6 +28,8 @@ function App() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [stale, setStale] = useState(false);
+  // The overview is computed when the folder opens, so re-reading one file does not refresh it.
+  const [overviewStale, setOverviewStale] = useState(false);
   const [watchError, setWatchError] = useState(false);
   const [search, setSearch] = useState('');
   const [panel, setPanel] = useState<'explain' | 'ask'>('explain');
@@ -36,6 +44,7 @@ function App() {
     if (event.projectId === project?.id) {
       revision.current++;
       setStale(true);
+      setOverviewStale(true);
       setEvidence(null);
       if (event.kind === 'watch-error') setWatchError(true);
     }
@@ -54,19 +63,33 @@ function App() {
       setError(result.message); setProject(null); setSource(null); setEvidence(null); selectSymbol(null); return;
     }
     if (!result.value) return;
-    setProject(result.value); setSource(null); setEvidence(null); setStale(false); setWatchError(false); setSearch(''); selectSymbol(null);
+    setProject(result.value); setSource(null); setEvidence(null); setStale(false); setOverviewStale(false); setWatchError(false); setSearch(''); selectSymbol(null);
   }
 
-  async function readFile(fileId: string) {
-    if (!project) return;
+  async function readFile(fileId: string): Promise<SourceView | null> {
+    if (!project) return null;
     const current = ++request.current;
     const atRevision = revision.current;
     setBusy(true); setError(''); setNotice(''); setEvidence(null); selectSymbol(null);
     const result = await window.learning.readSource({ projectId: project.id, fileId });
-    if (current !== request.current) return;
+    if (current !== request.current) return null;
     setBusy(false);
-    if (!result.ok) { setError(result.message); setSource(null); return; }
+    if (!result.ok) { setError(result.message); setSource(null); return null; }
     setSource(result.value); setStale(revision.current !== atRevision);
+    return result.value;
+  }
+
+  // Candidates were found when the folder opened. Only a file whose hash is unchanged is trusted
+  // to still hold the same function at the same place; otherwise the reader chooses again.
+  async function startFrom(candidate: StartCandidate) {
+    setView('flow');
+    const opened = await readFile(candidate.fileId);
+    if (!opened || candidate.name === null) return;
+    const match = opened.hash === candidate.fileHash
+      ? opened.analysis.symbols.find(item => item.name === candidate.name && item.evidence.startUtf16 === candidate.startUtf16)
+      : undefined;
+    if (match) selectSymbol(match.id);
+    else setNotice('파일이 폴더를 열 때와 달라 후보 위치를 다시 확인해야 해요. 왼쪽에서 함수를 직접 골라 주세요.');
   }
 
   async function showEvidence(next: Evidence, nextStep: string | null, fromAnswer = false) {
@@ -97,6 +120,7 @@ function App() {
   }
 
   const files = project?.files.filter(file => file.relativePath.toLowerCase().includes(search.toLowerCase())) ?? [];
+  const intro = project?.overview.intro;
   const scope = [project?.name, source?.relativePath, symbol?.name, step?.title].filter(Boolean);
 
   return <div className={`app${project ? '' : ' app--empty'}${panelOpen ? '' : ' app--panel-closed'}`}>
@@ -157,10 +181,17 @@ function App() {
       <main className="center">
         {view === 'overview' && <div className="page">
           <h2 className="page__title">한눈에 보기</h2>
+          {overviewStale && <p className="notice notice--warn overview-stale"><b>다시 확인 필요:</b> 프로젝트를 연 뒤 파일이 바뀌었거나 창으로 돌아왔어요. 아래 소개와 후보는 폴더를 열 때 읽은 내용이에요. 폴더를 다시 열면 새로 계산해요.</p>}
           <div className="cards">
-            <section className="card">
-              <h3>이 프로젝트는 무엇을 하나요?</h3>
-              <p className="unknown"><span className="tag tag--unknown">확인하지 못함</span>프로젝트 목적: 아직 확인하지 못했습니다.</p>
+            <section className="card" aria-labelledby="overview-intro">
+              <h3 id="overview-intro">이 프로젝트는 무엇을 하나요?</h3>
+              {intro ? <>
+                <span className="tag tag--doc">문서에 적힌 소개</span>
+                {intro.title && <p className="intro__title">{intro.title}</p>}
+                {intro.text && <p className="intro__text">{intro.text}</p>}
+                <p className="hint">{intro.relativePath}{intro.startLine !== null && ` · ${intro.startLine}–${intro.endLine}줄`} · 문서 내용이 실제 코드와 맞는지는 확인하지 않았어요.</p>
+                <button className="btn btn--small" disabled={busy} onClick={() => { setView('code'); void readFile(intro.fileId); }}>{intro.relativePath} 열기</button>
+              </> : <p className="unknown"><span className="tag tag--unknown">확인하지 못함</span>프로젝트 목적: 아직 확인하지 못했습니다.</p>}
             </section>
             <section className="card">
               <h3>읽을 수 있는 파일</h3>
@@ -169,18 +200,27 @@ function App() {
                 <ul>{Object.entries(project.excluded).map(([reason, count]) => <li key={reason}>{reason}: {count}</li>)}</ul>
               </details>
             </section>
+            <section className="card card--wide card--accent" aria-labelledby="overview-start">
+              <h3 id="overview-start">어디부터 읽을까요?</h3>
+              {project.overview.candidates.length > 0 ? <ul className="starts">{project.overview.candidates.map(item =>
+                <li key={`${item.fileId}:${item.startUtf16}`}>
+                  <button className="starts__item" disabled={busy} onClick={() => void startFrom(item)}>
+                    <b>{item.name ?? '이 파일 살펴보기'}</b> <span className="path">{item.relativePath}</span>
+                  </button>
+                  <span className="hint">{candidateReasons[item.reason]}</span>
+                </li>)}</ul>
+                : <p>시작점 후보를 찾지 못했어요. 왼쪽 목록에서 궁금한 파일을 골라 <b>코드 읽기</b>로 시작해 보세요.</p>}
+              <p className="hint"><span className="tag tag--unknown">학습 시작점 후보</span>TS/JS 파일 {project.overview.checkedFiles}개를 살펴봤어요{project.overview.limited && '(전체 중 일부)'}. 코드 구조로 고른 후보이고, 실제 실행 시작점인지는 확인하지 않았어요.</p>
+              {project.overview.notes.map(note => <p key={note} className="hint">{note}</p>)}
+            </section>
             <section className="card card--wide">
               <h3>확인한 범위와 모르는 부분</h3>
               <ul className="checklist">
-                <li><span className="tag tag--ok">확인됨</span>파일 목록과 TS/JS 함수 안의 구문 위치</li>
-                <li><span className="tag tag--unknown">확인하지 못함</span>프로젝트 목적, 기능의 실제 실행 순서, 구성 지도</li>
+                <li><span className="tag tag--ok">확인됨</span>파일 목록과 TS/JS 함수 안의 구문 위치{intro && ', README에 적힌 소개 문구'}</li>
+                <li><span className="tag tag--unknown">확인하지 못함</span>프로젝트 목적(문서 내용이 코드와 맞는지 포함), 기능의 실제 실행 순서, 구성 지도</li>
               </ul>
               {project.warnings.map(message => <p key={message} className="hint">{message}</p>)}
               <p className="hint">새 파일 목록은 폴더를 다시 열어 갱신합니다. 현재 파일·제외 규칙의 변경은 읽기 전에 다시 확인합니다.</p>
-            </section>
-            <section className="card card--wide card--accent">
-              <h3>어디부터 읽을까요?</h3>
-              <p>추천 시작점은 아직 만들지 못했어요. 왼쪽 목록에서 궁금한 파일을 골라 <b>코드 읽기</b>로 시작해 보세요.</p>
             </section>
           </div>
         </div>}

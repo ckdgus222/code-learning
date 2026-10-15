@@ -3,6 +3,7 @@ import type { Evidence, ProjectView, Result, SourceView } from '../shared/contra
 import { AppError, failure } from '../shared/errors';
 import { readAllowed, scanProject } from '../core/project/files';
 import { analyzeSource } from '../core/analysis/syntax';
+import { buildOverview } from '../core/analysis/overview';
 
 export interface WorkerRequest { id: number; kind: 'scan' | 'read' | 'evidence'; target?: string }
 export interface WorkerResponse { id: number; result: Result<ProjectView | SourceView | { source: SourceView; evidence: Evidence }> }
@@ -29,7 +30,9 @@ parentPort!.on('message', async (request: WorkerRequest) => {
   let result: WorkerResponse['result'];
   try {
     if (request.kind === 'scan') {
-      project = await scanProject(root, projectId);
+      // The overview rides on the scan reply: the session handles one request at a time.
+      const files = await scanProject(root, projectId);
+      project = { ...files, overview: await buildOverview(root, files) };
       result = { ok: true, value: project };
     } else if (request.kind === 'read') {
       result = { ok: true, value: await readSource(request.target!) };

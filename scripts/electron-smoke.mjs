@@ -19,7 +19,7 @@ const loopSource = 'export function 모두(목록: string[]) {\n  for (const 항
 await writeFile(path.join(fixture, 'loop.ts'), loopSource);
 await writeFile(path.join(fixture, '.env'), 'TEST_NOT_A_REAL_SECRET=canary');
 await writeFile(path.join(fixture, 'auth.json'), '{"test":"not-real-auth"}');
-await writeFile(path.join(fixture, 'README.md'), '<script>globalThis.attacked=true</script> ![x](https://example.com/test)');
+await writeFile(path.join(fixture, 'README.md'), '# 주문 예제\n\n주문 수량을 확인하는 작은 시험 자료입니다.\n\n<script>globalThis.attacked=true</script> ![x](https://example.com/test)');
 await writeFile(path.join(second, 'other.ts'), 'export function other() { return 2; }');
 // Test harness lives outside the shipped app. Production IPC has no path injection/test API.
 const bootstrap = path.join(temporary, 'bootstrap.cjs');
@@ -155,6 +155,37 @@ try {
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
     await page.getByRole('button', { name: '주문', exact: true }).waitFor();
     await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+  });
+  await check('Overview shows the README intro as text and start candidates that open the flow view', async () => {
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    const intro = page.getByRole('region', { name: '이 프로젝트는 무엇을 하나요?' });
+    await intro.getByText('주문 수량을 확인하는 작은 시험 자료입니다.', { exact: true }).waitFor();
+    assert.match(await intro.innerText(), /README\.md · 3–3줄 · 문서 내용이 실제 코드와 맞는지는 확인하지 않았어요/);
+    assert.equal(await page.evaluate(() => globalThis.attacked), undefined);
+    // loop.ts changed in the flow check and files were read again since; the overview still asks for a re-check.
+    await page.getByText('다시 확인 필요:', { exact: false }).waitFor();
+    await page.screenshot({ path: path.join(artifacts, 'local-overview.png') });
+    const starts = page.getByRole('region', { name: '어디부터 읽을까요?' });
+    await starts.getByRole('button', { name: '주문 order.ts', exact: true }).click();
+    await page.getByRole('article', { name: '함수 요약' }).getByRole('heading', { name: '주문', exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: '흐름 따라가기', exact: true }).getAttribute('aria-current'), 'page');
+    // A candidate in a file that changed after opening is not trusted to point at the same function.
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await starts.getByRole('button', { name: '모두 loop.ts', exact: true }).click();
+    await page.getByText('파일이 폴더를 열 때와 달라', { exact: false }).waitFor();
+    assert.equal(await page.getByRole('article', { name: '함수 요약' }).count(), 0);
+    // Opening the folder again computes the overview anew and clears the re-check notice.
+    // Reopening the same folder keeps its project ID, so the current view stays; go back to the overview.
+    await dialogTo(fixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await until(async () => await page.getByText('다시 확인 필요:', { exact: false }).count() === 0);
+    await starts.getByRole('button', { name: '모두 loop.ts', exact: true }).click();
+    await page.getByRole('article', { name: '함수 요약' }).getByRole('heading', { name: '모두', exact: true }).waitFor();
+    // Leave the following checks in code reading with order.ts open.
+    await page.getByRole('button', { name: 'order.ts', exact: true }).click();
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+    await page.locator('.cm-content').waitFor();
   });
   await check('Source cannot be edited; malicious text is not executed', async () => {
     await page.locator('.cm-content').click();

@@ -35,6 +35,8 @@ export interface CodeSymbol {
   kind: string;
   /** Parameter list as written, or '' when the function takes none. */
   params: string;
+  /** Exported where it is declared; `export { name }` lists are not followed. */
+  exported: boolean;
   evidence: Evidence;
   steps: CodeStep[];
 }
@@ -47,12 +49,46 @@ export interface Analysis {
 }
 
 export interface ProjectFile { id: string; relativePath: string; size: number }
-export interface ProjectView {
+export interface ProjectFiles {
   id: string;
   name: string;
   files: ProjectFile[];
   excluded: Record<string, number>;
   warnings: string[];
+}
+/** A README's own words, shown as plain text. Whether they match the code is not checked. */
+export interface ProjectIntro {
+  fileId: string;
+  relativePath: string;
+  title: string | null;
+  text: string | null;
+  startLine: number | null;
+  endLine: number | null;
+}
+/**
+ * A place to start reading, chosen from code structure when the project was opened. It is not
+ * an Evidence ID: the screen re-reads the file and uses it only if the hash is unchanged.
+ */
+export interface StartCandidate {
+  fileId: string;
+  relativePath: string;
+  /** null when the file itself is the candidate (an entry file that exports nothing). */
+  name: string | null;
+  reason: 'package-main' | 'package-bin' | 'entry-name' | 'exported';
+  fileHash: string;
+  startUtf16: number;
+  startLine: number;
+}
+export interface ProjectOverview {
+  intro: ProjectIntro | null;
+  candidates: StartCandidate[];
+  /** TS/JS files actually read for candidates; `limited` when more existed than were checked. */
+  checkedFiles: number;
+  limited: boolean;
+  notes: string[];
+}
+export interface ProjectView extends ProjectFiles {
+  overview: ProjectOverview;
 }
 export interface SourceView {
   projectId: string;

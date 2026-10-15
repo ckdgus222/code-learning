@@ -3,7 +3,7 @@ import { lstat, open, realpath, opendir } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import ignore, { type Ignore } from 'ignore';
-import type { ProjectView } from '../../shared/contracts';
+import type { ProjectFiles } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 
 export const MAX_FILE_BYTES = 256 * 1024;
@@ -148,8 +148,8 @@ export async function readAllowed(root: string, relative: string) {
   return result;
 }
 
-export async function scanProject(root: string, projectId: string): Promise<ProjectView> {
-  const result: ProjectView = { id: projectId, name: path.basename(root), files: [], excluded: {}, warnings: [] };
+export async function scanProject(root: string, projectId: string): Promise<ProjectFiles> {
+  const result: ProjectFiles = { id: projectId, name: path.basename(root), files: [], excluded: {}, warnings: [] };
   let visited = 0;
   let limited = false;
   const exclude = (why: string) => { result.excluded[why] = (result.excluded[why] ?? 0) + 1; };
