@@ -252,6 +252,22 @@ describe('static source analysis', () => {
     expect(symbols.map(symbol => symbol.steps.length)).toEqual([1, 1, 1, 1, 1]);
   });
 
+  it('marks functions exported where they are declared, and nothing it cannot follow', () => {
+    const source = [
+      'export function a() {}',
+      'export const b = () => 1, c = function () {};',
+      'export class K { m() {} }',
+      'function d() {}',
+      'export { d };',
+      'const e = () => { const inner = () => 1; };',
+    ].join('\n');
+    const exported = Object.fromEntries(analyze(source).symbols.map(symbol => [symbol.name, symbol.exported]));
+    expect(exported).toEqual({ a: true, b: true, c: true, m: false, d: false, e: false, inner: false });
+    expect(analyze('export default function () {}').symbols[0].exported).toBe(true);
+    expect(analyze('export default () => 2;').symbols[0].exported).toBe(true);
+    expect(analyze('module.exports.f = function () {};', 'cjs.js').symbols[0].exported).toBe(false);
+  });
+
   it('cuts long details and parameter lists to a bounded length', () => {
     const long = 'a'.repeat(400);
     const symbol = analyze(`function f(${long}) { if (${long}) { return 1; } }`).symbols[0];

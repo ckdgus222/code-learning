@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Evidence, ProjectView, SourceView } from '../../shared/contracts';
+import type { Evidence, ProjectFiles, SourceView } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 import { readAllowed } from '../project/files';
 
@@ -22,7 +22,7 @@ function checkCancelled(signal: AbortSignal) {
 // approved list; they never supply a filesystem path or a command to execute.
 export class ProjectAiContext {
   private evidence = new Map<string, Evidence>();
-  constructor(private readonly root: string, private readonly project: ProjectView) {}
+  constructor(private readonly root: string, private readonly project: ProjectFiles) {}
 
   private remember(evidence: Evidence): Evidence {
     this.evidence.delete(evidence.id);

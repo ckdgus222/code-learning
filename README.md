@@ -5,6 +5,7 @@
 ## 현재 가능한 일
 
 - 폴더 선택 → 제외 이유·파일 목록 → 파일명 검색 → 실제 코드 읽기
+- 한눈에 보기: 루트 README(`.md`·`.txt`)의 첫 소개 문단을 ‘문서에 적힌 소개’로 표시(일반 텍스트, 코드와 맞는지는 미확인). `package.json`의 main·bin, index·main·app 파일, export된 함수에서 고른 ‘학습 시작점 후보’를 누르면 흐름 따라가기로 이동
 - TS/JS 함수·화살표 함수·메서드 선택 → 조건문·반환문 등 구문 → 해당 원본 범위 강조
 - 흐름 따라가기: 함수 하나를 코드에 적힌 순서대로 한 단계씩 보기. 받는 값, 반환·오류 던지기 위치, 확인하는 조건·돌려주는 값, if의 맞으면/아니면 단계로 이동, 이전/다음, 코드 읽기와 왕복
 - 한글·이모지·BOM·CRLF를 유지한 코드 위치 확인
@@ -61,7 +62,7 @@ npm run test:ai-sandbox
 
 변경·실패·취소·AI 미연결 상태를 디자인에도 유지해야 합니다. 디자인 교체를 위해 프로세스 권한이나 분석 로직을 renderer로 옮기지 않습니다.
 
-취소 성공은 `role="status"`·`.notice--info`, 오류는 `role="alert"`로 구분합니다. 취소 문구 ‘작업을 취소했습니다.’는 자동검사에서도 사용합니다. 프로젝트 목적·역할 카드·추천 시작점·프로젝트 전체 실행 흐름 타입은 아직 없습니다. `CodeStep`은 구문 위치이며 실제 실행 흐름을 뜻하지 않습니다. `CodeStep.detail`은 조건·반환 값 같은 원문 일부(최대 300자)이고, `branch`는 if의 조건이 맞을 때와 아닐 때 같은 함수 안에서 이어지는 단계 ID입니다. 문장 목록 밖이라 확인할 수 없으면 null이며, 화면은 ‘다음 연결을 확인하지 못했어요’로 표시합니다. `CodeSymbol.params`는 매개변수 원문입니다.
+취소 성공은 `role="status"`·`.notice--info`, 오류는 `role="alert"`로 구분합니다. 취소 문구 ‘작업을 취소했습니다.’는 자동검사에서도 사용합니다. 프로젝트 목적(AI 설명)·역할 카드·프로젝트 전체 실행 흐름 타입은 아직 없습니다. `ProjectView.overview`는 폴더를 열 때 worker가 계산한 소개·시작점 후보입니다. 후보는 근거 ID가 아니며, 화면은 파일을 다시 읽어 해시가 같을 때만 그 함수를 고릅니다. 열린 뒤 변경 이벤트가 오면 개요에 ‘다시 확인 필요’를 표시하고, 폴더를 다시 열 때만 지웁니다. `CodeStep`은 구문 위치이며 실제 실행 흐름을 뜻하지 않습니다. `CodeStep.detail`은 조건·반환 값 같은 원문 일부(최대 300자)이고, `branch`는 if의 조건이 맞을 때와 아닐 때 같은 함수 안에서 이어지는 단계 ID입니다. 문장 목록 밖이라 확인할 수 없으면 null이며, 화면은 ‘다음 연결을 확인하지 못했어요’로 표시합니다. `CodeSymbol.params`는 매개변수 원문입니다.
 
 AI 설명 계약은 `src/shared/ai.ts`의 `Explanation`입니다: `summary`, `steps`(제목·입력·처리·결과·다른 경우·근거 ID), `claims`(코드 근거 또는 일반 개념), `terms`, `unknowns`. `LearningResult`는 원래 질문·근거·`sources`(제공한 파일별 근거와 경로)·`limitations`(읽기 제한)·호출/응답 모델·‘AI 검토됨’ 상태를 함께 전달합니다. main에서 형식·참조·최신성을 검사합니다. AI 검토는 정확성 보장이 아닙니다.
 
@@ -81,6 +82,7 @@ AI 설명 계약은 `src/shared/ai.ts`의 `Explanation`입니다: `summary`, `st
 | `src/workers/analysis.ts` | 작업자 하나에서 탐색·분석·근거 대조 |
 | `src/core/project/files.ts` | 제외 규칙, 읽기 경계, 크기·UTF-8·해시 검사 |
 | `src/core/analysis/syntax.ts` | Tree-sitter 구문 추출과 UTF-16 근거 |
+| `src/core/analysis/overview.ts` | 한눈에 보기의 README 소개와 학습 시작점 후보(파일은 텍스트로만 읽음) |
 | `src/core/storage/projects.ts` | Electron 내장 SQLite로 프로젝트 정보 저장 |
 | `src/core/ai` | 로컬 설치 확인·실행 차단, 제한된 자식 프로세스, 앱 중개 파일 읽기·3단계 워커·다중 근거 검사·대화 수명 |
 

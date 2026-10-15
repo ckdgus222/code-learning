@@ -57,6 +57,18 @@ function detailOf(node: Parser.SyntaxNode, text: string): string | undefined {
   }
 }
 
+/**
+ * `export function f`, `export default …`, or a function assigned in `export const f = …`.
+ * `export { f }` lists, re-exports, class methods and CommonJS `module.exports` are not followed.
+ */
+function isExported(node: Parser.SyntaxNode): boolean {
+  const parent = node.parent;
+  if (parent?.type === 'export_statement') return true;
+  const declaration = parent?.type === 'variable_declarator' ? parent.parent : null;
+  return !!declaration && ['lexical_declaration', 'variable_declaration'].includes(declaration.type)
+    && declaration.parent?.type === 'export_statement';
+}
+
 /** Static syntax only: neither source execution nor call-target resolution is performed. */
 export function analyzeSource(
   text: string,
@@ -183,7 +195,7 @@ export function analyzeSource(
           ?? `이름 없는 함수 (${node.startPosition.row + 1}행)`;
         const params = node.childForFieldName('parameters') ?? node.childForFieldName('parameter');
         result.symbols.push({
-          id: randomUUID(), name, kind: node.type, params: params ? clip(params.text) : '',
+          id: randomUUID(), name, kind: node.type, params: params ? clip(params.text) : '', exported: isExported(node),
           evidence: evidence(node), steps: stepsFor(body),
         });
       }
