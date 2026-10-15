@@ -1,10 +1,10 @@
 import path from 'node:path';
 import os from 'node:os';
-import { access, realpath, stat, mkdtemp, writeFile, rm, open } from 'node:fs/promises';
+import { access, realpath, stat, mkdtemp, writeFile, rm, open, mkdir, lstat, chmod } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { GEMINI_MODEL, type ConnectionReport, type LearningMode, type ProviderConnection, type ProviderId } from '../../shared/ai';
 import { AppError } from '../../shared/errors';
-import { runProcess } from './process';
+import { localProcessEnv, runProcess } from './process';
 import type { StageRequest, StageResponse } from './workflow';
 
 export const LOCAL_WORKER_BLOCKER = '읽기 전용 실행과 기존 로그인 연결 시험이 끝나지 않아 질문 전송을 잠갔습니다.';
@@ -98,6 +98,27 @@ export function parseStageOutput(provider: 'codex' | 'antigravity', stdout: stri
 
 export class LocalAiRuntime {
   private launches = new Map<ProviderId, Launch>();
+  /**
+   * `codexHome` is the app's own Codex home. Even with `--ignore-user-config`, codex-cli 0.162.1
+   * read the user's global `~/.codex/agents`, so every codex run gets this folder as CODEX_HOME,
+   * with its own one-time official login, and never the user's global Codex folder.
+   */
+  constructor(private readonly codexHome: string) {}
+
+  private async environment(provider: ProviderId): Promise<NodeJS.ProcessEnv | undefined> {
+    if (provider !== 'codex') return undefined;
+    try {
+      await mkdir(this.codexHome, { recursive: true, mode: 0o700 });
+      // A link could point back at the user's global ~/.codex, so only a real folder is used,
+      // and an existing one is made private too (mkdir's mode only applies to new folders).
+      const info = await lstat(this.codexHome);
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('not a private folder');
+      await chmod(this.codexHome, 0o700);
+    } catch {
+      throw new AppError('AI_UNAVAILABLE', '앱 전용 Codex 위치를 준비하지 못했습니다. 폴더 권한을 확인해 주세요.');
+    }
+    return { ...localProcessEnv(), CODEX_HOME: this.codexHome };
+  }
   private inspection?: { controller: AbortController; done: Promise<ConnectionReport> };
 
   checkConnections(): Promise<ConnectionReport> {
@@ -130,12 +151,19 @@ export class LocalAiRuntime {
           connections.push({ ...base, installation: 'unusable', message: '실행에 필요한 Node를 기본 위치에서 찾지 못했습니다.' });
           continue;
         }
+        let env: NodeJS.ProcessEnv | undefined;
+        try { env = await this.environment(provider); } catch (error) {
+          connections.push({ ...base, installation: 'unusable', message: (error as AppError).message });
+          continue;
+        }
         try {
-          const output = await runProcess({ executable: launch.executable, args: [...launch.prefix, '--version'], cwd: directory, signal, timeoutMs: 8000, maxOutputBytes: 16 * 1024 });
+          const output = await runProcess({ executable: launch.executable, args: [...launch.prefix, '--version'], cwd: directory, signal,
+            timeoutMs: 8000, maxOutputBytes: 16 * 1024, env });
           const version = output.stdout.match(/(?:^|\s)(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)(?:\s|$)/)?.[1] ?? null;
           if (output.exitCode !== 0 || !version) throw new Error('unusable');
           this.launches.set(provider, launch);
-          connections.push({ ...base, installation: 'found', version, message: '설치를 확인했습니다. 로그인·실제 응답·접근 제한은 아직 미검증입니다.' });
+          connections.push({ ...base, installation: 'found', version, message: '설치를 확인했습니다. 로그인·실제 응답·접근 제한은 아직 미검증입니다.'
+            + (provider === 'codex' ? ` 앱은 개인 Codex 설정과 분리된 앱 전용 위치를 쓰므로, 처음 한 번 터미널에서 로그인이 필요할 수 있어요: CODEX_HOME="${this.codexHome}" codex login` : '') });
         } catch (error) {
           if (signal.aborted) throw new AppError('CANCELLED', '연결 확인을 취소했습니다.');
           connections.push({ ...base, installation: 'unusable', message: '실행 파일은 있지만 버전을 확인하지 못했습니다.' });
@@ -174,7 +202,8 @@ export class LocalAiRuntime {
           '-c', 'web_search="disabled"', '-c', 'project_doc_max_bytes=0', '-c', 'approval_policy="never"',
           '--json', '--color', 'never', '--output-schema', schema, '-']
         : ['-p', '--model', GEMINI_MODEL, '--mode', 'plan', '--sandbox', '--output-format', 'json', '--json-schema', schema, '--print-timeout', '2m'];
-      const output = await runProcess({ executable: launch.executable, args: [...launch.prefix, ...args], stdin: request.prompt, cwd: directory, signal: request.signal });
+      const output = await runProcess({ executable: launch.executable, args: [...launch.prefix, ...args], stdin: request.prompt, cwd: directory,
+        signal: request.signal, env: await this.environment(request.provider) });
       // Stderr can contain provider/native paths; never return it to the renderer.
       if (/denied|permission|not allowed|unauthorized|authentication required|rate.limit|quota/i.test(output.stderr)) {
         throw new AppError('AI_UNAVAILABLE', 'AI 실행 중 인증·권한·이용 한도 오류가 발생했습니다.');

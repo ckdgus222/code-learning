@@ -2,14 +2,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LocalAiRuntime, executableCandidates, parseStageOutput, resolveLaunch } from '../src/core/ai/runtime';
 import { GEMINI_MODEL } from '../src/shared/ai';
 import { runProcess } from '../src/core/ai/process';
-import { access, open, realpath, rm } from 'node:fs/promises';
+import { access, chmod, lstat, mkdir, open, realpath, rm } from 'node:fs/promises';
 
-vi.mock('../src/core/ai/process', () => ({ runProcess: vi.fn() }));
+vi.mock('../src/core/ai/process', async original => ({ ...(await original<typeof import('../src/core/ai/process')>()), runProcess: vi.fn() }));
 vi.mock('node:fs/promises', () => ({
   realpath: vi.fn(async (name: string) => name), access: vi.fn(async () => undefined),
   stat: vi.fn(async () => ({ isFile: () => true })), mkdtemp: vi.fn(async () => '/private/tmp/ai-runtime-fixture'),
-  rm: vi.fn(async () => undefined), writeFile: vi.fn(async () => undefined), open: vi.fn(),
+  rm: vi.fn(async () => undefined), writeFile: vi.fn(async () => undefined), open: vi.fn(), mkdir: vi.fn(async () => undefined),
+  lstat: vi.fn(async () => ({ isDirectory: () => true, isSymbolicLink: () => false })), chmod: vi.fn(async () => undefined),
 }));
+const appCodexHome = '/private/tmp/app-data/codex-home';
 // The first bytes each fake file starts with; unknown files look like a native executable.
 let heads: Record<string, string> = {};
 beforeEach(() => {
@@ -31,7 +33,7 @@ describe('local connection readiness', () => {
     ]);
   });
   it('only probes versions and never claims authentication or isolation succeeded', async () => {
-    const report = await new LocalAiRuntime().checkConnections();
+    const report = await new LocalAiRuntime(appCodexHome).checkConnections();
     expect(report.providers).toHaveLength(3);
     expect(report.providers.every(item => item.installation === 'found' && item.authentication === 'unchecked' && item.isolation === 'unverified')).toBe(true);
     expect(report.modes.every(mode => !mode.ready)).toBe(true);
@@ -44,12 +46,12 @@ describe('local connection readiness', () => {
   });
   it('distinguishes missing and unusable installations without leaking output', async () => {
     vi.mocked(realpath).mockRejectedValue(new Error('private path'));
-    let report = await new LocalAiRuntime().checkConnections();
+    let report = await new LocalAiRuntime(appCodexHome).checkConnections();
     expect(report.providers.every(item => item.installation === 'missing')).toBe(true);
     expect(runProcess).not.toHaveBeenCalled();
     vi.mocked(realpath).mockImplementation(async (name: unknown) => String(name));
     vi.mocked(runProcess).mockResolvedValue({ stdout: 'PRIVATE_OUTPUT', stderr: 'PRIVATE_PATH', exitCode: 1 });
-    report = await new LocalAiRuntime().checkConnections();
+    report = await new LocalAiRuntime(appCodexHome).checkConnections();
     expect(report.providers.every(item => item.installation === 'unusable')).toBe(true);
     expect(JSON.stringify(report)).not.toContain('PRIVATE_');
   });
@@ -73,20 +75,51 @@ describe('local connection readiness', () => {
   it('uses the resolved launch for the version probe of a Node-script install', async () => {
     const home = (await import('node:os')).homedir();
     heads[`${home}/.local/bin/codex`] = '#!/usr/bin/env node\n';
-    const report = await new LocalAiRuntime().checkConnections();
+    const report = await new LocalAiRuntime(appCodexHome).checkConnections();
     expect(report.providers.find(item => item.provider === 'codex')?.installation).toBe('found');
     const codexCall = vi.mocked(runProcess).mock.calls.find(([request]) => request.args[0] === `${home}/.local/bin/codex`);
     expect(codexCall?.[0]).toMatchObject({ executable: `${home}/.local/bin/node`, args: [`${home}/.local/bin/codex`, '--version'] });
   });
+  it("gives only codex the app's own Codex home, created private, and never the user's CODEX_HOME", async () => {
+    const before = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = '/Users/test/.codex';
+    try {
+      const report = await new LocalAiRuntime(appCodexHome).checkConnections();
+      expect(report.providers.find(item => item.provider === 'codex')?.message).toContain(`CODEX_HOME="${appCodexHome}" codex login`);
+      const calls = vi.mocked(runProcess).mock.calls.map(([request]) => request);
+      const codex = calls.find(request => request.executable.endsWith('/codex'))!;
+      expect(codex.env?.CODEX_HOME).toBe(appCodexHome);
+      expect(Object.keys(codex.env!).every(key => ['HOME', 'PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'USER', 'LOGNAME', 'SYSTEMROOT', 'CODEX_HOME'].includes(key))).toBe(true);
+      for (const other of calls.filter(request => !request.executable.endsWith('/codex'))) expect(other.env).toBeUndefined();
+      expect(mkdir).toHaveBeenCalledWith(appCodexHome, { recursive: true, mode: 0o700 });
+      // An existing folder is made private as well.
+      expect(chmod).toHaveBeenCalledWith(appCodexHome, 0o700);
+    } finally {
+      if (before === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = before;
+    }
+  });
+  it('does not start codex when the app Codex home cannot be prepared or is a link', async () => {
+    for (const setup of [
+      () => vi.mocked(mkdir).mockRejectedValueOnce(new Error('denied')),
+      // A link could point at the user's global ~/.codex.
+      () => vi.mocked(lstat).mockResolvedValueOnce({ isDirectory: () => false, isSymbolicLink: () => true } as never),
+    ]) {
+      vi.mocked(runProcess).mockClear();
+      setup();
+      const report = await new LocalAiRuntime(appCodexHome).checkConnections();
+      expect(report.providers.find(item => item.provider === 'codex')).toMatchObject({ installation: 'unusable', message: expect.stringContaining('앱 전용 Codex 위치') });
+      expect(vi.mocked(runProcess).mock.calls.some(([request]) => request.executable.endsWith('/codex'))).toBe(false);
+    }
+  });
   it('deduplicates simultaneous inspections', async () => {
-    const runtime = new LocalAiRuntime();
+    const runtime = new LocalAiRuntime(appCodexHome);
     const first = runtime.checkConnections();
     expect(runtime.checkConnections()).toBe(first);
     await first;
     expect(runProcess).toHaveBeenCalledTimes(3);
   });
   it('blocks real model invocation even after successful installation detection', async () => {
-    const runtime = new LocalAiRuntime();
+    const runtime = new LocalAiRuntime(appCodexHome);
     await runtime.checkConnections();
     vi.mocked(runProcess).mockClear();
     await expect(runtime.run({ stage: 'explaining', provider: 'antigravity', prompt: 'private code', schema: {}, signal: new AbortController().signal }))
