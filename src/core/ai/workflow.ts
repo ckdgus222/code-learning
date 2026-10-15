@@ -6,6 +6,7 @@ import {
 } from '../../shared/ai';
 import { AppError, failure } from '../../shared/errors';
 import type { EvidenceSnapshot } from './context';
+import { maskSecrets } from './secrets';
 export type { EvidenceSnapshot } from './context';
 
 export interface StageRequest {
@@ -35,6 +36,21 @@ function checkReferences(explanation: Explanation, snapshot: EvidenceSnapshot) {
     throw new AppError('AI_RESPONSE', '설명에 현재 코드에서 확인할 수 없는 근거가 있습니다.');
   }
 }
+/**
+ * The code as it is sent: secret-looking values masked, plus one note per file that had any.
+ * The snapshot keeps the original text because revalidation compares it with the files on disk.
+ */
+function outgoing(snapshot: EvidenceSnapshot) {
+  const code = maskSecrets(snapshot.code);
+  const files = snapshot.files.map(file => ({ ...file, masked: maskSecrets(file.code) }));
+  // The selection is part of its own file, so one note per path with the larger count.
+  const counts = new Map<string, number>([[snapshot.relativePath, code.count]]);
+  for (const file of files) counts.set(file.relativePath, Math.max(counts.get(file.relativePath) ?? 0, file.masked.count));
+  const notes = [...counts].filter(([, count]) => count > 0).map(([path, count]) =>
+    `${path}: 비밀값처럼 보이는 ${count}곳을 가린 뒤 보냈어요. AI는 가린 내용을 보지 못했어요. 모든 비밀값을 찾아낸다고 보장하지는 않아요.`);
+  return { code: code.text, files: files.map(({ masked, ...file }) => ({ ...file, code: masked.text })), notes };
+}
+
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
   if (!result.success) throw new AppError('AI_RESPONSE', 'AI 응답 형식이 올바르지 않습니다. 다시 질문해 주세요.');
@@ -86,10 +102,12 @@ export class LocalWorkerWorkflow {
       previous.snapshot.revision !== snapshot.revision)) throw new AppError('CHANGED', '이 대화의 코드 기준이 달라졌습니다. 새 질문으로 시작해 주세요.');
     const conversationId = request.conversationId ?? randomUUID();
     const context = () => {
+      // Related files are added after organizing, so the outgoing copy is rebuilt for each stage.
+      const sent = outgoing(snapshot);
       const value = JSON.stringify({ question: request.question,
         history: previous?.turns.slice(-2).map(({ question, explanation }) => ({ question, explanation })) ?? [],
-        evidence: snapshot.evidence, relativePath: snapshot.relativePath, code: snapshot.code,
-        files: snapshot.files, availableFiles: snapshot.availableFiles, limitations: snapshot.limitations });
+        evidence: snapshot.evidence, relativePath: snapshot.relativePath, code: sent.code,
+        files: sent.files, availableFiles: snapshot.availableFiles, limitations: [...snapshot.limitations, ...sent.notes] });
       if (Buffer.byteLength(value, 'utf8') > 256 * 1024) throw new AppError('LIMIT', '질문 자료가 너무 큽니다. 더 작은 프로젝트나 새 질문으로 시작해 주세요.');
       return value;
     };
@@ -131,7 +149,7 @@ export class LocalWorkerWorkflow {
     this.ensureActive(job);
     const result: LearningResult = { jobId: job.id, conversationId, projectId: job.projectId, question: request.question,
       evidence: snapshot.evidence, sources: [snapshot, ...snapshot.files].map(({ evidence, relativePath }) => ({ evidence, relativePath })),
-      limitations: snapshot.limitations, explanation: review.explanation, review: 'AI 검토됨', models };
+      limitations: [...snapshot.limitations, ...outgoing(snapshot).notes], explanation: review.explanation, review: 'AI 검토됨', models };
     // Session-only history, bounded independently from provider CLI conversations.
     this.chats.set(conversationId, { snapshot, turns: [...(previous?.turns ?? []).slice(-1), { question: request.question, explanation: review.explanation, snapshot }] });
     while (this.chats.size > 8) this.chats.delete(this.chats.keys().next().value!);
