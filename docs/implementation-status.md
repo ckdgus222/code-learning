@@ -331,6 +331,38 @@ agy 1.3.5에는 설정 위치를 바꾸는 공식 옵션이 없다(공식 CLI re
   - 판정 규칙: 같은 종류의 도구 하나가 거절되면 그 칸을 ‘차단’으로 센다. 같은 종류의 다른 제공 도구를 시도하지 않았어도 그렇다. 셸 도구는 파일 읽기·수정·웹도 할 수 있다. 실제 판정 함수로 재현됐다(security 검토).
   - 설치 확인(`--version`)은 울타리 없이 실행한다. 이때 CLI는 홈을 읽고 앱 폴더 밖에 쓸 수 있다(security 검토 제안).
 
+### Codex 강제 호출 시험 (C08 local, 2026-10-18)
+
+사용자가 남은 빈칸을 더 시험하기로 했다(B안). 실제 모델은 시켜도 금지 도구를 시도하지 않아, Codex 7칸은 모두 ‘시도 없음’이었다. 그래서 **로컬 가짜 서버가 도구 호출을 직접 보내고**, 앱과 같은 실행 인자의 진짜 Codex 0.163.0이 어떻게 처리하는지 봤다. 실제 계정 요청과 외부 망 접속은 0건이다. 구현 기획은 Codex plan 리뷰 지적(빠진 도구 이름, 앱 거절과 시험 결과 분리, 거절 출처 판정, 버전·모델 확인)을 반영했다.
+
+- **왜 필요한가(공식 소스 rust-v0.163.0):**
+  - `core/src/tools/registry.rs`는 **등록된 도구라면 모델에게 보여 주지 않았어도 이름만으로 실행한다.** 그래서 ‘제공 목록에 없음’은 ‘실행 불가’가 아니다.
+  - `apply_patch`는 모델 정보에 패치 형식이 있으면 등록된다(`gpt-6.1-sol`은 `freeform`). 앱의 `excluded_tool_namespaces`는 Code Mode 노출만 거른다.
+  - MCP 자료 도구 3개는 `code_mode_only` 모델에서 MCP 서버가 없어도 등록된다.
+- **방식(`tests/live/codex-probe.ts`의 `forced-calls`, `tests/live/codex.live.ts`의 `C08 local`):**
+  - 가짜 서버가 응답 하나에 호출 하나씩, 고정된 호출 26개를 차례로 보낸다. Codex가 돌려준 출력은 메모리에서만 분류한다.
+  - 바깥 시험 파일은 탐침 폴더 안에 둔다. 탐침 규칙이 그곳 읽기·쓰기를 허용하므로, 막혔다면 Codex가 막은 것이다.
+  - **Codex 자신의 차단으로 인정하는 것은 두 가지뿐이다.** ‘그런 도구 없음’(`unsupported call: …`)과 소스에 있는 패치 거절 문구(`core/src/safety.rs`, `core/src/apply_patch.rs`)다. OS·격리 오류는 판정하지 않는다.
+  - CLI 버전과 요청 모델이 소스와 다르면 판정하지 않고 실패한다.
+- **결과(2026-10-18, 통과):**
+
+| 종류 | 강제로 부른 것 | Codex의 처리 |
+|---|---|---|
+| 셸 | `exec_command`·`write_stdin`·`shell_command`·`shell` | 모두 ‘그런 도구 없음’ |
+| 읽기 | `view_image`, exec 안 `import('node:fs')` | ‘그런 도구 없음’, import 거절 |
+| 편집(밖·안) | `apply_patch`로 파일 추가 | ‘읽기 전용이라 거절’, 파일 변화 없음 |
+| 웹 | `web.run`·`web_search`, exec 안 `fetch` | ‘그런 도구 없음’, `fetch` 없음 |
+| 하위 에이전트 | 기본·`collaboration`·`multi_agent_v1`의 12개 이름 | 모두 ‘그런 도구 없음’ |
+| MCP | `list_mcp_resources`·`list_mcp_resource_templates`·`read_mcp_resource` | **실행됨.** 연결된 서버가 없어 목록 둘은 비었고, 읽기는 없는 서버라 오류 |
+| 숨은 도구 | `tool_search` | 찾은 도구 0개 |
+| exec 안 | `ALL_TOOLS`, `fetch`·`require`·`process` 등 | 부를 수 있는 도구는 `clock__curr_time`뿐, 나머지 모두 없음 |
+
+- canary 유출과 파일 변화는 안·밖 모두 없었다.
+- **앱은 이 실행의 답을 버렸다**(`AI_RESPONSE`). Codex가 MCP 도구 실행을 보고하면 `parseStageOutput`이 답을 거절한다. 이미 일어난 일을 되돌리지는 않는다.
+- **이 결과의 범위:** 사용자 지정 제공자·임시 홈 조건이다. 로그인 조건의 제공 도구 목록을 대신하지 않는다. 서버 쪽 웹 검색(제공자가 직접 하는 검색)은 이 방식으로 시험할 수 없고, 설정 `web_search="disabled"`에 기댄다. **C06의 7칸 판정에는 넣지 않았다.** 어떻게 반영할지는 사용자 결정이다.
+- **알게 된 것(agy, 공식 문서):** agy는 개인 설정 말고도 작업 폴더의 `.agents/hooks.json`·`.agents/mcp_config.json`을 읽는다([훅](https://antigravity.google/docs/hooks/), [MCP](https://antigravity.google/docs/mcp/)). 앱은 agy를 매번 새 빈 임시 폴더에서 실행하므로 해당 파일이 없다. **agy를 사용자 프로젝트 폴더에서 실행하면 안 된다.** 앱 전용 agy 홈의 `.gemini/config/mcp_config.json`은 0바이트였다(이름·크기만 확인).
+- 검증: `npm run typecheck` 종료 0, `npm test`, `npm run test:codex-live -- -t 'C05 local|C07 local|C08 local'`.
+
 
 ## 실행한 검증
 

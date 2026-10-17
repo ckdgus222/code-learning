@@ -119,7 +119,52 @@ export function probeProfile(root: string, cwd: string, personalHome: string, po
 `;
 }
 
-export type CodexProbeVariant = 'app' | 'code-mode-flags-disabled' | 'direct-no-patch-catalog';
+export type CodexProbeVariant = 'app' | 'code-mode-flags-disabled' | 'direct-no-patch-catalog' | 'forced-calls';
+
+/** The CLI version and model whose official source the fixture and the forced calls are read from. */
+export const PROBE_SOURCE = { version: modelFixture.version, model: modelFixture.model.slug };
+
+/** A tool call the forced-calls server sends as its whole answer, in the Responses output item shape. */
+export interface ForcedCall { label: string; item: { type: string; call_id: string } & Record<string, unknown> }
+export type ForcedOutcome = 'unavailable' | 'refused' | 'ran' | 'unclear' | 'no-output';
+// Codex rust-v0.163.0 core/src/safety.rs reasons, sent as `patch rejected: {reason}` by
+// core/src/apply_patch.rs before the patch runs. Only these count as a policy refusal.
+const patchRejections = ['writing is blocked by read-only sandbox; rejected by user approval settings',
+  'writing outside of the project; rejected by user approval settings'].map(reason => `patch rejected: ${reason}`);
+// Fixed words whose presence (never the text) is recorded for an output that is not understood.
+const markerWords = ['sandbox', 'denied', 'reject', 'approval', 'permission', 'read-only', 'not found', 'not allowed', 'unsupported', 'error'];
+
+/** The text of a tool output item: a plain string, or the text parts of a content item list. */
+export function outputText(output: unknown): string {
+  if (typeof output === 'string') return output;
+  if (Array.isArray(output)) return output.map(part => typeof part?.text === 'string' ? part.text : '').join('\n');
+  return '';
+}
+
+/** Whether an MCP list tool answered with nothing in every list it returns. */
+export function isEmptyList(output: unknown): boolean {
+  try {
+    const value = JSON.parse(outputText(output));
+    return !!value && typeof value === 'object' && !Array.isArray(value)
+      && Object.values(value).length > 0 && Object.values(value).every(entry => Array.isArray(entry) && entry.length === 0);
+  } catch { return false; }
+}
+
+/**
+ * How Codex answered one forced call. The canary in the output means the call ran. Only Codex's
+ * own "no such tool" reply (registry.rs unsupported_tool_call_message) and its patch policy
+ * refusal count as blocks; any other text, such as an OS or sandbox error, stays unclear.
+ */
+export function classifyForced(output: unknown, canary: string): { outcome: ForcedOutcome; markers: string[]; length: number } {
+  if (output === undefined) return { outcome: 'no-output', markers: [], length: 0 };
+  const text = outputText(output);
+  const lower = text.toLowerCase();
+  const markers = markerWords.filter(word => lower.includes(word));
+  const outcome: ForcedOutcome = text.includes(canary) ? 'ran'
+    : /^unsupported (?:custom tool )?call: [\w.:/-]{1,160}$/.test(text.trim()) ? 'unavailable'
+      : patchRejections.includes(text.trim()) ? 'refused' : 'unclear';
+  return { outcome, markers, length: text.length };
+}
 
 /** Additional flags/catalog variants are observations only, never production settings. */
 export async function createCodexProbe(variant: CodexProbeVariant = 'app') {
@@ -139,6 +184,11 @@ export async function createCodexProbe(variant: CodexProbeVariant = 'app') {
   const extraRestrictions = variant === 'code-mode-flags-disabled' ? ['--disable', 'code_mode', '--disable', 'code_mode_only']
     : catalogOverride ? ['-c', `model_catalog_json=${JSON.stringify(catalogFile)}`, '-c', `model=${JSON.stringify(catalogOverride.model)}`] : [];
   const inventories: RequestInventory[] = [];
+  // forced-calls only: the calls still to send, and the output Codex returned for each sent call,
+  // kept in memory only. The calls are fixed by the test and point inside this probe's root.
+  const forced: ForcedCall[] = [];
+  const sentCalls = new Set<string>();
+  const forcedOutputs = new Map<string, unknown>();
   const envelopeShapes: { fields: string[]; inputTypes: string[]; contentTypes: string[] }[] = [];
   const failures: string[] = [];
   let httpRequests = 0;
@@ -177,16 +227,29 @@ export async function createCodexProbe(variant: CodexProbeVariant = 'app') {
           ? item.content.map((part: { type?: unknown }) => part?.type).filter(identifier) : []))] });
       const inventory = requestInventory(parsed);
       inventories.push(inventory);
-      // A static assistant answer only: never send a function/tool call for the CLI to execute.
-      const item = { id: 'msg_probe', type: 'message', status: 'completed', role: 'assistant',
+      for (const entry of input) {
+        if (typeof entry?.type === 'string' && entry.type.endsWith('_output') && sentCalls.has(entry.call_id)) {
+          forcedOutputs.set(entry.call_id, entry.output ?? entry.tools);
+        }
+      }
+      // A static assistant answer, except that the forced-calls variant first sends the calls its
+      // test queued, one per answer, so that each output can be matched to its call.
+      const call = forced.shift();
+      if (call) sentCalls.add(call.item.call_id);
+      const message = { id: 'msg_probe', type: 'message', status: 'completed', role: 'assistant',
         content: [{ type: 'output_text', text: '{"probe":true}', annotations: [] }] };
+      const item = call ? { id: `item_${call.item.call_id}`, ...call.item, status: 'completed' } : message;
       const result = { id: 'resp_probe', object: 'response', model: inventory.model, status: 'completed', output: [item],
         usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } };
       response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
       const send = (type: string, extra: object) => response.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}\n\n`);
       send('response.created', { response: { ...result, status: 'in_progress', output: [] } });
-      send('response.output_item.added', { output_index: 0, item: { ...item, status: 'in_progress', content: [] } });
-      send('response.output_text.delta', { item_id: item.id, output_index: 0, content_index: 0, delta: item.content[0].text });
+      if (call) {
+        send('response.output_item.added', { output_index: 0, item: { ...item, status: 'in_progress' } });
+      } else {
+        send('response.output_item.added', { output_index: 0, item: { ...message, status: 'in_progress', content: [] } });
+        send('response.output_text.delta', { item_id: message.id, output_index: 0, content_index: 0, delta: message.content[0].text });
+      }
       send('response.output_item.done', { output_index: 0, item });
       send('response.completed', { response: result });
       response.end();
@@ -216,10 +279,11 @@ export async function createCodexProbe(variant: CodexProbeVariant = 'app') {
     throw error;
   }
   return {
-    root, home, codexHome, agyHome, inventories, failures, catalogOverride,
+    root, home, codexHome, agyHome, inventories, failures, catalogOverride, forced, forcedOutputs,
     wrap(fencedRequest: ProcessRequest): ProcessRequest {
       // The app starts a stage inside its own sandbox-exec fence. A sandbox cannot be applied inside
-      // another one, so the probe runs the inner command under its own stricter profile instead.
+      // another one, so the probe runs the inner command under its own test profile instead. That
+      // profile limits the network and credential paths; unlike the app fence, it does not deny the home.
       // The app fence itself is checked by tests/ai-fence.test.ts.
       const request = fencedRequest.executable === SANDBOX_EXEC && fencedRequest.args[0] === '-p'
         ? { ...fencedRequest, executable: fencedRequest.args[2], args: fencedRequest.args.slice(3) } : fencedRequest;
@@ -244,7 +308,8 @@ export async function createCodexProbe(variant: CodexProbeVariant = 'app') {
         inventories, envelopeShapes, failures, authentication: 'none', transport: 'loopback-only sandbox-exec',
         scope: 'Custom provider with temporary HOME/CODEX_HOME; not evidence of the logged-in app tool inventory or C04 passage',
         conditionChanges: ['custom model provider', 'temporary HOME/CODEX_HOME/TMPDIR', 'OS network and credential-path restrictions',
-          '30-second timeout', 'static response, no model or tool execution', ...(catalogOverride ? ['pinned model catalog with direct mode and no apply_patch'] : [])] };
+          '30-second timeout', variant === 'forced-calls' ? 'fixed tool calls queued by the test, then a static response; no model'
+            : 'static response, no model or tool execution', ...(catalogOverride ? ['pinned model catalog with direct mode and no apply_patch'] : [])] };
     },
     async close() {
       await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
