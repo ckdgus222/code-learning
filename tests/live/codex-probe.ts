@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { executableCandidates, resolveLaunch, type Launch } from '../../src/core/ai/runtime';
 import type { ProcessRequest } from '../../src/core/ai/process';
+import { SANDBOX_EXEC } from '../../src/core/ai/fence';
 import modelFixture from '../fixtures/codex-model-0.163.0.json';
 
 interface ToolName { type: string; name: string }
@@ -216,7 +217,12 @@ export async function createCodexProbe(variant: CodexProbeVariant = 'app') {
   }
   return {
     root, home, codexHome, agyHome, inventories, failures, catalogOverride,
-    wrap(request: ProcessRequest): ProcessRequest {
+    wrap(fencedRequest: ProcessRequest): ProcessRequest {
+      // The app starts a stage inside its own sandbox-exec fence. A sandbox cannot be applied inside
+      // another one, so the probe runs the inner command under its own stricter profile instead.
+      // The app fence itself is checked by tests/ai-fence.test.ts.
+      const request = fencedRequest.executable === SANDBOX_EXEC && fencedRequest.args[0] === '-p'
+        ? { ...fencedRequest, executable: fencedRequest.args[2], args: fencedRequest.args.slice(3) } : fencedRequest;
       const selectedHome = request.env?.CODEX_HOME && path.resolve(request.env.CODEX_HOME);
       if (!selectedHome || !selectedHome.startsWith(`${root}${path.sep}`)) throw new Error('probe-requires-temporary-codex-home');
       const execAt = request.args.indexOf('exec');

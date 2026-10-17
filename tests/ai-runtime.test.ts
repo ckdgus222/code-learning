@@ -3,6 +3,7 @@ import { LocalAiRuntime, executableCandidates, parseStageOutput, resolveLaunch }
 import { GEMINI_MODEL } from '../src/shared/ai';
 import { runProcess } from '../src/core/ai/process';
 import { access, chmod, lstat, mkdir, open, realpath, rm } from 'node:fs/promises';
+import os from 'node:os';
 
 vi.mock('../src/core/ai/process', async original => ({ ...(await original<typeof import('../src/core/ai/process')>()), runProcess: vi.fn() }));
 vi.mock('node:fs/promises', () => ({
@@ -18,6 +19,8 @@ const appAgyHome = '/private/tmp/app-data/agy-home';
 let heads: Record<string, string> = {};
 // What the runtime wrote through a file handle, by file name.
 let written: Record<string, string> = {};
+const stage = (runtime: LocalAiRuntime, provider: 'codex' | 'antigravity') => (runtime as unknown as { executeVerifiedStage(request: object): Promise<unknown> })
+  .executeVerifiedStage({ stage: provider === 'codex' ? 'organizing' : 'explaining', provider, prompt: 'PROMPT', schema: {}, signal: new AbortController().signal });
 beforeEach(() => {
   vi.clearAllMocks();
   heads = {};
@@ -184,10 +187,13 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     await (runtime as unknown as { executeVerifiedStage(request: object): Promise<unknown> })
       .executeVerifiedStage({ stage: 'explaining', provider: 'antigravity', prompt, schema, signal: new AbortController().signal });
     const [request] = vi.mocked(runProcess).mock.calls[0];
-    expect(request.args).toEqual(expect.arrayContaining(['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', GEMINI_MODEL, '--mode', 'plan', '--sandbox']));
-    expect(request.args).not.toContain('-p');
+    // sandbox-exec -p <profile> <agy> <agy arguments…>
+    expect(request.executable).toBe('/usr/bin/sandbox-exec');
+    const agyArgs = request.args.slice(3);
+    expect(agyArgs).toEqual(expect.arrayContaining(['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', GEMINI_MODEL, '--mode', 'plan', '--sandbox']));
+    expect(agyArgs).not.toContain('-p');
     // --json-schema makes agy force an extra internal tool call, so the schema travels in the prompt.
-    expect(request.args).not.toContain('--json-schema');
+    expect(agyArgs).not.toContain('--json-schema');
     expect(request.args.join(' ')).not.toContain('PROMPT_WITH_CODE');
     const message = JSON.parse(request.stdin!);
     expect(message.event).toBe('user');
@@ -208,6 +214,46 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     expect(args).toContain('features.code_mode.excluded_tool_namespaces=["functions"]');
     expect(args).toContain('--sandbox read-only');
     expect(args).toContain('web_search="disabled"');
+  });
+  it('starts every stage inside the macOS fence, with its own app home, the run folder as TMPDIR and the CLI after the profile', async () => {
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
+    await runtime.checkConnections();
+    vi.mocked(runProcess).mockClear();
+    const events = [{ type: 'item.completed', item: { type: 'agent_message', text: '{"summary":"example"}' } }, { type: 'turn.completed' }];
+    vi.mocked(runProcess).mockResolvedValue({ stdout: events.map(event => JSON.stringify(event)).join('\n'), stderr: '', exitCode: 0 });
+    await stage(runtime, 'codex');
+    const [request] = vi.mocked(runProcess).mock.calls[0];
+    expect(request.executable).toBe('/usr/bin/sandbox-exec');
+    expect(request.args[0]).toBe('-p');
+    expect(request.args[2]).toBe(`${os.homedir()}/.local/bin/codex`);
+    expect(request.args[3]).toBe('exec');
+    expect(request.args[1]).toContain(`(allow file-write* (subpath "${appCodexHome}") (subpath "/private/tmp/ai-runtime-fixture")`);
+    expect(request.args[1]).not.toContain(appAgyHome);
+    expect(request.env).toMatchObject({ CODEX_HOME: appCodexHome, TMPDIR: '/private/tmp/ai-runtime-fixture' });
+  });
+  it.each([
+    ['sandbox-exec is missing', () => vi.mocked(access).mockImplementation(async name => { if (name === '/usr/bin/sandbox-exec') throw new Error('missing'); })],
+    ['the Node package of the CLI cannot be found', () => {
+      heads[`${os.homedir()}/.local/bin/codex`] = '#!/usr/bin/env node\n';
+      // Only the home folder holds a package.json, which must never reopen the whole home.
+      vi.mocked(access).mockImplementation(async name => { if (String(name).endsWith('package.json') && name !== `${os.homedir()}/package.json`) throw new Error('missing'); });
+    }],
+  ])('does not start the CLI at all when %s', async (_case, arrange) => {
+    arrange();
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
+    await runtime.checkConnections();
+    vi.mocked(runProcess).mockClear();
+    // The fence's own refusal, not a missing installation.
+    await expect(stage(runtime, 'codex')).rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: expect.stringContaining('울타리') });
+    expect(runProcess).not.toHaveBeenCalled();
+  });
+  it('does not retry without the fence when sandbox-exec cannot apply the profile', async () => {
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
+    await runtime.checkConnections();
+    vi.mocked(runProcess).mockClear();
+    vi.mocked(runProcess).mockResolvedValue({ stdout: '', stderr: 'sandbox-exec: invalid profile', exitCode: 65 });
+    await expect(stage(runtime, 'codex')).rejects.toMatchObject({ code: 'AI_UNAVAILABLE' });
+    expect(vi.mocked(runProcess).mock.calls.map(([request]) => request.executable)).toEqual(['/usr/bin/sandbox-exec']);
   });
   it('requires completed Codex turns and extracts the final structured message', () => {
     const events = [{ type: 'thread.started', thread_id: 'example' },

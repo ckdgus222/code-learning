@@ -5,6 +5,7 @@ import { constants } from 'node:fs';
 import { GEMINI_MODEL, type ConnectionReport, type LearningMode, type ProviderConnection, type ProviderId } from '../../shared/ai';
 import { AppError } from '../../shared/errors';
 import { localProcessEnv, runProcess } from './process';
+import { fencedLaunch } from './fence';
 import type { StageRequest, StageResponse } from './workflow';
 
 export const LOCAL_WORKER_BLOCKER = '읽기 전용 실행과 기존 로그인 연결 시험이 끝나지 않아 질문 전송을 잠갔습니다.';
@@ -302,8 +303,11 @@ export class LocalAiRuntime {
       const stdin = request.provider === 'codex' ? request.prompt : `${JSON.stringify({ event: 'user', message: {
         content: `${request.prompt}\n\n응답은 아래 JSON schema를 따르는 JSON 하나만 출력한다. 코드 울타리나 다른 글을 붙이지 않는다.\n${JSON.stringify(request.schema)}`,
       } })}\n`;
-      const output = await runProcess({ executable: launch.executable, args: [...launch.prefix, ...args], stdin, cwd: directory,
-        signal: request.signal, env: await this.environment(request.provider) });
+      const env = await this.environment(request.provider);
+      const fenced = await fencedLaunch(launch, { appHome: request.provider === 'codex' ? this.codexHome : this.antigravityHome, runDirectory: directory });
+      // TMPDIR points into this run's folder, the only temporary place the fence lets the CLI write.
+      const output = await runProcess({ executable: fenced.executable, args: [...fenced.prefix, ...args], stdin, cwd: directory,
+        signal: request.signal, env: { ...env, TMPDIR: directory } });
       // Stderr can contain provider/native paths; never return it to the renderer.
       if (/denied|permission|not allowed|unauthorized|authentication required|rate.limit|quota/i.test(output.stderr)) {
         throw new AppError('AI_UNAVAILABLE', 'AI 실행 중 인증·권한·이용 한도 오류가 발생했습니다.');
