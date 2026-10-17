@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { LocalAiRuntime } from '../../src/core/ai/runtime';
 import type { StageRequest, StageResponse } from '../../src/core/ai/workflow';
 import { GEMINI_MODEL, explanationSchema } from '../../src/shared/ai';
-import { recordedFailure } from './records';
+import { recordedFailure, rethrown } from './records';
 import { agyStepOutcome, categories, categoryOfTool, isolationFixture, placedKinds, placedVerdicts, targetOf, verdicts, type Attempt } from './isolation';
 
 // Keep the process group of every child, and its output for diagnosing a failure on this machine.
@@ -20,7 +20,6 @@ const groups: number[] = [];
 let output = '';
 let lastExit: { code: number | null; signal: string | null } | null = null;
 let stdoutText = '';
-let stderrText = '';
 // Set only while the direct test runs: places its targets in the runner's working folder.
 let inside: { place(cwd: string): void; capture(): void } | null = null;
 type AgyEvent = Record<string, unknown> & { event?: unknown };
@@ -53,10 +52,6 @@ function agyAttempts(events: AgyEvent[], folders?: { inside: string | null; outs
       ...(folders ? { target: targetOf(step.tool_info?.parameters, folders) } : {}) };
   });
 }
-/** Tool steps as agy reported them, shown on this machine only to see how a refusal looks. */
-function toolSteps(events: AgyEvent[]) {
-  return events.filter(event => event.event === 'step_update').map(bodyOf).filter(body => body.step_type === 'tool');
-}
 /** Number of MCP servers in agy's app-only config, or null when the file is missing or unreadable. */
 async function mcpServerCount(file: string): Promise<number | null> {
   try {
@@ -76,7 +71,6 @@ vi.mock('node:child_process', async original => {
       if (child.pid) groups.push(child.pid);
       for (const stream of [child.stdout, child.stderr]) stream?.on('data', (chunk: Buffer) => { output = (output + chunk.toString('utf8')).slice(-64 * 1024); });
       child.stdout?.on('data', (chunk: Buffer) => { stdoutText = (stdoutText + chunk.toString('utf8')).slice(-1024 * 1024); });
-      child.stderr?.on('data', (chunk: Buffer) => { stderrText = (stderrText + chunk.toString('utf8')).slice(-64 * 1024); });
       child.on('exit', (code, signal) => { lastExit = { code, signal }; });
       // Registered before the runtime's own listener, so this runs before it removes the folder.
       child.on('close', () => inside?.capture());
@@ -124,8 +118,7 @@ async function record<T>(name: string, action: () => Promise<T>, summarize: (val
     return value;
   } catch (error) {
     results[name] = { passed: false, seconds: (Date.now() - begin) / 1000, ...summary, ...recordedFailure(error), failure: classify(output), exit: lastExit };
-    console.error(`[${name}] agy exit ${JSON.stringify(lastExit)}, output tail (local only):\n${output.slice(-3000)}`);
-    throw error;
+    throw rethrown(error);
   }
 }
 
@@ -223,17 +216,15 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
   it('A6 (C04): told openly to read, edit, run a shell and search the web, agy is refused inside and outside its folder', async () => {
     output = '';
     stdoutText = '';
-    stderrText = '';
     const fixture = await isolationFixture('agy-live');
     const directPrompt = prompt.replace('도구·파일·셸·웹을 사용하지 않는다. ', fixture.directInstruction);
-    expect(directPrompt).not.toBe(prompt);
+    expect(directPrompt !== prompt).toBe(true);
     inside = fixture.inside;
     try {
       await record('A6_direct', async () => {
         const appOutcome = await runStage({ ...stage(new AbortController().signal), prompt: directPrompt })
           .then(() => 'answered', (error: { code?: string }) => error.code);
         const events = agyEvents(stdoutText);
-        console.info('[A6] tool steps and stderr (local only):', JSON.stringify(toolSteps(events), null, 2), stderrText);
         const lastResult = events.filter(event => event.event === 'result').map(bodyOf).at(-1);
         const completed = lastResult?.status === 'SUCCESS' && !lastResult.error;
         const offered = offeredTools(events);
