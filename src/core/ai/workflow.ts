@@ -103,8 +103,8 @@ export class LocalWorkerWorkflow {
       previous.snapshot.evidence.id !== snapshot.evidence.id || previous.snapshot.evidence.fileHash !== snapshot.evidence.fileHash ||
       previous.snapshot.revision !== snapshot.revision)) throw new AppError('CHANGED', '이 대화의 코드 기준이 달라졌습니다. 새 질문으로 시작해 주세요.');
     const conversationId = request.conversationId ?? randomUUID();
-    // A question can hold a pasted secret too. Answers are not masked again: they come from masked
-    // input, and a secret the patterns miss was already sent and would be missed again anyway.
+    // A question can hold a pasted secret too. Answers are not masked again (the user's choice).
+    // The patterns mask only text in a known shape, so a value can still reach an answer.
     // History keeps the original; each earlier question is masked again when it is sent.
     const maskedQuestion = maskSecrets(request.question);
     const questionNotes = maskedQuestion.count > 0 ? [maskedNote('질문', maskedQuestion.count)] : [];

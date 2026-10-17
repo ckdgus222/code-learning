@@ -29,6 +29,8 @@ beforeEach(() => {
   vi.mocked(access).mockResolvedValue(undefined);
   vi.mocked(open).mockImplementation((async (name: string) => ({
     read: async (buffer: Buffer) => ({ buffer, bytesRead: buffer.write(heads[name] ?? '\xCF\xFA\xED\xFE', 'latin1') }),
+    stat: async () => ({ isFile: () => true, nlink: 1 }),
+    truncate: async () => undefined,
     chmod: async () => undefined,
     writeFile: async (text: string) => { written[name] = text; },
     close: async () => undefined,

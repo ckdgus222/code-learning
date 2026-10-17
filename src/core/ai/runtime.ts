@@ -66,7 +66,8 @@ export const AGY_NO_TOOLS_HOOK = {
   'code-learning-no-tools': { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command',
     command: `echo '${JSON.stringify({ decision: 'deny', reason: AGY_NO_TOOLS_REASON })}'`, timeout: 5 }] }] },
 };
-const NO_FOLLOW_WRITE = constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW;
+// No O_TRUNC: the file is emptied only after it is shown to be a file of its own.
+const NO_FOLLOW_WRITE = constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW;
 
 /** Makes each level under `home` a private folder, refusing a link at any level. */
 async function privateFolder(home: string, parts: string[]): Promise<string> {
@@ -87,6 +88,11 @@ async function privateFolder(home: string, parts: string[]): Promise<string> {
 async function writePrivateFile(file: string, text: string): Promise<void> {
   const handle = await open(file, NO_FOLLOW_WRITE, 0o600);
   try {
+    // O_NOFOLLOW opens a hard link, which shares its contents with another name such as the
+    // user's own ~/.gemini file.
+    const info = await handle.stat();
+    if (!info.isFile() || info.nlink !== 1) throw new Error('not a private file');
+    await handle.truncate(0);
     await handle.chmod(0o600);
     await handle.writeFile(text);
   } finally { await handle.close(); }

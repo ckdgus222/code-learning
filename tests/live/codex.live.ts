@@ -349,11 +349,16 @@ describe('Codex connection through the app runtime (real account, non-secret fix
     await new Promise(resolve => setTimeout(resolve, 500));
     // Signal 0 only checks existence; ESRCH means no process is left in that group. A daemon
     // that moved itself to another group would not be seen here.
-    const alive = groups.filter(pid => {
+    const aliveOf = (pids: number[]) => pids.filter(pid => {
       try { process.kill(-pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
     });
+    const alive = aliveOf(groups);
+    // A failed cancel must not leave a CLI on the real account running after the test. Only these
+    // just-checked groups are killed: an older group id may already belong to another program.
+    for (const pid of alive) { try { process.kill(-pid, 'SIGKILL'); } catch { /* Already gone. */ } }
+    await new Promise(resolve => setTimeout(resolve, 200));
     results.C03_cancel = { passed: outcome.code === 'CANCELLED' && groups.length > 0 && alive.length === 0,
-      code: outcome.code, groupsStarted: groups.length, groupsAlive: alive.length };
+      code: outcome.code, groupsStarted: groups.length, groupsAlive: alive.length, groupsLeftAfterKill: aliveOf(alive).length };
     expect(outcome.code).toBe('CANCELLED');
     expect(groups.length).toBeGreaterThan(0);
     expect(alive).toEqual([]);
