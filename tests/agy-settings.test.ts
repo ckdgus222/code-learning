@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { AGY_DENY_RULES, AGY_NO_TOOLS_HOOK, restrictAgy } from '../src/core/ai/runtime';
@@ -70,6 +70,25 @@ describe('agy restrictions in the app-only HOME', () => {
       expect(await readFile(path.join(outside, 'target.json'), 'utf8')).toBe('{}');
       // Nothing was made inside the link's target either.
       await expect(stat(path.join(outside, 'antigravity-cli'))).rejects.toThrow();
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a settings or hooks file that is a hard link, leaving the other name untouched', async () => {
+    // A hard link is not a symbolic link: O_NOFOLLOW opens it, and it shares the user's ~/.gemini file.
+    const outside = await mkdtemp(path.join(os.tmpdir(), 'agy-settings-target-'));
+    try {
+      const target = path.join(outside, 'target.json');
+      for (const file of [settingsFile(), hooksFile()]) {
+        await rm(path.join(home, '.gemini'), { recursive: true, force: true });
+        await writeFile(target, '{}', { mode: 0o644 });
+        await mkdir(path.dirname(file), { recursive: true });
+        await link(target, file);
+        await expect(restrictAgy(home)).rejects.toThrow();
+        expect(await readFile(target, 'utf8'), file).toBe('{}');
+        expect((await stat(target)).mode & 0o777, file).toBe(0o644);
+      }
     } finally {
       await rm(outside, { recursive: true, force: true });
     }

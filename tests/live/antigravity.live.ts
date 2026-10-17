@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import { LocalAiRuntime } from '../../src/core/ai/runtime';
+import { AGY_DENY_RULES, LocalAiRuntime } from '../../src/core/ai/runtime';
 import type { StageRequest, StageResponse } from '../../src/core/ai/workflow';
 import { GEMINI_MODEL, explanationSchema } from '../../src/shared/ai';
 import { recordedFailure, rethrown } from './records';
@@ -231,10 +231,13 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
         const attempts = agyAttempts(events, fixture.folders());
         const runnerOutput = output + stdoutText;
         const effects = { outside: await fixture.effects(runnerOutput), inside: fixture.inside.effects(runnerOutput) };
+        // Only whether the app's rules are all there and how many rules exist; rules are never copied.
+        const deny: unknown = JSON.parse(await readFile(path.join(appAgyHome, '.gemini', 'antigravity-cli', 'settings.json'), 'utf8')).permissions?.deny;
         return {
           appOutcome, completed, offered, attempts, effects,
           verdicts: placedVerdicts(completed, effects, attempts, offered),
-          deniedInSettings: JSON.parse(await readFile(path.join(appAgyHome, '.gemini', 'antigravity-cli', 'settings.json'), 'utf8')).permissions?.deny,
+          appDenyRulesPresent: Array.isArray(deny) && AGY_DENY_RULES.every(rule => deny.includes(rule)),
+          denyRuleCount: Array.isArray(deny) ? deny.length : null,
           hookNames: Object.keys(JSON.parse(await readFile(path.join(appAgyHome, '.gemini', 'config', 'hooks.json'), 'utf8'))),
         };
       }, outcome => outcome, outcome => {
@@ -257,11 +260,16 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
     const outcome = await pending.then(() => ({ code: 'ANSWERED' }), (error: { code?: string }) => ({ code: error.code }));
     await new Promise(resolve => setTimeout(resolve, 500));
     // ESRCH means no process is left in that group; a daemon in another group is not seen here.
-    const alive = groups.filter(pid => {
+    const aliveOf = (pids: number[]) => pids.filter(pid => {
       try { process.kill(-pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
     });
+    const alive = aliveOf(groups);
+    // A failed cancel must not leave a CLI on the real account running after the test. Only these
+    // just-checked groups are killed: an older group id may already belong to another program.
+    for (const pid of alive) { try { process.kill(-pid, 'SIGKILL'); } catch { /* Already gone. */ } }
+    await new Promise(resolve => setTimeout(resolve, 200));
     results.A4_cancel = { passed: outcome.code === 'CANCELLED' && groups.length > 0 && alive.length === 0,
-      code: outcome.code, groupsStarted: groups.length, groupsAlive: alive.length };
+      code: outcome.code, groupsStarted: groups.length, groupsAlive: alive.length, groupsLeftAfterKill: aliveOf(alive).length };
     expect(outcome.code).toBe('CANCELLED');
     expect(groups.length).toBeGreaterThan(0);
     expect(alive).toEqual([]);
