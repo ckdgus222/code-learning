@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import path from 'node:path';
-import { createCodexProbe, observedToolNames, probeProfile, requestInventory } from './live/codex-probe';
+import { classifyForced, createCodexProbe, isEmptyList, observedToolNames, probeProfile, requestInventory } from './live/codex-probe';
 import { runProcess } from '../src/core/ai/process';
 import modelFixture from './fixtures/codex-model-0.163.0.json';
 
@@ -201,5 +201,40 @@ describe.skipIf(process.platform !== 'darwin')('local Codex probe transport (no 
       expect(JSON.stringify(probe.summary())).not.toContain('PRIVATE');
     } finally { await probe.close(); }
     await expect(stat(path.join(probe.root, 'home'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});
+
+describe('forced call outcomes', () => {
+  const canary = 'CANARY_fixture';
+  it("counts only Codex's own no-such-tool reply and its exact patch refusals as blocks", () => {
+    expect(classifyForced('unsupported call: exec_command', canary).outcome).toBe('unavailable');
+    expect(classifyForced('unsupported custom tool call: apply_patch', canary).outcome).toBe('unavailable');
+    expect(classifyForced([{ type: 'input_text', text: 'unsupported call: web.run' }], canary).outcome).toBe('unavailable');
+    expect(classifyForced('patch rejected: writing is blocked by read-only sandbox; rejected by user approval settings', canary).outcome).toBe('refused');
+    expect(classifyForced('patch rejected: writing outside of the project; rejected by user approval settings', canary).outcome).toBe('refused');
+    // An OS or sandbox error, a similar phrase or a longer text decides nothing.
+    for (const text of ['sandbox-exec: sandbox_apply: Operation not permitted', 'patch rejected: something else',
+      'unsupported call: exec_command\nthen it ran anyway', 'Permission denied']) {
+      expect(classifyForced(text, canary).outcome, text).toBe('unclear');
+    }
+    expect(classifyForced(undefined, canary).outcome).toBe('no-output');
+  });
+
+  it('treats the canary in any output as a call that ran, before any refusal text', () => {
+    expect(classifyForced(`unsupported call: x ${canary}`, canary).outcome).toBe('ran');
+    expect(classifyForced([{ type: 'input_text', text: 'Output:' }, { type: 'input_text', text: canary }], canary).outcome).toBe('ran');
+  });
+
+  it('records fixed marker words and the length, never the text', () => {
+    const result = classifyForced('PRIVATE /tmp/path: permission denied by sandbox', canary);
+    expect(result).toEqual({ outcome: 'unclear', markers: ['sandbox', 'denied', 'permission'], length: 47 });
+  });
+
+  it('sees an MCP list as empty only when every list it returns is empty', () => {
+    expect(isEmptyList('{"resources":[]}')).toBe(true);
+    expect(isEmptyList('{"resourceTemplates":[]}')).toBe(true);
+    for (const text of ['{"resources":[{"uri":"file:///x"}]}', '{}', '[]', 'not json', '{"resources":[],"nextCursor":"x"}']) {
+      expect(isEmptyList(text), text).toBe(false);
+    }
   });
 });
