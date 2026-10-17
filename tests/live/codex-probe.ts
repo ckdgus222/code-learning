@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { executableCandidates, resolveLaunch, type Launch } from '../../src/core/ai/runtime';
 import type { ProcessRequest } from '../../src/core/ai/process';
-import modelFixture from '../fixtures/codex-model-0.162.1.json';
+import modelFixture from '../fixtures/codex-model-0.163.0.json';
 
 interface ToolName { type: string; name: string }
 class InventoryError extends Error {}
