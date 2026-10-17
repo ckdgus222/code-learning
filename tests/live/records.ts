@@ -14,3 +14,10 @@ export function recordedFailure(error: unknown): { code?: string; errorName?: st
     message: kept && typeof message === 'string' ? message : undefined,
   };
 }
+
+/** The error a live check rethrows, so the test runner's output keeps no more than the results file. */
+export function rethrown(error: unknown): unknown {
+  const { code, errorName, message } = recordedFailure(error);
+  if (message !== undefined) return error;
+  return new Error(`${errorName ?? 'Error'}${code ? ` ${code}` : ''} (message withheld: it can quote provider output or a path)`);
+}

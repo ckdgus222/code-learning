@@ -13,7 +13,7 @@ import { runProcess, type ProcessRequest } from '../../src/core/ai/process';
 import type { StageRequest, StageResponse } from '../../src/core/ai/workflow';
 import { organizationSchema } from '../../src/shared/ai';
 import { categories, codexAttempts, isolationFixture, placedKinds, placedVerdicts, verdicts } from './isolation';
-import { recordedFailure } from './records';
+import { recordedFailure, rethrown } from './records';
 import { createCodexProbe, findCodexLaunch, observedToolNames, type CodexProbe, type CodexProbeVariant } from './codex-probe';
 
 // Keep the process group of every child the runtime starts, the end of its stderr for diagnosing
@@ -41,7 +41,7 @@ function eventKinds(stdout: string): string[] {
   }
   return [...kinds];
 }
-/** Messages of Codex `error` items, kept in memory or shown on this machine only. */
+/** Messages of Codex `error` items, kept in memory only. */
 function errorItemMessages(stdout: string): string[] {
   return stdout.split('\n').flatMap(line => {
     try { const event = JSON.parse(line); return event.item?.type === 'error' ? [String(event.item.message ?? '')] : []; } catch { return []; }
@@ -118,8 +118,7 @@ async function record<T>(name: string, action: () => Promise<T>, summarize: (val
     // Provider output is only classified.
     results[name] = { passed: false, seconds: (Date.now() - started) / 1000, ...summary, ...recordedFailure(error), failure: classify(stderrTail),
       events: eventKinds(stdoutText), answerSchemaValid: answerMatchesSchema(stdoutText) };
-    console.error(`[${name}] stderr tail (local only):\n${stderrTail}\n[${name}] error items (local only):\n${errorItemMessages(stdoutText).join('\n')}`);
-    throw error;
+    throw rethrown(error);
   }
 }
 
@@ -150,7 +149,7 @@ async function withLocalProbe(name: string, action: (probe: CodexProbe, runtimeF
     const versionOutput = await runProcess({ ...launch, args: [...launch.prefix, '--version'], cwd: probe.root,
       env: { CODEX_HOME: probe.codexHome }, signal: new AbortController().signal });
     version = versionOutput.stdout.match(/(?:^|\s)(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)(?:\s|$)/)?.[1] ?? null;
-    expect(versionOutput.exitCode, versionOutput.stderr).toBe(0);
+    expect(versionOutput.exitCode).toBe(0);
     expect(version).not.toBeNull();
     if (probe.catalogOverride) expect(version, 'The catalog fixture is specific to this CLI version').toBe(probe.catalogOverride.version);
     const runtimeFor = (home: string) => {
@@ -165,9 +164,7 @@ async function withLocalProbe(name: string, action: (probe: CodexProbe, runtimeF
     localResults[name] = { ...probe.summary(), version, ...details, passed: true };
   } catch (error) {
     localResults[name] = { ...probe?.summary(), version, ...details, passed: false, failure: classify(stderrTail), events: eventKinds(stdoutText) };
-    // Local diagnostics only. The JSON report never contains provider text or request contents.
-    console.error(`[${name}] local startup diagnostics:\n${stderrTail}\n${errorItemMessages(stdoutText).join('\n')}`);
-    throw error;
+    throw rethrown(error);
   } finally {
     localProbe = null;
     try {
@@ -175,7 +172,7 @@ async function withLocalProbe(name: string, action: (probe: CodexProbe, runtimeF
       localResults[name] = { ...localResults[name] as object, cleanup: 'completed' };
     } catch (error) {
       localResults[name] = { ...localResults[name] as object, passed: false, cleanup: 'failed' };
-      throw error;
+      throw rethrown(error);
     } finally {
       // Keep each run's sanitized counts even when a later filtered run replaces the summary.
       await mkdir('test-results', { recursive: true });
@@ -262,7 +259,8 @@ describe('Codex connection through the app runtime (real account, non-secret fix
       stdoutText = '';
       const response = await runStage({ ...stage(new AbortController().signal), prompt: 'Return the JSON object {"probe":true}.',
         schema: { type: 'object', properties: { probe: { type: 'boolean' } }, required: ['probe'], additionalProperties: false } }, runtimeFor(probe.codexHome));
-      expect(response.value).toEqual({ probe: true });
+      // Compared as a boolean so a failure does not print the answer.
+      expect(z.object({ probe: z.literal(true) }).strict().safeParse(response.value).success).toBe(true);
       expect(eventKinds(stdoutText)).toContain('turn.completed');
       expect(codexAttempts(stdoutText)).toEqual([]);
       const observedNames = probe.inventories.flatMap(observedToolNames);
@@ -314,7 +312,7 @@ describe('Codex connection through the app runtime (real account, non-secret fix
     stdoutText = '';
     const fixture = await isolationFixture('codex-live');
     const directPrompt = prompt.replace('도구·파일·셸·웹을 사용하지 않는다. ', fixture.directInstruction);
-    expect(directPrompt).not.toBe(prompt);
+    expect(directPrompt !== prompt).toBe(true);
     inside = fixture.inside;
     try {
       await record('C06_direct', async () => {

@@ -250,6 +250,31 @@ describe('local worker workflow with fake adapters', () => {
     }
   });
 
+  it('masks a secret pasted into the question, both now and when the question is sent again as history', async () => {
+    const f = fixture();
+    // Made-up values in the shape of secrets; not real credentials.
+    const asked = '이 키 sk-abcdefghijklmnopqrstuvwx 는 어디에 쓰나요?\npassword: hunter22';
+    const masked = `이 키 ${SECRET_MASK} 는 어디에 쓰나요?\npassword: ${SECRET_MASK}`;
+    const note = '질문: 비밀값처럼 보이는 2곳을 가린 뒤 보냈어요. AI는 가린 내용을 보지 못했어요. 모든 비밀값을 찾아낸다고 보장하지는 않아요.';
+    const first = await f.finish({ ...f.request, question: asked });
+    if (first.kind !== 'completed') throw new Error('expected completion');
+    expect(f.run).toHaveBeenCalledTimes(3);
+    for (const [request] of f.run.mock.calls) expect(context(request)).toMatchObject({ question: masked, limitations: [note] });
+    // The answer screen on this computer shows the question as typed, with the same note.
+    expect(first.result.question).toBe(asked);
+    expect(first.result.limitations).toEqual([note]);
+
+    f.run.mockClear();
+    const next = await f.finish({ ...f.request, question: '다시 설명해 주세요', conversationId: first.result.conversationId });
+    if (next.kind !== 'completed') throw new Error('expected completion');
+    for (const [request] of f.run.mock.calls) {
+      expect(context(request).history[0].question).toBe(masked);
+      expect(JSON.stringify(context(request))).not.toMatch(/sk-abcdefghijklmnopqrstuvwx|hunter22/);
+      // That question's note went out with its own answer.
+      expect(context(request).limitations).toEqual([]);
+    }
+  });
+
   it('stops before explanation when related file access is denied', async () => {
     const f = fixture();
     f.expand.mockRejectedValue(new AppError('NOT_ALLOWED', '제외된 파일'));

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AGY_NO_TOOLS_REASON } from '../src/core/ai/runtime';
 import { AppError } from '../src/shared/errors';
-import { recordedFailure } from './live/records';
+import { recordedFailure, rethrown } from './live/records';
 import { agyStepOutcome, categoryOfTool, codexAttempts, placedVerdicts, targetOf, verdicts, type Attempt, type Category, type Place } from './live/isolation';
 
 // The C04 verdict rules used by the live runner checks; no runner or network is involved here.
@@ -148,5 +148,19 @@ describe('what a live check records from a failure', () => {
     expect(recordedFailure(fileError)).toEqual({ code: 'ENOENT', errorName: 'Error', message: undefined });
     const parseError = (() => { try { JSON.parse('{"key": PRIVATE_VALUE}'); } catch (error) { return error; } })();
     expect(JSON.stringify(recordedFailure(parseError))).not.toContain('PRIVATE');
+  });
+  it('rethrows app errors and assertions as they are, and any other error without its message', async () => {
+    const appError = new AppError('AI_RESPONSE', 'fixed wording');
+    expect(rethrown(appError)).toBe(appError);
+    const assertion = (() => { try { expect(1).toBe(2); } catch (error) { return error; } })();
+    expect(rethrown(assertion)).toBe(assertion);
+    const fileError = await import('node:fs/promises').then(fs => fs.readFile('/nonexistent/PRIVATE_PATH/file.txt')).catch(error => error);
+    const parseError = (() => { try { JSON.parse('{"key": PRIVATE_VALUE}'); } catch (error) { return error; } })();
+    for (const error of [fileError, parseError]) {
+      const thrown = rethrown(error) as Error;
+      expect(thrown).not.toBe(error);
+      expect(`${thrown.message}\n${thrown.stack}`).not.toContain('PRIVATE');
+    }
+    expect((rethrown(fileError) as Error).message).toContain('ENOENT');
   });
 });
