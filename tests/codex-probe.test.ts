@@ -165,6 +165,10 @@ describe.skipIf(process.platform !== 'darwin')('local Codex probe transport (no 
       expect(wrapped.executable).toBe('/usr/bin/sandbox-exec');
       expect(wrapped.stdin).toBe('PRIVATE_PROMPT');
       expect(wrapped.env).toEqual({ CODEX_HOME: probe.codexHome, HOME: probe.home, TMPDIR: probe.root, PATH: '/usr/bin:/bin:/usr/sbin:/sbin' });
+      // A stage the app already fenced runs the same inner command under the probe's own profile.
+      const fenced = probe.wrap({ executable: '/usr/bin/sandbox-exec', args: ['-p', '(version 1)\n(allow default)\n', '/opt/node', ...args], cwd: probe.root,
+        stdin: 'PRIVATE_PROMPT', env: { CODEX_HOME: probe.codexHome }, signal: new AbortController().signal });
+      expect(fenced.args).toEqual(wrapped.args);
       expect(() => probe.wrap({ ...wrapped, env: { CODEX_HOME: '/Users/fixture/.codex' } })).toThrow();
       expect(() => probe.wrap({ ...wrapped, env: { CODEX_HOME: `${probe.root}/../outside` } })).toThrow();
       expect(JSON.stringify(probe.summary())).not.toContain('PRIVATE');
