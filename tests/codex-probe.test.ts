@@ -4,7 +4,7 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { createCodexProbe, observedToolNames, probeProfile, requestInventory } from './live/codex-probe';
 import { runProcess } from '../src/core/ai/process';
-import modelFixture from './fixtures/codex-model-0.162.1.json';
+import modelFixture from './fixtures/codex-model-0.163.0.json';
 
 describe('local Codex request inventory', () => {
   it('distinguishes an observed empty array from missing or malformed definitions', () => {

@@ -1,6 +1,6 @@
 {
-  "source": "https://raw.githubusercontent.com/openai/codex/rust-v0.162.1/codex-rs/models-manager/models.json",
-  "version": "0.162.1",
+  "source": "https://raw.githubusercontent.com/openai/codex/rust-v0.163.0/codex-rs/models-manager/models.json",
+  "version": "0.163.0",
   "sourceSha256": "943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b",
   "model": {
     "slug": "gpt-6.1-sol",

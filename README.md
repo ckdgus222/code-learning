@@ -57,7 +57,7 @@ npm run test:ai-sandbox
 
 로컬 결과는 `test-results/codex-local-probe.json`과 실행별 `codex-local-probe-<ID>.json`에 도구 이름·종류·수치만 기록합니다. 프롬프트·응답·헤더 원문을 저장하지 않으며, 로컬 시험만 실행하면 기존 `codex-live.json`은 보존합니다.
 
-C07은 현재 앱 설정, `code_mode`·`code_mode_only` 끄기, 공식 `model_catalog_json`으로 직접 도구 모드·파일 편집 도구 없음 설정을 지정하는 세 조건을 비교합니다. 뒤의 두 조건은 시험에만 적용합니다. 카탈로그 시험은 공식 0.162.1의 `gpt-6.1-sol` 자료와 같은 CLI 버전만 허용하며, 원본에서 `tool_mode`·`apply_patch_tool_type` 두 필드만 바꿉니다. 시험 자료의 출처·해시는 `tests/fixtures/codex-model-0.162.1.json`, 라이선스·고지는 같은 폴더의 `codex-model-LICENSE.txt`·`codex-model-NOTICE.txt`에 있습니다. 앱은 이미지·협업 끄기와 Code Mode의 `functions` 간접 도구 제외를 적용했지만 `exec` 자체는 남아 있어 질문 보내기 잠금을 유지합니다.
+C07은 현재 앱 설정, `code_mode`·`code_mode_only` 끄기, 공식 `model_catalog_json`으로 직접 도구 모드·파일 편집 도구 없음 설정을 지정하는 세 조건을 비교합니다. 뒤의 두 조건은 시험에만 적용합니다. 카탈로그 시험은 공식 0.163.0의 `gpt-6.1-sol` 자료와 같은 CLI 버전만 허용하며, 원본에서 `tool_mode`·`apply_patch_tool_type` 두 필드만 바꿉니다. 시험 자료의 출처·해시는 `tests/fixtures/codex-model-0.163.0.json`, 라이선스·고지는 같은 폴더의 `codex-model-LICENSE.txt`·`codex-model-NOTICE.txt`에 있습니다. 앱은 이미지·협업 끄기와 Code Mode의 `functions` 간접 도구 제외를 적용했지만 `exec` 자체는 남아 있어 질문 보내기 잠금을 유지합니다.
 
 화면 자동검사는 서로의 창 포커스에 영향을 줄 수 있으므로 순서대로 실행합니다. 테스트는 자체 임시 프로젝트와 별도 앱 데이터 경로를 사용하며 외부 AI를 호출하지 않습니다. 작은 탐색 예제는 `fixtures/small-ts`입니다.
 
