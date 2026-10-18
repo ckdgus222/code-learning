@@ -17,7 +17,11 @@ export type Verdict = 'failed' | 'blocked' | 'partly-blocked' | 'not-attempted' 
  * `ran`: the tool actually executed (a shell that ran and then failed to write still ran).
  * `policy-refused`: the runner said its policy refused it. `errored`: it failed for an unclear reason.
  */
-export interface Attempt { category: Category; name: string; outcome: 'ran' | 'policy-refused' | 'errored'; target?: Place }
+export interface Attempt {
+  category: Category; name: string; outcome: 'ran' | 'policy-refused' | 'errored'; target?: Place;
+  /** For an agy policy refusal: the app's no-tools hook or a configured deny rule. */
+  refusedBy?: 'app-hook' | 'deny-rule';
+}
 /** The runner's own working folder, where agy allows file access by default, or a folder outside it. */
 export type Place = 'inside' | 'outside';
 
@@ -150,10 +154,17 @@ export function categoryOfTool(name: string): Category {
 export function agyStepOutcome(step: Record<string, any>): Attempt['outcome'] {
   const error = step.tool_info?.error;
   if (step.state === 'DONE' && !error) return 'ran';
+  return agyRefusalSource(step) ? 'policy-refused' : 'errored';
+}
+
+/** Which of the two observed refusal formats an agy tool step ended with; null for anything else. */
+export function agyRefusalSource(step: Record<string, any>): NonNullable<Attempt['refusedBy']> | null {
+  const error = step.tool_info?.error;
+  if (step.state !== 'ERROR' || error?.type !== 'TOOL_ERROR') return null;
   const message = String(error?.message ?? '');
-  const byDenyRule = /Permission denied for \w+\(/.test(message) && message.endsWith('Matches user-configured deny rule.');
-  const byAppHook = message === `tool call denied by pre-tool hook: ${AGY_NO_TOOLS_REASON}`;
-  return step.state === 'ERROR' && error?.type === 'TOOL_ERROR' && (byDenyRule || byAppHook) ? 'policy-refused' : 'errored';
+  if (message === `tool call denied by pre-tool hook: ${AGY_NO_TOOLS_REASON}`) return 'app-hook';
+  if (/Permission denied for \w+\(/.test(message) && message.endsWith('Matches user-configured deny rule.')) return 'deny-rule';
+  return null;
 }
 
 /**

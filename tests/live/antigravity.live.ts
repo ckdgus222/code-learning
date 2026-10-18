@@ -11,11 +11,11 @@ import path from 'node:path';
 import { z } from 'zod';
 import { AGY_DENY_RULES, LocalAiRuntime } from '../../src/core/ai/runtime';
 import { runProcess, type ProcessRequest } from '../../src/core/ai/process';
-import { createAgyProbe, findAgyLaunch, type AgyProbe } from './agy-probe';
+import { PROBE_URL_PATH, createAgyProbe, findAgyLaunch, forcedCallResults, forcedCallsPassed, type AgyForcedCall, type AgyProbe } from './agy-probe';
 import type { StageRequest, StageResponse } from '../../src/core/ai/workflow';
 import { GEMINI_MODEL, explanationSchema } from '../../src/shared/ai';
 import { recordedFailure, rethrown } from './records';
-import { agyStepOutcome, attemptedOnly, categories, categoryOfTool, isolationFixture, markerExists, mcpCheckPassed, placedKinds, placedVerdicts, targetOf, verdicts, type Attempt } from './isolation';
+import { agyRefusalSource, agyStepOutcome, attemptedOnly, categories, categoryOfTool, isolationFixture, markerExists, mcpCheckPassed, placedKinds, placedVerdicts, targetOf, verdicts, type Attempt } from './isolation';
 
 // Keep the process group of every child, and its output for diagnosing a failure on this machine.
 // Only classifications and yes/no answers go into the results file.
@@ -51,7 +51,8 @@ function agyAttempts(events: AgyEvent[], folders?: { inside: string | null; outs
   }
   return [...steps.values()].map(step => {
     const name = String(step.tool_name ?? step.tool_info?.name ?? 'unknown');
-    return { category: categoryOfTool(name), name, outcome: agyStepOutcome(step),
+    const refusedBy = agyRefusalSource(step);
+    return { category: categoryOfTool(name), name, outcome: agyStepOutcome(step), ...(refusedBy ? { refusedBy } : {}),
       ...(folders ? { target: targetOf(step.tool_info?.parameters, folders) } : {}) };
   });
 }
@@ -394,6 +395,86 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
       await probe?.close();
       await mkdir('test-results', { recursive: true });
       await writeFile(`test-results/agy-local-probe-${randomUUID()}.json`, JSON.stringify({ A8_api_key_shape: localResults.A8_api_key_shape }, null, 2));
+    }
+  });
+
+  // Step 2: the server itself asks for each tool, with fixed arguments inside the probe folder only.
+  // Only declared tools whose parameters were observed in step 1 are called; the rest stay untested.
+  it('A9 local: in API key mode, every tool call a local server forces on agy is refused by policy and nothing runs (no account)', async () => {
+    const appFiles = ['antigravity-cli/settings.json', 'config/hooks.json', 'config/mcp_config.json'].map(file => path.join(appAgyHome, '.gemini', file));
+    const fileStates = () => Promise.all(appFiles.map(file => stat(file).then(info => `${info.size}:${info.mtimeMs}`, () => 'missing')));
+    const before = await fileStates();
+    const answer = { summary: '시험 응답', steps: [], claims: [{ kind: 'concept', text: '시험 응답' }], terms: [], unknowns: [] };
+    let probe: AgyProbe | undefined;
+    let fixture: Awaited<ReturnType<typeof isolationFixture>> | undefined;
+    let details: Record<string, unknown> = {};
+    try {
+      // The probe root comes first so the outside files can sit inside it.
+      probe = await createAgyProbe(answer, []);
+      fixture = await isolationFixture('agy-forced', probe.root);
+      const { canary, original, created, shell } = fixture.files;
+      const firstLine = (await readFile(original, 'utf8')).split('\n')[0];
+      const insideFile = (name: string) => path.join(fixture!.folders().inside ?? '/nonexistent', name);
+      const common = { toolSummary: 'probe' };
+      const calls: AgyForcedCall[] = [
+        { label: 'view_outside', name: 'view_file', args: () => ({ ...common, toolAction: 'read', AbsolutePath: canary }) },
+        { label: 'view_inside', name: 'view_file', args: () => ({ ...common, toolAction: 'read', AbsolutePath: insideFile('inside-canary.txt') }) },
+        { label: 'write_outside', name: 'write_to_file', args: () => ({ ...common, toolAction: 'edit', TargetFile: created, Overwrite: false, CodeContent: 'forced', Description: 'probe' }) },
+        { label: 'write_inside', name: 'write_to_file', args: () => ({ ...common, toolAction: 'edit', TargetFile: insideFile('inside-created.txt'), Overwrite: false, CodeContent: 'forced', Description: 'probe' }) },
+        { label: 'replace_outside', name: 'replace_file_content', args: () => ({ ...common, toolAction: 'edit', TargetFile: original, Instruction: 'probe',
+          Description: 'probe', AllowMultiple: false, TargetContent: firstLine, ReplacementContent: 'forced', StartLine: 1, EndLine: 1 }) },
+        // WaitMsBeforeAsync keeps a command that did run in the foreground until it ends.
+        { label: 'shell_read', name: 'run_command', args: () => ({ ...common, toolAction: 'shell', Cwd: path.dirname(canary), CommandLine: `cat ${canary}`, WaitMsBeforeAsync: 5000 }) },
+        { label: 'shell_write', name: 'run_command', args: () => ({ ...common, toolAction: 'shell', Cwd: path.dirname(canary), CommandLine: `echo forced > ${shell}`, WaitMsBeforeAsync: 5000 }) },
+        { label: 'shell_bypass', name: 'run_command', args: () => ({ ...common, toolAction: 'shell', Cwd: path.dirname(canary), CommandLine: `cat ${canary}`, WaitMsBeforeAsync: 5000, BypassSandbox: true }) },
+        { label: 'read_url', name: 'read_url_content', args: () => ({ ...common, toolAction: 'web', Url: `${probe!.baseUrl}${PROBE_URL_PATH}` }) },
+        { label: 'search_web', name: 'search_web', args: () => ({ ...common, toolAction: 'web', query: 'code learning probe' }) },
+      ];
+      probe.forced.push(...calls);
+      inside = fixture.inside;
+      localProbe = probe;
+      const launch = await findAgyLaunch();
+      const localRuntime = new LocalAiRuntime(probe.codexHome, probe.home);
+      (localRuntime as unknown as { launches: Map<string, typeof launch> }).launches.set('antigravity', launch);
+      output = '';
+      stdoutText = '';
+      const appOutcome = await (localRuntime as unknown as { executeVerifiedStage(request: StageRequest): Promise<StageResponse> })
+        .executeVerifiedStage({ ...stage(new AbortController().signal), prompt: 'Return the JSON object for this check.' })
+        .then(() => 'answered', (error: { code?: string }) => error.code);
+      const events = agyEvents(stdoutText);
+      const lastResult = events.filter(event => event.event === 'result').map(bodyOf).at(-1);
+      const completed = lastResult?.status === 'SUCCESS' && !lastResult.error;
+      const attempts = agyAttempts(events, fixture.folders());
+      // Every response agy sent back, matched to a call or not, is searched for the canaries.
+      const responses = probe.allResponses().map(value => JSON.stringify(value) ?? '').join('\n');
+      const effects = { outside: await fixture.effects(responses + stdoutText), inside: fixture.inside.effects(responses + stdoutText) };
+      const probeUrlRequests = probe.probeUrlRequests();
+      // A request for the probe address is the web effect: read_url_content ran.
+      effects.outside.web ||= probeUrlRequests > 0;
+      const executionEvidence = Object.values(effects).some(kinds => Object.values(kinds).some(Boolean)) || probeUrlRequests > 0;
+      const results = forcedCallResults(calls, probe.sentLabels(), attempts, [...probe.forcedResponses.keys()]);
+      const offered = probe.shapes.find(shape => shape.toolNames?.length)?.toolNames ?? null;
+      details = { appOutcome, completed, results, effects, probeUrlRequests, attemptsWithoutCall: attempts.length - results.filter(result => result.outcome !== 'no-step').length,
+        // One summary per kind, under the API key condition only; never merged with A6, A7 or C04.
+        kinds: { condition: 'local-api-key', ...placedVerdicts(completed, effects, attempts, offered) },
+        untested: offered?.filter(name => !calls.some(call => call.name === name)) ?? null,
+        appHomeUnchanged: JSON.stringify(await fileStates()) === JSON.stringify(before) };
+      expect(details.appHomeUnchanged).toBe(true);
+      expect(probe.failures).toEqual([]);
+      expect(results.filter(result => !result.sent || result.outcome !== 'policy-refused' || !result.refusedBy).map(result => result.label)).toEqual([]);
+      expect(executionEvidence).toBe(false);
+      expect(forcedCallsPassed(results, attempts, completed, executionEvidence)).toBe(true);
+      localResults.A9_api_key_forced = { ...probe.summary(), ...details, passed: true };
+    } catch (error) {
+      localResults.A9_api_key_forced = { ...probe?.summary(), ...details, passed: false, ...recordedFailure(error), failure: classify(output) };
+      throw rethrown(error);
+    } finally {
+      inside = null;
+      localProbe = null;
+      await fixture?.cleanup();
+      await probe?.close();
+      await mkdir('test-results', { recursive: true });
+      await writeFile(`test-results/agy-local-probe-${randomUUID()}.json`, JSON.stringify({ A9_api_key_forced: localResults.A9_api_key_forced }, null, 2));
     }
   });
 });
