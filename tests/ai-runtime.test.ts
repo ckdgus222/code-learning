@@ -180,8 +180,8 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
   const ok = { event: 'result', conversation_id: 'c', status: 'SUCCESS', structured_output: { summary: 'example' } };
   it('extracts the final agy stream-json result and the model named in init', () => {
     const value = { summary: 'example' };
-    expect(parseStageOutput('antigravity', agy(init(GEMINI_MODEL), { event: 'step_update', step_type: 'agent_response', state: 'DONE' }, ok), 0))
-      .toEqual({ value, reportedModel: GEMINI_MODEL });
+    expect(parseStageOutput('antigravity', agy(init(GEMINI_MODEL), { event: 'step_update', step_type: 'user_input', state: 'DONE' },
+      { event: 'step_update', step_type: 'agent_response', state: 'DONE' }, ok), 0)).toEqual({ value, reportedModel: GEMINI_MODEL });
     // A body nested under the event name and the `response` fallback are read too.
     expect(parseStageOutput('antigravity', agy(init(), { event: 'result', result: { status: 'SUCCESS', response: JSON.stringify(value) } }), 0))
       .toEqual({ value, reportedModel: null });
@@ -191,6 +191,9 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     ['a different model', [init('different-model'), ok]],
     ['a tool step', [init(GEMINI_MODEL), { event: 'step_update', step_type: 'tool', tool_name: 'run_command' }, ok]],
     ['a nested tool step', [init(GEMINI_MODEL), { event: 'step_update', step_update: { step_type: 'tool' } }, ok]],
+    // A sub-agent call and a question were reported as these kinds in the local A9 run, not as tool steps.
+    ['a subagent step', [init(GEMINI_MODEL), { event: 'step_update', step_type: 'subagent', state: 'DONE' }, ok]],
+    ['a step without a kind', [init(GEMINI_MODEL), { event: 'step_update', step_index: 2, state: 'ERROR' }, ok]],
     ['no result', [init(GEMINI_MODEL)]],
     ['an error status', [init(GEMINI_MODEL), { event: 'result', status: 'ERROR', error: 'failed' }]],
     ['success with an error', [init(GEMINI_MODEL), { ...ok, error: 'tool denied' }]],
