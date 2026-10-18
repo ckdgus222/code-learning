@@ -432,6 +432,28 @@ agy 1.3.5에는 설정 위치를 바꾸는 공식 옵션이 없다(공식 CLI re
 - **Codex 조사의 나머지 결론:** 이 컴퓨터에는 `/etc/codex`가 없다. 다만 관리형 설정 전체(MDM 등)를 확인한 것은 아니다. agy 시험 범위는 버전별로 나눈다. 1.4.0 A6와 1.4.2 A7은 제공 목록이 같은 60개이고, 합쳐서 시도한 도구는 6개, 1.4.2에서만 보면 2개다. 지금 기록은 거절이 거부 규칙에서 왔는지 앱 훅에서 왔는지를 구분하지 않는다.
 - 검증: typecheck 종료 0, `npm test` **14파일 262개**, `test:codex-live -- -t 'C05 local|C07 local|C08 local'` 5개, `package`, `test:electron` **18개**, `test:packaged` **8항목** 통과.
 
+### Gemini 가짜 서버 시험 1단계: 요청 형식 관찰 (A8 local, 2026-10-18)
+
+사용자가 Gemini 가짜 서버 시험을 승인했다(실제 계정 0건). 구현 기획은 Codex plan 리뷰 3차에 통과했다(임시 홈만 쓰는 별도 런타임, 허용 목록과 고정 인자, 결과 분리 저장, 거절 출처는 2단계). 이번은 **도구 호출 없이** agy가 무엇을 보내고 답하는지만 본 1단계다.
+
+- **방식(`tests/live/agy-probe.ts`, `antigravity.live.ts` A8):**
+  - 임시 agy HOME에 `"modelProvider": "gemini"`만 둔다. deny 규칙·훅·빈 MCP 설정은 앱 코드(`restrictAgy`)가 실행 때 쓴다.
+  - 처음부터 임시 홈만 쓰는 `LocalAiRuntime`을 따로 만들고 agy 실행 파일만 등록한다. 앱 전용 홈을 쓰는 런타임과 `checkConnections()`는 부르지 않는다.
+  - 환경변수는 통째로 바꾼다: 임시 `HOME`, 고정 가짜 `GEMINI_API_KEY`, 로컬 서버의 `GOOGLE_GEMINI_BASE_URL`. 개인 환경은 넘기지 않는다.
+  - 시험용 sandbox 규칙은 Codex 탐침 규칙에 **localhost 포트 열기와 그 포트로 들어오는 연결만** 더한다. 처음에는 Codex 규칙 그대로 썼는데, agy가 자기 로컬 포트를 열지 못해(`network-bind` 거부) 요청 없이 끝났다. 나가는 연결은 가짜 서버 포트만 허용한다. 처음에는 localhost 전체로 나가는 연결도 열었으나, security 검토 지적(이 컴퓨터의 다른 로컬 서비스에 닿음)으로 좁혔고 그래도 A8은 통과했다.
+  - 단위 시험으로 확인한 것: 가짜 서버 포트 연결 허용, 다른 localhost 포트로 나가는 연결·바깥 주소 직접 연결·가짜 개인 파일 읽기 거부. 주소 찾기(DNS) 차단은 실행 중 macOS 거부 기록으로만 봤다.
+  - 서버는 형식 정보만 남긴다: 경로, 쿼리·헤더 이름(값 제외), 본문 맨 위 키, 도구 선언 이름.
+  - 결과는 `test-results/agy-local-probe.json`에 따로 쓴다. A8만 실행하면 `agy-live.json`을 쓰지 않는다. 실행 전후 해시가 같았다.
+- **결과(agy 1.4.2, 통과):**
+  - 정상 답변을 받았고 앱이 받아들였다(설명 스키마 맞음, init의 모델 `gemini-3.8-flash-high`).
+  - 가짜 서버가 받은 요청은 2건이다. 둘 다 `POST /v1beta/models/<모델>:streamGenerateContent?alt=sse`다. 첫 요청은 `gemini-3.1-flash-lite-preview`로 도구 없이 보냈다(보조 요청으로 보이며, 용도는 확인하지 않음). 둘째 요청이 `gemini-3.8-flash`로 간 본 요청이다.
+  - **init 이벤트는 도구 60개를 알렸지만, 모델에게 실제로 보낸 도구 선언은 13개였다:** `view_file`·`run_command`·`write_to_file`·`replace_file_content`·`read_url_content`·`search_web`·`ask_question`·`manage_task`·`send_message`·`schedule`·`invoke_subagent`·`define_subagent`·`manage_subagents`. 나머지 47개는 모델에게 보내지 않았다. 이 시험에는 MCP 서버가 없었고 `call_mcp_tool`도 보내지 않았다(A7에서는 작업 폴더 MCP 서버가 있을 때 모델이 그 도구를 불렀다).
+  - 앱 전용 agy 홈의 세 설정 파일은 크기·수정 시각이 그대로였다.
+  - 울타리 거부 기록: 바깥 주소로 나가기, 주소 찾기, `~/.local/bin`에 업데이트 시험 파일 만들기가 막혔다(첫 실행에서는 모든 주소에 포트 열기 `*:0`도 막혔다). 막혀도 답변은 정상이었다.
+  - 서버 기록의 경로는 공식 모델 호출 형식(`/v1…/models/<모델>:<동작>`)만 남기고, 다른 경로는 값이 섞일 수 있어 `<unrecognized-path>`로 바꾼다(security 검토 제안).
+- **이 결과의 범위:** API 키 방식은 로그인 방식과 다른 경로다. 로그인 방식에서도 모델에게 13개만 보내는지는 확인하지 않았다. 모델에게 보내지 않은 도구를 이름으로 부르면 agy가 거절하는지도 아직 모른다. 둘 다 2단계에서 다룬다.
+- 검증: typecheck 종료 0, `npm test`, 새 단위 시험(`tests/agy-probe.test.ts`: 형식 기록에 원문·알 수 없는 경로 없음, 시험 규칙이 가짜 서버 포트만 연결을 허용하고 다른 로컬 포트·바깥 주소·가짜 개인 파일은 막음), `npm run test:agy-live -- -t 'A8 local'` 통과.
+
 
 ## 실행한 검증
 
