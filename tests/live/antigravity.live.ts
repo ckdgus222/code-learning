@@ -10,6 +10,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { AGY_DENY_RULES, LocalAiRuntime } from '../../src/core/ai/runtime';
+import { runProcess, type ProcessRequest } from '../../src/core/ai/process';
+import { createAgyProbe, findAgyLaunch, type AgyProbe } from './agy-probe';
 import type { StageRequest, StageResponse } from '../../src/core/ai/workflow';
 import { GEMINI_MODEL, explanationSchema } from '../../src/shared/ai';
 import { recordedFailure, rethrown } from './records';
@@ -61,6 +63,13 @@ async function mcpServerCount(file: string): Promise<number | null> {
     return typeof servers === 'object' && servers ? Object.keys(servers).length : null;
   } catch { return null; }
 }
+// Only the local A8 case sets this. Production runtime arguments stay unchanged.
+let localProbe: AgyProbe | null = null;
+const localResults: Record<string, unknown> = {};
+vi.mock('../../src/core/ai/process', async original => {
+  const actual = await original<typeof import('../../src/core/ai/process')>();
+  return { ...actual, runProcess: (request: ProcessRequest) => actual.runProcess(localProbe ? localProbe.wrap(request) : request) };
+});
 vi.mock('node:child_process', async original => {
   const actual = await original<typeof import('node:child_process')>();
   return {
@@ -146,7 +155,9 @@ afterAll(async () => {
   for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
   Object.assign(process.env, saved);
   await mkdir('test-results', { recursive: true });
-  await writeFile('test-results/agy-live.json', JSON.stringify(results, null, 2));
+  // A local-only run must not replace the last real-account record.
+  if (Object.keys(results).some(key => /^A[1-7]_/.test(key))) await writeFile('test-results/agy-live.json', JSON.stringify(results, null, 2));
+  if (Object.keys(localResults).length) await writeFile('test-results/agy-local-probe.json', JSON.stringify(localResults, null, 2));
 });
 
 describe('Antigravity with an app-only HOME (real account, non-secret fixture)', () => {
@@ -338,6 +349,51 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
       });
     } finally {
       inside = null;
+    }
+  });
+
+  // Step 1 of the forced-call check: no tool call yet, only what agy sends and whether it answers.
+  it('A8 local: in API key mode against a local Gemini-compatible server, agy answers and shows its request shape (no account)', async () => {
+    const appFiles = ['antigravity-cli/settings.json', 'config/hooks.json', 'config/mcp_config.json'].map(file => path.join(appAgyHome, '.gemini', file));
+    // Size and change time only; the app-only home must not be touched by a local probe.
+    const fileStates = () => Promise.all(appFiles.map(file => stat(file).then(info => `${info.size}:${info.mtimeMs}`, () => 'missing')));
+    const before = await fileStates();
+    const answer = { summary: '시험 응답', steps: [], claims: [{ kind: 'concept', text: '시험 응답' }], terms: [], unknowns: [] };
+    let probe: AgyProbe | undefined;
+    let details: Record<string, unknown> = {};
+    try {
+      probe = await createAgyProbe(answer);
+      localProbe = probe;
+      const launch = await findAgyLaunch();
+      const versionOutput = await runProcess({ ...launch, args: [...launch.prefix, '--version'], cwd: probe.root,
+        env: { HOME: probe.home }, signal: new AbortController().signal });
+      const version = versionOutput.stdout.match(/(?:^|\s)(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)(?:\s|$)/)?.[1] ?? null;
+      // A runtime with temporary homes from the start: the app runtime above is never used here.
+      const localRuntime = new LocalAiRuntime(probe.codexHome, probe.home);
+      (localRuntime as unknown as { launches: Map<string, typeof launch> }).launches.set('antigravity', launch);
+      output = '';
+      stdoutText = '';
+      const appOutcome = await (localRuntime as unknown as { executeVerifiedStage(request: StageRequest): Promise<StageResponse> })
+        .executeVerifiedStage({ ...stage(new AbortController().signal), prompt: 'Return the JSON object for this check.' })
+        .then(response => ({ answered: explanationSchema.safeParse(response.value).success, reportedModel: response.reportedModel }),
+          (error: { code?: string }) => ({ answered: false, code: error.code }));
+      const events = agyEvents(stdoutText);
+      details = { version, versionExit: versionOutput.exitCode, appOutcome, eventKinds: [...new Set(events.map(event => String(event.event)))],
+        offered: offeredTools(events), attempts: agyAttempts(events), appHomeUnchanged: JSON.stringify(await fileStates()) === JSON.stringify(before) };
+      expect(versionOutput.exitCode).toBe(0);
+      expect(appOutcome.answered).toBe(true);
+      expect(details.appHomeUnchanged).toBe(true);
+      expect(probe.failures).toEqual([]);
+      expect(probe.shapes.length).toBeGreaterThan(0);
+      localResults.A8_api_key_shape = { ...probe.summary(), ...details, passed: true };
+    } catch (error) {
+      localResults.A8_api_key_shape = { ...probe?.summary(), ...details, passed: false, ...recordedFailure(error), failure: classify(output) };
+      throw rethrown(error);
+    } finally {
+      localProbe = null;
+      await probe?.close();
+      await mkdir('test-results', { recursive: true });
+      await writeFile(`test-results/agy-local-probe-${randomUUID()}.json`, JSON.stringify({ A8_api_key_shape: localResults.A8_api_key_shape }, null, 2));
     }
   });
 });
