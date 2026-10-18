@@ -15,7 +15,7 @@ import type { Evidence, SourceView } from '../src/shared/contracts';
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
-type Habit = 'reread' | 'reuse-old' | 'unknown-id';
+type Habit = 'reread' | 'reuse-old' | 'unknown-id' | 'cite-selection';
 async function setup(habit: Habit) {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'ai-followup-')));
   roots.push(root);
@@ -46,7 +46,8 @@ async function setup(habit: Habit) {
     }
     if (request.stage === 'explaining') {
       const oldId = material.history.at(-1)?.explanation.claims.find((claim: { kind: string }) => claim.kind === 'code')?.evidenceIds[0];
-      const cited = !followUp || habit === 'reread' ? related.evidence.id : habit === 'reuse-old' ? oldId : randomUUID();
+      const cited = habit === 'cite-selection' ? material.evidence.id
+        : !followUp || habit === 'reread' ? related.evidence.id : habit === 'reuse-old' ? oldId : randomUUID();
       draft = { summary: 'helper 값을 씁니다.', steps: [], claims: [{ kind: 'code', text: 'b.ts의 helper가 42를 돌려줍니다.', evidenceIds: [cited] }], terms: [], unknowns: [] };
       return { reportedModel: GEMINI_MODEL, value: draft };
     }
@@ -94,6 +95,20 @@ describe('A01: follow-up questions over a related file, with real evidence IDs',
     // The history the model saw still holds the old ID as it was: nothing rewrote it.
     const material = JSON.parse(f.prompts.at(-3)!.prompt.split('자료:\n')[1].split('\n과제:\n')[0]);
     expect(material.history[0].explanation.claims[0].evidenceIds).toEqual([before.id]);
+    // The model is told those old IDs cannot be cited and how to get the file again.
+    expect(f.prompts.at(-3)!.prompt).toContain('history 속 근거 ID 중 지금의 evidence.id나 files의 evidence.id에 없는 것은 이전 답변 때 것이라 이번 답변에 쓸 수 없다');
+  });
+
+  it('keeps the selection\'s ID valid in a follow-up, though the earlier answer cited it too', async () => {
+    const f = await setup('cite-selection');
+    const first = await f.ask();
+    if (first.kind !== 'completed') throw new Error('expected completion');
+    const next = await f.ask(first.result.conversationId);
+    // The same ID is in the history and in the current material, and the answer citing it is accepted.
+    const material = JSON.parse(f.prompts.at(-3)!.prompt.split('자료:\n')[1].split('\n과제:\n')[0]);
+    expect(material.history[0].explanation.claims[0].evidenceIds).toEqual([f.evidence.id]);
+    expect(material.evidence.id).toBe(f.evidence.id);
+    expect(next).toMatchObject({ kind: 'completed', result: { evidence: { id: f.evidence.id } } });
   });
 
   it('refuses a follow-up answer that cites the previous turn\'s ID without reading the file again', async () => {
