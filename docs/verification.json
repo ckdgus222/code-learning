@@ -1,4 +1,6 @@
 {
+  "status": "historical-baseline",
+  "note": "2026-10-14 과거 기준선이며 현재 결과가 아니다. 이후 코드가 바뀌어 해시 일부가 현재 파일과 다르다. 현재 검증은 docs/implementation-status.md 맨 위 \"현재 검증 요약\"에 있다.",
   "date": "2026-10-14",
   "typecheck": "exit 0",
   "vitest": {
