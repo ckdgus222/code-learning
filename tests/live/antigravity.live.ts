@@ -193,12 +193,23 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
 
   it("A2: answers with the app's explanation schema and the requested Gemini model", async () => {
     output = '';
-    await record('A2_normal', () => runStage(stage(new AbortController().signal)), response => ({
-      schemaValid: explanationSchema.safeParse(response.value).success, reportedModel: response.reportedModel,
-    }), response => {
-      expect(explanationSchema.safeParse(response.value).success).toBe(true);
+    stdoutText = '';
+    await record('A2_normal', async () => {
+      // The app's outcome is kept rather than thrown, so the step kinds are recorded even when the
+      // app rejects the answer over one of them.
+      const outcome = await runStage(stage(new AbortController().signal)).then(response => ({ response }), (error: { code?: string }) => ({ error: error.code ?? 'unknown' }));
+      const stepTypes = [...new Set(agyEvents(stdoutText).filter(event => event.event === 'step_update').map(event => String(bodyOf(event).step_type)))];
+      return { ...outcome, stepTypes };
+    }, outcome => ({
+      appOutcome: 'response' in outcome ? 'answered' : outcome.error, stepTypes: outcome.stepTypes,
+      schemaValid: 'response' in outcome && explanationSchema.safeParse(outcome.response.value).success,
+      reportedModel: 'response' in outcome ? outcome.response.reportedModel : null,
+    }), outcome => {
+      expect('response' in outcome, 'the app accepted the answer').toBe(true);
+      if (!('response' in outcome)) return;
+      expect(explanationSchema.safeParse(outcome.response.value).success).toBe(true);
       // The runtime already rejects a different reported model; a missing one is recorded as null.
-      expect([GEMINI_MODEL, null]).toContain(response.reportedModel);
+      expect([GEMINI_MODEL, null]).toContain(outcome.response.reportedModel);
     });
   });
 

@@ -142,6 +142,9 @@ function json(text: string): unknown {
 function reportModel(value: unknown): string | null {
   return typeof value === 'string' && /^[a-zA-Z0-9._:/-]{1,120}$/.test(value) ? value : null;
 }
+/** The only agy step kinds a normal answer reports (seen in the API-key run A8 and the login run A2). */
+export const AGY_ANSWER_STEP_TYPES = ['user_input', 'agent_response'];
+
 // Parsing a successful envelope is separate from enforcing tool permissions.
 // Tool failures and partial output never become a successful explanation.
 export function parseStageOutput(provider: 'codex' | 'antigravity', stdout: string, exitCode: number): StageResponse {
@@ -158,8 +161,11 @@ export function parseStageOutput(provider: 'codex' | 'antigravity', stdout: stri
     if (!init) throw new AppError('AI_RESPONSE', 'Gemini 워커의 시작 정보가 없습니다.');
     const reportedModel = reportModel(body(init).model);
     if (reportedModel && reportedModel !== GEMINI_MODEL) throw new AppError('AI_RESPONSE', 'Gemini 응답 모델이 요청 모델과 다릅니다.');
-    if (events.some(event => event.event === 'step_update' && body(event).step_type === 'tool')) {
-      throw new AppError('AI_RESPONSE', 'Gemini 워커가 허용하지 않은 도구 작업을 보고했습니다.');
+    // A normal answer carries only the user's input and the agent's response. A tool call, a
+    // sub-agent or a question is reported as another kind (`tool`, `subagent`, or no kind at all in
+    // the local A9 run), so anything else rejects the answer; it does not undo what already ran.
+    if (events.some(event => event.event === 'step_update' && !AGY_ANSWER_STEP_TYPES.includes(String(body(event).step_type)))) {
+      throw new AppError('AI_RESPONSE', 'Gemini 워커가 허용하지 않은 작업 단계를 보고했습니다.');
     }
     const result = events.filter(event => event.event === 'result').map(body).at(-1);
     if (!result || result.status !== 'SUCCESS' || result.error) throw new AppError('AI_RESPONSE', 'Gemini 워커가 정상적인 설명을 반환하지 않았습니다.');
