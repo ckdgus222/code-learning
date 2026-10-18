@@ -413,6 +413,25 @@ agy 1.3.5에는 설정 위치를 바꾸는 공식 옵션이 없다(공식 CLI re
 - 실제 계정 요청: agy 2건(A2·A7). A1은 `--version`만 실행한다.
 - 검증: typecheck 종료 0, `npm test` **14파일 262개**(A7 판정·표식 회귀 시험 포함) 통과. 앱 코드 변경은 없다.
 
+### Codex 교차검증 반영: 이미지 생성·기록 노트 끄기, 로그인 모델 정보 확인 (2026-10-18)
+
+사용자가 남은 빈칸을 별도 Codex 세션에 다시 조사하게 했다(읽기 전용, 실제 계정 요청 0건). 새 발견 4개를 공식 소스(rust-v0.163.0)와 결과 파일로 다시 확인했고, 모두 맞았다. 사용자가 추천대로 진행하도록 승인했다.
+
+- **이미지 생성 도구가 꺼져 있지 않았다.** `image_generation`은 기본 켜짐이다(`features/src/lib.rs`). 기능이 켜져 있고, 무료 요금제가 아니고, 제공자가 지원하고, 모델이 이미지 입력을 받고, OpenAI 인증이면 `image_gen.imagegen`이 등록된다(`core/src/tools/spec_plan.rs` `image_generation_available`). `excluded_tool_namespaces`로는 막히지 않는다.
+- **기록·노트 도구 9개가 켜질 수 있다**(기록 4개, 노트 5개, 노트 쓰기·덧붙이기 포함, `ext/history-notes`). 조건은 OpenAI 제공자, Codex 백엔드 인증, 그리고 `token_budget.use_history_notes_extension`이다. 이 값이 켜지는 경로는 두 가지다(`core/src/session/token_budget.rs`):
+  - 모델 정보의 기본값(`apply_model_defaults`). 사용자가 `token_budget`을 명시하면 적용하지 않는다.
+  - `context_management` 기능(`apply_experimental_context`, 기본 꺼짐). 켜져 있고 모델이 `supports_experimental_context`이고 대상 요금제면, 명시한 `token_budget` 끄기를 다시 켜고 기록·노트를 켠다(security 검토 제안으로 확인).
+- **로그인 상태의 모델 정보(사용자 승인, 도구 관련 값만 읽음):** 앱 전용 Codex 홈의 `models_cache.json`은 로그인 상태에서 서버가 준 모델 목록이다. 계정 식별 정보(`identity`)와 `etag`는 열지 않았다.
+  - 받은 시각 2026-10-17, 클라이언트 0.163.0, 모델 9개.
+  - 기본 모델(우선순위 1) `gpt-6.1-sol`: `code_mode_only`, 패치 `freeform`, 셸 `unified_exec`, 입력 텍스트·이미지, `token_budget` 꺼짐·기록 노트 꺼짐.
+  - 번들 시험 자료와 다른 도구 관련 값은 셸 방식(`shell_command` → `unified_exec`)뿐이다. 셸은 `--disable shell_tool`로 꺼져 있다. 도구 설명 항목은 같았다.
+  - `gpt-6.1-sol`의 `supports_experimental_context`는 `false`다(다른 모델 중에는 `true`도 있다).
+  - 그래서 **확인한 모델 정보만으로는** 기록·노트가 켜지지 않는다. 모델 목록은 서버에서 다시 받으면 바뀔 수 있고, 관리형 설정까지 확인한 것은 아니다. 이미지 생성은 유료 요금제라면 켜질 조건을 갖췄다(사용자 요금제는 확인하지 않음).
+- **앱 실행 인자에 `--disable image_generation`, `--disable token_budget`, `--disable context_management`를 더했다.** 사용자는 이미지 생성과 기록·노트 끄기를 승인했다. 세 번째 옵션은 같은 목적의 두 번째 경로를 막으려고 더했다. 로컬 C05·C07·C08에서 Codex가 세 옵션을 받아들였고, 제공 도구 목록은 전과 같았다. 로그인 조건에서 옵션이 받아들여지는지, 그리고 도구가 실제로 빠지는지는 **실제 요청으로 아직 확인하지 않았다.**
+- **agy도 가짜 서버로 시험할 수 있다.** 공식 설치 문서에 API 키 방식(`settings.json`의 `"modelProvider": "gemini"`, `GEMINI_API_KEY`)과 다른 끝점(`GOOGLE_GEMINI_BASE_URL`)이 있다([공식 문서](https://antigravity.google/docs/install?tab=cli#point-the-cli-to-a-custom-endpoint)). 앞서 쓴 인계서의 "공식 끝점 설정이 없다"는 틀렸다. CLI 참조 문서만 보고 설치 문서를 확인하지 않았다. API 키 방식은 로그인 방식과 다른 경로이므로, 그 결과는 로그인 조건의 증거가 아니다.
+- **Codex 조사의 나머지 결론:** 이 컴퓨터에는 `/etc/codex`가 없다. 다만 관리형 설정 전체(MDM 등)를 확인한 것은 아니다. agy 시험 범위는 버전별로 나눈다. 1.4.0 A6와 1.4.2 A7은 제공 목록이 같은 60개이고, 합쳐서 시도한 도구는 6개, 1.4.2에서만 보면 2개다. 지금 기록은 거절이 거부 규칙에서 왔는지 앱 훅에서 왔는지를 구분하지 않는다.
+- 검증: typecheck 종료 0, `npm test` **14파일 262개**, `test:codex-live -- -t 'C05 local|C07 local|C08 local'` 5개, `package`, `test:electron` **18개**, `test:packaged` **8항목** 통과.
+
 
 ## 실행한 검증
 

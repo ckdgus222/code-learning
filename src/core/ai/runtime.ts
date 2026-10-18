@@ -307,6 +307,13 @@ export class LocalAiRuntime {
           '--disable', 'hooks', '--disable', 'shell_tool', '--disable', 'multi_agent',
           // Model metadata can select V2 agents despite the legacy multi_agent flag.
           '--disable', 'multi_agent_v2', '-c', 'agents.enabled=false', '--disable', 'view_image',
+          // On by default; with an OpenAI login on a paid plan and a model that takes images, Codex
+          // offers image_gen.imagegen (rust-v0.163.0 spec_plan.rs image_generation_available).
+          '--disable', 'image_generation',
+          // An explicit token_budget keeps a refreshed model catalog from turning it on, which would
+          // add the history/notes tools, notes writing among them (core/src/session/token_budget.rs).
+          // context_management (off by default) turns both back on for some models and plans.
+          '--disable', 'token_budget', '--disable', 'context_management',
           // With a ChatGPT login, apps linked to the account (GitHub and others) are installed into
           // the app-only CODEX_HOME and offered as MCP tools; Codex called them in C04 step 2.
           '--disable', 'apps', '--disable', 'plugins',
