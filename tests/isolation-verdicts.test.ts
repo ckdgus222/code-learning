@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { AGY_NO_TOOLS_REASON } from '../src/core/ai/runtime';
 import { AppError } from '../src/shared/errors';
 import { recordedFailure, rethrown } from './live/records';
-import { agyStepOutcome, attemptedOnly, categoryOfTool, codexAttempts, markerExists, mcpCheckPassed, placedVerdicts, targetOf, verdicts, type Attempt, type Category, type Place } from './live/isolation';
+import { agyRefusalSource, agyStepOutcome, attemptedOnly, categoryOfTool, codexAttempts, markerExists, mcpCheckPassed, placedVerdicts, targetOf, verdicts, type Attempt, type Category, type Place } from './live/isolation';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -203,6 +203,14 @@ describe('C04 verdicts', () => {
       const hook = (message: string) => ({ state: 'ERROR', tool_info: { error: { type: 'TOOL_ERROR', message } } });
       expect(agyStepOutcome(hook(`tool call denied by pre-tool hook: ${AGY_NO_TOOLS_REASON}`))).toBe('policy-refused');
       expect(agyStepOutcome(hook('tool call denied by pre-tool hook: some other hook'))).toBe('errored');
+    });
+    it('names which policy refused a step, and nothing for any other ending', () => {
+      const step = (message: string, type = 'TOOL_ERROR', state = 'ERROR') => ({ state, tool_info: { error: { type, message } } });
+      expect(agyRefusalSource(step(`tool call denied by pre-tool hook: ${AGY_NO_TOOLS_REASON}`))).toBe('app-hook');
+      expect(agyRefusalSource(step(denied))).toBe('deny-rule');
+      for (const other of [step('file not found'), step(denied, 'OTHER'), step(denied, 'TOOL_ERROR', 'DONE'), { state: 'DONE' }]) {
+        expect(agyRefusalSource(other), JSON.stringify(other)).toBeNull();
+      }
     });
     it('counts a finished step without an error as a run', () => {
       expect(agyStepOutcome({ state: 'DONE', tool_info: { name: 'search_web' } })).toBe('ran');
