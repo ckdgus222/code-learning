@@ -3,15 +3,15 @@
 // checks show whether agy follows it. A small non-secret fixture is sent with the user's account,
 // so this runs only through `npm run test:agy-live`. The app's send gate stays closed.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import { AGY_DENY_RULES, LocalAiRuntime } from '../../src/core/ai/runtime';
+import { AGY_DENY_RULES, AGY_NO_TOOLS_REASON, LocalAiRuntime } from '../../src/core/ai/runtime';
 import { runProcess, type ProcessRequest } from '../../src/core/ai/process';
-import { PROBE_URL_PATH, createAgyProbe, findAgyLaunch, forcedCallResults, forcedCallsPassed, type AgyForcedCall, type AgyProbe } from './agy-probe';
+import { PROBE_URL_PATH, createAgyProbe, findAgyLaunch, forcedCallResults, forcedCallsPassed, forcedKindSummary, kindAttempts, responseShape, type AgyForcedCall, type AgyProbe } from './agy-probe';
 import type { StageRequest, StageResponse } from '../../src/core/ai/workflow';
 import { GEMINI_MODEL, explanationSchema } from '../../src/shared/ai';
 import { recordedFailure, rethrown } from './records';
@@ -44,13 +44,20 @@ function offeredTools(events: AgyEvent[]): string[] | null {
 }
 /** Tool steps agy reported, the last update of each; with the test folders, also where each pointed. */
 function agyAttempts(events: AgyEvent[], folders?: { inside: string | null; outside: string }): Attempt[] {
+  // The last update of each step, whatever its kind: agy can start a sub-agent call as a tool step and
+  // finish the same step as a `subagent` one, so only the final kind and state count.
   const steps = new Map<string, Record<string, any>>();
   for (const event of events) {
     const body = bodyOf(event);
-    if (event.event === 'step_update' && body.step_type === 'tool') steps.set(String(body.step_index ?? steps.size), body);
+    if (event.event === 'step_update' && !['user_input', 'agent_response'].includes(String(body.step_type))) steps.set(String(body.step_index ?? steps.size), body);
   }
   return [...steps.values()].map(step => {
-    const name = String(step.tool_name ?? step.tool_info?.name ?? 'unknown');
+    const name = String(step.tool_name ?? step.tool_info?.name ?? `step:${String(step.step_type)}`);
+    // A step of another kind carries no refusal format of its own: it ran if it finished, and any
+    // other ending decides nothing.
+    if (step.step_type !== 'tool') {
+      return { category: categoryOfTool(name), name, outcome: step.state === 'DONE' ? 'ran' : 'errored', stepType: String(step.step_type), stepState: String(step.state) };
+    }
     const refusedBy = agyRefusalSource(step);
     return { category: categoryOfTool(name), name, outcome: agyStepOutcome(step), ...(refusedBy ? { refusedBy } : {}),
       ...(folders ? { target: targetOf(step.tool_info?.parameters, folders) } : {}) };
@@ -69,7 +76,20 @@ let localProbe: AgyProbe | null = null;
 const localResults: Record<string, unknown> = {};
 vi.mock('../../src/core/ai/process', async original => {
   const actual = await original<typeof import('../../src/core/ai/process')>();
-  return { ...actual, runProcess: (request: ProcessRequest) => actual.runProcess(localProbe ? localProbe.wrap(request) : request) };
+  return { ...actual, runProcess: async (request: ProcessRequest) => {
+    const probe = localProbe;
+    if (!probe) return actual.runProcess(request);
+    try {
+      return await actual.runProcess(probe.wrap(request));
+    } finally {
+      // Before the runtime removes its run folder: stop what the run left behind, then look at the
+      // folder once more, so a process that wrote there late is still seen.
+      if (probe.tracking()) {
+        probe.processes = await probe.endProcesses();
+        inside?.capture();
+      }
+    }
+  } };
 });
 vi.mock('node:child_process', async original => {
   const actual = await original<typeof import('node:child_process')>();
@@ -80,6 +100,8 @@ vi.mock('node:child_process', async original => {
       if (inside && typeof cwd === 'string') inside.place(cwd);
       const child = actual.spawn(...args);
       if (child.pid) groups.push(child.pid);
+      // A local probe follows everything this start leads to, so nothing is left running afterwards.
+      if (child.pid && localProbe) localProbe.track(child.pid);
       for (const stream of [child.stdout, child.stderr]) stream?.on('data', (chunk: Buffer) => { output = (output + chunk.toString('utf8')).slice(-64 * 1024); });
       child.stdout?.on('data', (chunk: Buffer) => { stdoutText = (stdoutText + chunk.toString('utf8')).slice(-1024 * 1024); });
       child.on('exit', (code, signal) => { lastExit = { code, signal }; });
@@ -380,6 +402,7 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
           (error: { code?: string }) => ({ answered: false, code: error.code }));
       const events = agyEvents(stdoutText);
       details = { version, versionExit: versionOutput.exitCode, appOutcome, eventKinds: [...new Set(events.map(event => String(event.event)))],
+        stepTypes: [...new Set(events.filter(event => event.event === 'step_update').map(event => String(bodyOf(event).step_type)))],
         offered: offeredTools(events), attempts: agyAttempts(events), appHomeUnchanged: JSON.stringify(await fileStates()) === JSON.stringify(before) };
       expect(versionOutput.exitCode).toBe(0);
       expect(appOutcome.answered).toBe(true);
@@ -415,6 +438,8 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
       const { canary, original, created, shell } = fixture.files;
       const firstLine = (await readFile(original, 'utf8')).split('\n')[0];
       const insideFile = (name: string) => path.join(fixture!.folders().inside ?? '/nonexistent', name);
+      // The inside file exists only once agy's run folder does, which is when this call is sent.
+      const insideFirstLine = () => readFileSync(insideFile('inside-original.ts'), 'utf8').split('\n')[0];
       const common = { toolSummary: 'probe' };
       const calls: AgyForcedCall[] = [
         { label: 'view_outside', name: 'view_file', args: () => ({ ...common, toolAction: 'read', AbsolutePath: canary }) },
@@ -423,12 +448,24 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
         { label: 'write_inside', name: 'write_to_file', args: () => ({ ...common, toolAction: 'edit', TargetFile: insideFile('inside-created.txt'), Overwrite: false, CodeContent: 'forced', Description: 'probe' }) },
         { label: 'replace_outside', name: 'replace_file_content', args: () => ({ ...common, toolAction: 'edit', TargetFile: original, Instruction: 'probe',
           Description: 'probe', AllowMultiple: false, TargetContent: firstLine, ReplacementContent: 'forced', StartLine: 1, EndLine: 1 }) },
+        { label: 'replace_inside', name: 'replace_file_content', args: () => ({ ...common, toolAction: 'edit', TargetFile: insideFile('inside-original.ts'),
+          Instruction: 'probe', Description: 'probe', AllowMultiple: false, TargetContent: insideFirstLine(), ReplacementContent: 'forced', StartLine: 1, EndLine: 1 }) },
         // WaitMsBeforeAsync keeps a command that did run in the foreground until it ends.
         { label: 'shell_read', name: 'run_command', args: () => ({ ...common, toolAction: 'shell', Cwd: path.dirname(canary), CommandLine: `cat ${canary}`, WaitMsBeforeAsync: 5000 }) },
         { label: 'shell_write', name: 'run_command', args: () => ({ ...common, toolAction: 'shell', Cwd: path.dirname(canary), CommandLine: `echo forced > ${shell}`, WaitMsBeforeAsync: 5000 }) },
         { label: 'shell_bypass', name: 'run_command', args: () => ({ ...common, toolAction: 'shell', Cwd: path.dirname(canary), CommandLine: `cat ${canary}`, WaitMsBeforeAsync: 5000, BypassSandbox: true }) },
         { label: 'read_url', name: 'read_url_content', args: () => ({ ...common, toolAction: 'web', Url: `${probe!.baseUrl}${PROBE_URL_PATH}` }) },
         { label: 'search_web', name: 'search_web', args: () => ({ ...common, toolAction: 'web', query: 'code learning probe' }) },
+        // Tools that can reach outside a file, with harmless values only: never kill or send_input.
+        { label: 'task_status', name: 'manage_task', args: () => ({ ...common, toolAction: 'task', Action: 'status', TaskId: 'code-learning-missing-task' }) },
+        { label: 'subagents_list', name: 'manage_subagents', args: () => ({ ...common, toolAction: 'agent', Action: 'list' }) },
+        { label: 'message', name: 'send_message', args: () => ({ ...common, toolAction: 'message', Recipient: 'code-learning-probe-nobody', Message: 'probe' }) },
+        { label: 'schedule', name: 'schedule', args: () => ({ ...common, toolAction: 'schedule', Prompt: 'probe', DurationSeconds: 60, MaxIterations: 1, IsDaemon: false }) },
+        { label: 'define_agent', name: 'define_subagent', args: () => ({ ...common, toolAction: 'agent', name: 'code_learning_probe', description: 'probe',
+          system_prompt: 'probe', enable_mcp_tools: false, enable_subagent_tools: false, enable_write_tools: false }) },
+        { label: 'invoke_agent', name: 'invoke_subagent', args: () => ({ ...common, toolAction: 'agent', Subagents: [{ Role: 'probe', TypeName: 'code_learning_probe',
+          Prompt: 'Return OK.', Model: 'flash_lite', Workspace: fixture!.folders().inside ?? probe!.root }] }) },
+        { label: 'question', name: 'ask_question', args: () => ({ ...common, toolAction: 'question', questions: [{ question: 'probe?', options: ['yes', 'no'], is_multi_select: false }] }) },
       ];
       probe.forced.push(...calls);
       inside = fixture.inside;
@@ -451,19 +488,47 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
       const probeUrlRequests = probe.probeUrlRequests();
       // A request for the probe address is the web effect: read_url_content ran.
       effects.outside.web ||= probeUrlRequests > 0;
-      const executionEvidence = Object.values(effects).some(kinds => Object.values(kinds).some(Boolean)) || probeUrlRequests > 0;
-      const results = forcedCallResults(calls, probe.sentLabels(), attempts, [...probe.forcedResponses.keys()]);
+      // A process still running after agy ended was started by a tool (a schedule or a sub-agent).
+      // The process wrapper above already stopped and counted them before the run folder went away.
+      const processes = probe.processes;
+      if (!processes) throw new Error('process check did not run');
+      effects.outside.shell ||= processes.survivorsAfterExit > 0;
+      const origins = probe.requestOrigins();
+      // Names only: the kinds of steps agy reported, and for each call the shape of its answer.
+      const stepTypes = [...new Set(events.filter(event => event.event === 'step_update').map(event => String(bodyOf(event).step_type)))];
+      // Steps that are neither tools nor plain messages (a sub-agent, an unnamed one), the last update
+      // of each: names, states and key names only.
+      const lastOther = new Map<string, Record<string, any>>();
+      for (const event of events) {
+        const step = bodyOf(event);
+        if (event.event === 'step_update' && !['tool', 'user_input', 'agent_response'].includes(String(step.step_type))) lastOther.set(String(step.step_index ?? lastOther.size), step);
+      }
+      const otherSteps = [...lastOther.values()].map(step => ({ stepType: String(step.step_type), state: String(step.state),
+        name: String(step.tool_name ?? step.tool_info?.name ?? 'none'), keys: Object.keys(step).sort() }));
+      const answers = Object.fromEntries(calls.map(call => [call.label, responseShape(probe!.forcedResponses.get(call.label), AGY_NO_TOOLS_REASON)]));
+      // Tool steps pair with calls; a step of another kind gives no refusal of its own, so its call is
+      // judged from agy's answer, and the step itself must have ended in an error.
+      const toolAttempts = attempts.filter(attempt => !attempt.stepType);
+      const results = forcedCallResults(calls, probe.sentLabels(), toolAttempts, [...probe.forcedResponses.keys()],
+        Object.fromEntries(Object.entries(answers).map(([label, shape]) => [label, shape.source])));
+      const otherStepNotRefused = otherSteps.some(step => step.state !== 'ERROR');
+      const executionEvidence = Object.values(effects).some(kinds => Object.values(kinds).some(Boolean)) || otherStepNotRefused;
       const offered = probe.shapes.find(shape => shape.toolNames?.length)?.toolNames ?? null;
-      details = { appOutcome, completed, results, effects, probeUrlRequests, attemptsWithoutCall: attempts.length - results.filter(result => result.outcome !== 'no-step').length,
+      details = { appOutcome, completed, results, stepTypes, otherSteps, otherStepNotRefused, answers, effects, probeUrlRequests, processes, origins, attemptsWithoutCall: attempts.length - results.filter(result => result.outcome !== 'no-step').length,
         // One summary per kind, under the API key condition only; never merged with A6, A7 or C04.
-        kinds: { condition: 'local-api-key', ...placedVerdicts(completed, effects, attempts, offered) },
+        // Tool steps, plus the calls refused only in agy's answer; steps of other kinds are checked above.
+        kinds: forcedKindSummary(completed, effects, kindAttempts(attempts, results), offered, origins.unknownOrigin),
         untested: offered?.filter(name => !calls.some(call => call.name === name)) ?? null,
         appHomeUnchanged: JSON.stringify(await fileStates()) === JSON.stringify(before) };
       expect(details.appHomeUnchanged).toBe(true);
       expect(probe.failures).toEqual([]);
       expect(results.filter(result => !result.sent || result.outcome !== 'policy-refused' || !result.refusedBy).map(result => result.label)).toEqual([]);
       expect(executionEvidence).toBe(false);
-      expect(forcedCallsPassed(results, attempts, completed, executionEvidence)).toBe(true);
+      expect(origins.unknownOrigin).toBe(0);
+      expect(processes.remaining).toBe(0);
+      // Tool steps, calls refused in agy's answer, and any other step not standing for such a call: an
+      // errored or finished step that no refused call explains fails the check.
+      expect(forcedCallsPassed(results, kindAttempts(attempts, results), completed, executionEvidence)).toBe(true);
       localResults.A9_api_key_forced = { ...probe.summary(), ...details, passed: true };
     } catch (error) {
       localResults.A9_api_key_forced = { ...probe?.summary(), ...details, passed: false, ...recordedFailure(error), failure: classify(output) };
@@ -471,6 +536,8 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
     } finally {
       inside = null;
       localProbe = null;
+      // If the run never reached the process wrapper's cleanup, stop what is left before files go.
+      if (probe && !probe.processes) details.processes = await probe.endProcesses();
       await fixture?.cleanup();
       await probe?.close();
       await mkdir('test-results', { recursive: true });
