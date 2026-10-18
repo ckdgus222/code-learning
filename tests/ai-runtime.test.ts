@@ -222,7 +222,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     expect(message.message.content.startsWith(prompt)).toBe(true);
     expect(message.message.content).toContain(JSON.stringify(schema));
   });
-  it('passes explicit Codex restrictions for shell, hooks, agents, images, web, apps and plugins', async () => {
+  it('passes explicit Codex restrictions for shell, hooks, agents, images, image generation, history notes, web, apps and plugins', async () => {
     const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
     await runtime.checkConnections();
     vi.mocked(runProcess).mockClear();
@@ -231,7 +231,9 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     await (runtime as unknown as { executeVerifiedStage(request: object): Promise<unknown> })
       .executeVerifiedStage({ stage: 'organizing', provider: 'codex', prompt: 'PROMPT', schema: {}, signal: new AbortController().signal });
     const args = vi.mocked(runProcess).mock.calls[0][0].args.join(' ');
-    for (const feature of ['hooks', 'shell_tool', 'multi_agent', 'multi_agent_v2', 'view_image', 'apps', 'plugins']) expect(args).toContain(`--disable ${feature}`);
+    for (const feature of ['hooks', 'shell_tool', 'multi_agent', 'multi_agent_v2', 'view_image', 'image_generation', 'token_budget', 'context_management', 'apps', 'plugins']) {
+      expect(args).toContain(`--disable ${feature}`);
+    }
     expect(args).toContain('agents.enabled=false');
     expect(args).toContain('features.code_mode.excluded_tool_namespaces=["functions"]');
     expect(args).toContain('--sandbox read-only');
