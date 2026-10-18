@@ -17,6 +17,8 @@ await writeFile(path.join(fixture, 'order.ts'), source);
 // A loop whose last if has no known next step, a throw that a catch picks up, and a return under finally.
 const loopSource = 'export function 모두(목록: string[]) {\n  for (const 항목 of 목록) {\n    if (항목) {\n      보내기(항목);\n    }\n  }\n  try {\n    throw new Error("다시");\n  } catch {\n    return 0;\n  } finally {\n    정리();\n  }\n}\n';
 await writeFile(path.join(fixture, 'loop.ts'), loopSource);
+// A plain JavaScript file for the reader's colours; not a start-candidate name.
+await writeFile(path.join(fixture, 'helper.js'), 'export function greet(name) {\n  // 인사\n  return "안녕 " + name;\n}\n');
 await writeFile(path.join(fixture, '.env'), 'TEST_NOT_A_REAL_SECRET=canary');
 await writeFile(path.join(fixture, 'auth.json'), '{"test":"not-real-auth"}');
 await writeFile(path.join(fixture, 'README.md'), '# 주문 예제\n\n주문 수량을 확인하는 작은 시험 자료입니다.\n\n<script>globalThis.attacked=true</script> ![x](https://example.com/test)');
@@ -76,6 +78,95 @@ try {
     assert.equal(await page.locator('.cm-line').allTextContents().then(lines => lines.join('\n')), source.slice(0, -2) + '\r\n');
     await page.locator('.cm-selectionBackground').first().waitFor();
     await page.screenshot({ path: path.join(artifacts, 'local-code-flow.png') });
+  });
+  await check('Code reader colours syntax, takes keyboard focus, reads with keys and stays read-only', async () => {
+    const evidence = await page.getByTestId('evidence-range').innerText();
+    const lines = () => page.locator('.cm-line').allTextContents().then(all => all.join('\n'));
+    const before = await lines();
+    // A keyword and a string literal get colours of their own, unlike plain text.
+    const colours = await page.evaluate(() => {
+      const spans = [...document.querySelectorAll('.cm-content span')];
+      const colourOf = element => element ? getComputedStyle(element).color : null;
+      return { keyword: colourOf(spans.find(span => span.textContent === 'return')),
+        string: colourOf(spans.find(span => span.textContent?.startsWith('"실패'))), plain: colourOf(document.querySelector('.cm-line')) };
+    });
+    assert.ok(colours.keyword && colours.string);
+    assert.notEqual(colours.keyword, colours.plain);
+    assert.notEqual(colours.keyword, colours.string);
+    // Tab leaves the code and Shift+Tab comes back, with a visible focus mark.
+    const content = page.locator('.cm-content');
+    assert.equal(await content.getAttribute('tabindex'), '0');
+    await content.focus();
+    await page.keyboard.press('Tab');
+    assert.equal(await content.evaluate(element => element === document.activeElement), false);
+    await page.keyboard.press('Shift+Tab');
+    assert.equal(await content.evaluate(element => element === document.activeElement), true);
+    assert.notEqual(await page.locator('.cm-editor').evaluate(element => getComputedStyle(element).boxShadow), 'none');
+    // Reading keys: ArrowRight collapses the evidence selection and Shift extends a new one.
+    // The selection layer redraws on the next frame, so wait for it.
+    await page.keyboard.press('ArrowRight');
+    await until(async () => await page.locator('.cm-selectionBackground').count() === 0);
+    await page.keyboard.press('Shift+ArrowRight');
+    await page.keyboard.press('Shift+ArrowDown');
+    await page.locator('.cm-selectionBackground').first().waitFor();
+    // Typing, deleting and pasting change nothing.
+    await page.keyboard.type('x');
+    await page.keyboard.press('Backspace');
+    // The paste carries real text, so an empty clipboard cannot make this pass.
+    await content.evaluate(element => {
+      const clipboardData = new DataTransfer();
+      clipboardData.setData('text/plain', 'pasted();');
+      element.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }));
+    });
+    assert.equal(await lines(), before);
+    // JavaScript gets the same colours.
+    await page.getByRole('button', { name: 'helper.js', exact: true }).click();
+    await page.getByRole('button', { name: 'greet', exact: true }).waitFor();
+    const jsColours = await page.evaluate(() => {
+      const spans = [...document.querySelectorAll('.cm-content span')];
+      const colourOf = element => element ? getComputedStyle(element).color : null;
+      return { keyword: colourOf(spans.find(span => span.textContent === 'return')), string: colourOf(spans.find(span => span.textContent?.startsWith('"안녕'))),
+        comment: colourOf(spans.find(span => span.textContent?.startsWith('//'))), plain: colourOf(document.querySelector('.cm-line')) };
+    });
+    assert.ok(jsColours.keyword && jsColours.string && jsColours.comment);
+    assert.equal(new Set([jsColours.keyword, jsColours.string, jsColours.comment]).size, 3);
+    assert.notEqual(jsColours.keyword, jsColours.plain);
+    // The rest of the reading keys, in this LF file whose first line has no indentation. The caret is
+    // read from the browser selection, which CodeMirror keeps in step while the code has focus.
+    const caret = () => page.evaluate(() => {
+      const place = (node, offset) => {
+        const line = (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement).closest('.cm-line');
+        if (!line) return null; // the selection left the code
+        const before = document.createRange();
+        before.setStart(line, 0);
+        before.setEnd(node, offset);
+        return { line: [...document.querySelectorAll('.cm-line')].indexOf(line), column: before.toString().length };
+      };
+      const selection = getSelection();
+      return { anchor: place(selection.anchorNode, selection.anchorOffset), head: place(selection.focusNode, selection.focusOffset) };
+    });
+    const at = (line, column) => ({ line, column });
+    await content.focus();
+    await page.keyboard.press('Meta+ArrowDown');
+    assert.deepEqual(await caret(), { anchor: at(4, 0), head: at(4, 0) });
+    await page.keyboard.press('Meta+ArrowUp');
+    assert.deepEqual(await caret(), { anchor: at(0, 0), head: at(0, 0) });
+    await page.keyboard.press('Meta+ArrowRight');
+    const firstLine = 'export function greet(name) {'.length;
+    assert.deepEqual(await caret(), { anchor: at(0, firstLine), head: at(0, firstLine) });
+    await page.keyboard.press('Meta+ArrowLeft');
+    assert.deepEqual(await caret(), { anchor: at(0, 0), head: at(0, 0) });
+    await page.keyboard.press('PageDown');
+    assert.ok((await caret()).head.line > 0);
+    await page.keyboard.press('PageUp');
+    assert.equal((await caret()).head.line, 0);
+    await page.keyboard.press('Meta+a');
+    assert.deepEqual(await caret(), { anchor: at(0, 0), head: at(4, 0) });
+    // Back to the TypeScript step: the same original range is marked again.
+    await page.getByRole('button', { name: 'order.ts', exact: true }).click();
+    await page.getByRole('button', { name: '주문', exact: true }).click();
+    await page.getByRole('button', { name: '조건 확인', exact: true }).click();
+    assert.equal(await page.getByTestId('evidence-range').innerText(), evidence);
   });
   await check('Switching views preserves the selected function, step and evidence', async () => {
     const evidence = await page.getByTestId('evidence-range').innerText();

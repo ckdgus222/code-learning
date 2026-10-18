@@ -187,6 +187,8 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .cm-scroller { overflow: auto; font: 15px/1.65 var(--mono) !important; }
 .cm-gutters { border-right: 1px solid var(--line) !important; background: var(--surface) !important; color: #a0a5ad !important; }
 .cm-editor.cm-focused { outline: none !important; }
+/* Keyboard focus on the code must stay visible; a mouse click does not show it. */
+.cm-editor:has(.cm-content:focus-visible) { box-shadow: inset 0 0 0 2px var(--accent); }
 /* CodeMirror's own theme rules are more specific; the evidence highlight must stay visible when focused. */
 .cm-selectionBackground { background: #cfdcfa !important; }
 
