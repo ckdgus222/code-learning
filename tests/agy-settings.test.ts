@@ -2,12 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { chmod, link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { AGY_DENY_RULES, AGY_NO_TOOLS_HOOK, restrictAgy } from '../src/core/ai/runtime';
+import { AGY_DENY_RULES, AGY_NO_MCP_SERVERS, AGY_NO_TOOLS_HOOK, restrictAgy } from '../src/core/ai/runtime';
 
 // Real files in a temporary folder that stands in for the app-only agy HOME.
 let home: string;
 const settingsFile = () => path.join(home, '.gemini', 'antigravity-cli', 'settings.json');
 const hooksFile = () => path.join(home, '.gemini', 'config', 'hooks.json');
+const mcpFile = () => path.join(home, '.gemini', 'config', 'mcp_config.json');
 const json = async (file: string) => JSON.parse(await readFile(file, 'utf8'));
 beforeEach(async () => { home = await mkdtemp(path.join(os.tmpdir(), 'agy-settings-')); });
 afterEach(async () => { await rm(home, { recursive: true, force: true }); });
@@ -18,7 +19,8 @@ describe('agy restrictions in the app-only HOME', () => {
     expect(await json(settingsFile())).toEqual({ permissions: { deny: AGY_DENY_RULES } });
     expect(await json(hooksFile())).toEqual(AGY_NO_TOOLS_HOOK);
     expect(AGY_NO_TOOLS_HOOK['code-learning-no-tools'].PreToolUse[0].matcher).toBe('*');
-    for (const file of [settingsFile(), hooksFile()]) expect((await stat(file)).mode & 0o777).toBe(0o600);
+    expect(await json(mcpFile())).toEqual({ mcpServers: {} });
+    for (const file of [settingsFile(), hooksFile(), mcpFile()]) expect((await stat(file)).mode & 0o777).toBe(0o600);
     for (const folder of [path.dirname(settingsFile()), path.dirname(hooksFile())]) expect((await stat(folder)).mode & 0o777).toBe(0o700);
   });
 
@@ -43,6 +45,8 @@ describe('agy restrictions in the app-only HOME', () => {
       hooks: { start: { SessionStart: [{ type: 'command', command: 'echo started' }] } },
     }));
     await writeFile(hooksFile(), JSON.stringify({ other: { PreToolUse: [{ matcher: '*', hooks: [{ command: 'echo other' }] }] } }));
+    // A configured MCP server is a command agy would start by itself.
+    await writeFile(mcpFile(), JSON.stringify({ mcpServers: { other: { command: 'node', args: ['/tmp/server.js'] } } }));
     await restrictAgy(home);
     await restrictAgy(home);
     const settings = await json(settingsFile());
@@ -51,13 +55,14 @@ describe('agy restrictions in the app-only HOME', () => {
     expect(settings.permissions.deny).toEqual(['command(rm)', 'mcp(*)', ...AGY_DENY_RULES.filter(rule => rule !== 'mcp(*)')]);
     expect(settings.hooks).toBeUndefined();
     expect(await json(hooksFile())).toEqual(AGY_NO_TOOLS_HOOK);
+    expect(await json(mcpFile())).toEqual(AGY_NO_MCP_SERVERS);
   });
 
-  it('refuses a settings file, hooks file or folder that is a link, leaving its target untouched', async () => {
+  it('refuses a settings file, hooks file, MCP file or folder that is a link, leaving its target untouched', async () => {
     const outside = await mkdtemp(path.join(os.tmpdir(), 'agy-settings-target-'));
     try {
       await writeFile(path.join(outside, 'target.json'), '{}');
-      for (const file of [settingsFile(), hooksFile()]) {
+      for (const file of [settingsFile(), hooksFile(), mcpFile()]) {
         await rm(path.join(home, '.gemini'), { recursive: true, force: true });
         await mkdir(path.dirname(file), { recursive: true });
         await symlink(path.join(outside, 'target.json'), file);
@@ -75,12 +80,12 @@ describe('agy restrictions in the app-only HOME', () => {
     }
   });
 
-  it('refuses a settings or hooks file that is a hard link, leaving the other name untouched', async () => {
+  it('refuses a settings, hooks or MCP file that is a hard link, leaving the other name untouched', async () => {
     // A hard link is not a symbolic link: O_NOFOLLOW opens it, and it shares the user's ~/.gemini file.
     const outside = await mkdtemp(path.join(os.tmpdir(), 'agy-settings-target-'));
     try {
       const target = path.join(outside, 'target.json');
-      for (const file of [settingsFile(), hooksFile()]) {
+      for (const file of [settingsFile(), hooksFile(), mcpFile()]) {
         await rm(path.join(home, '.gemini'), { recursive: true, force: true });
         await writeFile(target, '{}', { mode: 0o644 });
         await mkdir(path.dirname(file), { recursive: true });

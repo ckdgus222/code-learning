@@ -12,9 +12,9 @@ import { LocalAiRuntime } from '../../src/core/ai/runtime';
 import { runProcess, type ProcessRequest } from '../../src/core/ai/process';
 import type { StageRequest, StageResponse } from '../../src/core/ai/workflow';
 import { organizationSchema } from '../../src/shared/ai';
-import { categories, codexAttempts, isolationFixture, placedKinds, placedVerdicts, verdicts } from './isolation';
+import { categories, codexAttempts, isolationFixture, placedKinds, placedVerdicts, verdicts, type Category, type Place } from './isolation';
 import { recordedFailure, rethrown } from './records';
-import { PROBE_SOURCE, classifyForced, createCodexProbe, findCodexLaunch, isEmptyList, observedToolNames, outputText,
+import { PROBE_SOURCE, classifyForced, createCodexProbe, findCodexLaunch, forcedKindVerdict, isEmptyList, observedToolNames, outputText,
   type CodexProbe, type CodexProbeVariant, type ForcedCall } from './codex-probe';
 
 // Keep the process group of every child the runtime starts, the end of its stderr for diagnosing
@@ -354,10 +354,30 @@ describe('Codex connection through the app runtime (real account, non-secret fix
         }
         const searched = probe.forcedOutputs.get('call_tool_search');
         const searchedNames = Array.isArray(searched) ? searched.map(tool => tool?.name) : null;
+        const attempts = codexAttempts(stdoutText, fixture.folders());
+        // One verdict per kind from these forced calls alone, under the local probe's conditions. It is
+        // kept apart from the C06 verdicts; exec and tool_search are observations, not one kind.
+        const kindLabels: Record<string, string[]> = {
+          shell: ['exec_command', 'write_stdin', 'shell_command', 'shell'], read: ['view_image'],
+          'edit:outside': ['apply_patch_outside'], 'edit:inside': ['apply_patch_inside'], web: ['web_run', 'web_search'],
+          mcp: ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'],
+          agents: calls.map(({ label }) => label).filter(label => /^(?:spawn_agent|collaboration_|multi_agent_v1_)/.test(label)),
+        };
+        // A run Codex reported, in that kind and place; a run of unknown place counts against both.
+        const ranIn = (category: Category, place?: Place) => attempts.some(attempt => attempt.category === category && attempt.outcome === 'ran'
+          && (!place || !attempt.target || attempt.target === place));
+        const failedBy: Record<string, boolean> = {
+          shell: effects.outside.shell || ranIn('shell'), read: effects.outside.read || effects.inside.read || ranIn('read'),
+          'edit:outside': effects.outside.edit || ranIn('edit', 'outside'), 'edit:inside': effects.inside.edit || ranIn('edit', 'inside'),
+          web: ranIn('web'), mcp: ranIn('mcp'), agents: false,
+        };
+        const kinds = Object.fromEntries(Object.entries(kindLabels).map(([kind, labels]) => [kind,
+          forcedKindVerdict(outputs.filter(({ label }) => labels.includes(label)).map(({ outcome: result }) => result), labels.length, failedBy[kind])]));
         return {
           models: [...new Set(probe.inventories.map(inventory => inventory.model))],
+          kinds: { condition: 'local-probe', ...kinds },
           // The app refuses an answer after any tool event; that is recorded, not what this check is about.
-          response, outputs, effects, attempts: codexAttempts(stdoutText, fixture.folders()), events: eventKinds(stdoutText),
+          response, outputs, effects, attempts, events: eventKinds(stdoutText),
           exec,
           toolSearch: searchedNames && { names: searchedNames.filter(name => toolName.safeParse(name).success),
             unrecognized: searchedNames.filter(name => !toolName.safeParse(name).success).length },
@@ -387,6 +407,9 @@ describe('Codex connection through the app runtime (real account, non-secret fix
       expect(outcome.exec).toEqual({ tools: ['clock__curr_time'], importFs: 'rejected', globals: { fetch: 'undefined', require: 'undefined',
         process: 'undefined', Deno: 'undefined', XMLHttpRequest: 'undefined', WebSocket: 'undefined' } });
       expect(outcome.toolSearch).toEqual({ names: [], unrecognized: 0 });
+      // MCP is 'failed' because its resource tools ran, even though they found no server.
+      expect(outcome.kinds).toEqual({ condition: 'local-probe', shell: 'blocked', read: 'blocked', 'edit:outside': 'blocked',
+        'edit:inside': 'blocked', web: 'blocked', mcp: 'failed', agents: 'blocked' });
     });
   });
 

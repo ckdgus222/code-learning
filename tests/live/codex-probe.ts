@@ -141,6 +141,15 @@ export function outputText(output: unknown): string {
   return '';
 }
 
+/**
+ * One verdict for a kind from its forced calls alone. An observed effect or a run the CLI reported
+ * (`failedBy`) fails the kind first; only then do Codex's own refusals of every call block it.
+ */
+export function forcedKindVerdict(results: ForcedOutcome[], calls: number, failedBy: boolean): 'failed' | 'blocked' | 'undetermined' {
+  if (failedBy || results.includes('ran')) return 'failed';
+  return results.length === calls && results.every(result => result === 'unavailable' || result === 'refused') ? 'blocked' : 'undetermined';
+}
+
 /** Whether an MCP list tool answered with nothing in every list it returns. */
 export function isEmptyList(output: unknown): boolean {
   try {

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import path from 'node:path';
-import { classifyForced, createCodexProbe, isEmptyList, observedToolNames, probeProfile, requestInventory } from './live/codex-probe';
+import { classifyForced, createCodexProbe, forcedKindVerdict, isEmptyList, observedToolNames, probeProfile, requestInventory } from './live/codex-probe';
 import { runProcess } from '../src/core/ai/process';
 import modelFixture from './fixtures/codex-model-0.163.0.json';
 
@@ -236,5 +236,21 @@ describe('forced call outcomes', () => {
     for (const text of ['{"resources":[{"uri":"file:///x"}]}', '{}', '[]', 'not json', '{"resources":[],"nextCursor":"x"}']) {
       expect(isEmptyList(text), text).toBe(false);
     }
+  });
+});
+
+describe('forced call verdict per kind', () => {
+  it('fails a kind on an observed effect or a reported run before looking at refusals', () => {
+    // Reproduced in review: a file change seen on disk although Codex replied with a refusal,
+    // and a shell run Codex reported although its reply was not understood.
+    expect(forcedKindVerdict(['refused'], 1, true)).toBe('failed');
+    expect(forcedKindVerdict(['unclear'], 1, true)).toBe('failed');
+    expect(forcedKindVerdict(['unavailable', 'ran'], 2, false)).toBe('failed');
+  });
+  it("blocks a kind only when Codex itself refused every one of its calls", () => {
+    expect(forcedKindVerdict(['unavailable', 'refused'], 2, false)).toBe('blocked');
+    expect(forcedKindVerdict(['unavailable'], 2, false)).toBe('undetermined');
+    expect(forcedKindVerdict(['unavailable', 'unclear'], 2, false)).toBe('undetermined');
+    expect(forcedKindVerdict(['no-output'], 1, false)).toBe('undetermined');
   });
 });
