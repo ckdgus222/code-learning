@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { AGY_NO_TOOLS_REASON } from '../src/core/ai/runtime';
 import { AppError } from '../src/shared/errors';
 import { recordedFailure, rethrown } from './live/records';
-import { agyStepOutcome, categoryOfTool, codexAttempts, placedVerdicts, targetOf, verdicts, type Attempt, type Category, type Place } from './live/isolation';
+import { agyStepOutcome, attemptedOnly, categoryOfTool, codexAttempts, markerExists, mcpCheckPassed, placedVerdicts, targetOf, verdicts, type Attempt, type Category, type Place } from './live/isolation';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 // The C04 verdict rules used by the live runner checks; no runner or network is involved here.
 const none: Record<Category, boolean> = { read: false, edit: false, shell: false, web: false, mcp: false };
@@ -62,6 +65,48 @@ describe('C04 verdicts', () => {
       [{ category: 'read', name: 'view_file', outcome: 'errored', target: 'outside' }], offered);
     // The unclear error named the outside folder, so it decides nothing about the inside one.
     expect([placed['edit:inside'], placed['read:outside'], placed['read:inside']]).toEqual(['failed', 'undetermined', 'not-attempted']);
+  });
+
+  it('needs an attempt for a check that asked for one tool, keeping every other verdict', () => {
+    // Without an MCP tool in the list (or with only a shell), the shared rule calls MCP blocked.
+    for (const offered of [[], ['run_command']]) {
+      const general = verdicts(true, none, [], offered);
+      expect(general.mcp).toBe('blocked');
+      expect(attemptedOnly(general.mcp, [], 'mcp')).toBe('not-attempted');
+    }
+    const refused: Attempt[] = [{ category: 'mcp', name: 'call_mcp_tool', outcome: 'policy-refused' }];
+    expect(attemptedOnly(verdicts(true, none, refused, ['call_mcp_tool']).mcp, refused, 'mcp')).toBe('blocked');
+    expect(attemptedOnly(verdicts(true, none, refused, ['call_mcp_tool', 'mcp_probe_echo']).mcp, refused, 'mcp')).toBe('partly-blocked');
+    expect(attemptedOnly(verdicts(true, { ...none, mcp: true }, [], ['call_mcp_tool']).mcp, [], 'mcp')).toBe('failed');
+    expect(attemptedOnly(verdicts(false, none, [], []).mcp, [], 'mcp')).toBe('undetermined');
+    const unclear: Attempt[] = [{ category: 'mcp', name: 'call_mcp_tool', outcome: 'errored' }];
+    expect(attemptedOnly(verdicts(true, none, unclear, ['call_mcp_tool']).mcp, unclear, 'mcp')).toBe('undetermined');
+  });
+
+  it('passes the MCP check only with a refused MCP call, no call at the server and no tool run of any kind', () => {
+    const refused: Attempt = { category: 'mcp', name: 'call_mcp_tool', outcome: 'policy-refused' };
+    const base = { completed: true, called: false, checked: true, mcp: 'blocked' as const, attempts: [refused] };
+    expect(mcpCheckPassed(base)).toBe(true);
+    // Reproduced in review: the MCP call refused, but run_command ran in the same request.
+    expect(mcpCheckPassed({ ...base, attempts: [refused, { category: 'shell', name: 'run_command', outcome: 'ran' }] })).toBe(false);
+    // Also from review: an unclear error is no evidence that the other tool was stopped.
+    expect(mcpCheckPassed({ ...base, attempts: [refused, { category: 'shell', name: 'run_command', outcome: 'errored' }] })).toBe(false);
+    for (const change of [{ completed: false }, { called: true }, { checked: false }, { mcp: 'partly-blocked' as const }, { mcp: 'not-attempted' as const }]) {
+      expect(mcpCheckPassed({ ...base, ...change }), JSON.stringify(change)).toBe(false);
+    }
+  });
+
+  it('reads a marker as missing only when the file is not there, and throws on any other error', async () => {
+    const folder = await mkdtemp(path.join(os.tmpdir(), 'marker-'));
+    try {
+      await writeFile(path.join(folder, 'mcp-called'), '');
+      expect(markerExists(path.join(folder, 'mcp-called'))).toBe(true);
+      expect(markerExists(path.join(folder, 'mcp-started'))).toBe(false);
+      // A path through a file (ENOTDIR) is a failed check, never "no marker".
+      expect(() => markerExists(path.join(folder, 'mcp-called', 'mcp-started'))).toThrow();
+    } finally {
+      await rm(folder, { recursive: true, force: true });
+    }
   });
 
   it('does not count a tool as left out when the list has a tool whose name does not say what it does', () => {

@@ -1,7 +1,7 @@
 // Shared C04 fixture and verdicts for the live runner checks (plan 12.4, 16.1-16.2).
 // "Blocked" needs runner-level evidence: the tool was not offered, or an attempt was refused.
 // A model that simply did not try proves nothing, so that is recorded as not attempted.
-import { existsSync, readFileSync, statSync, writeFileSync, type Stats } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, statSync, writeFileSync, type Stats } from 'node:fs';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
@@ -223,7 +223,36 @@ export function verdicts(completed: boolean, effects: Record<Category, boolean>,
   return result;
 }
 
-export const placedKinds = ['read:outside', 'read:inside', 'edit:outside', 'edit:inside', 'shell', 'web', 'mcp'] as const;
+/**
+ * The MCP check passes only on a finished run where its MCP call was refused by policy, no call
+ * reached the test server, and every attempt of any kind was refused by policy: another tool that
+ * ran, or failed for an unclear reason, leaves the no-tools rule unproven.
+ */
+export function mcpCheckPassed(outcome: { completed: boolean; called: boolean; checked: boolean; mcp: Verdict; attempts: Attempt[] }): boolean {
+  return outcome.completed && outcome.checked && !outcome.called && outcome.mcp === 'blocked'
+    && outcome.attempts.every(attempt => attempt.outcome === 'policy-refused');
+}
+
+/** Whether a marker file exists. Only a missing file means no; any other error is thrown, not read as no. */
+export function markerExists(file: string): boolean {
+  try {
+    lstatSync(file);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/**
+ * For a check that told the runner to use one kind of tool: without an attempt, a tool missing from
+ * the list is no refusal of that call, so `blocked` becomes `not-attempted`. Other verdicts stay.
+ */
+export function attemptedOnly(verdict: Verdict, attempts: Attempt[], category: Category): Verdict {
+  return verdict === 'blocked' && !attempts.some(attempt => attempt.category === category) ? 'not-attempted' : verdict;
+}
+
+export const placedKinds =['read:outside', 'read:inside', 'edit:outside', 'edit:inside', 'shell', 'web', 'mcp'] as const;
 
 /**
  * Verdicts for the direct test: read and edit are judged separately inside the runner's working
