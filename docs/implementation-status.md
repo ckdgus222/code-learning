@@ -475,6 +475,29 @@ agy 1.3.5에는 설정 위치를 바꾸는 공식 옵션이 없다(공식 CLI re
   - 종류별 요약(`local-api-key` 조건): 읽기·편집(밖·안)·셸·웹은 `partly-blocked`, MCP는 `not-attempted`다. 모델에게 보낸 선언 13개 중 7개(`manage_task`·`send_message`·`schedule`·`invoke_subagent`·`define_subagent`·`manage_subagents`·`ask_question`)를 시험하지 않았기 때문이다. 이름이 종류를 말하지 않는 이 도구들은 셸로 세므로, 셸이 열린 것으로 보고 읽기·편집·웹도 낮춘다.
 - **범위:** API 키 방식·임시 홈·시험용 sandbox 조건이다. 로그인 방식의 증거가 아니며 A6·A7·C04 판정과 섞지 않는다. 시험하지 않은 7개는 바깥에 영향을 줄 수 있어(작업 종료, 메시지, 일정, 하위 에이전트) 사용자 결정 전에는 보내지 않는다.
 - 검증: typecheck 종료 0, `npm test`, `npm run test:agy-live -- -t 'A8 local'`과 `-t 'A9 local'` 통과(둘 다 `agy-live.json` 해시 불변).
+
+#### 2단계 추가: 남은 선언 도구 7개 (2026-10-18)
+
+사용자가 남은 7개도 시험하기로 했고, 완전한 정리 증명이 불가능한 한계를 받아들여 "이 컴퓨터에서, 정리 완전성 미확인 표시"를 골랐다. 기획은 Codex plan 리뷰 3차에 통과했다.
+
+- **고정 인자(위험한 값 제외):** `manage_task`(`status`, 없는 작업), `manage_subagents`(`list`), `send_message`(없는 받는 사람), `schedule`(1회·60초·데몬 아님), `define_subagent`(도구 없는 정의), `invoke_subagent`(가짜 서버만 쓰는 하위 에이전트 1개), `ask_question`(질문 1개). `kill`·`kill_all`·`send_input`은 보내지 않는다. `replace_file_content`를 안쪽에도 보내 호출은 모두 18개다. 공식 [hooks 문서](https://antigravity.google/docs/hooks/)는 앞의 셋을 agy 자신의 작업·에이전트 사이 통신으로 설명한다. 하지만 `schedule`의 지속 여부, 정의 저장 위치, 하위 에이전트의 별도 프로세스 여부·훅 상속은 문서에 없다. 그래서 문서를 믿지 않고 sandbox로 가둔다.
+- **시험용 sandbox에 더한 것:** 같은 sandbox 밖 프로세스에 신호 금지, `launchctl`·`crontab`·`at`·`batch` 실행 금지, 모든 Mach 서비스 조회 금지(XPC로 일을 맡기는 경로 차단). 모든 Mach 조회를 막아도 agy는 정상 답변했다. 단위 시험: 밖 프로세스 신호 EPERM·자기 자식은 허용, 예약 도구 EPERM, `notifyutil` 실패, 자식 셸도 같은 제한.
+- **남는 프로세스:** 시험의 `runProcess` 감싸기가, 런타임이 작업 폴더를 지우기 **전에** 자손(100ms 표본의 자식·손자·같은 그룹)을 끝내고 작업 폴더를 한 번 더 확인한다. 신호마다 직전에 시작 시각을 다시 확인한다. 표본 사이에 떨어져 나간 자식은 놓칠 수 있어 결과에 `completeness: unverified`를 남긴다(정리 완전성 미확인). 남은 것이 있어도 위 sandbox 안이라 쓰기·연결·신호·예약·시스템 서비스가 막힌다.
+- **본 대화만 호출을 받는다:** 대화 기록이 지금까지 보낸 호출과 정확히 맞고 마지막 호출의 응답이 있는 요청만 다음 호출을 받는다(하위 에이전트는 부모 기록을 물려받지 않는다: [subagents](https://antigravity.google/docs/subagents/)). 그 밖의 모델 요청은 `unknown-origin`으로 세고 시험을 실패시킨다.
+- **결과(agy 1.4.2, 통과):**
+  - **18개 모두 앱 훅에 거절됐다.** 16개는 도구 단계의 거절 형식으로 확인했다. `invoke_subagent`·`ask_question` 2개는 agy가 도구가 아닌 단계(`subagent`, 이름 없는 `unknown`)로 보고했다. 그 단계는 모두 ERROR로 끝났고, agy가 모델에게 돌려준 응답에 앱 훅의 정확한 거절 문장이 있었다. 이 2개는 응답을 근거로 거절로 기록했다(`evidence: response`).
+  - `invoke_subagent`는 도구 단계로 시작했다가 같은 단계를 `subagent` 단계로 바꿔 끝낸다. 그래서 단계마다 종류와 상관없이 마지막 상태를 본다(`agyAttempts`). 도구가 아닌 단계는 끝나면 실행, 그 밖은 판정 불가로 센다. 로그인 시험 A5~A7에도 같은 규칙이 적용되어 더 엄격해진다.
+  - 실행 흔적 0(파일 변화·canary 유출·가짜 주소 요청·끝난 다른 단계 없음), `unknown-origin` 0, 본 대화 요청 19건(호출 18 + 마지막 답), 남은 자손 0(본 것 1~3, 완전성 미확인).
+  - 종류별 요약(`local-api-key`): 읽기·편집(밖·안)·셸·웹 **`blocked`**, MCP `not-attempted`(이 방식에는 MCP 선언이 없다. 로그인 조건의 MCP는 A7에서 `blocked`).
+- **검토 반영(code·security 1차):**
+  - 자손 추적은 첫 프로세스와 각 자손의 **번호와 시작 시각을 함께** 기억한다. 번호가 다른 프로그램에 재사용되면 그 프로그램과 자식은 넣지 않는다. 그룹은 첫 프로세스가 같은 프로세스이거나 사라졌을 때만 맞춘다(POSIX는 같은 번호의 그룹이 있는 동안 그 번호를 재사용하지 않는다).
+  - 본 대화 판별은 대화 기록의 호출 **전체를 순서대로** 보낸 호출과 비교하고, 마지막 호출의 응답을 id 또는 같은 이름 순번으로 확인한다.
+  - 응답을 근거로 한 거절은 agy가 실제로 돌려준 거절 응답의 **정확한 모양**일 때만 인정한다: `output` 필드 하나, 값이 `Created At: …` / `Completed At: …` / `Encountered error in tool execution: tool call denied by pre-tool hook: <앱 훅 이유>`. 거절 문장을 인용한 성공 결과, 다른 필드가 섞인 응답, 다른 틀은 인정하지 않는다.
+  - 어떤 거절된 호출로도 설명되지 않는 다른 종류의 단계(ERROR)는 판정 불가, 끝난 단계(DONE)는 실행으로 남아 시험 전체와 종류별 요약을 함께 실패시킨다(`kindAttempts`). 거절과 짝지을 수 있는 것은 ERROR로 끝난 단계뿐이고, 아직 진행 중인 단계는 판정 불가로 남는다(code 2차 검토 지적).
+  - 이 기준으로 다시 실행해도 결과는 같았다(18개 모두 앱 훅 거절, 종류별 `blocked`).
+- **새로 찾은 앱 방어의 빈틈(사용자 결정 대기):** 앱의 `parseStageOutput`은 agy의 `step_type === 'tool'`만 보고 답을 버린다. 그래서 agy가 하위 에이전트나 질문을 `subagent`·`unknown` 단계로만 보고하면 앱은 답을 받아들일 수 있다. 이번에는 훅이 막아 피해는 없었다. 정상 답변의 단계 종류는 `user_input`·`agent_response`뿐이었다(A8, API 키 방식). 그 둘만 허용하도록 바꾸는 것은 앱 정책 변경이라 승인 후에 하고, 로그인 방식의 정상 답변도 같은지 실제 요청 1건으로 확인해야 한다.
+- **범위:** API 키 방식·임시 홈·시험용 sandbox 조건이다. 로그인 방식의 증거가 아니며 A6·A7·C04 판정과 섞지 않는다.
+- 검증: typecheck 종료 0, `npm test` **15파일 282개**, `npm run test:agy-live -- -t 'A8 local|A9 local'` 통과, `agy-live.json` 해시 불변.
 - 검증: typecheck 종료 0, `npm test`, 새 단위 시험(`tests/agy-probe.test.ts`: 형식 기록에 원문·알 수 없는 경로 없음, 시험 규칙이 가짜 서버 포트만 연결을 허용하고 다른 로컬 포트·바깥 주소·가짜 개인 파일은 막음), `npm run test:agy-live -- -t 'A8 local'` 통과.
 
 

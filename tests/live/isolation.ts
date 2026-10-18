@@ -21,6 +21,9 @@ export interface Attempt {
   category: Category; name: string; outcome: 'ran' | 'policy-refused' | 'errored'; target?: Place;
   /** For an agy policy refusal: the app's no-tools hook or a configured deny rule. */
   refusedBy?: 'app-hook' | 'deny-rule';
+  /** For an agy step that is not a tool step (a sub-agent, an unnamed one): its kind and final state. */
+  stepType?: string;
+  stepState?: string;
 }
 /** The runner's own working folder, where agy allows file access by default, or a folder outside it. */
 export type Place = 'inside' | 'outside';
