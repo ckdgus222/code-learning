@@ -1,6 +1,8 @@
 import { _electron as electron } from 'playwright';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const root = path.resolve(import.meta.dirname, '..');
@@ -39,6 +41,13 @@ try {
   assert.equal(await page.getByRole('combobox', { name: 'AI 사용 방식' }).inputValue(), 'local-worker');
   await page.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
   await page.getByRole('list', { name: '로컬 AI 설치 상태' }).waitFor({ timeout: 35_000 });
+  // The version check runs inside the fence: a CLI installed in a fixed location must still show its version.
+  const statuses = await page.getByRole('list', { name: '로컬 AI 설치 상태' }).innerText();
+  const installed = binary => [path.join(os.homedir(), '.local/bin'), path.join(os.homedir(), '.npm-global/bin'), '/opt/homebrew/bin', '/usr/local/bin']
+    .some(folder => existsSync(path.join(folder, binary)));
+  for (const [binary, name] of [['codex', 'Codex'], ['agy', 'Antigravity']]) {
+    if (installed(binary)) assert.match(statuses, new RegExp(`${name} · 설치 확인 \\(\\d+\\.\\d+\\.\\d+`), `${name} version inside the fence`);
+  }
   assert.match(await page.getByTestId('ai-readiness').innerText(), /질문 전송을 잠갔습니다/);
   assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
   await page.screenshot({ path: path.join(root, 'test-results/packaged-local-ai.png') });
@@ -49,7 +58,7 @@ try {
   assert.match(await cancellation.getAttribute('class'), /(?:^|\s)notice--info(?:\s|$)/);
   assert.equal(await page.getByRole('alert').count(), 0);
   await app.close(); app = undefined;
-  const report = { passed: true, checks: ['packaged app startup', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'source unchanged', 'packaged CSP', 'local AI installation inspection and execution gate (no AI request)', 'cancel'], state };
+  const report = { passed: true, checks: ['packaged app startup', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'source unchanged', 'packaged CSP', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel'], state };
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

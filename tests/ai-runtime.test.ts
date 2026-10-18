@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LocalAiRuntime, executableCandidates, parseStageOutput, resolveLaunch } from '../src/core/ai/runtime';
 import { GEMINI_MODEL } from '../src/shared/ai';
-import { runProcess } from '../src/core/ai/process';
+import { runProcess, type ProcessRequest } from '../src/core/ai/process';
 import { access, chmod, lstat, mkdir, open, realpath, rm } from 'node:fs/promises';
 import os from 'node:os';
+
+// The CLI and its own arguments inside `sandbox-exec -p <profile> <CLI> …`, or the request as it is.
+const inner = (request: ProcessRequest) => request.executable === '/usr/bin/sandbox-exec'
+  ? { ...request, executable: request.args[2], args: request.args.slice(3) } : request;
 
 vi.mock('../src/core/ai/process', async original => ({ ...(await original<typeof import('../src/core/ai/process')>()), runProcess: vi.fn() }));
 vi.mock('node:fs/promises', () => ({
@@ -51,10 +55,22 @@ describe('local connection readiness', () => {
     expect(report.modes.every(mode => !mode.ready)).toBe(true);
     expect(runProcess).toHaveBeenCalledTimes(3);
     for (const [request] of vi.mocked(runProcess).mock.calls) {
-      expect(request.args).toEqual(['--version']);
+      expect(inner(request).args).toEqual(['--version']);
       expect(request.stdin).toBeUndefined();
     }
     expect(rm).toHaveBeenCalled();
+  });
+  it('checks the codex and agy versions inside the fence with their own app home; Claude Code, without one, as it is', async () => {
+    await new LocalAiRuntime(appCodexHome, appAgyHome).checkConnections();
+    const calls = vi.mocked(runProcess).mock.calls.map(([request]) => request);
+    const of = (binary: string) => calls.find(request => inner(request).executable.endsWith(`/${binary}`))!;
+    for (const [binary, own, other] of [['codex', appCodexHome, appAgyHome], ['agy', appAgyHome, appCodexHome]]) {
+      expect(of(binary).executable, binary).toBe('/usr/bin/sandbox-exec');
+      expect(of(binary).args[1]).toContain(`(allow file-write* (subpath "${own}") (subpath "/private/tmp/ai-runtime-fixture")`);
+      expect(of(binary).args[1]).not.toContain(other);
+      expect(of(binary).env?.TMPDIR).toBe('/private/tmp/ai-runtime-fixture');
+    }
+    expect(of('claude').executable).toBe(`${os.homedir()}/.local/bin/claude`);
   });
   it('distinguishes missing and unusable installations without leaking output', async () => {
     vi.mocked(realpath).mockRejectedValue(new Error('private path'));
@@ -86,11 +102,14 @@ describe('local connection readiness', () => {
   });
   it('uses the resolved launch for the version probe of a Node-script install', async () => {
     const home = (await import('node:os')).homedir();
-    heads[`${home}/.local/bin/codex`] = '#!/usr/bin/env node\n';
+    // As npm installs it: the command is a link to a script inside the package, which the fence reopens.
+    const script = `${home}/.npm-global/lib/node_modules/@openai/codex/bin/codex.js`;
+    vi.mocked(realpath).mockImplementation(async (name: unknown) => name === `${home}/.local/bin/codex` ? script : String(name));
+    heads[script] = '#!/usr/bin/env node\n';
     const report = await new LocalAiRuntime(appCodexHome, appAgyHome).checkConnections();
     expect(report.providers.find(item => item.provider === 'codex')?.installation).toBe('found');
-    const codexCall = vi.mocked(runProcess).mock.calls.find(([request]) => request.args[0] === `${home}/.local/bin/codex`);
-    expect(codexCall?.[0]).toMatchObject({ executable: `${home}/.local/bin/node`, args: [`${home}/.local/bin/codex`, '--version'] });
+    const codexCall = vi.mocked(runProcess).mock.calls.map(([request]) => inner(request)).find(request => request.args[0] === script);
+    expect(codexCall).toMatchObject({ executable: `${home}/.local/bin/node`, args: [script, '--version'] });
   });
   it("gives codex its app-only CODEX_HOME and agy its app-only HOME, created private; claude is unchanged", async () => {
     const before = process.env.CODEX_HOME;
@@ -98,7 +117,7 @@ describe('local connection readiness', () => {
     try {
       const report = await new LocalAiRuntime(appCodexHome, appAgyHome).checkConnections();
       expect(report.providers.find(item => item.provider === 'codex')?.message).toContain(`CODEX_HOME="${appCodexHome}" codex login`);
-      const calls = vi.mocked(runProcess).mock.calls.map(([request]) => request);
+      const calls = vi.mocked(runProcess).mock.calls.map(([request]) => inner(request));
       const codex = calls.find(request => request.executable.endsWith('/codex'))!;
       expect(codex.env?.CODEX_HOME).toBe(appCodexHome);
       expect(Object.keys(codex.env!).every(key => ['HOME', 'PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'USER', 'LOGNAME', 'SYSTEMROOT', 'CODEX_HOME'].includes(key))).toBe(true);
@@ -116,6 +135,7 @@ describe('local connection readiness', () => {
       // agy's app-only settings get the deny rules before agy starts.
       expect(written[`${appAgyHome}/.gemini/antigravity-cli/settings.json`]).toContain('"command(*)"');
       expect(written[`${appAgyHome}/.gemini/config/hooks.json`]).toContain('"decision\\":\\"deny');
+      expect(JSON.parse(written[`${appAgyHome}/.gemini/config/mcp_config.json`])).toEqual({ mcpServers: {} });
     } finally {
       if (before === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = before;
     }
@@ -130,7 +150,7 @@ describe('local connection readiness', () => {
       setup();
       const report = await new LocalAiRuntime(appCodexHome, appAgyHome).checkConnections();
       expect(report.providers.find(item => item.provider === 'codex')).toMatchObject({ installation: 'unusable', message: expect.stringContaining('앱 전용 Codex 위치') });
-      expect(vi.mocked(runProcess).mock.calls.some(([request]) => request.executable.endsWith('/codex'))).toBe(false);
+      expect(vi.mocked(runProcess).mock.calls.some(([request]) => inner(request).executable.endsWith('/codex'))).toBe(false);
     }
   });
   it('deduplicates simultaneous inspections', async () => {
@@ -233,24 +253,39 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     expect(request.args[1]).not.toContain(appAgyHome);
     expect(request.env).toMatchObject({ CODEX_HOME: appCodexHome, TMPDIR: '/private/tmp/ai-runtime-fixture' });
   });
-  it.each([
+  const fenceFailures: [string, () => void][] = [
     ['sandbox-exec is missing', () => vi.mocked(access).mockImplementation(async name => { if (name === '/usr/bin/sandbox-exec') throw new Error('missing'); })],
     ['the Node package of the CLI cannot be found', () => {
       heads[`${os.homedir()}/.local/bin/codex`] = '#!/usr/bin/env node\n';
       // Only the home folder holds a package.json, which must never reopen the whole home.
       vi.mocked(access).mockImplementation(async name => { if (String(name).endsWith('package.json') && name !== `${os.homedir()}/package.json`) throw new Error('missing'); });
     }],
-  ])('does not start the CLI at all when %s', async (_case, arrange) => {
+  ];
+  it.each(fenceFailures)('does not check the version at all when %s, and reports the fence', async (_case, arrange) => {
     arrange();
+    const report = await new LocalAiRuntime(appCodexHome, appAgyHome).checkConnections();
+    // The fence's own refusal, not a missing installation.
+    expect(report.providers.find(item => item.provider === 'codex')).toMatchObject({ installation: 'unusable', message: expect.stringContaining('울타리') });
+    expect(vi.mocked(runProcess).mock.calls.some(([request]) => inner(request).executable.endsWith('/codex')
+      || inner(request).args[0]?.endsWith('/codex'))).toBe(false);
+  });
+  it('does not start a stage at all when sandbox-exec is gone after the version check', async () => {
     const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
     await runtime.checkConnections();
+    fenceFailures[0][1]();
     vi.mocked(runProcess).mockClear();
-    // The fence's own refusal, not a missing installation.
     await expect(stage(runtime, 'codex')).rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: expect.stringContaining('울타리') });
     expect(runProcess).not.toHaveBeenCalled();
   });
-  it('does not retry without the fence when sandbox-exec cannot apply the profile', async () => {
+  it('does not retry without the fence when sandbox-exec cannot apply the profile, for a version check or a stage', async () => {
+    vi.mocked(runProcess).mockImplementation(async request => request.executable === '/usr/bin/sandbox-exec'
+      ? { stdout: '', stderr: 'sandbox-exec: invalid profile', exitCode: 65 } : { stdout: 'claude 1.2.3\n', stderr: '', exitCode: 0 });
+    const report = await new LocalAiRuntime(appCodexHome, appAgyHome).checkConnections();
+    expect(report.providers.filter(item => item.installation === 'unusable').map(item => item.provider)).toEqual(['codex', 'antigravity']);
+    // One fenced call each, and no codex or agy start outside the fence.
+    expect(vi.mocked(runProcess).mock.calls.map(([request]) => request.executable)).toEqual(['/usr/bin/sandbox-exec', '/usr/bin/sandbox-exec', `${os.homedir()}/.local/bin/claude`]);
     const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
+    vi.mocked(runProcess).mockResolvedValue({ stdout: 'codex-cli 1.2.3\n', stderr: '', exitCode: 0 });
     await runtime.checkConnections();
     vi.mocked(runProcess).mockClear();
     vi.mocked(runProcess).mockResolvedValue({ stdout: '', stderr: 'sandbox-exec: invalid profile', exitCode: 65 });

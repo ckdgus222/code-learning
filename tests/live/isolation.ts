@@ -11,7 +11,8 @@ import { AGY_NO_TOOLS_REASON } from '../../src/core/ai/runtime';
 
 export const categories = ['read', 'edit', 'shell', 'web', 'mcp'] as const;
 export type Category = typeof categories[number];
-export type Verdict = 'failed' | 'blocked' | 'not-attempted' | 'undetermined';
+/** `partly-blocked`: refused, but other offered tools of that kind went untried, or the runner gives no list. */
+export type Verdict = 'failed' | 'blocked' | 'partly-blocked' | 'not-attempted' | 'undetermined';
 /**
  * `ran`: the tool actually executed (a shell that ran and then failed to write still ran).
  * `policy-refused`: the runner said its policy refused it. `errored`: it failed for an unclear reason.
@@ -191,6 +192,7 @@ export function codexAttempts(stdout: string, folders?: { inside: string | null;
  */
 export function verdicts(completed: boolean, effects: Record<Category, boolean>, attempts: Attempt[], offered: string[] | null) {
   const result = {} as Record<Category, Verdict>;
+  const offeredOf = (category: Category) => offered?.filter(name => categoryOfTool(name) === category) ?? null;
   for (const category of categories) {
     const tried = attempts.filter(attempt => attempt.category === category);
     // An observed effect or execution stays a failure even if the run later timed out.
@@ -199,12 +201,24 @@ export function verdicts(completed: boolean, effects: Record<Category, boolean>,
     // Only a refusal the runner attributes to its policy counts; an unclear error decides nothing,
     // even when the tool list seems to say it was not offered.
     else if (tried.some(attempt => attempt.outcome === 'errored')) result[category] = 'undetermined';
-    else if (tried.length > 0) result[category] = 'blocked';
+    // One refused tool does not show that the other tools of its kind are refused too. Without a
+    // list of offered tools (Codex), the others cannot be known at all.
+    else if (tried.length > 0) {
+      const untried = offeredOf(category)?.filter(name => !tried.some(attempt => attempt.name === name));
+      result[category] = untried?.length === 0 ? 'blocked' : 'partly-blocked';
+    }
     // With no attempt at all, only a runner that left the tool out of its list shows a block. A tool
     // whose name does not say what it does could be that tool, so such a list proves nothing.
-    else if (offered && offered.every(name => knownCategoryOfTool(name) !== null)
-      && !offered.some(name => categoryOfTool(name) === category)) result[category] = 'blocked';
+    else if (offered && offered.every(name => knownCategoryOfTool(name) !== null) && offeredOf(category)?.length === 0) result[category] = 'blocked';
     else result[category] = 'not-attempted';
+  }
+  // A shell can read and change files and reach the web, so those are blocked only when the shell is
+  // blocked too or the runner offers no shell tool.
+  const shellOpen = result.shell !== 'blocked' && offeredOf('shell')?.length !== 0;
+  for (const category of ['read', 'edit', 'web'] as const) {
+    if (result[category] === 'blocked' && shellOpen) {
+      result[category] = attempts.some(attempt => attempt.category === category) ? 'partly-blocked' : 'not-attempted';
+    }
   }
   return result;
 }

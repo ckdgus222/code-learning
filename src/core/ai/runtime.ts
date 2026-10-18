@@ -66,6 +66,8 @@ export const AGY_NO_TOOLS_HOOK = {
   'code-learning-no-tools': { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command',
     command: `echo '${JSON.stringify({ decision: 'deny', reason: AGY_NO_TOOLS_REASON })}'`, timeout: 5 }] }] },
 };
+/** No MCP server, in the format of the official MCP docs (`mcpServers`). */
+export const AGY_NO_MCP_SERVERS = { mcpServers: {} };
 // No O_TRUNC: the file is emptied only after it is shown to be a file of its own.
 const NO_FOLLOW_WRITE = constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW;
 
@@ -102,7 +104,9 @@ async function writePrivateFile(file: string, text: string): Promise<void> {
  * Restricts agy under the app-only HOME before every run, so the restrictions hold even if agy
  * rewrites its files. settings.json gets the deny rules (deny outranks ask and allow, official
  * permissions docs) and loses any hooks, since a hook runs commands; other keys agy wrote there
- * itself, such as trusted folders, are kept. hooks.json then holds only the app's hook.
+ * itself, such as trusted folders, are kept. hooks.json then holds only the app's hook, and
+ * mcp_config.json no MCP server. A run's working folder, where agy also reads `.agents/`, is a new
+ * empty folder the app makes, so agy must never run in a user's project.
  */
 export async function restrictAgy(home: string): Promise<void> {
   const settingsFile = path.join(await privateFolder(home, ['.gemini', 'antigravity-cli']), 'settings.json');
@@ -122,8 +126,10 @@ export async function restrictAgy(home: string): Promise<void> {
   const updated: Record<string, unknown> = { ...settings, permissions: { ...permissions, deny: [...new Set([...deny, ...AGY_DENY_RULES])] } };
   delete updated.hooks;
   await writePrivateFile(settingsFile, `${JSON.stringify(updated, null, 2)}\n`);
-  const hooksFile = path.join(await privateFolder(home, ['.gemini', 'config']), 'hooks.json');
-  await writePrivateFile(hooksFile, `${JSON.stringify(AGY_NO_TOOLS_HOOK, null, 2)}\n`);
+  const configFolder = await privateFolder(home, ['.gemini', 'config']);
+  await writePrivateFile(path.join(configFolder, 'hooks.json'), `${JSON.stringify(AGY_NO_TOOLS_HOOK, null, 2)}\n`);
+  // A configured MCP server is a command agy starts by itself; the hook only sees tool calls.
+  await writePrivateFile(path.join(configFolder, 'mcp_config.json'), `${JSON.stringify(AGY_NO_MCP_SERVERS, null, 2)}\n`);
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -206,7 +212,7 @@ export class LocalAiRuntime {
       await chmod(home, 0o700);
       if (provider === 'antigravity') await restrictAgy(home);
     } catch {
-      throw new AppError('AI_UNAVAILABLE', `앱 전용 ${provider === 'codex' ? 'Codex' : 'Antigravity'} 위치를 준비하지 못했습니다. 폴더 권한${provider === 'antigravity' ? '과 설정 파일(settings.json, hooks.json)' : ''}을 확인해 주세요.`);
+      throw new AppError('AI_UNAVAILABLE', `앱 전용 ${provider === 'codex' ? 'Codex' : 'Antigravity'} 위치를 준비하지 못했습니다. 폴더 권한${provider === 'antigravity' ? '과 설정 파일(settings.json, hooks.json, mcp_config.json)' : ''}을 확인해 주세요.`);
     }
     return provider === 'codex' ? { ...localProcessEnv(), CODEX_HOME: home } : { ...localProcessEnv(), HOME: home };
   }
@@ -247,9 +253,18 @@ export class LocalAiRuntime {
           connections.push({ ...base, installation: 'unusable', message: (error as AppError).message });
           continue;
         }
+        // The two CLIs with an app-only home check their version inside the same fence as a question
+        // (agy otherwise tries to update itself here). Claude Code has none and is not used to send.
+        let start = launch;
+        if (env) {
+          try { start = await fencedLaunch(launch, { appHome: provider === 'codex' ? this.codexHome : this.antigravityHome, runDirectory: directory }); } catch (error) {
+            connections.push({ ...base, installation: 'unusable', message: (error as AppError).message });
+            continue;
+          }
+        }
         try {
-          const output = await runProcess({ executable: launch.executable, args: [...launch.prefix, '--version'], cwd: directory, signal,
-            timeoutMs: 8000, maxOutputBytes: 16 * 1024, env });
+          const output = await runProcess({ executable: start.executable, args: [...start.prefix, '--version'], cwd: directory, signal,
+            timeoutMs: 8000, maxOutputBytes: 16 * 1024, env: env && { ...env, TMPDIR: directory } });
           const version = output.stdout.match(/(?:^|\s)(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)(?:\s|$)/)?.[1] ?? null;
           if (output.exitCode !== 0 || !version) throw new Error('unusable');
           this.launches.set(provider, launch);
