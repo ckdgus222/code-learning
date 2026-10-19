@@ -36,6 +36,12 @@ try {
       coloured: !!keyword && getComputedStyle(keyword).color !== getComputedStyle(document.querySelector('.cm-line')).color };
   });
   assert.deepEqual(reader, { tabindex: '0', coloured: true });
+  // The search package is in the bundle too: Cmd+F from the code opens the Korean search panel.
+  await page.locator('.cm-content').focus();
+  await page.keyboard.press('Meta+f');
+  assert.equal(await page.locator('.cm-search input[name="search"]').getAttribute('aria-label'), '찾기');
+  await page.keyboard.press('Escape');
+  await page.locator('.cm-search').waitFor({ state: 'detached' });
   assert.equal(await readFile(path.join(project, 'sample.ts'), 'utf8'), text);
   const csp = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content');
   assert.ok(csp.includes("connect-src 'none'"));
@@ -65,7 +71,7 @@ try {
   assert.match(await cancellation.getAttribute('class'), /(?:^|\s)notice--info(?:\s|$)/);
   assert.equal(await page.getByRole('alert').count(), 0);
   await app.close(); app = undefined;
-  const report = { passed: true, checks: ['packaged app startup', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'source unchanged', 'packaged CSP', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel'], state };
+  const report = { passed: true, checks: ['packaged app startup', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel'], state };
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

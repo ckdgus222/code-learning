@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Evidence, ProjectView, SourceView, StartCandidate } from '../shared/contracts';
 import { useSelection, type View } from './selection';
-import { Reader } from './reader';
+import { Reader, type ReaderHandle } from './reader';
 import { AiPanel } from './ai-panel';
 import { Flow } from './flow';
 import './styles.css';
@@ -17,6 +17,8 @@ const candidateReasons: Record<StartCandidate['reason'], string> = {
   'entry-name': '이름이 index·main·app인 파일',
   exported: '다른 파일에서 쓰도록 내보낸(export) 함수',
 };
+// Code text size in px (plan 7.3: 14–16px to start, adjustable).
+const CODE_SIZE = { min: 12, start: 15, max: 20 };
 
 function App() {
   const [project, setProject] = useState<ProjectView | null>(null);
@@ -34,6 +36,10 @@ function App() {
   const [search, setSearch] = useState('');
   const [panel, setPanel] = useState<'explain' | 'ask'>('explain');
   const [panelOpen, setPanelOpen] = useState(true);
+  // Reading settings live as long as the window: they stay across files and views, not across restarts.
+  const [codeSize, setCodeSize] = useState(CODE_SIZE.start);
+  const [wrap, setWrap] = useState(false);
+  const reader = useRef<ReaderHandle>(null);
   const request = useRef(0);
   const revision = useRef(0);
   const { view, setView, symbolId, stepId, selectSymbol, selectStep } = useSelection();
@@ -248,6 +254,15 @@ function App() {
             <span className="badge">읽기 전용</span>
             {symbol && <button className="btn btn--small" onClick={() => setView('flow')}>이 함수 흐름으로 보기</button>}
             <button className="btn btn--small" disabled={busy} onClick={() => readFile(source.fileId)}>파일 다시 읽기</button>
+            <div className="reader__tools" role="group" aria-label="읽기 설정">
+              <button className="btn btn--small" aria-keyshortcuts="Meta+F" onClick={() => reader.current?.openSearch()}>찾기 ⌘F</button>
+              <button className="btn btn--small" aria-label="코드 글자 작게" disabled={codeSize <= CODE_SIZE.min}
+                onClick={() => setCodeSize(size => size - 1)}>가−</button>
+              <span className="reader__size" aria-live="polite">코드 {codeSize}px</span>
+              <button className="btn btn--small" aria-label="코드 글자 크게" disabled={codeSize >= CODE_SIZE.max}
+                onClick={() => setCodeSize(size => size + 1)}>가+</button>
+              <button className="btn btn--small" aria-pressed={wrap} onClick={() => setWrap(on => !on)}>줄바꿈</button>
+            </div>
           </div>
           <div className="reader__body">
             <section aria-label="구문과 코드" className="outline">
@@ -268,7 +283,7 @@ function App() {
             </section>
             <div className="code">
               {evidence && <p data-testid="evidence-range" className="evidence">근거: {source.relativePath} · {evidence.startLine}–{evidence.endLine}줄 · UTF-16 [{evidence.startUtf16}, {evidence.endUtf16})</p>}
-              <Reader source={source} evidence={evidence} />
+              <Reader ref={reader} source={source} evidence={evidence} codeSize={codeSize} wrap={wrap} />
             </div>
           </div>
         </div>)}
