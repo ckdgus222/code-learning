@@ -147,7 +147,7 @@ function App() {
       {error && <p role="alert" className="notice">{error}</p>}
       {notice && <p role="status" className="notice notice--info">{notice}</p>}
       {project && watchError && <p role="alert" className="notice notice--warn"><b>변경 감지 제한:</b> 폴더를 다시 열어 주세요. 근거를 사용할 때 파일을 다시 확인합니다.</p>}
-      {project && stale && <p role="alert" className="notice notice--warn"><b>코드 변경 또는 창 복귀:</b> 다시 확인 필요. 이전 코드 기준의 강조를 해제했습니다. 파일을 다시 읽으면 최신 코드로 이어서 볼 수 있어요.</p>}
+      {project && stale && <p role="alert" className="notice notice--warn"><b>코드 변경 또는 잠자기 복귀:</b> 다시 확인 필요. 이전 코드 기준의 강조를 해제했습니다. 파일을 다시 읽으면 최신 코드로 이어서 볼 수 있어요.</p>}
     </div>}
 
     {!project ? <main className="welcome">
@@ -187,7 +187,7 @@ function App() {
       <main className="center">
         {view === 'overview' && <div className="page">
           <h2 className="page__title">한눈에 보기</h2>
-          {overviewStale && <p className="notice notice--warn overview-stale"><b>다시 확인 필요:</b> 프로젝트를 연 뒤 파일이 바뀌었거나 창으로 돌아왔어요. 아래 소개와 후보는 폴더를 열 때 읽은 내용이에요. 폴더를 다시 열면 새로 계산해요.</p>}
+          {overviewStale && <p className="notice notice--warn overview-stale"><b>다시 확인 필요:</b> 프로젝트를 연 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 아래 소개와 후보는 폴더를 열 때 읽은 내용이에요. 폴더를 다시 열면 새로 계산해요.</p>}
           <div className="cards">
             <section className="card" aria-labelledby="overview-intro">
               <h3 id="overview-intro">이 프로젝트는 무엇을 하나요?</h3>

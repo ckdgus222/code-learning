@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, type IpcMainInvokeEvent } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { mkdir, realpath } from 'node:fs/promises';
@@ -110,20 +110,22 @@ function createWindow() {
   contents.session.on('will-download', event => event.preventDefault());
   contents.on('render-process-gone', () => { void dispose(); });
   window.on('closed', () => { window = null; void dispose(); });
-  window.on('focus', () => {
-    if (session) {
-      projectRevision++;
-      aiContext?.clear();
-      void learning.close();
-      contents.send(channels.event, { projectId: session.id, kind: 'changed' });
-    }
-  });
   void window.loadURL(rendererUrl);
 }
 
 app.whenReady().then(async () => {
   await mkdir(app.getPath('userData'), { recursive: true });
   storage = new ProjectStorage(path.join(app.getPath('userData'), 'learning.sqlite'));
+  // The watcher may miss changes made while the Mac slept (plan 15.6), so waking up asks for a re-check.
+  // Returning to the window does not: the watcher keeps running in the background, and evidence and
+  // every AI stage recheck file hashes before use.
+  powerMonitor.on('resume', () => {
+    if (!session || !window) return;
+    projectRevision++;
+    aiContext?.clear();
+    void learning.close();
+    window.webContents.send(channels.event, { projectId: session.id, kind: 'changed' });
+  });
   handle(channels.open, async argument => {
     z.undefined().parse(argument);
     if (opening) throw new AppError('INVALID_REQUEST', '폴더 선택 작업이 이미 진행 중입니다.');
@@ -152,8 +154,12 @@ app.whenReady().then(async () => {
       });
       session = next;
       try {
+        // The screen does not know this project yet, so it ignores a change or wake-up notice sent during
+        // the scan and would show a scan older than the files.
+        const revision = projectRevision;
         const project = await next.open();
         if (generation !== requestedAt || session !== next) throw new AppError('CANCELLED', '이전 프로젝트 결과를 버렸습니다.');
+        if (projectRevision !== revision) throw new AppError('CHANGED', '폴더를 여는 동안 파일이 바뀌었거나 잠자기에서 돌아왔습니다. 다시 열어 주세요.');
         aiContext = new ProjectAiContext(root, project);
         return project;
       } catch (error) {
