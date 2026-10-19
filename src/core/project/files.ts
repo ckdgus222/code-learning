@@ -12,7 +12,8 @@ const MAX_ENTRIES = 5000;
 const MAX_DEPTH = 20;
 const excludedDirs = new Set(['.git', '.svn', '.hg', '.ssh', '.aws', '.azure', '.gcloud', '.codex', '.claude', '.gemini',
   '.idea', '.vscode', 'node_modules', 'vendor', 'dist', 'build', 'out', 'coverage', '.next', '.venv', 'venv', '__pycache__']);
-const textExtensions = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.json', '.md', '.txt', '.py', '.java', '.dart',
+/** The file types a project scan lists; anything else is excluded as unsupported or binary. */
+export const textExtensions = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.json', '.md', '.txt', '.py', '.java', '.dart',
   '.yaml', '.yml', '.toml', '.css', '.html', '.sql', '.conf']);
 const textNames = new Set(['Dockerfile', 'Makefile', 'LICENSE', '.gitignore']);
 type Rules = { base: string; matcher: Ignore }[];
@@ -141,11 +142,21 @@ export async function assertAllowed(root: string, relative: string): Promise<voi
   }
 }
 
-export async function readAllowed(root: string, relative: string) {
+export async function readAllowed(root: string, relative: string, limit = MAX_FILE_BYTES) {
   await assertAllowed(root, relative);
-  const result = await readStable(root, relative);
+  const result = await readStable(root, relative, limit);
   await assertAllowed(root, relative);
   return result;
+}
+
+/** The same policy and path checks as reading, without reading: the file is still allowed and a plain file. */
+export async function assertAllowedFile(root: string, relative: string): Promise<void> {
+  await assertAllowed(root, relative);
+  const { absolute, fileIdentity } = await inspectPath(root, relative);
+  const stat = await lstat(absolute);
+  if (!stat.isFile() || stat.nlink !== 1 || `${stat.dev}:${stat.ino}` !== fileIdentity) {
+    throw new AppError('NOT_ALLOWED', '일반 파일만 읽을 수 있습니다. 링크·특수 파일은 제외합니다.');
+  }
 }
 
 export async function scanProject(root: string, projectId: string): Promise<ProjectFiles> {

@@ -1,14 +1,17 @@
 import { parentPort, workerData } from 'node:worker_threads';
-import type { Evidence, ProjectView, Result, SourceView } from '../shared/contracts';
+import type { Evidence, ProjectFile, ProjectMap, ProjectView, Result, SourceView } from '../shared/contracts';
 import { AppError, failure } from '../shared/errors';
 import { readAllowed, scanProject } from '../core/project/files';
 import { analyzeSource } from '../core/analysis/syntax';
 import { buildOverview } from '../core/analysis/overview';
+import { buildProjectMap, MAP_LIMITS } from '../core/analysis/project-map';
 
 export interface WorkerRequest { id: number; kind: 'scan' | 'read' | 'evidence'; target?: string }
-export interface WorkerResponse { id: number; result: Result<ProjectView | SourceView | { source: SourceView; evidence: Evidence }> }
+export interface WorkerResponse { id: number; result: Result<ProjectView | SourceView | ProjectMap | { source: SourceView; evidence: Evidence }> }
 
-const { root, projectId } = workerData as { root: string; projectId: string };
+const { root, projectId, map } = workerData as {
+  root: string; projectId: string; map?: { files: ProjectFile[]; starts: string[]; stop: SharedArrayBuffer };
+};
 let project: ProjectView | undefined;
 const sources = new Map<string, SourceView>();
 
@@ -51,3 +54,13 @@ parentPort!.on('message', async (request: WorkerRequest) => {
   } catch (error) { result = failure(error); }
   parentPort!.postMessage({ id: request.id, result } satisfies WorkerResponse);
 });
+
+// A map worker is started only to draw the project map and reports one result. The session's own
+// worker keeps answering reads meanwhile, so opening files does not wait for the map. It stops itself
+// when the session raises the shared flag, because terminating it mid-parse would abort the app.
+if (map) {
+  const stop = new Int32Array(map.stop);
+  buildProjectMap(root, projectId, map.files, map.starts, MAP_LIMITS, () => Atomics.load(stop, 0) === 1).then(
+    value => parentPort!.postMessage({ id: 0, result: { ok: true, value } } satisfies WorkerResponse),
+    error => parentPort!.postMessage({ id: 0, result: failure(error) } satisfies WorkerResponse));
+}

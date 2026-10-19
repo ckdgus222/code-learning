@@ -1,14 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Evidence, ProjectView, SourceView, StartCandidate } from '../shared/contracts';
+import type { Evidence, MapImport, ProjectView, SourceView, StartCandidate } from '../shared/contracts';
 import { useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
 import { AiPanel } from './ai-panel';
 import { Flow } from './flow';
+import { ProjectMapView, type MapEntry } from './project-map';
+import { matchImport } from './map-layout';
 import './styles.css';
 
 const views: { id: View; label: string }[] = [
-  { id: 'overview', label: '한눈에 보기' }, { id: 'flow', label: '흐름 따라가기' },
+  { id: 'overview', label: '한눈에 보기' }, { id: 'map', label: '프로젝트 지도' }, { id: 'flow', label: '흐름 따라가기' },
   { id: 'code', label: '코드 읽기' }, { id: 'changes', label: '달라진 내용' },
 ];
 const candidateReasons: Record<StartCandidate['reason'], string> = {
@@ -42,6 +44,12 @@ function App() {
   const reader = useRef<ReaderHandle>(null);
   const request = useRef(0);
   const revision = useRef(0);
+  // A second notice changes no other state (stale is already set), so this redraws the screen for the map.
+  const [, setRevisionShown] = useState(0);
+  // The map is drawn by its own worker, so it has its own request counter: reads may go on meanwhile.
+  const [projectMap, setProjectMap] = useState<MapEntry | null>(null);
+  const [mapping, setMapping] = useState(false);
+  const mapRequest = useRef(0);
   const { view, setView, symbolId, stepId, selectSymbol, selectStep } = useSelection();
   const symbol = source?.analysis.symbols.find(item => item.id === symbolId);
   const step = symbol?.steps.find(item => item.id === stepId);
@@ -49,6 +57,7 @@ function App() {
   useEffect(() => window.learning.onProjectEvent(event => {
     if (event.projectId === project?.id) {
       revision.current++;
+      setRevisionShown(revision.current);
       setStale(true);
       setOverviewStale(true);
       setEvidence(null);
@@ -58,6 +67,10 @@ function App() {
 
   // A newly opened project starts from its overview, not the previous project's view.
   useEffect(() => setView('overview'), [project?.id, setView]);
+  // The map is drawn the first time it is looked at after a folder opens.
+  useEffect(() => {
+    if (view === 'map' && project && !projectMap && !mapping) void buildMap();
+  }, [view, project]);
 
   async function openProject() {
     const current = ++request.current;
@@ -66,9 +79,11 @@ function App() {
     if (current !== request.current) return;
     setBusy(false);
     if (!result.ok) {
-      setError(result.message); setProject(null); setSource(null); setEvidence(null); selectSymbol(null); return;
+      setError(result.message); setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap(); return;
     }
     if (!result.value) return;
+    // Reopening the same folder keeps the project ID but gives every file a new ID, so the map goes too.
+    forgetMap();
     setProject(result.value); setSource(null); setEvidence(null); setStale(false); setOverviewStale(false); setWatchError(false); setSearch(''); selectSymbol(null);
   }
 
@@ -114,9 +129,44 @@ function App() {
     selectStep(nextStep);
   }
 
+  function forgetMap() { mapRequest.current++; setProjectMap(null); setMapping(false); }
+  async function buildMap() {
+    if (!project) return;
+    const current = ++mapRequest.current;
+    const atRevision = revision.current;
+    setMapping(true); setError('');
+    const result = await window.learning.projectMap({ projectId: project.id });
+    if (current !== mapRequest.current) return;
+    setMapping(false);
+    if (!result.ok) { if (result.code !== 'CANCELLED') setError(result.message); return; }
+    // A change notice that arrived while the map was drawn keeps it marked for a re-check.
+    setProjectMap({ map: result.value, revision: atRevision, build: current });
+  }
+  async function cancelMap() {
+    if (!project) return;
+    mapRequest.current++;
+    setMapping(false);
+    const result = await window.learning.cancelProjectMap({ projectId: project.id });
+    if (!result.ok) setError(result.message);
+  }
+  // Like a start candidate: the import is highlighted only while the file has the hash it had for the map.
+  async function showImport(item: MapImport) {
+    // Reading now would drop a folder that is still opening, as the file list's busy lock prevents.
+    if (busy) return;
+    setView('code');
+    const atRevision = revision.current;
+    const opened = await readFile(item.fromFileId);
+    // A change notice during the read (a wake from sleep included) leaves the code to be checked again.
+    if (!opened || revision.current !== atRevision) return;
+    const found = matchImport(opened, item);
+    if (found.status === 'found') setEvidence(found.evidence);
+    else setNotice(found.status === 'changed' ? '지도를 만든 뒤 이 파일이 바뀌어 import 위치를 강조하지 않았어요. 지도를 다시 만들어 주세요.'
+      : `이 import(${item.startLine}행)는 코드 분석 범위 밖이라 강조하지 못했어요.`);
+  }
+
   async function cancel() {
     const current = ++request.current;
-    setProject(null); setSource(null); setEvidence(null); selectSymbol(null);
+    setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap();
     setBusy(true); setError(''); setNotice('');
     const result = await window.learning.cancel();
     if (current !== request.current) return;
@@ -160,7 +210,7 @@ function App() {
       </ol>
       <ul className="welcome__promises">
         <li>원본 파일을 수정하지 않아요.</li>
-        <li>AI 연결 미검증: 도구 접근·설정 분리 확인 전에는 외부 AI에 코드를 보내지 않습니다.</li>
+        <li>AI에는 질문 탭에서 동의한 질문만 보내요. 알려진 한계는 README에 있어요.</li>
       </ul>
     </main> : <>
       <aside className="sidebar" aria-label="보기와 파일">
@@ -223,13 +273,19 @@ function App() {
               <h3>확인한 범위와 모르는 부분</h3>
               <ul className="checklist">
                 <li><span className="tag tag--ok">확인됨</span>파일 목록과 TS/JS 함수 안의 구문 위치{intro && ', README에 적힌 소개 문구'}</li>
-                <li><span className="tag tag--unknown">확인하지 못함</span>프로젝트 목적(문서 내용이 코드와 맞는지 포함), 기능의 실제 실행 순서, 구성 지도</li>
+                <li><span className="tag tag--unknown">확인하지 못함</span>프로젝트 목적(문서 내용이 코드와 맞는지 포함), 기능의 실제 실행 순서. 파일끼리 가져다 쓰는 관계는 ‘프로젝트 지도’에서 볼 수 있어요.</li>
               </ul>
               {project.warnings.map(message => <p key={message} className="hint">{message}</p>)}
               <p className="hint">새 파일 목록은 폴더를 다시 열어 갱신합니다. 현재 파일·제외 규칙의 변경은 읽기 전에 다시 확인합니다.</p>
             </section>
           </div>
         </div>}
+
+        {view === 'map' && <ProjectMapView project={project} entry={projectMap}
+          stale={projectMap !== null && projectMap.revision !== revision.current} mapping={mapping}
+          onBuild={() => void buildMap()} onCancel={() => void cancelMap()}
+          locked={busy} onOpenFile={fileId => { if (busy) return; setView('code'); void readFile(fileId); }}
+          onShowImport={item => void showImport(item)} />}
 
         {view === 'flow' && <Flow source={source} symbol={symbol} step={step} evidence={evidence} locked={busy || stale}
           onSymbol={item => { selectSymbol(item.id); void showEvidence(item.evidence, null); }}
