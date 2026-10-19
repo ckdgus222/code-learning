@@ -9,10 +9,18 @@ import { fencedLaunch } from './fence';
 import type { StageRequest, StageResponse } from './workflow';
 
 // The user opened the local worker on 2026-10-19 with the C04 gaps stated as known limits
-// (README ‘알려진 한계’). The single-provider modes stay closed: they were never tested.
-export const LOCAL_WORKER_READY = '질문을 보낼 수 있어요. 알려진 한계: 도구 차단은 Codex 0.163.0·Antigravity 1.4.2에서 시험한 범위만 확인했어요. '
+// (README ‘알려진 한계’), and the same day the Codex and Gemini single modes for faster answers.
+// Claude Code stays closed: it has no stage runner and no isolation checks.
+const KNOWN_LIMITS = '알려진 한계: 도구 차단은 Codex 0.163.0·Antigravity 1.4.2에서 시험한 범위만 확인했어요. '
   + '울타리는 홈 폴더 읽기와 허용 폴더 밖 쓰기를 막지만 네트워크는 막지 않아요. 자세한 내용은 README의 ‘알려진 한계’에 있어요.';
+export const LOCAL_WORKER_READY = `질문을 보낼 수 있어요. ${KNOWN_LIMITS}`;
+export const SINGLE_READY = `질문을 보낼 수 있어요. 한 AI가 바로 설명하고 다른 AI의 대조는 없어요. ${KNOWN_LIMITS}`;
 export const LOCAL_WORKER_NEEDS_BOTH = '로컬 워커에는 Codex와 Antigravity가 둘 다 필요해요. 먼저 로컬 AI 설치 상태를 확인해 주세요.';
+export const SINGLE_NEEDS = {
+  codex: 'Codex 단독에는 Codex가 필요해요. 먼저 로컬 AI 설치 상태를 확인해 주세요.',
+  antigravity: 'Gemini 단독에는 Antigravity가 필요해요. 먼저 로컬 AI 설치 상태를 확인해 주세요.',
+};
+export const CLAUDE_CODE_CLOSED = 'Claude Code 단독은 아직 준비 중이에요.';
 const providers: { provider: ProviderId; binary: string }[] = [
   { provider: 'codex', binary: 'codex' }, { provider: 'antigravity', binary: 'agy' }, { provider: 'claude-code', binary: 'claude' },
 ];
@@ -285,29 +293,31 @@ export class LocalAiRuntime {
           connections.push({ ...base, installation: 'unusable', message: '실행 파일은 있지만 버전을 확인하지 못했습니다.' });
         }
       }
-      const localWorkerReady = this.localWorkerReady();
       return { checkedAt: new Date().toISOString(), providers: connections,
-        modes: [
-          { mode: 'local-worker', ready: localWorkerReady, reason: localWorkerReady ? LOCAL_WORKER_READY : LOCAL_WORKER_NEEDS_BOTH },
-          ...providers.map(({ provider }) => ({ mode: provider, ready: false, reason: 'AI 단독 실행은 후속 연결 단계입니다.' })),
-        ] };
+        modes: (['local-worker', ...providers.map(({ provider }) => provider)] as const).map(mode => {
+          const blocker = this.blocker(mode);
+          return { mode, ready: !blocker, reason: blocker ?? (mode === 'local-worker' ? LOCAL_WORKER_READY : SINGLE_READY) };
+        }) };
     } finally { await rm(directory, { recursive: true, force: true }); }
   }
 
-  /** Both workers were found by this run's installation check (`launches` is cleared when one starts). */
-  private localWorkerReady(): boolean {
-    return this.launches.has('codex') && this.launches.has('antigravity');
+  /** Why a mode cannot send now, or null. Only this run's installation check counts (`launches` is cleared when one starts). */
+  private blocker(mode: LearningMode): string | null {
+    if (mode === 'claude-code') return CLAUDE_CODE_CLOSED;
+    if (mode === 'local-worker') return this.launches.has('codex') && this.launches.has('antigravity') ? null : LOCAL_WORKER_NEEDS_BOTH;
+    return this.launches.has(mode) ? null : SINGLE_NEEDS[mode];
   }
 
   assertReady(mode: LearningMode): void {
-    if (mode !== 'local-worker') throw new AppError('AI_UNAVAILABLE', 'AI 단독 실행은 아직 준비 중입니다.');
     // Deliberately no environment/UI override. Login is not checked here: a missing one fails at the
     // first stage that calls that provider (with only Antigravity missing, after Codex has run).
-    if (!this.localWorkerReady()) throw new AppError('AI_UNAVAILABLE', LOCAL_WORKER_NEEDS_BOTH);
+    const blocker = this.blocker(mode);
+    if (blocker) throw new AppError('AI_UNAVAILABLE', blocker);
   }
 
   async run(request: StageRequest): Promise<StageResponse> {
-    this.assertReady('local-worker');
+    // The stage's own CLI must have been found by this run's installation check.
+    this.assertReady(request.provider);
     return this.executeVerifiedStage(request);
   }
 

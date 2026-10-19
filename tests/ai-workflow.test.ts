@@ -84,6 +84,53 @@ describe('local worker workflow with fake adapters', () => {
     ]);
   });
 
+  it.each(['codex', 'antigravity'] as const)('%s single mode runs one explaining stage by that CLI with only the captured code, marked unchecked', async mode => {
+    const f = fixture();
+    // The real capture adds the selection's whole file; a single mode sends that and nothing more.
+    f.snapshot.files = [{ evidence: { ...f.snapshot.evidence, id: randomUUID(), startUtf16: 0, endUtf16: 18 }, relativePath: 'src/example.ts', code: 'const answer = 42;' }];
+    const result = await f.finish({ ...f.request, mode });
+    expect(result.kind).toBe('completed');
+    if (result.kind !== 'completed') throw new Error('expected completion');
+    expect(f.run.mock.calls.map(([input]) => [input.stage, input.provider])).toEqual([['explaining', mode]]);
+    expect(f.expand).not.toHaveBeenCalled();
+    expect(context(f.run.mock.calls[0][0]).files).toEqual(f.snapshot.files);
+    expect(f.events.filter(e => e.kind === 'progress').map(e => e.phase)).toEqual(['collecting', 'explaining', 'validating']);
+    expect(result.result.review).toBe('AI 대조 없음');
+    expect(result.result.models.map(model => [model.stage, model.provider, model.requestedModel]))
+      .toEqual([['explaining', mode, mode === 'antigravity' ? GEMINI_MODEL : null]]);
+    expect(result.result.limitations).toContain('단독 방식: 관련 파일을 더 읽지 않았고, 다른 AI의 대조도 없습니다.');
+  });
+
+  it('tells only the local worker that related files can be requested', async () => {
+    const worker = fixture();
+    await worker.finish();
+    const single = fixture();
+    await single.finish({ ...single.request, mode: 'codex' });
+    for (const [input] of worker.run.mock.calls) {
+      expect(input.prompt).toContain('연관 파일은 availableFiles의 ID로 요청하면 앱이 읽어서 files에 제공한다.');
+      expect(input.prompt).not.toContain('관련 파일을 더 요청할 수 없다');
+    }
+    const prompt = single.run.mock.calls[0][0].prompt;
+    expect(prompt).toContain('이번 방식에서는 관련 파일을 더 요청할 수 없다.');
+    expect(prompt).not.toContain('availableFiles의 ID로 요청하면');
+    expect(prompt).not.toContain('availableFiles에서 다시 요청한다');
+  });
+
+  it.each(['codex', 'antigravity'] as const)('rejects unrelated evidence in %s single mode', async mode => {
+    const f = fixture();
+    f.run.mockImplementation(async () => ({ reportedModel: null,
+      value: { ...f.explanation, claims: [{ kind: 'code', text: '틀린 근거', evidenceIds: [randomUUID()] }] } }));
+    expect(await f.finish({ ...f.request, mode })).toMatchObject({ kind: 'failed', error: { code: 'AI_RESPONSE' } });
+    expect(f.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses Claude Code single before capturing any code', () => {
+    const f = fixture();
+    expect(() => f.workflow.start({ ...f.request, mode: 'claude-code' })).toThrow('Claude Code 단독 연결은 아직 준비 중입니다.');
+    expect(f.capture).not.toHaveBeenCalled();
+    expect(f.run).not.toHaveBeenCalled();
+  });
+
   it('sends Codex stages a schema without oneOf', async () => {
     // Codex passes --output-schema on as an OpenAI strict schema, which lists anyOf but not oneOf.
     // The first real local worker run (W1) failed at the reviewing stage while the claims union was a oneOf.

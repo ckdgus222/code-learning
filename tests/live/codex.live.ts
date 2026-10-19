@@ -1,7 +1,7 @@
 // Live Codex connection checks C01-C03 (plan 12.4) through the app's own runtime code.
 // This sends a small non-secret fixture with the user's Codex account, so it is excluded from
 // `npm test` and runs only through `npm run test:codex-live`. Most checks call the runtime's stage
-// executor directly; W1 sends one question through the opened local worker, as the app does.
+// executor directly; W1~W3 send one question through the app workflow in each open mode, as the app does.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -13,7 +13,7 @@ import { runProcess, type ProcessRequest } from '../../src/core/ai/process';
 import { LocalWorkerWorkflow, type StageRequest, type StageResponse } from '../../src/core/ai/workflow';
 import { ProjectAiContext } from '../../src/core/ai/context';
 import { readAllowed, scanProject } from '../../src/core/project/files';
-import { organizationSchema, type Explanation, type LearningEvent } from '../../src/shared/ai';
+import { organizationSchema, type Explanation, type LearningEvent, type LearningMode, type ModelRun } from '../../src/shared/ai';
 import type { Evidence, SourceView } from '../../src/shared/contracts';
 import { categories, codexAttempts, isolationFixture, placedKinds, placedVerdicts, verdicts, type Category, type Place } from './isolation';
 import { recordedFailure, rethrown } from './records';
@@ -225,10 +225,11 @@ describe('Codex connection through the app runtime (real account, non-secret fix
     });
   });
 
-  // One real question through the opened local worker, as the app sends it: 3 model requests (Codex
-  // organizes, Gemini explains, Codex checks). Run it after C01, which finds both workers. Only the
-  // outcome, phases, models and whether every cited evidence resolves are recorded, never the text.
-  it('W1: one question goes through the whole local worker and its answer cites evidence the app can find', async () => {
+  // One real question through the app workflow, as the app sends it. W1 is the local worker (3 model
+  // requests: Codex organizes, Gemini explains, Codex checks); W2 and W3 are the single modes (1 request
+  // each). Run them after C01, which finds the CLIs. Only the outcome, phases, models, time and whether
+  // every cited evidence resolves are recorded, never the text.
+  async function askOnce(mode: LearningMode, key: string, stages: [ModelRun['stage'], ModelRun['provider']][]) {
     stderrTail = '';
     stdoutText = '';
     const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'worker-live-')));
@@ -255,14 +256,14 @@ describe('Codex connection through the app runtime (real account, non-secret fix
         expand: (snapshot, ids, signal) => context.expand(snapshot, ids, signal),
         revalidate: (snapshot, signal) => context.revalidate(snapshot, signal),
       });
-      await record('W1_worker', async () => {
+      await record(key, async () => {
         const { jobId } = workflow!.start({ projectId: project.id, evidenceId: evidence.id, expectedFileHash: hash,
-          question: 'count가 limit보다 크면 무엇을 돌려주나요? limit 값은 얼마인가요?', mode: 'local-worker', consent: true });
+          question: 'count가 limit보다 크면 무엇을 돌려주나요? limit 값은 얼마인가요?', mode, consent: true });
         await new Promise<void>((resolve, reject) => {
           const deadline = Date.now() + 280_000;
           const timer = setInterval(() => {
             if (events.some(event => event.jobId === jobId && event.kind !== 'progress')) { clearInterval(timer); resolve(); }
-            else if (Date.now() > deadline) { clearInterval(timer); reject(new Error('the local worker did not finish in time')); }
+            else if (Date.now() > deadline) { clearInterval(timer); reject(new Error('the question did not finish in time')); }
           }, 100);
         });
         return { jobId, end: events.find(event => event.jobId === jobId && event.kind !== 'progress')!,
@@ -273,7 +274,7 @@ describe('Codex connection through the app runtime (real account, non-secret fix
           codexError: classify(codexErrorMessages(stdoutText)), phases };
         const cited = citedIds(end.result.explanation);
         return {
-          outcome: end.kind, phases, models: end.result.models,
+          outcome: end.kind, review: end.result.review, phases, models: end.result.models,
           sources: end.result.sources.map(item => item.relativePath),
           citedCount: cited.length,
           citedResolve: cited.every(id => end.result.sources.some(item => item.evidence.id === id) && context.lookup(id) !== undefined),
@@ -283,7 +284,7 @@ describe('Codex connection through the app runtime (real account, non-secret fix
       }, ({ end }) => {
         expect(end.kind).toBe('completed');
         if (end.kind !== 'completed') return;
-        expect(end.result.models.map(model => [model.stage, model.provider])).toEqual([['organizing', 'codex'], ['explaining', 'antigravity'], ['reviewing', 'codex']]);
+        expect(end.result.models.map(model => [model.stage, model.provider])).toEqual(stages);
         const cited = citedIds(end.result.explanation);
         expect(cited.length).toBeGreaterThan(0);
         for (const id of cited) expect(context.lookup(id) !== undefined && end.result.sources.some(item => item.evidence.id === id)).toBe(true);
@@ -293,7 +294,13 @@ describe('Codex connection through the app runtime (real account, non-secret fix
       await workflow?.close();
       await rm(root, { recursive: true, force: true });
     }
-  }, 300_000);
+  }
+  it('W1: one question goes through the whole local worker and its answer cites evidence the app can find', () =>
+    askOnce('local-worker', 'W1_worker', [['organizing', 'codex'], ['explaining', 'antigravity'], ['reviewing', 'codex']]), 300_000);
+  it('W2: one question in the Codex single mode is answered by Codex alone with evidence the app can find', () =>
+    askOnce('codex', 'W2_codex', [['explaining', 'codex']]), 300_000);
+  it('W3: one question in the Gemini single mode is answered by Gemini alone with evidence the app can find', () =>
+    askOnce('antigravity', 'W3_gemini', [['explaining', 'antigravity']]), 300_000);
 
   it('C01: with an empty Codex home the CLI starts, reports a login problem and gives no answer', async () => {
     stderrTail = '';

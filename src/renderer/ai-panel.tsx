@@ -4,11 +4,13 @@ import { GEMINI_MODEL, type ConnectionReport, type LearningEvent, type LearningM
 
 const modes: { id: LearningMode; label: string }[] = [
   { id: 'local-worker', label: '로컬 워커 · Codex → Gemini → Codex' },
-  { id: 'codex', label: 'Codex 단독 · 준비 중' },
+  { id: 'codex', label: 'Codex 단독 · 대조 없음' },
   { id: 'claude-code', label: 'Claude Code 단독 · 준비 중' },
-  { id: 'antigravity', label: 'Antigravity 단독 · 준비 중' },
+  { id: 'antigravity', label: 'Gemini 단독 (Antigravity) · 대조 없음' },
 ];
 const names = { codex: 'Codex', 'claude-code': 'Claude Code', antigravity: 'Antigravity' };
+// Who receives the code in each mode; the consent text names them.
+const recipients: Record<LearningMode, string> = { 'local-worker': 'Codex와 Gemini', codex: 'Codex', antigravity: 'Gemini(Antigravity)', 'claude-code': 'Claude Code' };
 const phases: Record<LearningPhase, string> = {
   collecting: '질문할 코드 확인 중', organizing: 'Codex가 작업 정리 중',
   'reading-related': '프로젝트의 관련 파일을 읽는 중',
@@ -39,7 +41,10 @@ export function AiPanel({ projectId, evidence, relativePath, stale, onEvidence }
     if (event.projectId !== projectId) return;
     if (starting.current) { if (queued.current.length < 16) queued.current.push(event); return; }
     if (event.jobId !== active.current) return;
-    if (event.kind === 'progress') { setStatus(phases[event.phase]); return; }
+    if (event.kind === 'progress') {
+      setStatus(event.phase === 'explaining' && mode === 'codex' ? 'Codex에 설명 요청 중' : phases[event.phase]);
+      return;
+    }
     active.current = null;
     setRunning(false);
     if (event.kind === 'failed') {
@@ -50,7 +55,7 @@ export function AiPanel({ projectId, evidence, relativePath, stale, onEvidence }
     if (stale || event.result.evidence.id !== evidence?.id || event.result.evidence.fileHash !== evidence?.fileHash) return;
     setAnswers(previous => [...previous.slice(-3), event.result]);
     setQuestion('');
-    setStatus('AI 검토됨 · 설명의 정확성을 보장하지 않습니다.');
+    setStatus(`${event.result.review} · 설명의 정확성을 보장하지 않습니다.`);
   }
   const receiver = useRef(receive);
   receiver.current = receive;
@@ -117,7 +122,7 @@ export function AiPanel({ projectId, evidence, relativePath, stale, onEvidence }
       </select>
     </label>
     <p className="hint">Mac에 설치된 공식 프로그램을 실행합니다. 답변 생성은 각 AI 제공자 서버에서 이뤄집니다.</p>
-    <p className="hint">선택한 프로젝트에서 관련 파일을 찾아 읽습니다. 원본 파일은 수정·생성·삭제하지 않습니다. 민감 파일·제외 파일·폴더 밖 파일은 읽기 대상에서 제외합니다.</p>
+    <p className="hint">{mode === 'local-worker' && '선택한 프로젝트에서 관련 파일을 찾아 읽습니다. '}원본 파일은 수정·생성·삭제하지 않습니다. 민감 파일·제외 파일·폴더 밖 파일은 읽기 대상에서 제외합니다.</p>
     <button className="btn" disabled={checking || running} onClick={inspect}>{checking ? '설치 확인 중…' : '로컬 AI 설치 확인'}</button>
     {connections && <ul aria-label="로컬 AI 설치 상태">
       {connections.providers.map(item => <li key={item.provider} className="fact fact--muted">
@@ -126,7 +131,9 @@ export function AiPanel({ projectId, evidence, relativePath, stale, onEvidence }
       </li>)}
     </ul>}
     <p className="hint" data-testid="ai-readiness">{ready?.reason ?? '먼저 설치 상태를 확인해 주세요. 설치 확인만으로 로그인이나 실제 AI 연결이 검증되는 것은 아닙니다.'}</p>
-    <p className="hint">{mode === 'local-worker' ? `Codex 정리 → Gemini 3.8 Flash · High (${GEMINI_MODEL}) 설명 → Codex 대조` : '단독 실행은 후속 단계에서 연결합니다.'}</p>
+    <p className="hint">{mode === 'local-worker' ? `Codex 정리 → Gemini 3.8 Flash · High (${GEMINI_MODEL}) 설명 → Codex 대조`
+      : mode === 'claude-code' ? '단독 실행은 후속 단계에서 연결합니다.'
+        : '한 AI가 바로 설명합니다. 관련 파일을 더 읽지 않고 다른 AI의 대조가 없습니다.'}</p>
     {evidence && <p className="hint" data-testid="question-scope">질문 기준: {relativePath} · {evidence.startLine}–{evidence.endLine}행</p>}
     <label>선택한 코드에 질문
       <textarea aria-label="선택한 코드에 질문" maxLength={2000} value={question} disabled={running}
@@ -135,7 +142,8 @@ export function AiPanel({ projectId, evidence, relativePath, stale, onEvidence }
     {!evidence && <p className="hint">함수나 구문을 선택하면 질문할 코드 범위가 정해집니다.</p>}
     {stale && <p className="hint">코드가 바뀌었습니다. 파일을 다시 읽고 근거를 선택해 주세요.</p>}
     <label className="ai-consent"><input type="checkbox" checked={consent} disabled={running || !ready?.ready}
-      onChange={event => setConsent(event.target.checked)} />선택한 코드·프로젝트 파일 목록·관련 파일(추가 최대 4개)·질문·최근 답변을 Codex와 Gemini에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.</label>
+      onChange={event => setConsent(event.target.checked)} />선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·{mode === 'local-worker' && '관련 파일(추가 최대 4개)·'}질문·최근 답변을 {recipients[mode]}에 보내는 데 동의합니다.
+      {mode !== 'local-worker' && ' 다른 파일은 더 읽지 않습니다.'} 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.</label>
     <div className="ai-actions">
       <button className="btn btn--primary" onClick={ask} disabled={!ready?.ready || !evidence || stale || !consent || running || !question.trim()}>질문 보내기</button>
       {running && <button className="btn" onClick={cancel}>AI 작업 취소</button>}

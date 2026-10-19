@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { LOCAL_WORKER_NEEDS_BOTH, LOCAL_WORKER_READY, LocalAiRuntime, executableCandidates, parseStageOutput, resolveLaunch } from '../src/core/ai/runtime';
+import { CLAUDE_CODE_CLOSED, LOCAL_WORKER_NEEDS_BOTH, LOCAL_WORKER_READY, SINGLE_NEEDS, SINGLE_READY, LocalAiRuntime, executableCandidates, parseStageOutput,
+  resolveLaunch } from '../src/core/ai/runtime';
 import { GEMINI_MODEL } from '../src/shared/ai';
 import { runProcess, type ProcessRequest } from '../src/core/ai/process';
 import { access, chmod, lstat, mkdir, open, realpath, rm } from 'node:fs/promises';
@@ -52,9 +53,9 @@ describe('local connection readiness', () => {
     const report = await new LocalAiRuntime(appCodexHome, appAgyHome).checkConnections();
     expect(report.providers).toHaveLength(3);
     expect(report.providers.every(item => item.installation === 'found' && item.authentication === 'unchecked' && item.isolation === 'unverified')).toBe(true);
-    // Finding both workers opens the local worker only; the single-provider modes stay closed.
-    expect(report.modes.map(mode => [mode.mode, mode.ready])).toEqual([['local-worker', true], ['codex', false], ['antigravity', false], ['claude-code', false]]);
-    expect(report.modes[0].reason).toBe(LOCAL_WORKER_READY);
+    // Finding both workers opens the local worker and the Codex and Gemini single modes; Claude Code stays closed.
+    expect(report.modes.map(mode => [mode.mode, mode.ready, mode.reason])).toEqual([['local-worker', true, LOCAL_WORKER_READY],
+      ['codex', true, SINGLE_READY], ['antigravity', true, SINGLE_READY], ['claude-code', false, CLAUDE_CODE_CLOSED]]);
     expect(runProcess).toHaveBeenCalledTimes(3);
     for (const [request] of vi.mocked(runProcess).mock.calls) {
       expect(inner(request).args).toEqual(['--version']);
@@ -163,16 +164,16 @@ describe('local connection readiness', () => {
     expect(runProcess).toHaveBeenCalledTimes(3);
   });
   const privateStage = () => ({ stage: 'explaining' as const, provider: 'antigravity' as const, prompt: 'private code', schema: {}, signal: new AbortController().signal });
-  it('opens only the local worker, and only after this run found both Codex and Antigravity', async () => {
+  it('opens a mode only after this run found its CLIs, and never Claude Code', async () => {
     const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
     // Before an installation check nothing is started.
-    await expect(runtime.run(privateStage())).rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: LOCAL_WORKER_NEEDS_BOTH });
+    await expect(runtime.run(privateStage())).rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: SINGLE_NEEDS.antigravity });
     expect(runProcess).not.toHaveBeenCalled();
     await runtime.checkConnections();
-    expect(() => runtime.assertReady('local-worker')).not.toThrow();
-    for (const mode of ['codex', 'claude-code', 'antigravity'] as const) expect(() => runtime.assertReady(mode)).toThrow();
+    for (const mode of ['local-worker', 'codex', 'antigravity'] as const) expect(() => runtime.assertReady(mode)).not.toThrow();
+    expect(() => runtime.assertReady('claude-code')).toThrow(CLAUDE_CODE_CLOSED);
   });
-  it('keeps the local worker closed when one of the two workers is missing', async () => {
+  it('keeps the local worker and Gemini single closed when Antigravity is missing; Codex single still opens', async () => {
     vi.mocked(realpath).mockImplementation(async (name: unknown) => {
       if (String(name).endsWith('/agy')) throw new Error('missing');
       return String(name);
@@ -180,10 +181,30 @@ describe('local connection readiness', () => {
     const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
     const report = await runtime.checkConnections();
     expect(report.providers.find(item => item.provider === 'antigravity')?.installation).toBe('missing');
-    expect(report.modes[0]).toEqual({ mode: 'local-worker', ready: false, reason: LOCAL_WORKER_NEEDS_BOTH });
+    expect(report.modes.map(mode => [mode.mode, mode.ready, mode.reason]).slice(0, 3)).toEqual([['local-worker', false, LOCAL_WORKER_NEEDS_BOTH],
+      ['codex', true, SINGLE_READY], ['antigravity', false, SINGLE_NEEDS.antigravity]]);
     vi.mocked(runProcess).mockClear();
-    await expect(runtime.run(privateStage())).rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: LOCAL_WORKER_NEEDS_BOTH });
+    await expect(runtime.run(privateStage())).rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: SINGLE_NEEDS.antigravity });
     expect(runProcess).not.toHaveBeenCalled();
+  });
+  it('opens Gemini single without Codex, and runs its stage; the local worker and Codex single stay closed', async () => {
+    vi.mocked(realpath).mockImplementation(async (name: unknown) => {
+      if (String(name).endsWith('/codex')) throw new Error('missing');
+      return String(name);
+    });
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
+    const report = await runtime.checkConnections();
+    expect(report.modes.map(mode => [mode.mode, mode.ready, mode.reason]).slice(0, 3)).toEqual([['local-worker', false, LOCAL_WORKER_NEEDS_BOTH],
+      ['codex', false, SINGLE_NEEDS.codex], ['antigravity', true, SINGLE_READY]]);
+    expect(() => runtime.assertReady('local-worker')).toThrow(LOCAL_WORKER_NEEDS_BOTH);
+    expect(() => runtime.assertReady('codex')).toThrow(SINGLE_NEEDS.codex);
+    vi.mocked(runProcess).mockClear();
+    await expect(runtime.run({ ...privateStage(), provider: 'codex' })).rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: SINGLE_NEEDS.codex });
+    expect(runProcess).not.toHaveBeenCalled();
+    // The fake output is not an agy answer; what matters is that agy itself was started.
+    await runtime.run(privateStage()).catch(() => undefined);
+    expect(runProcess).toHaveBeenCalledTimes(1);
+    expect(inner(vi.mocked(runProcess).mock.calls[0][0]).executable).toMatch(/\/agy$/);
   });
 });
 

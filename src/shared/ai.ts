@@ -72,7 +72,8 @@ export interface LearningResult {
   sources: { evidence: Evidence; relativePath: string }[];
   limitations: string[];
   explanation: Explanation;
-  review: 'AI 검토됨';
+  /** A single mode has no second AI checking the explanation against the code. */
+  review: 'AI 검토됨' | 'AI 대조 없음';
   models: ModelRun[];
 }
 export type LearningEvent =
