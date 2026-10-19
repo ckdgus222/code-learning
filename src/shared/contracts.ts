@@ -175,6 +175,10 @@ export interface CallSite {
   endLine: number;
   /** The call's first line, cut short. */
   text: string;
+  /** Its arguments as written (first line each); null for a tagged template, whose arguments line up differently. */
+  args: { text: string; spread: boolean }[] | null;
+  /** In a test file (`*.test.*`, `*.spec.*`, inside `__tests__/`): its arguments are examples (plan v2.3 V-1). */
+  inTest: boolean;
   /** The function the call sits in, named as the analyzer names it; null at the top of the file. */
   inFunction: { name: string; startUtf16: number; endUtf16: number; startLine: number } | null;
 }
@@ -186,6 +190,38 @@ export type CallLink = CallSite & (
   | { status: 'linked'; target: CallTarget }
   | { status: 'unknown'; reason: CallUnknownReason; detail: string | null }
   | { status: 'external'; specifier: string });
+/** A place in a file shown by V-1; like CallSite it is re-read before use. */
+export interface ValueSite { fileId: string; fileHash: string; startUtf16: number; endUtf16: number; startLine: number; endLine: number; text: string }
+/**
+ * What the code says about one name the chosen function uses (plan v2.3 V-1): where and how it is declared,
+ * and the values and expressions written for it. Never a value from running the code.
+ */
+export interface NameValue {
+  /** Its own parameter, declared inside it, or declared outside it and used in it. */
+  group: 'parameter' | 'inside' | 'outside';
+  name: string;
+  /** How it is declared; for a followed import, how the exporting file declares it. */
+  role: 'parameter' | 'const' | 'let' | 'var' | 'for' | 'catch' | 'import' | 'function' | 'other';
+  shape: 'plain' | 'rest' | 'destructured';
+  declaredAt: ValueSite | null;
+  /** The type written for it. */
+  type: string | null;
+  /** A const of one name written as a literal. */
+  fixed: string | null;
+  /** What is written where it is declared: a value, a default, a destructuring, a loop, or an exported expression. */
+  initial: (ValueSite & { kind: 'value' | 'default' | 'pattern' | 'loop' | 'export' }) | null;
+  /** Writes that belong to this declaration, in source order. */
+  assignments: ValueSite[];
+  /** A plain parameter of the chosen function: its position among the arguments of the calls found. */
+  index: number | null;
+  /** A parameter of an enclosing function, whose arguments are found by choosing that function. */
+  outerFunction: { name: string; fileId: string; fileHash: string; startUtf16: number; endUtf16: number; startLine: number } | null;
+  /** Why the declaration or its values cannot be worked out; nothing else is shown then. */
+  unknown: string | null;
+  /** The path of a package or path alias it is imported from. */
+  external: string | null;
+  notes: string[];
+}
 /** What one function calls and where it is called from, read from the code only; not an execution order. */
 export interface FunctionCalls {
   projectId: string;
@@ -203,6 +239,8 @@ export interface FunctionCalls {
   /** In its file (settles calls), exported (settles imports), property names (member calls only). */
   names: { local: string[]; exported: string[]; property: string[] };
   unexamined: { fileId: string; relativePath: string; reason: string }[];
+  /** The names it uses and what the code says about them (plan v2.3 V-1). */
+  values: NameValue[];
   limited: boolean;
   notes: string[];
 }

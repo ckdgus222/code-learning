@@ -18,7 +18,7 @@ const reasons: Record<CallUnknownReason, string> = {
   duplicate: '같은 이름이 여러 번 선언됐어요',
   reassigned: '다시 대입돼요',
   undeclared: '선언을 찾지 못했어요(전역·내장 이름일 수 있어요)',
-  'unclear-file': '파일에 with·eval·이스케이프로 쓴 이름·전역 객체의 동적 키가 있어 이름을 정할 수 없어요',
+  'unclear-file': '파일에 with·eval·이스케이프로 쓴 이름·전역 객체의 동적 키·using 선언이 있어 이름을 정할 수 없어요',
   namespace: 'TS namespace·enum 안이라 이름을 정할 수 없어요',
   incomplete: '파일을 끝까지 보지 못해 확정하지 않았어요(분석 한도 또는 구문 오류)',
   'import-file': '가져온 파일을 정할 수 없어요',

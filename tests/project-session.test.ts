@@ -12,8 +12,8 @@ const { parentPort, workerData } = require('node:worker_threads');
 const fs = require('node:fs');
 const path = require('node:path');
 const delay = Number(process.env.MAP_DELAY);
-// Leaves a file in the project folder when a worker replies after being asked to stop.
-const mark = name => fs.writeFileSync(path.join(workerData.root, name + '-' + Math.random().toString(36).slice(2)), '');
+// Leaves a file in MARK_DIR (outside the project folder) when a worker replies after being asked to stop.
+const mark = name => fs.writeFileSync(path.join(process.env.MARK_DIR, name + '-' + Math.random().toString(36).slice(2)), '');
 const side = workerData.map ?? workerData.calls;
 if (side) {
   const job = workerData.map ? 'map' : 'calls';
@@ -59,10 +59,14 @@ if (side) {
 }`;
 
 let root: string;
+// Outside the project folder: a marker written inside it would be a file change the session sees.
+let marks: string;
 let workerPath: string;
 let session: ProjectSession;
 beforeEach(async () => {
   root = await mkdtemp('/private/tmp/learning-session-test-');
+  marks = await mkdtemp('/private/tmp/learning-session-marks-');
+  process.env.MARK_DIR = marks;
   workerPath = path.join(root, '..', `${path.basename(root)}-worker.cjs`);
   await writeFile(workerPath, fakeWorker);
   await writeFile(path.join(root, 'a.ts'), 'export const a = 1;\n');
@@ -75,10 +79,12 @@ afterEach(async () => {
   delete process.env.MAP_DELAY;
   delete process.env.READ_MODE;
   await rm(root, { recursive: true, force: true });
+  await rm(marks, { recursive: true, force: true });
+  delete process.env.MARK_DIR;
   await rm(workerPath, { force: true });
 });
 
-const markers = async (name: string) => (await readdir(root)).filter(entry => entry.startsWith(name)).length;
+const markers = async (name: string) => (await readdir(marks)).filter(entry => entry.startsWith(name)).length;
 // A worker reads its environment when it starts, so the mode is set before the session is made.
 async function sessionIn(mode: string, timeoutMs?: number) {
   process.env.READ_MODE = mode;

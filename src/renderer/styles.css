@@ -181,6 +181,11 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .symbols__item[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .symbols__item:disabled, .steps__item:disabled { opacity: .5; }
 .symbols__signals { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.value-names { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0; }
+/* The card sits inside the summary's own grid: it takes the full width and stacks each label over its value. */
+.value-card { justify-self: stretch; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.value-card .flow-facts { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.value-card .flow-facts dd { display: block; margin-bottom: 8px; }
 .steps { display: grid; gap: 1px; margin: 6px 0 6px 6px; padding-left: 8px; border-left: 2px solid var(--line); }
 .steps li { display: flex; align-items: baseline; gap: 6px; }
 .steps__no { min-width: 16px; color: var(--muted); font-size: 12px; text-align: right; }
