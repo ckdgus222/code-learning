@@ -8,7 +8,11 @@ import { localProcessEnv, runProcess } from './process';
 import { fencedLaunch } from './fence';
 import type { StageRequest, StageResponse } from './workflow';
 
-export const LOCAL_WORKER_BLOCKER = '읽기 전용 실행과 기존 로그인 연결 시험이 끝나지 않아 질문 전송을 잠갔습니다.';
+// The user opened the local worker on 2026-10-19 with the C04 gaps stated as known limits
+// (README ‘알려진 한계’). The single-provider modes stay closed: they were never tested.
+export const LOCAL_WORKER_READY = '질문을 보낼 수 있어요. 알려진 한계: 도구 차단은 Codex 0.163.0·Antigravity 1.4.2에서 시험한 범위만 확인했어요. '
+  + '울타리는 홈 폴더 읽기와 허용 폴더 밖 쓰기를 막지만 네트워크는 막지 않아요. 자세한 내용은 README의 ‘알려진 한계’에 있어요.';
+export const LOCAL_WORKER_NEEDS_BOTH = '로컬 워커에는 Codex와 Antigravity가 둘 다 필요해요. 먼저 로컬 AI 설치 상태를 확인해 주세요.';
 const providers: { provider: ProviderId; binary: string }[] = [
   { provider: 'codex', binary: 'codex' }, { provider: 'antigravity', binary: 'agy' }, { provider: 'claude-code', binary: 'claude' },
 ];
@@ -281,19 +285,25 @@ export class LocalAiRuntime {
           connections.push({ ...base, installation: 'unusable', message: '실행 파일은 있지만 버전을 확인하지 못했습니다.' });
         }
       }
+      const localWorkerReady = this.localWorkerReady();
       return { checkedAt: new Date().toISOString(), providers: connections,
         modes: [
-          { mode: 'local-worker', ready: false, reason: LOCAL_WORKER_BLOCKER },
+          { mode: 'local-worker', ready: localWorkerReady, reason: localWorkerReady ? LOCAL_WORKER_READY : LOCAL_WORKER_NEEDS_BOTH },
           ...providers.map(({ provider }) => ({ mode: provider, ready: false, reason: 'AI 단독 실행은 후속 연결 단계입니다.' })),
         ] };
     } finally { await rm(directory, { recursive: true, force: true }); }
   }
 
-  assertReady(mode: LearningMode): never {
+  /** Both workers were found by this run's installation check (`launches` is cleared when one starts). */
+  private localWorkerReady(): boolean {
+    return this.launches.has('codex') && this.launches.has('antigravity');
+  }
+
+  assertReady(mode: LearningMode): void {
     if (mode !== 'local-worker') throw new AppError('AI_UNAVAILABLE', 'AI 단독 실행은 아직 준비 중입니다.');
-    // Deliberately no environment/UI override. Enable only after C04/C05 and
-    // the exact provider invocation have passed real isolated-fixture checks.
-    throw new AppError('AI_UNAVAILABLE', LOCAL_WORKER_BLOCKER);
+    // Deliberately no environment/UI override. Login is not checked here: a missing one fails at the
+    // first stage that calls that provider (with only Antigravity missing, after Codex has run).
+    if (!this.localWorkerReady()) throw new AppError('AI_UNAVAILABLE', LOCAL_WORKER_NEEDS_BOTH);
   }
 
   async run(request: StageRequest): Promise<StageResponse> {

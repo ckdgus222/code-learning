@@ -137,7 +137,7 @@ function App() {
       </nav>}
       <div className="topbar__actions">
         {busy && <span role="status" className="busy"><span className="spinner" aria-hidden="true" />처리 중…</span>}
-        <span className="badge badge--muted" title="도구 접근·설정 분리 확인 전에는 외부 AI에 코드를 보내지 않습니다.">AI 연결 안 됨</span>
+        <span className="badge badge--muted" title="질문 탭에서 동의하고 보낸 질문만 Codex·Gemini에 보냅니다. 알려진 한계는 README에 있습니다.">AI는 동의한 질문만</span>
         <button className="btn btn--primary" onClick={openProject} disabled={busy}>프로젝트 폴더 열기</button>
         <button className="btn" onClick={cancel} disabled={!project && !busy}>작업 취소·프로젝트 닫기</button>
       </div>
@@ -307,8 +307,8 @@ function App() {
             <p><b>{symbol.name}</b> 함수는 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요. 왼쪽에서 구문을 골라 한 부분씩 볼 수 있어요.</p>
           </section> : <p className="hint">함수나 구문을 고르면 그 부분을 여기서 짚어 줘요.</p>}
           <section className="fact fact--muted">
-            <span className="tag tag--unknown">AI 설명 없음</span>
-            <p>AI 설명을 연결하지 않았어요. 코드는 계속 읽을 수 있어요.</p>
+            <span className="tag tag--unknown">AI 설명은 질문 탭에서</span>
+            <p>여기에는 코드에서 확인한 내용만 보여요. AI 설명은 질문 탭에서 동의하고 질문하면 받을 수 있어요.</p>
           </section>
         </div>}
         <div hidden={panel !== 'ask'}>

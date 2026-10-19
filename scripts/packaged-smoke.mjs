@@ -61,7 +61,10 @@ try {
   for (const [binary, name] of [['codex', 'Codex'], ['agy', 'Antigravity']]) {
     if (installed(binary)) assert.match(statuses, new RegExp(`${name} · 설치 확인 \\(\\d+\\.\\d+\\.\\d+`), `${name} version inside the fence`);
   }
-  assert.match(await page.getByTestId('ai-readiness').innerText(), /질문 전송을 잠갔습니다/);
+  // Both workers found: the local worker is ready and states its known limits. Nothing is sent here:
+  // the send button waits for consent, which this test never gives.
+  const ready = /Codex · 설치 확인/.test(statuses) && /Antigravity · 설치 확인/.test(statuses);
+  assert.match(await page.getByTestId('ai-readiness').innerText(), ready ? /질문을 보낼 수 있어요\. 알려진 한계/ : /Codex와 Antigravity가 둘 다 필요해요/);
   assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
   await page.screenshot({ path: path.join(root, 'test-results/packaged-local-ai.png') });
   await page.getByRole('button', { name: '작업 취소·프로젝트 닫기' }).click();

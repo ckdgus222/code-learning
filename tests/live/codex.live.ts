@@ -1,17 +1,20 @@
 // Live Codex connection checks C01-C03 (plan 12.4) through the app's own runtime code.
 // This sends a small non-secret fixture with the user's Codex account, so it is excluded from
-// `npm test` and runs only through `npm run test:codex-live`. The app's send gate stays closed:
-// the checks call the runtime's stage executor directly, from this test only.
+// `npm test` and runs only through `npm run test:codex-live`. Most checks call the runtime's stage
+// executor directly; W1 sends one question through the opened local worker, as the app does.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { LocalAiRuntime } from '../../src/core/ai/runtime';
 import { runProcess, type ProcessRequest } from '../../src/core/ai/process';
-import type { StageRequest, StageResponse } from '../../src/core/ai/workflow';
-import { organizationSchema } from '../../src/shared/ai';
+import { LocalWorkerWorkflow, type StageRequest, type StageResponse } from '../../src/core/ai/workflow';
+import { ProjectAiContext } from '../../src/core/ai/context';
+import { readAllowed, scanProject } from '../../src/core/project/files';
+import { organizationSchema, type Explanation, type LearningEvent } from '../../src/shared/ai';
+import type { Evidence, SourceView } from '../../src/shared/contracts';
 import { categories, codexAttempts, isolationFixture, placedKinds, placedVerdicts, verdicts, type Category, type Place } from './isolation';
 import { recordedFailure, rethrown } from './records';
 import { PROBE_SOURCE, classifyForced, createCodexProbe, findCodexLaunch, forcedKindVerdict, isEmptyList, observedToolNames, outputText,
@@ -47,6 +50,17 @@ function errorItemMessages(stdout: string): string[] {
   return stdout.split('\n').flatMap(line => {
     try { const event = JSON.parse(line); return event.item?.type === 'error' ? [String(event.item.message ?? '')] : []; } catch { return []; }
   });
+}
+/** Messages of Codex `error` events, `turn.failed` errors and `error` items, kept in memory only. */
+function codexErrorMessages(stdout: string): string {
+  return stdout.split('\n').flatMap(line => {
+    try {
+      const event = JSON.parse(line);
+      if (event.type === 'error') return [String(event.message ?? '')];
+      if (event.type === 'turn.failed') return [String(event.error?.message ?? '')];
+      return event.item?.type === 'error' ? [String(event.item.message ?? '')] : [];
+    } catch { return []; }
+  }).join('\n');
 }
 /** Whether the final answer, if any, would pass the app's schema; null when there is no answer. */
 function answerMatchesSchema(stdout: string): boolean | null {
@@ -97,10 +111,12 @@ const results: Record<string, unknown> = {
   scope: 'C01~C03 일부 실연결 확인. 작업 정리 단계만 시험했고 코드 대조 단계·한도 초과·인증 만료·프로젝트 전환·앱 종료 취소는 시험하지 않았다.',
 };
 /** The kind of failure only; the stderr text itself stays on this machine and is never recorded. */
-function classify(stderr: string): 'login' | 'flag' | 'quota' | 'other' {
+function classify(stderr: string): 'login' | 'flag' | 'quota' | 'schema' | 'other' {
   if (/unexpected argument|unrecognized|unknown (?:option|flag)|invalid value/i.test(stderr)) return 'flag';
   if (/not logged in|log ?in|login|authenticat|unauthori[sz]ed|\b401\b/i.test(stderr)) return 'login';
   if (/rate.?limit|quota|usage limit|\b429\b/i.test(stderr)) return 'quota';
+  // Checked last so the earlier checks keep classifying as before.
+  if (/schema|response_format/i.test(stderr)) return 'schema';
   return 'other';
 }
 const saved = { ...process.env };
@@ -208,6 +224,76 @@ describe('Codex connection through the app runtime (real account, non-secret fix
       expect(eventKinds(stdoutText)).not.toContain('item.completed:error');
     });
   });
+
+  // One real question through the opened local worker, as the app sends it: 3 model requests (Codex
+  // organizes, Gemini explains, Codex checks). Run it after C01, which finds both workers. Only the
+  // outcome, phases, models and whether every cited evidence resolves are recorded, never the text.
+  it('W1: one question goes through the whole local worker and its answer cites evidence the app can find', async () => {
+    stderrTail = '';
+    stdoutText = '';
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'worker-live-')));
+    let workflow: LocalWorkerWorkflow | undefined;
+    try {
+      await writeFile(path.join(root, 'order.ts'), 'import { limit } from "./limit";\n\nexport function order(count: number) {\n'
+        + '  if (count > limit) return "too many";\n  return "ok";\n}\n');
+      await writeFile(path.join(root, 'limit.ts'), 'export const limit = 10;\n');
+      const project = await scanProject(root, randomUUID());
+      const file = project.files.find(item => item.relativePath === 'order.ts')!;
+      const { text, hash } = await readAllowed(root, file.relativePath);
+      const source: SourceView = { projectId: project.id, fileId: file.id, relativePath: file.relativePath, text, hash,
+        analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] } };
+      const start = text.indexOf('export function');
+      const evidence: Evidence = { id: randomUUID(), projectId: project.id, fileId: file.id, fileHash: hash,
+        startUtf16: start, endUtf16: text.length - 1, startLine: 3, endLine: 6 };
+      const context = new ProjectAiContext(root, project);
+      const citedIds = (explanation: Explanation) => [...explanation.steps.flatMap(step => step.evidenceIds),
+        ...explanation.claims.flatMap(claim => claim.kind === 'code' ? claim.evidenceIds : [])];
+      const events: LearningEvent[] = [];
+      workflow = new LocalWorkerWorkflow({
+        assertReady: mode => runtime.assertReady(mode), run: request => runtime.run(request), emit: event => events.push(event),
+        capture: (_request, signal) => context.capture(source, evidence, 1, signal),
+        expand: (snapshot, ids, signal) => context.expand(snapshot, ids, signal),
+        revalidate: (snapshot, signal) => context.revalidate(snapshot, signal),
+      });
+      await record('W1_worker', async () => {
+        const { jobId } = workflow!.start({ projectId: project.id, evidenceId: evidence.id, expectedFileHash: hash,
+          question: 'count가 limit보다 크면 무엇을 돌려주나요? limit 값은 얼마인가요?', mode: 'local-worker', consent: true });
+        await new Promise<void>((resolve, reject) => {
+          const deadline = Date.now() + 280_000;
+          const timer = setInterval(() => {
+            if (events.some(event => event.jobId === jobId && event.kind !== 'progress')) { clearInterval(timer); resolve(); }
+            else if (Date.now() > deadline) { clearInterval(timer); reject(new Error('the local worker did not finish in time')); }
+          }, 100);
+        });
+        return { jobId, end: events.find(event => event.jobId === jobId && event.kind !== 'progress')!,
+          phases: [...new Set(events.filter(event => event.jobId === jobId && event.kind === 'progress').map(event => event.kind === 'progress' ? event.phase : ''))] };
+      }, ({ end, phases }) => {
+        // `appCode`, not `code`: a failed check's own `code` would overwrite it. Codex error text is only classified.
+        if (end.kind !== 'completed') return { outcome: end.kind, appCode: end.kind === 'failed' ? end.error.code : null,
+          codexError: classify(codexErrorMessages(stdoutText)), phases };
+        const cited = citedIds(end.result.explanation);
+        return {
+          outcome: end.kind, phases, models: end.result.models,
+          sources: end.result.sources.map(item => item.relativePath),
+          citedCount: cited.length,
+          citedResolve: cited.every(id => end.result.sources.some(item => item.evidence.id === id) && context.lookup(id) !== undefined),
+          claims: end.result.explanation.claims.length, steps: end.result.explanation.steps.length, unknowns: end.result.explanation.unknowns.length,
+          limitations: end.result.limitations.length,
+        };
+      }, ({ end }) => {
+        expect(end.kind).toBe('completed');
+        if (end.kind !== 'completed') return;
+        expect(end.result.models.map(model => [model.stage, model.provider])).toEqual([['organizing', 'codex'], ['explaining', 'antigravity'], ['reviewing', 'codex']]);
+        const cited = citedIds(end.result.explanation);
+        expect(cited.length).toBeGreaterThan(0);
+        for (const id of cited) expect(context.lookup(id) !== undefined && end.result.sources.some(item => item.evidence.id === id)).toBe(true);
+      });
+    } finally {
+      // After a timeout the job is still running on the real account: cancel it before removing its files.
+      await workflow?.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 300_000);
 
   it('C01: with an empty Codex home the CLI starts, reports a login problem and gives no answer', async () => {
     stderrTail = '';
