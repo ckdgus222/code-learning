@@ -59,6 +59,12 @@ const callsFixture = path.join(temporary, '호출 프로젝트');
 await mkdir(path.join(callsFixture, 'src'), { recursive: true });
 await writeFile(path.join(callsFixture, 'src/app.ts'), "import { save } from './store';\nexport function placeOrder(order: string) {\n  check(order);\n  save(order);\n  log.info(order);\n}\nfunction check(order: string) { return order.length > 0; }\nexport const quick = () => save('q');\nexport function withDefault(x = check('d')) { return x; }\n");
 await writeFile(path.join(callsFixture, 'src/store.ts'), 'export function save(order: string) {\n  return order;\n}\n');
+// Plan v2.3 V-1: price takes two values, keeps one name inside and uses two from outside; shop and a test call it.
+const valuesFixture = path.join(temporary, '값 프로젝트');
+await mkdir(path.join(valuesFixture, 'src'), { recursive: true });
+await writeFile(path.join(valuesFixture, 'src/price.ts'), 'const RATE = 0.1;\nlet total = 0;\nexport function price(amount: number, qty = 1) {\n  let sum = amount * qty;\n  sum = sum + sum * RATE;\n  total = total + sum;\n  return sum;\n}\n');
+await writeFile(path.join(valuesFixture, 'src/shop.ts'), "import { price } from './price';\nexport function buy() { return price(100, 2); }\n");
+await writeFile(path.join(valuesFixture, 'src/price.test.ts'), "import { price } from './price';\nprice(5);\n");
 // Test harness lives outside the shipped app. Production IPC has no path injection/test API.
 const bootstrap = path.join(temporary, 'bootstrap.cjs');
 await writeFile(bootstrap, `const { app } = require('electron');\napp.setPath('userData', ${JSON.stringify(profile)});\nrequire(${JSON.stringify(path.join(root, '.vite/build/main.cjs'))});\n`);
@@ -103,6 +109,12 @@ async function launch() {
 function ending() {
   const child = app.process();
   return new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
+}
+// Quitting waits for every worker; if one never stops, the app never ends, so the wait fails instead of hanging.
+async function endsWithin(ended, step) {
+  let timer;
+  const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`The app did not end within 60 s after: ${step}`)), 60_000); });
+  try { return await Promise.race([ended, late]); } finally { clearTimeout(timer); }
 }
 // Holds back every message from worker threads started after this, until the test releases them.
 async function holdWorkerMessages() {
@@ -263,12 +275,17 @@ try {
     });
     assert.ok(await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).isVisible());
     for (const [width, height] of [[1280, 800], [1440, 900]]) {
-      await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(size[0], size[1]), [width, height]);
-      await until(async () => await page.evaluate(expected => window.outerWidth === expected, width));
+      // The resize is asked for again while waiting: a single request was sometimes not applied (cause not found).
+      await until(async () => {
+        await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(size[0], size[1]), [width, height]);
+        return await page.evaluate(expected => window.outerWidth === expected, width);
+      });
       await page.getByRole('button', { name: '찾기 ⌘F', exact: true }).click();
       await field.waitFor();
       assert.deepEqual(await layoutProblems(), [], `${width}x${height}`);
       await page.screenshot({ path: path.join(artifacts, `reader-tools-${width}.png`) });
+      // Escape closes the panel from its field; focus is put back there first in case it moved away meanwhile.
+      await field.focus();
       await page.keyboard.press('Escape');
       await until(async () => await page.locator('.cm-search').count() === 0);
     }
@@ -1050,7 +1067,8 @@ try {
     await until(async () => (await page.getByTestId('question-scope').innerText()) === '질문 기준: src/work.ts · 3–66행');
     assert.equal(await page.getByRole('tab', { name: '질문', exact: true }).getAttribute('aria-selected'), 'true');
     const question = '이 함수를 더 단순하고 읽기 쉽게 쓸 수 있을까요? 바꾼다면 어디를 어떻게 바꾸면 좋을지 알려 주세요.';
-    assert.equal(await page.getByRole('textbox', { name: '선택한 코드에 질문' }).inputValue(), question);
+    // The question box is filled by an effect right after the tab opens.
+    await until(async () => await page.getByRole('textbox', { name: '선택한 코드에 질문' }).inputValue() === question);
     await page.screenshot({ path: path.join(artifacts, 'hard-code-reader.png') });
     // Sent through the test-only AI handlers above: the request names the whole function's evidence.
     await page.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
@@ -1127,13 +1145,45 @@ try {
     await page.getByText('호출을 찾은 뒤 이 파일이 바뀌어 그 함수를 고르지 않았어요. 다시 찾아 주세요.', { exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: 'save', exact: true }).getAttribute('aria-pressed'), 'false');
   });
+  await check('Values: names a function uses, arguments from calls and tests, fixed values and writes, never run values', async () => {
+    await dialogTo(valuesFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '값 프로젝트', exact: true }).waitFor();
+    await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    await page.getByRole('button', { name: 'src/price.ts', exact: true }).click();
+    await page.getByRole('button', { name: 'price', exact: true }).click();
+    const summary = page.getByRole('article', { name: '함수 요약' });
+    await summary.getByText('실행한 값이 아니에요. 코드에 적힌 값과 식이에요.', { exact: true }).waitFor();
+    const names = async (group) => summary.getByRole('group', { name: group }).getByRole('button').allInnerTexts();
+    assert.deepEqual([await names('받는 값'), await names('안에서 만든 이름'), await names('바깥 이름')], [['amount', 'qty'], ['sum'], ['RATE', 'total']]);
+    // A parameter: what shop passes, and what the test passes as an example.
+    await summary.getByRole('group', { name: '받는 값' }).getByRole('button', { name: 'amount', exact: true }).click();
+    const amount = summary.getByRole('region', { name: 'amount 값' });
+    assert.deepEqual(await amount.getByRole('list', { name: 'amount에 넘기는 값' }).locator('li').allInnerTexts(), ['src/shop.ts 2행 100 코드 보기']);
+    assert.deepEqual(await amount.getByRole('list', { name: 'amount 테스트 예시' }).locator('li').allInnerTexts(), ['src/price.test.ts 2행 5 코드 보기']);
+    await summary.getByRole('group', { name: '받는 값' }).getByRole('button', { name: 'qty', exact: true }).click();
+    const qty = summary.getByRole('region', { name: 'qty 값' });
+    assert.deepEqual(await qty.getByRole('list', { name: 'qty 테스트 예시' }).locator('li').allInnerTexts(), ['src/price.test.ts 2행 넘기지 않음 · 기본값을 써요 코드 보기']);
+    await page.screenshot({ path: path.join(artifacts, 'values-parameter.png') });
+    // A const written as a literal is a fixed value; a let shows its first value and its writes.
+    await summary.getByRole('group', { name: '바깥 이름' }).getByRole('button', { name: 'RATE', exact: true }).click();
+    await summary.getByRole('region', { name: 'RATE 값' }).getByText('0.1', { exact: true }).waitFor();
+    await summary.getByRole('group', { name: '안에서 만든 이름' }).getByRole('button', { name: 'sum', exact: true }).click();
+    const sum = summary.getByRole('region', { name: 'sum 값' });
+    await sum.getByText('amount * qty', { exact: true }).waitFor();
+    const writes = sum.getByRole('list', { name: 'sum에 대입하는 곳' }).locator('li');
+    assert.deepEqual(await writes.allInnerTexts(), ['src/price.ts 5행 sum = sum + sum * RATE 코드 보기']);
+    // Showing a write marks its range in the reader.
+    await writes.getByRole('button', { name: '코드 보기', exact: true }).click();
+    await until(async () => (await page.getByTestId('evidence-range').innerText()).includes('5–5줄'));
+  });
   await check('Quitting while files are parsed waits for the workers and ends cleanly', async () => {
     // (a) Closing the window while a large folder opens.
     await dialogTo(bigMapFixture);
     let ended = ending();
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
-    assert.deepEqual(await ended, { code: 0, signal: null });
+    assert.deepEqual(await endsWithin(ended, '(a) closing the window while a large folder opens'), { code: 0, signal: null });
     // (b) Cancel, then ask to quit twice at once.
     await launch();
     await dialogTo(bigMapFixture);
@@ -1141,7 +1191,7 @@ try {
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('button', { name: '작업 취소·프로젝트 닫기' }).click();
     await app.evaluate(({ app: electronApp }) => { electronApp.quit(); electronApp.quit(); });
-    assert.deepEqual(await ended, { code: 0, signal: null });
+    assert.deepEqual(await endsWithin(ended, '(b) cancel, then quit twice'), { code: 0, signal: null });
     // (c) While quitting waits for a worker (its answer held back), no new folder or map is started.
     await launch();
     await dialogTo(fixture);
@@ -1160,7 +1210,7 @@ try {
     assert.equal(await app.evaluate(() => globalThis.testHeld.length), 1);
     await releaseWorkerMessages();
     await reopening.catch(() => undefined);
-    assert.deepEqual(await ended, { code: 0, signal: null });
+    assert.deepEqual(await endsWithin(ended, '(c) quit while a worker answer is held back'), { code: 0, signal: null });
     app = undefined;
   });
   assert.deepEqual(failures, []);

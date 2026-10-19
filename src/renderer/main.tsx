@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { CallSite, CodeSymbol, Evidence, MapFunction, MapImport, ProjectView, SourceView, StartCandidate } from '../shared/contracts';
+import type { CallSite, ValueSite, CodeSymbol, Evidence, MapFunction, MapImport, ProjectView, SourceView, StartCandidate } from '../shared/contracts';
 import { useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
 import { AiPanel } from './ai-panel';
@@ -8,6 +8,7 @@ import { Flow } from './flow';
 import { ProjectMapView, type MapEntry } from './project-map';
 import { matchCallStep, matchFunction, matchImport } from './map-layout';
 import { CallsFacts, type CallFunction, type CallsState } from './calls';
+import { ValuesFacts } from './values';
 import { COMPLEXITY_NOTE, ComplexityTags, overLimit } from './complexity';
 import './styles.css';
 
@@ -237,6 +238,17 @@ function App() {
       setNotice(`이 호출(${site.startLine}행)은 함수 단계 목록에 없어 코드 위치만 강조했어요.`);
     }
   }
+  // A place from the value search (plan V-1): re-read, and marked in the reader while the file is unchanged.
+  async function showValueSite(site: ValueSite | CallSite) {
+    if (busy) return;
+    setView('code');
+    const atRevision = revision.current;
+    const opened = await readFile(site.fileId);
+    if (!opened || revision.current !== atRevision) return;
+    if (opened.hash !== site.fileHash) { setNotice('값을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 다시 찾아 주세요.'); return; }
+    setReaderEvidence({ id: crypto.randomUUID(), projectId: opened.projectId, fileId: opened.fileId, fileHash: opened.hash,
+      startUtf16: site.startUtf16, endUtf16: site.endUtf16, startLine: site.startLine, endLine: site.endLine });
+  }
   // The same for a function to follow: it is chosen in the flow view, which then searches its own calls.
   async function showCallFunction(target: CallFunction) {
     if (busy) return;
@@ -261,6 +273,7 @@ function App() {
     else setError(result.message);
   }
 
+  const pathOf = (fileId: string) => project?.files.find(file => file.id === fileId)?.relativePath ?? '(목록에 없는 파일)';
   const files = project?.files.filter(file => file.relativePath.toLowerCase().includes(search.toLowerCase())) ?? [];
   const intro = project?.overview.intro;
   const scope = [project?.name, source?.relativePath, symbol?.name, step?.title].filter(Boolean);
@@ -380,11 +393,13 @@ function App() {
             else if (symbol) void showEvidence(symbol.evidence, null);
           }}
           onOpenCode={() => setView('code')}
-          calls={calls && source && symbol && calls.key === callsKey(source, symbol) && <CallsFacts state={calls.state}
-            stale={calls.revision !== revision.current} locked={busy}
-            pathOf={fileId => project.files.find(file => file.id === fileId)?.relativePath ?? '(목록에 없는 파일)'}
-            onRetry={() => void findCalls(source, symbol)} onCancel={() => void cancelCalls()}
-            onShowSite={site => void showCallSite(site)} onShowFunction={target => void showCallFunction(target)} />} />}
+          calls={calls && source && symbol && calls.key === callsKey(source, symbol) && <>
+            <CallsFacts state={calls.state} stale={calls.revision !== revision.current} locked={busy} pathOf={pathOf}
+              onRetry={() => void findCalls(source, symbol)} onCancel={() => void cancelCalls()}
+              onShowSite={site => void showCallSite(site)} onShowFunction={target => void showCallFunction(target)} />
+            {calls.state.status === 'done' && <ValuesFacts key={calls.key} result={calls.state.result} locked={busy} pathOf={pathOf}
+              onShowSite={site => void showValueSite(site)} onShowFunction={target => void showCallFunction(target)} />}
+          </>} />}
 
         {view === 'changes' && <div className="page page--empty">
           <h2 className="page__title">달라진 내용</h2>

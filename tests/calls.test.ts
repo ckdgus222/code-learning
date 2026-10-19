@@ -291,7 +291,7 @@ describe('reassignments written with TypeScript marks', () => {
 describe('eval in brackets and quoted property names', () => {
   it('takes (eval)(…) as eval, in its file and through an import', async () => {
     expect(outcomes(await callsOf('src/eval-paren.ts', 'run'))).toEqual([[2, '확인 못 함 expression'], [2, '확인 못 함 unclear-file']]);
-    expect(outcomes(await callsOf('src/use-eval-paren.ts', 'go'))).toEqual([[2, '확인 못 함 export 가져온 파일에 with·eval·이스케이프로 쓴 이름·전역 객체의 동적 키가 있어요.']]);
+    expect(outcomes(await callsOf('src/use-eval-paren.ts', 'go'))).toEqual([[2, '확인 못 함 export 가져온 파일에 with·eval·이스케이프로 쓴 이름·전역 객체의 동적 키·using 선언이 있어요.']]);
   });
 
   it('matches a method named by a string with its member calls, written with a dot or brackets', async () => {
