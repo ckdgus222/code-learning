@@ -18,8 +18,11 @@ const phases: Record<LearningPhase, string> = {
   reviewing: 'Codex가 원본 코드와 대조 중', validating: '근거와 코드 변경 여부 확인 중',
 };
 
-export function AiPanel({ projectId, evidence, relativePath, stale, onEvidence }: {
-  projectId: string; evidence: Evidence | null; relativePath: string; stale: boolean; onEvidence(evidence: Evidence): void;
+export function AiPanel({ projectId, evidence, relativePath, stale, draft, onEvidence }: {
+  projectId: string; evidence: Evidence | null; relativePath: string; stale: boolean;
+  /** A question to put in the box, put again whenever the id changes (not on mount). */
+  draft: { text: string; id: number } | null;
+  onEvidence(evidence: Evidence): void;
 }) {
   const [mode, setMode] = useState<LearningMode>('local-worker');
   const [connections, setConnections] = useState<ConnectionReport | null>(null);
@@ -36,6 +39,12 @@ export function AiPanel({ projectId, evidence, relativePath, stale, onEvidence }
   const queued = useRef<LearningEvent[]>([]);
   const mounted = useRef(true);
   const ready = connections?.modes.find(item => item.mode === mode);
+  const draftShown = useRef(draft?.id);
+  useEffect(() => {
+    if (!draft || draft.id === draftShown.current) return;
+    draftShown.current = draft.id;
+    setQuestion(draft.text);
+  }, [draft]);
 
   function receive(event: LearningEvent) {
     if (event.projectId !== projectId) return;

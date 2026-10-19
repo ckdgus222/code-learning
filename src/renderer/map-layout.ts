@@ -1,4 +1,4 @@
-import type { Evidence, MapFile, MapImport, ProjectMap, SourceView } from '../shared/contracts';
+import type { CodeSymbol, Evidence, MapFile, MapFunction, MapImport, ProjectMap, SourceView } from '../shared/contracts';
 
 export interface MapBox {
   id: string;
@@ -93,4 +93,12 @@ export function matchImport(source: SourceView, item: MapImport):
   if (source.fileId !== item.fromFileId || source.hash !== item.fileHash) return { status: 'changed' };
   const found = source.analysis.imports.find(entry => entry.evidence.startUtf16 === item.startUtf16 && entry.evidence.endUtf16 === item.endUtf16);
   return found ? { status: 'found', evidence: found.evidence } : { status: 'missing' };
+}
+
+/** The same for a function from the map's list: 'missing' when the analyzer's limits left it out. */
+export function matchFunction(source: SourceView, item: MapFunction):
+  { status: 'found'; symbol: CodeSymbol } | { status: 'changed' } | { status: 'missing' } {
+  if (source.fileId !== item.fileId || source.hash !== item.fileHash) return { status: 'changed' };
+  const found = source.analysis.symbols.find(symbol => symbol.evidence.startUtf16 === item.startUtf16 && symbol.evidence.endUtf16 === item.endUtf16);
+  return found ? { status: 'found', symbol: found } : { status: 'missing' };
 }

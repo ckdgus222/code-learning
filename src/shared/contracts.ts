@@ -30,6 +30,12 @@ export interface CodeStep {
   branch?: { whenTrue: string | null; whenFalse: string | null };
 }
 
+/**
+ * Plan v2.3 C-1 (D2): a function body with more code lines, or deeper nesting, than this is marked as a
+ * place to look. It is not a verdict on the code. The user adjusts the values after trying them.
+ */
+export const COMPLEXITY_LIMITS = { lines: 60, depth: 4 } as const;
+
 export interface CodeSymbol {
   id: string;
   name: string;
@@ -40,6 +46,8 @@ export interface CodeSymbol {
   exported: boolean;
   evidence: Evidence;
   steps: CodeStep[];
+  /** Code lines and deepest if/loop/switch/try nesting of its own body, nested functions left out (syntax.ts). */
+  complexity: { lines: number; depth: number };
 }
 
 export interface Analysis {
@@ -124,6 +132,18 @@ export interface MapFile {
   checked: 'full' | 'partial' | 'failed' | 'skipped' | 'not-code';
   reason: string | null;
 }
+/** A function over a `COMPLEXITY_LIMITS` value, found while drawing the map; like MapImport it is re-read before use. */
+export interface MapFunction {
+  fileId: string;
+  fileHash: string;
+  startUtf16: number;
+  endUtf16: number;
+  startLine: number;
+  endLine: number;
+  name: string;
+  lines: number;
+  depth: number;
+}
 export type MapUnresolvedReason = 'not-found' | 'ambiguous' | 'outside' | 'not-static' | 'syntax' | 'unavailable' | 'unreadable';
 export interface ProjectMap {
   projectId: string;
@@ -133,6 +153,8 @@ export interface ProjectMap {
   unresolved: (MapImport & { reason: MapUnresolvedReason; candidates: string[] })[];
   /** Non-relative specifiers: a package and a path alias cannot be told apart from the import alone. */
   external: MapImport[];
+  /** Functions over a complexity limit in the files the map read, in path and then source order. */
+  complexFunctions: MapFunction[];
   limited: boolean;
   notes: string[];
 }

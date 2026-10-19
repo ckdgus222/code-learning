@@ -138,8 +138,11 @@ describe('closing never ends a worker in the middle of its work', () => {
     session.cancelMap();
     const replacing = session.map();
     await session.close();
-    await expect(cancelled).rejects.toMatchObject({ code: 'CANCELLED' });
-    await expect(replacing).rejects.toMatchObject({ code: 'CANCELLED' });
+    // Watched together: either worker may reply first, and an unwatched rejection fails the run.
+    await Promise.all([
+      expect(cancelled).rejects.toMatchObject({ code: 'CANCELLED' }),
+      expect(replacing).rejects.toMatchObject({ code: 'CANCELLED' }),
+    ]);
     await workersStopped();
     expect(await markers('map-replied')).toBe(2);
   });

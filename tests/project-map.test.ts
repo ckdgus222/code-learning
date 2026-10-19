@@ -4,7 +4,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { scanProject } from '../src/core/project/files';
 import { buildProjectMap, MAP_LIMITS } from '../src/core/analysis/project-map';
+import { analyzeSource } from '../src/core/analysis/syntax';
 import type { ProjectFiles, ProjectMap } from '../src/shared/contracts';
+import { complexitySource, legacySource } from './complexity-fixture';
 
 let sandbox: string;
 let root: string;
@@ -135,7 +137,7 @@ describe('project map from static imports', () => {
     const byPath = new Map(map.files.map(file => [file.relativePath, file]));
     expect(byPath.get('src/a.ts')).toMatchObject({ checked: 'full', reason: null, start: true, folder: 'src' });
     // The syntax error in its last line means other imports inside an error could have been missed.
-    expect(byPath.get('src/main.ts')).toMatchObject({ checked: 'partial', reason: '구문 오류가 있어 오류 구역 안의 import는 놓쳤을 수 있어요.', start: false });
+    expect(byPath.get('src/main.ts')).toMatchObject({ checked: 'partial', reason: '구문 오류가 있어 오류 구역 안의 import와 함수는 놓쳤을 수 있어요.', start: false });
     expect(byPath.get('src/bad.ts')).toMatchObject({ checked: 'failed', reason: 'UTF-8로 읽을 수 없는 파일입니다.' });
     expect(byPath.get('styles.css')).toMatchObject({ checked: 'not-code', folder: '' });
     expect(byPath.has('src/ignored.ts')).toBe(false);
@@ -150,7 +152,7 @@ describe('project map from static imports', () => {
     expect(tight.notes).toEqual(['지도는 파일 2개·합계 16 MiB까지만 읽어요. 나머지 파일의 연결은 보지 않았어요.']);
     const shallow = await mapOf(project, [], { ...MAP_LIMITS, nodesPerFile: 20 });
     const main = shallow.files.find(file => file.relativePath === 'src/main.ts')!;
-    expect(main).toMatchObject({ checked: 'partial', reason: '분석량 한도에 닿아 파일 뒷부분의 import는 보지 않았어요.' });
+    expect(main).toMatchObject({ checked: 'partial', reason: '분석량 한도에 닿아 파일 뒷부분의 import와 함수는 보지 않았어요.' });
     expect(shallow.edges.length).toBeLessThan(7);
   });
 
@@ -168,6 +170,55 @@ describe('project map from static imports', () => {
     const map = await mapOf(project);
     expect(readable(project, map).unresolved).toContainEqual([9, 'unavailable', ['styles.css']]);
     expect(readable(project, map).edges.some(([, line]) => line === 9)).toBe(false);
+  });
+
+  it('lists the functions over a complexity limit, measured as the analyzer measures them', async () => {
+    await put('src/complexity.ts', complexitySource);
+    await put('lib/legacy.js', legacySource);
+    const project = await scanProject(root, randomUUID());
+    const map = await mapOf(project);
+    const pathOf = (id: string) => project.files.find(file => file.id === id)!.relativePath;
+    const lineOf = (text: string, name: string) => text.slice(0, text.indexOf(name)).split('\n').length;
+    // In path order (lib/ before src/), then in source order.
+    expect(map.complexFunctions.map(item => [pathOf(item.fileId), item.name, item.startLine, item.lines, item.depth])).toEqual([
+      ['lib/legacy.js', 'legacy', 1, 6, 5],
+      ['src/complexity.ts', 'lines61', lineOf(complexitySource, 'function lines61'), 61, 0],
+      ['src/complexity.ts', 'depth5', lineOf(complexitySource, 'function depth5'), 7, 5],
+      ['src/complexity.ts', 'bigInner', lineOf(complexitySource, 'function bigInner'), 61, 0],
+    ]);
+    for (const [relativePath, text] of [['lib/legacy.js', legacySource], ['src/complexity.ts', complexitySource]]) {
+      const file = project.files.find(item => item.relativePath === relativePath)!;
+      const hash = createHash('sha256').update(text).digest('hex');
+      const symbols = analyzeSource(text, relativePath, { projectId: project.id, fileId: file.id, fileHash: hash }).symbols;
+      for (const item of map.complexFunctions.filter(entry => entry.fileId === file.id)) {
+        expect(item.fileHash).toBe(hash);
+        const symbol = symbols.find(entry => entry.evidence.startUtf16 === item.startUtf16)!;
+        expect([symbol.name, symbol.evidence.endUtf16, symbol.evidence.startLine, symbol.evidence.endLine, symbol.complexity])
+          .toEqual([item.name, item.endUtf16, item.startLine, item.endLine, { lines: item.lines, depth: item.depth }]);
+      }
+    }
+  });
+
+  it('lists only the functions it reached in a file cut short by the node limit', async () => {
+    const long = (name: string) => `function ${name}() {\n${Array.from({ length: 61 }, (_, index) => `  step(${index});`).join('\n')}\n}\n`;
+    await put('src/two.ts', long('first') + long('second'));
+    const project = await scanProject(root, randomUUID());
+    const map = await mapOf(project, [], { ...MAP_LIMITS, nodesPerFile: 50 });
+    const two = project.files.find(file => file.relativePath === 'src/two.ts')!;
+    expect(map.files.find(file => file.id === two.id)).toMatchObject({ checked: 'partial' });
+    // The first function was reached, so it is measured in full; the second was not reached.
+    expect(map.complexFunctions.filter(item => item.fileId === two.id).map(item => [item.name, item.lines])).toEqual([['first', 61]]);
+  });
+
+  it('lists functions in a file of 1000 nested functions without checking every outer function again', async () => {
+    // Looking up each function's outer functions made this take about 30 s.
+    await put('src/nested.ts', `${'function f() {'.repeat(1000)}${'}'.repeat(1000)}\n`);
+    const project = await scanProject(root, randomUUID());
+    const nested = project.files.filter(file => file.relativePath === 'src/nested.ts');
+    const started = Date.now();
+    const map = await mapOf({ ...project, files: nested });
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect([map.files[0].checked, map.complexFunctions]).toEqual(['full', []]);
   });
 
   it('stops between files when asked, instead of being ended in the middle of a parse', async () => {

@@ -48,6 +48,12 @@ for (let index = 0; index < 65; index++) {
   await mkdir(path.join(bigMapFixture, folder), { recursive: true });
   await writeFile(path.join(bigMapFixture, folder, `file${index}.ts`), `import { step } from '../part${(index + 1) % 5}/file${(index + 1) % 65}';\n${bigBody}`);
 }
+// Plan v2.3 C-1: one function of 61 code lines (over the limit of 60) next to a short one.
+const hardFixture = path.join(temporary, '어려운 코드 프로젝트');
+const hardSource = `export function short() { return 1; }\n\nexport function long() {\n  if (ready()) {\n    step(0);\n  }\n${
+  Array.from({ length: 59 }, (_, index) => `  step(${index + 1});`).join('\n')}\n}\n`;
+await mkdir(path.join(hardFixture, 'src'), { recursive: true });
+await writeFile(path.join(hardFixture, 'src/work.ts'), hardSource);
 // Test harness lives outside the shipped app. Production IPC has no path injection/test API.
 const bootstrap = path.join(temporary, 'bootstrap.cjs');
 await writeFile(bootstrap, `const { app } = require('electron');\napp.setPath('userData', ${JSON.stringify(profile)});\nrequire(${JSON.stringify(path.join(root, '.vite/build/main.cjs'))});\n`);
@@ -1011,6 +1017,48 @@ try {
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
     await page.getByRole('button', { name: '주문', exact: true }).click();
     assert.equal(await page.getByRole('region', { name: 'AI 설명' }).count(), 0);
+  });
+  await check('Hard code: the map lists a long function, the reader marks it, and the AI button asks about all of it', async () => {
+    await dialogTo(hardFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '어려운 코드 프로젝트', exact: true }).waitFor();
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    const list = page.getByRole('region', { name: '어려운 코드 살펴볼 곳' });
+    await list.getByText('어려운 코드 살펴볼 곳 · 1개', { exact: true }).waitFor();
+    assert.deepEqual(await list.locator('li').allInnerTexts(), ['src/work.ts 3행 long 긴 함수 · 61줄코드 보기']);
+    await list.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(artifacts, 'hard-code-map.png') });
+    // From the list to the function in the reader: chosen, marked, and the short one is not.
+    await list.getByRole('button', { name: '코드 보기', exact: true }).click();
+    await until(async () => await page.getByRole('button', { name: 'long', exact: true }).getAttribute('aria-pressed') === 'true');
+    assert.equal(await page.getByTestId('evidence-range').innerText().then(text => text.split(' · ')[1]), '3–66줄');
+    assert.deepEqual(await page.locator('.symbols__signals .tag').allInnerTexts(), ['긴 함수 · 61줄']);
+    await page.getByText('표시는 살펴볼 곳이에요. 나쁜 코드라는 판정이 아니에요. 기준: 본문 60줄 넘음, 중첩 4단계 넘음.', { exact: true }).first().waitFor();
+    // A step inside makes the step the question's code, until the AI button chooses the whole function again.
+    await page.getByRole('list', { name: 'long 내부 구문' }).getByRole('button', { name: '조건 확인', exact: true }).click();
+    await until(async () => (await page.getByTestId('question-scope').innerText()).endsWith('4–6행'));
+    await page.getByRole('button', { name: 'AI에게 단순하게 쓰는 법 묻기', exact: true }).click();
+    await until(async () => (await page.getByTestId('question-scope').innerText()) === '질문 기준: src/work.ts · 3–66행');
+    assert.equal(await page.getByRole('tab', { name: '질문', exact: true }).getAttribute('aria-selected'), 'true');
+    const question = '이 함수를 더 단순하고 읽기 쉽게 쓸 수 있을까요? 바꾼다면 어디를 어떻게 바꾸면 좋을지 알려 주세요.';
+    assert.equal(await page.getByRole('textbox', { name: '선택한 코드에 질문' }).inputValue(), question);
+    await page.screenshot({ path: path.join(artifacts, 'hard-code-reader.png') });
+    // Sent through the test-only AI handlers above: the request names the whole function's evidence.
+    await page.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
+    await until(async () => (await page.getByTestId('ai-readiness').innerText()).includes('테스트 전용'));
+    await page.getByRole('checkbox').check();
+    await page.getByRole('button', { name: '질문 보내기', exact: true }).click();
+    await page.getByText(`가짜 설명: ${question}`, { exact: true }).waitFor();
+    const sent = await app.evaluate(() => globalThis.testFakeAiCalls.at(-1).request);
+    const named = await page.evaluate(request => window.learning.readEvidence({ projectId: request.projectId, evidenceId: request.evidenceId }), sent);
+    assert.deepEqual([named.ok, named.value.evidence.startLine, named.value.evidence.endLine], [true, 3, 66]);
+    // After a change the map's entry no longer fits the file, so nothing is chosen.
+    await writeFile(path.join(hardFixture, 'src/work.ts'), `// changed\n${hardSource}`);
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByText('지도를 만든 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요.', { exact: false }).waitFor();
+    await list.getByRole('button', { name: '코드 보기', exact: true }).click();
+    await page.getByText('지도를 만든 뒤 이 파일이 바뀌어 함수를 고르지 않았어요. 지도를 다시 만들어 주세요.', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: 'long', exact: true }).getAttribute('aria-pressed'), 'false');
   });
   await check('Quitting while files are parsed waits for the workers and ends cleanly', async () => {
     // (a) Closing the window while a large folder opens.

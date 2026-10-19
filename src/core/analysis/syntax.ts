@@ -5,7 +5,7 @@ import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
 import type { Analysis, CodeStep, Evidence } from '../../shared/contracts';
 
-const functionTypes = new Set([
+export const functionTypes = new Set([
   'function_declaration', 'generator_function_declaration', 'function_expression',
   'generator_function', 'arrow_function', 'method_definition',
 ]);
@@ -55,6 +55,77 @@ function detailOf(node: Parser.SyntaxNode, text: string): string | undefined {
     case 'return_statement': case 'throw_statement': return firstCode(node)?.text;
     default: return undefined;
   }
+}
+
+// Plan v2.3 C-1: each of these around a point of the body adds one level of nesting.
+const nestingTypes = new Set([
+  'if_statement', 'for_statement', 'for_in_statement', 'while_statement', 'do_statement', 'switch_statement', 'try_statement',
+]);
+
+/** The name a function is listed under: its own, the variable, field or key it is assigned to, or its line. */
+export function functionName(node: Parser.SyntaxNode): string {
+  const parent = node.parent;
+  const assignedName = parent && ['variable_declarator', 'public_field_definition', 'field_definition'].includes(parent.type)
+    ? parent.childForFieldName('name')
+    : parent?.type === 'pair' ? parent.childForFieldName('key') : null;
+  return node.childForFieldName('name')?.text ?? assignedName?.text ?? `이름 없는 함수 (${node.startPosition.row + 1}행)`;
+}
+
+/**
+ * Plan v2.3 C-1, for a listed function. `lines`: lines of its body holding a character that is not white
+ * space, `{` or `}`, outside comments and nested functions. `depth`: the most ifs, loops, switches and trys
+ * around any point of the body; an `else if` counts with the if before it. A nested function, header and
+ * all, belongs to itself and is measured on its own from depth 0.
+ */
+export function measureFunction(node: Parser.SyntaxNode, text: string): { lines: number; depth: number } {
+  const body = node.childForFieldName('body')!;
+  // Comments and nested functions, in source order: their text is not this function's code.
+  const skipped: { start: number; end: number; endRow: number }[] = [];
+  let depth = 0;
+  // A cursor rather than `nextNamedSibling`/`parent`, which search from the root and get slow in deeply
+  // nested code. `level` counts the nesting statements around the cursor's node; `outside` keeps the level
+  // and type of each node the cursor went into, so returning to it restores the level.
+  const cursor = body.walk();
+  let level = 0;
+  const outside: { level: number; type: string }[] = [];
+  let entering = true;
+  for (;;) {
+    const type = cursor.nodeType;
+    if (entering && cursor.nodeIsNamed) {
+      if (type === 'comment' || functionTypes.has(type)) {
+        // An arrow's body can itself be a function (`() => () => x`); then all of it belongs to that function.
+        skipped.push({ start: cursor.startIndex, end: cursor.endIndex, endRow: cursor.endPosition.row });
+      } else {
+        const elseIf = type === 'if_statement' && outside.at(-1)?.type === 'else_clause';
+        const inner = nestingTypes.has(type) && !elseIf ? level + 1 : level;
+        depth = Math.max(depth, inner);
+        if (cursor.gotoFirstChild()) { outside.push({ level, type }); level = inner; continue; }
+      }
+    }
+    // The cursor starts at the body, so it never moves to the body's siblings or parent.
+    if (cursor.gotoNextSibling()) { entering = true; continue; }
+    if (!outside.length) break;
+    cursor.gotoParent();
+    level = outside.pop()!.level;
+    entering = false;
+  }
+
+  let lines = 0;
+  let counted = -1;
+  let row = body.startPosition.row;
+  let next = 0;
+  for (let index = body.startIndex; index < body.endIndex; index++) {
+    if (next < skipped.length && index >= skipped[next].start) {
+      index = skipped[next].end - 1;
+      row = skipped[next].endRow;
+      next++;
+      continue;
+    }
+    const character = text[index];
+    if (character === '\n') row++;
+    else if (character !== '{' && character !== '}' && !/\s/.test(character) && counted !== row) { lines++; counted = row; }
+  }
+  return { lines, depth };
 }
 
 /**
@@ -216,16 +287,10 @@ export function analyzeSource(
           limited = true;
           break;
         }
-        const parent = node.parent;
-        const assignedName = parent && ['variable_declarator', 'public_field_definition', 'field_definition'].includes(parent.type)
-          ? parent.childForFieldName('name')
-          : parent?.type === 'pair' ? parent.childForFieldName('key') : null;
-        const name = node.childForFieldName('name')?.text ?? assignedName?.text
-          ?? `이름 없는 함수 (${node.startPosition.row + 1}행)`;
         const params = node.childForFieldName('parameters') ?? node.childForFieldName('parameter');
         result.symbols.push({
-          id: randomUUID(), name, kind: node.type, params: params ? clip(params.text) : '', exported: isExported(node),
-          evidence: evidence(node), steps: stepsFor(body),
+          id: randomUUID(), name: functionName(node), kind: node.type, params: params ? clip(params.text) : '', exported: isExported(node),
+          evidence: evidence(node), steps: stepsFor(body), complexity: measureFunction(node, text),
         });
       }
     }
