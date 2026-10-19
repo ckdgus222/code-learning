@@ -61,6 +61,35 @@ function detailOf(node: Parser.SyntaxNode, text: string): string | undefined {
  * `export function f`, `export default …`, or a function assigned in `export const f = …`.
  * `export { f }` lists, re-exports, class methods and CommonJS `module.exports` are not followed.
  */
+/**
+ * Whether a node is an import, and of which kind. The analyzer's import evidence and the project map
+ * both use this, so a map entry and the evidence found on opening that file cover the same range.
+ * `static` is `import … from` or `export … from`; `not-static` is `import()`, `require()` or TS
+ * `import x = require()`; `syntax` is an import statement Tree-sitter recognized with an error in it.
+ */
+export function importOf(node: Parser.SyntaxNode): { kind: 'static' | 'not-static' | 'syntax'; specifier: string | null } | null {
+  // Only a string made of one plain fragment gives a specifier. An empty string has none, and one with an
+  // escape (`'./a\u002fb'`) is split into pieces, so taking a piece would name another path.
+  const literal = (string: Parser.SyntaxNode | null | undefined): string | null =>
+    string?.type === 'string' && string.namedChildren.length === 1 && string.namedChildren[0].type === 'string_fragment'
+      ? string.namedChildren[0].text : null;
+  if (node.type === 'import_statement') {
+    const required = node.namedChildren.find(child => child.type === 'import_require_clause');
+    if (required) return { kind: 'not-static', specifier: literal(required.namedChildren.find(child => child.type === 'string')) };
+    return { kind: node.hasError ? 'syntax' : 'static', specifier: literal(node.childForFieldName('source')) };
+  }
+  if (node.type === 'export_statement') {
+    const source = node.childForFieldName('source');
+    return source ? { kind: node.hasError ? 'syntax' : 'static', specifier: literal(source) } : null;
+  }
+  if (node.type === 'call_expression') {
+    const callee = node.childForFieldName('function');
+    if (callee?.type !== 'import' && !(callee?.type === 'identifier' && callee.text === 'require')) return null;
+    return { kind: 'not-static', specifier: literal(node.childForFieldName('arguments')?.firstNamedChild) };
+  }
+  return null;
+}
+
 function isExported(node: Parser.SyntaxNode): boolean {
   const parent = node.parent;
   if (parent?.type === 'export_statement') return true;
@@ -91,7 +120,7 @@ export function analyzeSource(
   const root = parser.parse(text, undefined, { bufferSize: Math.max(32 * 1024, text.length + 1) }).rootNode;
   result.warnings.push('코드에 적힌 구문 구조입니다. 실제 실행 순서와 호출 대상은 확인하지 않았습니다.');
   if (root.hasError) {
-    result.warnings.push('구문 오류가 있습니다. 오류가 포함된 함수와 import는 분석에서 제외합니다.');
+    result.warnings.push('구문 오류가 있습니다. 오류가 포함된 함수는 분석에서 제외합니다.');
   }
 
   let evidenceCount = 0;
@@ -176,7 +205,7 @@ export function analyzeSource(
     const node = pending.pop()!;
     if (node.nextNamedSibling) pending.push(node.nextNamedSibling);
     if (node.isError || node.isMissing) continue;
-    if (node.type === 'import_statement' && !node.hasError) {
+    if (importOf(node)) {
       result.imports.push({ text: text.slice(node.startIndex, node.endIndex), evidence: evidence(node) });
     }
     if (functionTypes.has(node.type)) {

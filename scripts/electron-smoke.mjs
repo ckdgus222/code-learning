@@ -24,6 +24,30 @@ await writeFile(path.join(fixture, '.env'), 'TEST_NOT_A_REAL_SECRET=canary');
 await writeFile(path.join(fixture, 'auth.json'), '{"test":"not-real-auth"}');
 await writeFile(path.join(fixture, 'README.md'), '# 주문 예제\n\n주문 수량을 확인하는 작은 시험 자료입니다.\n\n<script>globalThis.attacked=true</script> ![x](https://example.com/test)');
 await writeFile(path.join(second, 'other.ts'), 'export function other() { return 2; }');
+// The project map: ui uses store twice and shared once, store uses ui once and shared once, and ui uses itself.
+// A folder 21 levels deep stops the folder scan at its depth limit without reaching the map's own limits.
+const mapFixture = path.join(temporary, '지도 프로젝트');
+const mapFiles = {
+  'ui/app.ts': "import { save } from '../store/save';\nimport { format } from '../shared/format';\nimport React from 'react';\nconst lazy = import('./lazy');\nexport const app = 1;\n",
+  'ui/view.ts': "import { load } from '../store/load';\nimport { app } from './app';\nexport const view = 1;\n",
+  'store/save.ts': "import { format } from '../shared/format';\nexport const save = 1;\n",
+  'store/load.ts': "import { view } from '../ui/view';\nexport const load = 2;\n",
+  'shared/format.ts': 'export const format = 3;\n',
+  [`${Array.from({ length: 21 }, (_, index) => `d${index + 1}`).join('/')}/deep.ts`]: 'export const deep = 1;\n',
+};
+for (const [name, text] of Object.entries(mapFiles)) {
+  await mkdir(path.dirname(path.join(mapFixture, name)), { recursive: true });
+  await writeFile(path.join(mapFixture, name), text);
+}
+// 65 code files of about 100 KB in five folders: more than 60, so the map starts folded, and slow enough
+// to parse that a cancel lands while Tree-sitter is working.
+const bigMapFixture = path.join(temporary, '큰 지도 프로젝트');
+const bigBody = 'export function step(x: number) { if (x > 1) { return x + 1; } return 0; }\n'.repeat(1300);
+for (let index = 0; index < 65; index++) {
+  const folder = `part${index % 5}`;
+  await mkdir(path.join(bigMapFixture, folder), { recursive: true });
+  await writeFile(path.join(bigMapFixture, folder, `file${index}.ts`), `import { step } from '../part${(index + 1) % 5}/file${(index + 1) % 65}';\n${bigBody}`);
+}
 // Test harness lives outside the shipped app. Production IPC has no path injection/test API.
 const bootstrap = path.join(temporary, 'bootstrap.cjs');
 await writeFile(bootstrap, `const { app } = require('electron');\napp.setPath('userData', ${JSON.stringify(profile)});\nrequire(${JSON.stringify(path.join(root, '.vite/build/main.cjs'))});\n`);
@@ -482,6 +506,159 @@ try {
     await dialogTo(fixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
+  });
+  await check('Project map: file and design views, evidence, freshness, reopening and cancelled or stale maps', async () => {
+    await dialogTo(mapFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '지도 프로젝트', exact: true }).waitFor();
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    const boxes = page.locator('.react-flow__node');
+    // Five code files are fewer than 60, so the map starts in the file view; the deep file was never listed.
+    await until(async () => await boxes.count() === 5);
+    await page.getByText('초기 탐색 제한(파일 1,000개·항목 5,000개·깊이 20)에 도달했습니다.', { exact: false }).waitFor();
+    await page.getByText('확인 못 함 · 1개', { exact: true }).waitFor();
+    await page.getByText('외부 패키지 또는 경로 별칭 · 1개', { exact: true }).waitFor();
+    const design = page.getByRole('region', { name: '폴더 사이 연결' });
+    await design.getByText('폴더 사이 연결(설계) · 4개', { exact: true }).waitFor();
+    const designLines = await design.locator('li').allInnerTexts();
+    // Each direction counted on its own; the import inside ui is left out.
+    assert.deepEqual(designLines.sort(), ['store → shared · import 1개', 'store → ui · import 1개', 'ui → shared · import 1개', 'ui → store · import 2개']);
+    await page.screenshot({ path: path.join(artifacts, 'project-map-files.png') });
+    // The design view folds every folder; a folder box opens its files.
+    await page.getByRole('button', { name: '설계 보기', exact: true }).click();
+    await until(async () => await boxes.count() === 3);
+    await page.screenshot({ path: path.join(artifacts, 'project-map-design.png') });
+    await boxes.filter({ hasText: 'ui · 파일 2개' }).click();
+    await until(async () => await boxes.count() === 4);
+    await page.getByRole('button', { name: '파일 보기', exact: true }).click();
+    await until(async () => await boxes.count() === 5);
+    await boxes.filter({ hasText: 'save.ts' }).click();
+    await page.getByRole('heading', { name: 'store/save.ts', exact: true }).waitFor();
+    // An import's evidence opens the importing file with that import highlighted.
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByText('연결 목록 · 6개', { exact: true }).click();
+    const loadLine = page.locator('.map-list li').filter({ hasText: 'store/load.ts 1행 → ui/view.ts' });
+    await loadLine.getByRole('button', { name: '코드 보기', exact: true }).click();
+    await page.getByRole('heading', { name: 'store/load.ts', exact: true }).waitFor();
+    assert.match(await page.getByTestId('evidence-range').innerText(), /store\/load\.ts · 1–1줄/);
+    // A wake from sleep while that file is read (sent as the read request leaves for the worker): no highlight.
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await app.evaluate(({ powerMonitor }) => {
+      const { Worker } = process.getBuiltinModule('node:worker_threads');
+      const original = Worker.prototype.postMessage;
+      Worker.prototype.postMessage = function (message, ...rest) {
+        const result = original.call(this, message, ...rest);
+        if (message?.kind === 'read') { Worker.prototype.postMessage = original; powerMonitor.emit('resume'); }
+        return result;
+      };
+    });
+    await page.getByText('연결 목록 · 6개', { exact: true }).click();
+    await loadLine.getByRole('button', { name: '코드 보기', exact: true }).click();
+    await page.getByRole('heading', { name: 'store/load.ts', exact: true }).waitFor();
+    await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).waitFor();
+    assert.equal(await page.getByTestId('evidence-range').count(), 0);
+    // A fresh map, so the next change is the only thing marking it.
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).click();
+    await until(async () => await page.getByText('지도를 만든 뒤 파일이 바뀌었거나', { exact: false }).count() === 0
+      && await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).isVisible());
+    // A change after the map was drawn: the map asks for a re-check and the old position is not highlighted.
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await writeFile(path.join(mapFixture, 'store/load.ts'), "\n" + mapFiles['store/load.ts']);
+    await page.getByText('지도를 만든 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요.', { exact: false }).waitFor();
+    await page.getByText('연결 목록 · 6개', { exact: true }).click();
+    await loadLine.getByRole('button', { name: '코드 보기', exact: true }).click();
+    await page.getByText('지도를 만든 뒤 이 파일이 바뀌어 import 위치를 강조하지 않았어요.', { exact: false }).waitFor();
+    assert.equal(await page.getByTestId('evidence-range').count(), 0);
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).click();
+    await until(async () => await page.getByText('지도를 만든 뒤 파일이 바뀌었거나', { exact: false }).count() === 0
+      && await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).isVisible());
+    // Two more changes with a fresh map between them and no file read: the screen's other change states are
+    // already set by then, and the map must still be marked each time.
+    for (const blankLines of ['\n\n', '\n\n\n']) {
+      await writeFile(path.join(mapFixture, 'store/load.ts'), blankLines + mapFiles['store/load.ts']);
+      await page.getByText('지도를 만든 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요.', { exact: false }).waitFor();
+      await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).click();
+      await until(async () => await page.getByText('지도를 만든 뒤 파일이 바뀌었거나', { exact: false }).count() === 0
+        && await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).isVisible());
+    }
+    // Waking from sleep while the map is drawn: the map is dropped (sent as the map worker starts).
+    await app.evaluate(({ powerMonitor }) => {
+      const { Worker } = process.getBuiltinModule('node:worker_threads');
+      const original = Worker.prototype.once;
+      globalThis.testOriginalOnce = original;
+      Worker.prototype.once = function (event, listener) {
+        if (event === 'message') { Worker.prototype.once = original; powerMonitor.emit('resume'); }
+        return original.call(this, event, listener);
+      };
+    });
+    await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).click();
+    await page.getByText('지도를 만드는 동안 파일이 바뀌었거나 잠자기에서 돌아왔어요.', { exact: false }).waitFor();
+    await app.evaluate(() => { process.getBuiltinModule('node:worker_threads').Worker.prototype.once = globalThis.testOriginalOnce; });
+    // Cancelling a map stops only the map; files still open meanwhile.
+    await app.evaluate(() => {
+      const { Worker } = process.getBuiltinModule('node:worker_threads');
+      const original = Worker.prototype.once;
+      globalThis.testOriginalOnce = original;
+      Worker.prototype.once = function (event, listener) {
+        // Hold the map's answer back so it can be cancelled while it is still being drawn.
+        if (event === 'message') return original.call(this, event, (...values) => setTimeout(() => listener(...values), 5000));
+        return original.call(this, event, listener);
+      };
+    });
+    await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).click();
+    await page.getByText('지도를 만드는 중…', { exact: true }).waitFor();
+    await page.getByRole('button', { name: 'shared/format.ts', exact: true }).click();
+    await page.getByRole('heading', { name: 'shared/format.ts', exact: true }).waitFor();
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByRole('button', { name: '지도 만들기 취소', exact: true }).click();
+    await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).waitFor();
+    // A map still being drawn when the folder is opened again is dropped; reopening shows new files.
+    await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).click();
+    await page.getByText('지도를 만드는 중…', { exact: true }).waitFor();
+    await writeFile(path.join(mapFixture, 'ui/extra.ts'), "import { view } from './view';\nexport const extra = 1;\n");
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await app.evaluate(() => { process.getBuiltinModule('node:worker_threads').Worker.prototype.once = globalThis.testOriginalOnce; });
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await until(async () => await boxes.count() === 6);
+    assert.equal(await page.getByText('지도를 만드는 동안', { exact: false }).count(), 0);
+    // A larger project: cancelling while its files are parsed stops the map, not the app.
+    await dialogTo(bigMapFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '큰 지도 프로젝트', exact: true }).waitFor();
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByText('지도를 만드는 중…', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '지도 만들기 취소', exact: true }).click();
+    await page.getByRole('button', { name: '지도 만들기', exact: true }).waitFor();
+    assert.equal(await app.evaluate(() => 'alive'), 'alive');
+    // More than 60 code files: the map starts in the design view, one box per folder.
+    await page.getByRole('button', { name: '지도 만들기', exact: true }).click();
+    // About 6.5 MB of code takes longer than the usual wait to draw.
+    await page.getByText('폴더 사이 연결(설계)', { exact: false }).waitFor({ timeout: 30_000 });
+    assert.equal(await boxes.count(), 5);
+    assert.equal(await page.getByRole('button', { name: '설계 보기', exact: true }).getAttribute('aria-pressed'), 'true');
+    await boxes.filter({ hasText: 'part0 · 파일 13개' }).click();
+    await until(async () => await boxes.count() === 17);
+    // While another folder opens, the old map does not open code: that read would drop the new project.
+    // Then leave the following checks with the original fixture open.
+    await page.getByText('연결 목록 · 65개', { exact: true }).click();
+    await app.evaluate(({ dialog }, folder) => {
+      dialog.showOpenDialog = async () => {
+        globalThis.testMapDialogWaiting = true;
+        await new Promise(resolve => { globalThis.testMapReleaseDialog = resolve; });
+        return { canceled: false, filePaths: [folder] };
+      };
+    }, fixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await until(() => app.evaluate(() => globalThis.testMapDialogWaiting === true));
+    await boxes.filter({ hasText: 'file0.ts' }).click();
+    // The list's button is disabled meanwhile; a forced click must still change nothing.
+    assert.equal(await page.locator('.map-list button').first().isDisabled(), true);
+    await page.locator('.map-list button').first().click({ force: true });
+    await app.evaluate(() => globalThis.testMapReleaseDialog());
+    await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: 'order.ts', exact: true }).isVisible(), true);
   });
   await check('IPC rejects path injection and another window', async () => {
     const bad = await page.evaluate(() => window.learning.readSource({ projectId: 'bad', fileId: '../../auth.json' }));

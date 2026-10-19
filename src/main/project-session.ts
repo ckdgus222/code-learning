@@ -1,7 +1,7 @@
 import { Worker } from 'node:worker_threads';
 import path from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
-import type { Evidence, ProjectEvent, ProjectView, Result, SourceView } from '../shared/contracts';
+import type { Evidence, ProjectEvent, ProjectMap, ProjectView, Result, SourceView } from '../shared/contracts';
 import { AppError } from '../shared/errors';
 import type { WorkerRequest, WorkerResponse } from '../workers/analysis';
 
@@ -13,8 +13,11 @@ export class ProjectSession {
   private closed = false;
   private termination?: Promise<void>;
   private observedChanges = 0;
+  private project?: ProjectView;
+  /** The map being drawn and the flag that asks its worker to stop. */
+  private mapRun?: { worker: Worker; stop: Int32Array };
 
-  constructor(readonly id: string, readonly root: string, workerPath: string, private notify: (event: ProjectEvent) => void) {
+  constructor(readonly id: string, readonly root: string, private readonly workerPath: string, private notify: (event: ProjectEvent) => void) {
     this.worker = new Worker(workerPath, { workerData: { root, projectId: id } });
     this.worker.on('message', (message: WorkerResponse) => {
       const pending = this.pending.get(message.id);
@@ -43,6 +46,7 @@ export class ProjectSession {
 
   async open(): Promise<ProjectView> {
     const project = await this.request<ProjectView>('scan');
+    this.project = project;
     const paths = new Set<string>(['.gitignore']);
     for (const file of project.files) {
       paths.add(file.relativePath);
@@ -77,9 +81,55 @@ export class ProjectSession {
     return result;
   }
 
+  /**
+   * Draws the project map in a worker of its own, from the files listed when the folder was opened.
+   * Cancel, time limit and closing raise a shared flag instead of terminating the worker: ending a
+   * thread while Tree-sitter parses aborts the whole app. The worker stops after its current file and
+   * replies; only then, idle, is it terminated. The time limit stops only the map, never the session.
+   */
+  async map(timeoutMs = 30_000): Promise<ProjectMap> {
+    if (this.closed || !this.project) throw new AppError('PROJECT_CLOSED', '프로젝트가 닫혔습니다. 다시 열어 주세요.');
+    if (this.mapRun) throw new AppError('INVALID_REQUEST', '이미 지도를 만드는 중입니다.');
+    const revision = this.observedChanges;
+    const stop = new Int32Array(new SharedArrayBuffer(4));
+    const worker = new Worker(this.workerPath, { workerData: { root: this.root, projectId: this.id,
+      map: { files: this.project.files, starts: this.project.overview.candidates.map(candidate => candidate.fileId), stop: stop.buffer } } });
+    const run = { worker, stop };
+    this.mapRun = run;
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; Atomics.store(stop, 0, 1); }, timeoutMs);
+    try {
+      const result = await new Promise<WorkerResponse['result']>(resolve => {
+        worker.once('message', (message: WorkerResponse) => resolve(message.result));
+        worker.once('error', () => resolve({ ok: false, code: 'INTERNAL', message: '지도를 만들지 못했어요.' }));
+        worker.once('exit', () => resolve({ ok: false, code: 'INTERNAL', message: '지도 작업이 끝나 버렸어요.' }));
+      });
+      if (timedOut) throw new AppError('LIMIT', '지도를 만드는 데 너무 오래 걸려 멈췄어요.');
+      if (!result.ok) throw new AppError(result.code, result.message);
+      if (this.closed) throw new AppError('CANCELLED', '취소한 결과는 표시하지 않습니다.');
+      if (revision !== this.observedChanges) throw new AppError('CHANGED', '지도를 만드는 동안 파일이 바뀌었어요. 다시 만들어 주세요.');
+      return result.value as ProjectMap;
+    } finally {
+      clearTimeout(timer);
+      if (this.mapRun === run) this.mapRun = undefined;
+      // It has replied or ended, so it is not inside Tree-sitter now.
+      await worker.terminate();
+    }
+  }
+
+  /**
+   * Asks the map worker to stop; its request then ends with CANCELLED. A new map may start at once:
+   * the stopping worker finishes its current file and is cleaned up by its own request.
+   */
+  cancelMap(): void {
+    if (this.mapRun) Atomics.store(this.mapRun.stop, 0, 1);
+    this.mapRun = undefined;
+  }
+
   close(code: 'CANCELLED' | 'INTERNAL' | 'LIMIT' = 'CANCELLED'): Promise<void> {
     if (this.termination) return this.termination;
     this.closed = true;
+    this.cancelMap();
     const message = code === 'LIMIT' ? '작업 제한 시간을 넘었습니다. 더 작은 폴더를 선택해 주세요.' :
       code === 'INTERNAL' ? '분석 작업이 종료되었습니다. 폴더를 다시 열어 주세요.' : '작업을 취소했습니다.';
     for (const item of this.pending.values()) {

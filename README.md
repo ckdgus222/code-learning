@@ -1,6 +1,6 @@
 # Code Learning
 
-로컬 프로젝트를 읽기 전용으로 살펴보는 독립 macOS 앱입니다. **현재는 구현 착수본이며, 개인용 시제품 완료 상태가 아닙니다.** 기준은 상위 폴더의 `universal-code-learning-implementation-plan-v2.2.md`입니다.
+로컬 프로젝트를 읽기 전용으로 살펴보는 독립 macOS 앱입니다. **현재는 구현 착수본이며, 개인용 시제품 완료 상태가 아닙니다.** 기준은 상위 폴더의 `universal-code-learning-implementation-plan-v2.2.md`와 그 보완인 `universal-code-learning-implementation-plan-v2.3.md`(에이전트 작업 검사, v2.2와 다르면 v2.3 우선)입니다.
 
 ## 현재 가능한 일
 
@@ -8,6 +8,7 @@
 - 한눈에 보기: 루트 README(`.md`·`.txt`)의 첫 소개 문단을 ‘문서에 적힌 소개’로 표시(일반 텍스트, 코드와 맞는지는 미확인). `package.json`의 main·bin, index·main·app 파일, export된 함수에서 고른 ‘학습 시작점 후보’를 누르면 흐름 따라가기로 이동
 - TS/JS 함수·화살표 함수·메서드 선택 → 조건문·반환문 등 구문 → 해당 원본 범위 강조
 - 흐름 따라가기: 함수 하나를 코드에 적힌 순서대로 한 단계씩 보기. 받는 값, 반환·오류 던지기 위치, 확인하는 조건·돌려주는 값, if의 맞으면/아니면 단계로 이동, 이전/다음, 코드 읽기와 왕복
+- 프로젝트 지도: 파일끼리 가져다 쓰는(import) 관계를 그림으로 보기. ‘설계 보기’는 폴더끼리 연결과 개수, ‘파일 보기’는 파일끼리 연결. 다른 폴더를 쓰는 폴더가 왼쪽, 쓰이는 폴더가 오른쪽이고, 거꾸로 가는 연결은 점선. 상대 경로로 정확히 한 파일에 이어지는 정적 import만 선으로 긋고, 나머지는 ‘확인 못 함’(이유·후보)이나 ‘외부 패키지 또는 경로 별칭’으로 따로 보여 줌. 화살표·목록에서 그 import 코드로 이동(지도를 만든 뒤 파일이 바뀌었으면 강조하지 않음). 실행 순서가 아니며 TS/JS만 봄. 지도는 별도 작업자가 만들어 그동안에도 파일을 열 수 있고 취소할 수 있음
 - 한글·이모지·BOM·CRLF를 유지한 코드 위치 확인
 - 기존 파일·제외 규칙 변경 감지, 근거 사용 전 해시 재검사
 - 프로젝트 전환·취소 시 분석 worker와 감시 정리
@@ -110,9 +111,11 @@ AI 설명 계약은 `src/shared/ai.ts`의 `Explanation`입니다: `summary`, `st
 |---|---|
 | `src/main` | 창, IPC 요청 검사, 프로젝트 세션·작업 취소·파일 감시 |
 | `src/preload` | 화면에 필요한 제한된 API만 전달 |
-| `src/workers/analysis.ts` | 작업자 하나에서 탐색·분석·근거 대조 |
+| `src/workers/analysis.ts` | 작업자 하나에서 탐색·분석·근거 대조. 프로젝트 지도는 같은 스크립트로 띄운 별도 작업자가 만듦 |
 | `src/core/project/files.ts` | 제외 규칙, 읽기 경계, 크기·UTF-8·해시 검사 |
 | `src/core/analysis/syntax.ts` | Tree-sitter 구문 추출과 UTF-16 근거 |
+| `src/core/analysis/project-map.ts` | 프로젝트 지도의 import 수집·상대 경로 연결·대상 재확인·조사 상태 |
+| `src/renderer/project-map.tsx`, `map-layout.ts` | 지도 화면(React Flow), 설계 보기의 폴더 묶기와 열 순서, 지도 근거와 코드 근거 짝 찾기 |
 | `src/core/analysis/overview.ts` | 한눈에 보기의 README 소개와 학습 시작점 후보(파일은 텍스트로만 읽음) |
 | `src/core/storage/projects.ts` | Electron 내장 SQLite로 프로젝트 정보 저장 |
 | `src/core/ai` | 로컬 설치 확인·실행 차단, 제한된 자식 프로세스, 앱 중개 파일 읽기·3단계 워커·다중 근거 검사·대화 수명 |

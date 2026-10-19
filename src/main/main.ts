@@ -3,7 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { mkdir, realpath } from 'node:fs/promises';
 import { z } from 'zod';
-import { channels, sourceRequestSchema, evidenceRequestSchema, type Result, type Evidence } from '../shared/contracts';
+import { channels, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, type Result, type Evidence } from '../shared/contracts';
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { ProjectSession } from './project-session';
@@ -168,6 +168,22 @@ app.whenReady().then(async () => {
         throw error;
       }
     } finally { opening = false; }
+  });
+  handle(channels.map, async argument => {
+    const input = projectRequestSchema.parse(argument);
+    const active = current(input.projectId);
+    const revision = projectRevision;
+    const map = await active.map();
+    // Waking from sleep raises only projectRevision, not the session's own change count.
+    if (session !== active || projectRevision !== revision) {
+      throw new AppError('CHANGED', '지도를 만드는 동안 파일이 바뀌었거나 잠자기에서 돌아왔어요. 다시 만들어 주세요.');
+    }
+    return map;
+  });
+  handle(channels.cancelMap, async argument => {
+    const input = projectRequestSchema.parse(argument);
+    current(input.projectId).cancelMap();
+    return null;
   });
   handle(channels.read, async argument => {
     const input = sourceRequestSchema.parse(argument);
