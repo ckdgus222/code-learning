@@ -656,6 +656,24 @@ try {
     assert.match(await page.getByTestId('ai-readiness').innerText(), ready ? /질문을 보낼 수 있어요\. 알려진 한계/ : /Codex와 Antigravity가 둘 다 필요해요/);
     assert.equal(await page.getByRole('checkbox').isEnabled(), ready);
     assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
+    // The consent names what capture sends: the selection's whole file too, and related files only here.
+    const consentText = () => page.locator('.ai-consent').innerText();
+    assert.match(await consentText(), /선택한 코드와 그 파일 전체\(크기 제한 안\)·프로젝트 파일 목록·관련 파일\(추가 최대 4개\)·질문·최근 답변을 Codex와 Gemini에 보내는/);
+    // Each single mode opens with its own CLI, names it, and reads no other file.
+    for (const [mode, binary, recipient] of [['codex', 'Codex', 'Codex'], ['antigravity', 'Antigravity', 'Gemini\\(Antigravity\\)']]) {
+      await selector.selectOption(mode);
+      const found = new RegExp(`${binary} · 설치 확인`).test(listed);
+      assert.match(await page.getByTestId('ai-readiness').innerText(), found ? /한 AI가 바로 설명하고 다른 AI의 대조는 없어요/ : /단독에는 .+ 필요해요/);
+      assert.equal(await page.getByRole('checkbox').isEnabled(), found);
+      const consent = await consentText();
+      assert.match(consent, new RegExp(`선택한 코드와 그 파일 전체\\(크기 제한 안\\)·프로젝트 파일 목록·질문·최근 답변을 ${recipient}에 보내는 데 동의합니다\\. 다른 파일은 더 읽지 않습니다\\.`));
+      assert.doesNotMatch(consent, /관련 파일/);
+      assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
+    }
+    await selector.selectOption('claude-code');
+    assert.equal(await page.getByTestId('ai-readiness').innerText(), 'Claude Code 단독은 아직 준비 중이에요.');
+    assert.equal(await page.getByRole('checkbox').isEnabled(), false);
+    await selector.selectOption('local-worker');
     await page.getByRole('button', { name: '패널 접기', exact: true }).click();
     await page.getByRole('button', { name: '설명 패널 펼치기', exact: true }).click();
     assert.equal(await selector.inputValue(), 'local-worker');
