@@ -54,6 +54,11 @@ const hardSource = `export function short() { return 1; }\n\nexport function lon
   Array.from({ length: 59 }, (_, index) => `  step(${index + 1});`).join('\n')}\n}\n`;
 await mkdir(path.join(hardFixture, 'src'), { recursive: true });
 await writeFile(path.join(hardFixture, 'src/work.ts'), hardSource);
+// Plan v2.3 F: placeOrder calls check (same file), save (imported) and a member call; quick's arrow body is a call.
+const callsFixture = path.join(temporary, '호출 프로젝트');
+await mkdir(path.join(callsFixture, 'src'), { recursive: true });
+await writeFile(path.join(callsFixture, 'src/app.ts'), "import { save } from './store';\nexport function placeOrder(order: string) {\n  check(order);\n  save(order);\n  log.info(order);\n}\nfunction check(order: string) { return order.length > 0; }\nexport const quick = () => save('q');\nexport function withDefault(x = check('d')) { return x; }\n");
+await writeFile(path.join(callsFixture, 'src/store.ts'), 'export function save(order: string) {\n  return order;\n}\n');
 // Test harness lives outside the shipped app. Production IPC has no path injection/test API.
 const bootstrap = path.join(temporary, 'bootstrap.cjs');
 await writeFile(bootstrap, `const { app } = require('electron');\napp.setPath('userData', ${JSON.stringify(profile)});\nrequire(${JSON.stringify(path.join(root, '.vite/build/main.cjs'))});\n`);
@@ -225,7 +230,8 @@ try {
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
     await page.getByRole('button', { name: '주문', exact: true }).click();
     await page.getByRole('button', { name: '조건 확인', exact: true }).click();
-    assert.equal(await page.getByTestId('evidence-range').innerText(), evidence);
+    // The step's range is shown once main has checked it against the file, a moment after the click.
+    await until(async () => await page.getByTestId('evidence-range').innerText() === evidence);
   });
   await check('Code reader finds text, resizes and wraps code, fits the window, and dragging or dropping changes nothing', async () => {
     const evidence = await page.getByTestId('evidence-range').innerText();
@@ -341,6 +347,8 @@ try {
     await content.focus();
     await page.keyboard.press('Meta+ArrowUp');
     await until(async () => await page.locator('.cm-selectionBackground').count() === 0);
+    // Line boxes are measured once the editor has finished scrolling back to the top.
+    await until(() => page.evaluate(() => document.querySelector('.cm-scroller').scrollTop === 0));
     const first = await page.locator('.cm-line').nth(0).boundingBox();
     const third = await page.locator('.cm-line').nth(2).boundingBox();
     await page.mouse.move(first.x + 4, first.y + first.height / 2);
@@ -360,7 +368,8 @@ try {
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
     await page.getByRole('button', { name: '주문', exact: true }).click();
     await page.getByRole('button', { name: '조건 확인', exact: true }).click();
-    assert.equal(await page.getByTestId('evidence-range').innerText(), evidence);
+    // The step's range is shown once main has checked it against the file, a moment after the click.
+    await until(async () => await page.getByTestId('evidence-range').innerText() === evidence);
   });
   await check('Switching views preserves the selected function, step and evidence', async () => {
     const evidence = await page.getByTestId('evidence-range').innerText();
@@ -1059,6 +1068,64 @@ try {
     await list.getByRole('button', { name: '코드 보기', exact: true }).click();
     await page.getByText('지도를 만든 뒤 이 파일이 바뀌어 함수를 고르지 않았어요. 지도를 다시 만들어 주세요.', { exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: 'long', exact: true }).getAttribute('aria-pressed'), 'false');
+  });
+  await check('Calls: what a function calls and where it is called from, moving to either, and stale after a change', async () => {
+    await dialogTo(callsFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '호출 프로젝트', exact: true }).waitFor();
+    await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    await page.getByRole('button', { name: 'src/app.ts', exact: true }).click();
+    await page.getByRole('button', { name: 'placeOrder', exact: true }).click();
+    const summary = page.getByRole('article', { name: '함수 요약' });
+    await summary.getByText('부르는 것 · 3개', { exact: true }).waitFor();
+    const calledList = summary.getByRole('list', { name: '이 함수가 부르는 것' });
+    assert.deepEqual(await calledList.locator('li').allInnerTexts(), [
+      '3행 check(order) → check src/app.ts 그 함수로 호출 위치',
+      '4행 save(order) → save src/store.ts 그 함수로 호출 위치',
+      '5행 log.info(order) · 확인 못 함멤버 호출(obj.f())이라 대상을 정할 수 없어요 호출 위치',
+    ]);
+    await summary.getByText('이 함수로 이어진 호출을 찾지 못했어요.', { exact: true }).waitFor();
+    await summary.getByText('찾은 이름: placeOrder', { exact: true }).waitFor();
+    await page.screenshot({ path: path.join(artifacts, 'calls-summary.png') });
+    // Follow save: its callers include placeOrder and the arrow quick.
+    await calledList.locator('li').nth(1).getByRole('button', { name: '그 함수로', exact: true }).click();
+    await until(async () => await page.getByRole('button', { name: 'save', exact: true }).getAttribute('aria-pressed') === 'true');
+    await summary.getByText('부르는 곳 · 2개', { exact: true }).waitFor();
+    const callers = summary.getByRole('list', { name: '이 함수를 부르는 곳' }).locator('li');
+    assert.deepEqual(await callers.allInnerTexts(), [
+      'src/app.ts 4행 save(order) · placeOrder 안 그 함수로 호출 위치',
+      "src/app.ts 8행 save('q') · quick 안 그 함수로 호출 위치",
+    ]);
+    // The call in quick is its whole arrow body, so that step is chosen and highlighted.
+    await callers.nth(1).getByRole('button', { name: '호출 위치', exact: true }).click();
+    await until(async () => (await page.getByTestId('evidence-range').innerText()).includes('8–8줄'));
+    assert.equal(await page.getByRole('button', { name: 'quick', exact: true }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.getByRole('button', { name: '표현식 결과 반환', exact: true }).getAttribute('aria-pressed'), 'true');
+    // While the search is held back it can be cancelled.
+    await holdWorkerMessages();
+    await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    await page.getByRole('button', { name: 'quick', exact: true }).click();
+    await summary.getByText('호출 관계를 찾는 중…', { exact: true }).waitFor();
+    await summary.getByRole('button', { name: '찾기 취소', exact: true }).click();
+    await summary.getByText('호출 찾기를 취소했어요.', { exact: true }).waitFor();
+    await releaseWorkerMessages();
+    await summary.getByRole('button', { name: '다시 찾기', exact: true }).click();
+    await summary.getByText('부르는 것 · 1개', { exact: true }).waitFor();
+    // A call in a default value is no step of the analyzer: its range is still marked in the reader.
+    await page.getByRole('button', { name: 'check', exact: true }).click();
+    await summary.getByText('부르는 곳 · 2개', { exact: true }).waitFor();
+    await summary.getByRole('list', { name: '이 함수를 부르는 곳' }).locator('li').nth(1).getByRole('button', { name: '호출 위치', exact: true }).click();
+    await page.getByText('이 호출(9행)은 함수 단계 목록에 없어 코드 위치만 강조했어요.', { exact: true }).waitFor();
+    assert.match(await page.getByTestId('evidence-range').innerText(), /^근거: src\/app\.ts · 9–9줄/);
+    await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    await page.getByRole('button', { name: 'quick', exact: true }).click();
+    await summary.getByText('부르는 것 · 1개', { exact: true }).waitFor();
+    // After a change the lists are marked, and moving to a changed file does not choose anything.
+    await writeFile(path.join(callsFixture, 'src/store.ts'), '// changed\nexport function save(order: string) {\n  return order;\n}\n');
+    await summary.getByText('호출을 찾은 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 아래 목록은 그 전 코드 기준이에요.', { exact: true }).waitFor();
+    await calledList.getByRole('button', { name: '그 함수로', exact: true }).click();
+    await page.getByText('호출을 찾은 뒤 이 파일이 바뀌어 그 함수를 고르지 않았어요. 다시 찾아 주세요.', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: 'save', exact: true }).getAttribute('aria-pressed'), 'false');
   });
   await check('Quitting while files are parsed waits for the workers and ends cleanly', async () => {
     // (a) Closing the window while a large folder opens.

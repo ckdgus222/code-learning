@@ -1,4 +1,4 @@
-import type { CodeSymbol, Evidence, MapFile, MapFunction, MapImport, ProjectMap, SourceView } from '../shared/contracts';
+import type { CallSite, CodeStep, CodeSymbol, Evidence, MapFile, MapFunction, MapImport, ProjectMap, SourceView } from '../shared/contracts';
 
 export interface MapBox {
   id: string;
@@ -95,10 +95,25 @@ export function matchImport(source: SourceView, item: MapImport):
   return found ? { status: 'found', evidence: found.evidence } : { status: 'missing' };
 }
 
-/** The same for a function from the map's list: 'missing' when the analyzer's limits left it out. */
-export function matchFunction(source: SourceView, item: MapFunction):
+/** The same for a function from the map's list or a call's target: 'missing' when the analyzer's limits left it out. */
+export function matchFunction(source: SourceView, item: Pick<MapFunction, 'fileId' | 'fileHash' | 'startUtf16' | 'endUtf16'>):
   { status: 'found'; symbol: CodeSymbol } | { status: 'changed' } | { status: 'missing' } {
   if (source.fileId !== item.fileId || source.hash !== item.fileHash) return { status: 'changed' };
   const found = source.analysis.symbols.find(symbol => symbol.evidence.startUtf16 === item.startUtf16 && symbol.evidence.endUtf16 === item.endUtf16);
   return found ? { status: 'found', symbol: found } : { status: 'missing' };
+}
+
+/**
+ * The analyzer's step for a call from the call search: a call expression, or the body of an arrow that is
+ * just the call (`() => save()`). 'missing' for a call outside any function or past the analyzer's limits.
+ */
+export function matchCallStep(source: SourceView, site: Pick<CallSite, 'fileId' | 'fileHash' | 'startUtf16' | 'endUtf16'>):
+  { status: 'found'; symbol: CodeSymbol; step: CodeStep } | { status: 'changed' } | { status: 'missing' } {
+  if (source.fileId !== site.fileId || source.hash !== site.fileHash) return { status: 'changed' };
+  for (const symbol of source.analysis.symbols) {
+    const step = symbol.steps.find(item => (item.kind === 'call_expression' || item.kind === 'expression_body')
+      && item.evidence.startUtf16 === site.startUtf16 && item.evidence.endUtf16 === site.endUtf16);
+    if (step) return { status: 'found', symbol, step };
+  }
+  return { status: 'missing' };
 }

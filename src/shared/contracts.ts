@@ -5,6 +5,9 @@ export const idSchema = z.string().uuid();
 export const sourceRequestSchema = z.object({ projectId: idSchema, fileId: idSchema }).strict();
 export const evidenceRequestSchema = z.object({ projectId: idSchema, evidenceId: idSchema }).strict();
 export const projectRequestSchema = z.object({ projectId: idSchema }).strict();
+/** A function as the analyzer listed it: its file, the hash the file had and the function's range. */
+export const callsRequestSchema = z.object({ projectId: idSchema, fileId: idSchema, fileHash: z.string().regex(/^[a-f0-9]{64}$/),
+  startUtf16: z.number().int().min(0), endUtf16: z.number().int().min(0) }).strict();
 
 // Offsets refer to the unchanged decoded source: UTF-16, start inclusive/end exclusive.
 export interface Evidence {
@@ -159,6 +162,51 @@ export interface ProjectMap {
   notes: string[];
 }
 
+/**
+ * A call found by the call search (plan v2.3 F). Like MapImport it is not an Evidence ID: the screen re-reads
+ * the file and moves only while the hash is unchanged.
+ */
+export interface CallSite {
+  fileId: string;
+  fileHash: string;
+  startUtf16: number;
+  endUtf16: number;
+  startLine: number;
+  endLine: number;
+  /** The call's first line, cut short. */
+  text: string;
+  /** The function the call sits in, named as the analyzer names it; null at the top of the file. */
+  inFunction: { name: string; startUtf16: number; endUtf16: number; startLine: number } | null;
+}
+export type CallUnknownReason = 'member' | 'expression' | 'not-function' | 'var' | 'block-function' | 'duplicate' |
+  'reassigned' | 'undeclared' | 'unclear-file' | 'namespace' | 'incomplete' | 'import-file' | 'export';
+/** The function a call leads to: its range is the analyzer's evidence range for it. */
+export interface CallTarget { fileId: string; fileHash: string; startUtf16: number; endUtf16: number; startLine: number; name: string }
+export type CallLink = CallSite & (
+  | { status: 'linked'; target: CallTarget }
+  | { status: 'unknown'; reason: CallUnknownReason; detail: string | null }
+  | { status: 'external'; specifier: string });
+/** What one function calls and where it is called from, read from the code only; not an execution order. */
+export interface FunctionCalls {
+  projectId: string;
+  fileId: string;
+  fileHash: string;
+  startUtf16: number;
+  endUtf16: number;
+  name: string;
+  /** Calls in its own body, in source order; calls inside nested functions belong to those. */
+  calls: CallLink[];
+  /** Calls that lead to it; null when it has no name to be called by, so none were searched for. */
+  callers: CallSite[] | null;
+  /** Calls by one of its names that the rules could not settle. */
+  maybeCallers: (CallSite & { reason: CallUnknownReason; detail: string | null })[];
+  /** In its file (settles calls), exported (settles imports), property names (member calls only). */
+  names: { local: string[]; exported: string[]; property: string[] };
+  unexamined: { fileId: string; relativePath: string; reason: string }[];
+  limited: boolean;
+  notes: string[];
+}
+
 export type AppErrorCode = 'CANCELLED' | 'INVALID_REQUEST' | 'PROJECT_CLOSED' | 'NOT_ALLOWED' |
   'CHANGED' | 'UNSUPPORTED' | 'LIMIT' | 'IO' | 'INTERNAL' | 'AI_UNAVAILABLE' | 'AI_AUTH' | 'AI_RESPONSE';
 export type Result<T> = { ok: true; value: T } | { ok: false; code: AppErrorCode; message: string };
@@ -171,6 +219,8 @@ export interface LearningApi {
   cancel(): Promise<Result<null>>;
   projectMap(input: z.infer<typeof projectRequestSchema>): Promise<Result<ProjectMap>>;
   cancelProjectMap(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
+  functionCalls(input: z.infer<typeof callsRequestSchema>): Promise<Result<FunctionCalls>>;
+  cancelFunctionCalls(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
   checkConnections(): Promise<Result<ConnectionReport>>;
   startExplanation(input: ExplainRequest): Promise<Result<{ jobId: string }>>;
   cancelExplanation(input: { jobId: string }): Promise<Result<null>>;
@@ -181,6 +231,7 @@ export interface LearningApi {
 export const channels = {
   open: 'learning:open', read: 'learning:read', evidence: 'learning:evidence',
   cancel: 'learning:cancel', event: 'learning:project-event', map: 'learning:map', cancelMap: 'learning:cancel-map',
+  calls: 'learning:calls', cancelCalls: 'learning:cancel-calls',
   connections: 'learning:connections', explain: 'learning:explain',
   cancelExplanation: 'learning:cancel-explanation', learningEvent: 'learning:ai-event',
 } as const;

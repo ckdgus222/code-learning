@@ -3,7 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { mkdir, realpath } from 'node:fs/promises';
 import { z } from 'zod';
-import { channels, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, type Result, type Evidence } from '../shared/contracts';
+import { channels, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, type Result, type Evidence } from '../shared/contracts';
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { ProjectSession, workersStopped } from './project-session';
@@ -188,6 +188,23 @@ app.whenReady().then(async () => {
   handle(channels.cancelMap, async argument => {
     const input = projectRequestSchema.parse(argument);
     current(input.projectId).cancelMap();
+    return null;
+  });
+  handle(channels.calls, async argument => {
+    const { projectId, ...target } = callsRequestSchema.parse(argument);
+    if (quitting) throw new AppError('CANCELLED', '앱을 끝내는 중이에요.');
+    const active = current(projectId);
+    const revision = projectRevision;
+    const calls = await active.calls(target);
+    // As with the map: waking from sleep raises only projectRevision.
+    if (session !== active || projectRevision !== revision) {
+      throw new AppError('CHANGED', '호출을 찾는 동안 파일이 바뀌었거나 잠자기에서 돌아왔어요. 다시 찾아 주세요.');
+    }
+    return calls;
+  });
+  handle(channels.cancelCalls, async argument => {
+    const input = projectRequestSchema.parse(argument);
+    current(input.projectId).cancelCalls();
     return null;
   });
   handle(channels.read, async argument => {

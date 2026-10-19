@@ -1,16 +1,19 @@
 import { parentPort, workerData } from 'node:worker_threads';
-import type { Evidence, ProjectFile, ProjectMap, ProjectView, Result, SourceView } from '../shared/contracts';
+import type { Evidence, FunctionCalls, ProjectFile, ProjectMap, ProjectView, Result, SourceView } from '../shared/contracts';
 import { AppError, failure } from '../shared/errors';
 import { readAllowed, scanProject } from '../core/project/files';
 import { analyzeSource } from '../core/analysis/syntax';
 import { buildOverview } from '../core/analysis/overview';
 import { buildProjectMap, MAP_LIMITS } from '../core/analysis/project-map';
+import { findFunctionCalls } from '../core/analysis/calls';
 
 export interface WorkerRequest { id: number; kind: 'scan' | 'read' | 'evidence'; target?: string }
-export interface WorkerResponse { id: number; result: Result<ProjectView | SourceView | ProjectMap | { source: SourceView; evidence: Evidence }> }
+export interface WorkerResponse { id: number; result: Result<ProjectView | SourceView | ProjectMap | FunctionCalls | { source: SourceView; evidence: Evidence }> }
 
-const { root, projectId, map, stop } = workerData as {
-  root: string; projectId: string; map?: { files: ProjectFile[]; starts: string[]; stop: SharedArrayBuffer }; stop?: SharedArrayBuffer;
+const { root, projectId, map, calls, stop } = workerData as {
+  root: string; projectId: string; map?: { files: ProjectFile[]; starts: string[]; stop: SharedArrayBuffer };
+  calls?: { files: ProjectFile[]; target: { fileId: string; fileHash: string; startUtf16: number; endUtf16: number }; stop: SharedArrayBuffer };
+  stop?: SharedArrayBuffer;
 };
 // The session raises this when it closes; the worker stops before its next parse and replies, and only
 // then is it terminated (ending it mid-parse would abort the app).
@@ -66,6 +69,13 @@ parentPort!.on('message', async (request: WorkerRequest) => {
 if (map) {
   const stop = new Int32Array(map.stop);
   buildProjectMap(root, projectId, map.files, map.starts, MAP_LIMITS, () => Atomics.load(stop, 0) === 1).then(
+    value => parentPort!.postMessage({ id: 0, result: { ok: true, value } } satisfies WorkerResponse),
+    error => parentPort!.postMessage({ id: 0, result: failure(error) } satisfies WorkerResponse));
+}
+// A calls worker likewise searches the project for one function's calls, with the map's limits.
+if (calls) {
+  const stop = new Int32Array(calls.stop);
+  findFunctionCalls(root, projectId, calls.files, calls.target, MAP_LIMITS, () => Atomics.load(stop, 0) === 1).then(
     value => parentPort!.postMessage({ id: 0, result: { ok: true, value } } satisfies WorkerResponse),
     error => parentPort!.postMessage({ id: 0, result: failure(error) } satisfies WorkerResponse));
 }

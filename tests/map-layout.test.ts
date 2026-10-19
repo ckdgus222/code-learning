@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { matchFunction, matchImport, visibleGraph } from '../src/renderer/map-layout';
+import { matchCallStep, matchFunction, matchImport, visibleGraph } from '../src/renderer/map-layout';
 import { buildProjectMap } from '../src/core/analysis/project-map';
 import { analyzeSource } from '../src/core/analysis/syntax';
 import { readAllowed, scanProject } from '../src/core/project/files';
@@ -106,5 +106,17 @@ describe('finding the code evidence of a map entry', () => {
     // The analyzer lists 200 functions; the 201st is still measured for the map.
     const many = await entries('many-long.ts', `${Array.from({ length: 200 }, (_, index) => `function f${index}() {}`).join('\n')}\n${long}\n`);
     expect(many.functions.map(item => [item.name, matchFunction(many.source, item).status])).toEqual([['long', 'missing']]);
+  });
+
+  it('finds the step of a call from the call search: a call expression, or an arrow whose body is the call', async () => {
+    const text = "function run() {\n  check(1);\n}\nconst quick = () => save('q');\nboot();\n";
+    const { source } = await entries('calls.ts', text);
+    const site = (piece: string) => ({ fileId: source.fileId, fileHash: source.hash, startUtf16: text.indexOf(piece), endUtf16: text.indexOf(piece) + piece.length });
+    const found = (piece: string) => {
+      const match = matchCallStep(source, site(piece));
+      return match.status === 'found' ? [match.symbol.name, match.step.kind] : match.status;
+    };
+    expect([found('check(1)'), found("save('q')"), found('boot()')]).toEqual([['run', 'call_expression'], ['quick', 'expression_body'], 'missing']);
+    expect(matchCallStep({ ...source, hash: 'other' }, site('check(1)'))).toEqual({ status: 'changed' });
   });
 });

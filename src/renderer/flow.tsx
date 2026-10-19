@@ -50,9 +50,11 @@ interface FlowProps {
   /** null returns to the function summary. */
   onStep(step: CodeStep | null): void;
   onOpenCode(): void;
+  /** What the chosen function calls and where it is called from (calls.tsx), shown in its summary. */
+  calls: React.ReactNode;
 }
 
-export function Flow({ source, symbol, step, evidence, locked, onSymbol, onStep, onOpenCode }: FlowProps) {
+export function Flow({ source, symbol, step, evidence, locked, onSymbol, onStep, onOpenCode, calls }: FlowProps) {
   if (!source) {
     return <div className="page page--empty">
       <h2 className="page__title">흐름 따라가기</h2>
@@ -86,7 +88,7 @@ export function Flow({ source, symbol, step, evidence, locked, onSymbol, onStep,
       </nav>
       <section className="flow__main" aria-label="현재 위치">
         {!symbol ? <p className="hint">따라갈 함수를 왼쪽에서 골라 주세요.</p>
-          : !step ? <Summary symbol={symbol} source={source} locked={locked} onStep={onStep} />
+          : !step ? <Summary symbol={symbol} source={source} locked={locked} onStep={onStep} calls={calls} />
           : <article className="flow-card" aria-label="현재 단계">
             <div className="flow-card__top">
               <span className="eyebrow">{index + 1} / {steps.length} 단계 · {symbol.name}</span>
@@ -122,7 +124,9 @@ export function Flow({ source, symbol, step, evidence, locked, onSymbol, onStep,
   </div>;
 }
 
-function Summary({ symbol, source, locked, onStep }: { symbol: CodeSymbol; source: SourceView; locked: boolean; onStep(step: CodeStep): void }) {
+function Summary({ symbol, source, locked, onStep, calls }: {
+  symbol: CodeSymbol; source: SourceView; locked: boolean; onStep(step: CodeStep): void; calls: React.ReactNode;
+}) {
   // Where the code returns or throws. Whether the function really ends there is not checked.
   const exits = symbol.steps.filter(item => exitKinds.has(item.kind));
   return <article className="flow-card" aria-label="함수 요약">
@@ -143,6 +147,7 @@ function Summary({ symbol, source, locked, onStep }: { symbol: CodeSymbol; sourc
         </li>)}</ul> : <p>코드에서 찾은 반환·오류 던지기가 없어요.</p>}
         <p className="hint">함수가 실제로 어디서 끝나는지는 확인하지 않았어요. try 안에서 던진 오류는 catch로 이어질 수 있고, finally가 결과를 바꿀 수 있고, 마지막 줄까지 내려와 끝날 수도 있어요.</p>
       </dd>
+      {calls}
       <dt>하는 일</dt>
       <dd><span className="tag tag--unknown">확인하지 못함</span>AI 설명 연결 전이라 이 함수가 왜 있는지는 아직 확인하지 못했어요.</dd>
     </dl>
