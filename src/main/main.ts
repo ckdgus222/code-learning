@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { channels, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, type Result, type Evidence } from '../shared/contracts';
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
-import { ProjectSession } from './project-session';
+import { ProjectSession, workersStopped } from './project-session';
 import { explainRequestSchema, cancelExplanationSchema } from '../shared/ai';
 import { LocalAiRuntime } from '../core/ai/runtime';
 import { LocalWorkerWorkflow } from '../core/ai/workflow';
@@ -18,6 +18,8 @@ let storage: ProjectStorage;
 let generation = 0;
 let opening = false;
 let quitting = false;
+// Set only once every worker has ended; until then each quit request is held back.
+let quitReady = false;
 let projectRevision = 0;
 let aiContext: ProjectAiContext | undefined;
 // App-only Codex and Antigravity folders keep the user's own AI settings out of app runs.
@@ -128,6 +130,8 @@ app.whenReady().then(async () => {
   });
   handle(channels.open, async argument => {
     z.undefined().parse(argument);
+    // A worker started now would not be among those quitting waits for.
+    if (quitting) throw new AppError('CANCELLED', '앱을 끝내는 중이에요.');
     if (opening) throw new AppError('INVALID_REQUEST', '폴더 선택 작업이 이미 진행 중입니다.');
     opening = true;
     const requestedAt = ++generation;
@@ -171,6 +175,7 @@ app.whenReady().then(async () => {
   });
   handle(channels.map, async argument => {
     const input = projectRequestSchema.parse(argument);
+    if (quitting) throw new AppError('CANCELLED', '앱을 끝내는 중이에요.');
     const active = current(input.projectId);
     const revision = projectRevision;
     const map = await active.map();
@@ -218,8 +223,11 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => { app.quit(); });
 app.on('before-quit', event => {
-  if (quitting) return;
+  if (quitReady) return;
   event.preventDefault();
+  if (quitting) return;
   quitting = true;
-  void dispose().finally(() => { storage?.close(); app.quit(); });
+  // Workers end only after replying (ending one mid-parse aborts the app), so quitting waits for them all,
+  // including ones a window close or a cancel started closing before this.
+  void dispose().then(() => workersStopped()).finally(() => { storage?.close(); quitReady = true; app.quit(); });
 });

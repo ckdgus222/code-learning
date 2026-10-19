@@ -81,12 +81,39 @@ const caret = () => page.evaluate(() => {
   return { anchor: place(selection.anchorNode, selection.anchorOffset), head: place(selection.focusNode, selection.focusOffset) };
 });
 const at = (line, column) => ({ line, column });
-try {
+async function launch() {
   app = await electron.launch({ executablePath: require('electron'), args: [bootstrap], cwd: root,
     chromiumSandbox: true, timeout: 30_000 });
   page = await app.firstWindow();
   page.on('pageerror', error => failures.push(error.message));
   await page.getByRole('heading', { name: 'Code Learning', exact: true }).waitFor();
+}
+// How the app process ended: a worker ended while Tree-sitter parses aborts it (SIGABRT, Napi::Error).
+function ending() {
+  const child = app.process();
+  return new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
+}
+// Holds back every message from worker threads started after this, until the test releases them.
+async function holdWorkerMessages() {
+  await app.evaluate(() => {
+    const { Worker } = process.getBuiltinModule('node:worker_threads');
+    globalThis.testOriginalOn = Worker.prototype.on;
+    globalThis.testHeld = [];
+    Worker.prototype.on = function (event, listener) {
+      if (event !== 'message') return globalThis.testOriginalOn.call(this, event, listener);
+      return globalThis.testOriginalOn.call(this, event, (...values) => { globalThis.testHeld.push(() => listener(...values)); });
+    };
+  });
+}
+async function releaseWorkerMessages() {
+  await app.evaluate(() => {
+    process.getBuiltinModule('node:worker_threads').Worker.prototype.on = globalThis.testOriginalOn;
+    globalThis.testReleased = true;
+    for (const deliver of globalThis.testHeld.splice(0)) deliver();
+  });
+}
+try {
+  await launch();
   await check('SQLite uses isolated profile; renderer is sandboxed', async () => {
     const state = await app.evaluate(({ app, BrowserWindow }) => {
       const prefs = BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences();
@@ -660,6 +687,30 @@ try {
     await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: 'order.ts', exact: true }).isVisible(), true);
   });
+  await check('Cancelling while files are parsed leaves the app running, and the next open works', async () => {
+    for (let round = 0; round < 3; round++) {
+      // Opening runs the overview, which parses up to 20 files of about 100 KB.
+      await dialogTo(bigMapFixture);
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      await page.getByRole('button', { name: '작업 취소·프로젝트 닫기' }).click();
+      assert.equal(await app.evaluate(() => 'alive'), 'alive');
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).waitFor();
+    }
+    for (let round = 0; round < 3; round++) {
+      await dialogTo(bigMapFixture);
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      await page.getByRole('heading', { name: '큰 지도 프로젝트', exact: true }).waitFor();
+      await page.getByRole('button', { name: `part${round}/file${round}.ts`, exact: true }).click();
+      await page.getByRole('button', { name: '작업 취소·프로젝트 닫기' }).click();
+      assert.equal(await app.evaluate(() => 'alive'), 'alive');
+    }
+    await dialogTo(second);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '다른 프로젝트', exact: true }).waitFor();
+    await dialogTo(fixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
+  });
   await check('IPC rejects path injection and another window', async () => {
     const bad = await page.evaluate(() => window.learning.readSource({ projectId: 'bad', fileId: '../../auth.json' }));
     assert.equal(bad.ok, false); assert.equal(bad.code, 'INVALID_REQUEST');
@@ -675,14 +726,21 @@ try {
     assert.equal(untrusted.ok, false); assert.equal(untrusted.code, 'NOT_ALLOWED');
   });
   await check('Late cancellation cannot overwrite a new open in the UI', async () => {
-    await app.evaluate(() => {
-      const { Worker } = process.getBuiltinModule('node:worker_threads');
-      globalThis.testOriginalTerminate = Worker.prototype.terminate;
-      Worker.prototype.terminate = async function () {
+    // Closing no longer waits for the worker to end, so the cancel reply itself is held back: the real
+    // handler runs at once, and only its answer to the screen is late.
+    await app.evaluate(({ ipcMain }) => {
+      const handlers = ipcMain._invokeHandlers;
+      if (!(handlers instanceof Map) || !handlers.has('learning:cancel')) throw new Error('Electron internals changed: no invoke handler map');
+      const original = handlers.get('learning:cancel');
+      globalThis.testOriginalCancel = original;
+      handlers.set('learning:cancel', async (...values) => {
+        // Only this first reply is held back; the second cancel below is answered as usual.
+        handlers.set('learning:cancel', original);
+        const result = await original(...values);
         globalThis.testUiTerminateWaiting = true;
         await new Promise(resolve => { globalThis.testUiReleaseTerminate = resolve; });
-        return globalThis.testOriginalTerminate.call(this);
-      };
+        return result;
+      });
     });
     await page.getByRole('button', { name: '작업 취소·프로젝트 닫기' }).click();
     await until(() => app.evaluate(() => globalThis.testUiTerminateWaiting === true));
@@ -697,10 +755,7 @@ try {
     }, second);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await until(() => app.evaluate(() => globalThis.testUiDialogWaiting === true));
-    await app.evaluate(() => {
-      process.getBuiltinModule('node:worker_threads').Worker.prototype.terminate = globalThis.testOriginalTerminate;
-      globalThis.testUiReleaseTerminate();
-    });
+    await app.evaluate(() => globalThis.testUiReleaseTerminate());
     // An IPC round-trip and browser frame allow the late cancellation response to settle.
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     assert.equal(await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).isDisabled(), true);
@@ -737,24 +792,16 @@ try {
     const result = await pending;
     assert.equal(result.ok, false); assert.equal(result.code, 'CANCELLED');
   });
-  await check('Cancel while closing previous worker does not reopen a project', async () => {
+  await check('Cancel while the next project scans does not reopen a project', async () => {
     await dialogTo(fixture);
     const first = await page.evaluate(() => window.learning.openProject());
     assert.equal(first.ok, true);
-    await app.evaluate(() => {
-      const { Worker } = process.getBuiltinModule('node:worker_threads');
-      globalThis.testOriginalTerminate = Worker.prototype.terminate;
-      Worker.prototype.terminate = async function () {
-        globalThis.testTerminateWaiting = true;
-        await new Promise(resolve => { globalThis.testReleaseTerminate = resolve; });
-        return globalThis.testOriginalTerminate.call(this);
-      };
-    });
+    await holdWorkerMessages();
     await dialogTo(second);
     const pending = page.evaluate(() => window.learning.openProject());
-    await until(() => app.evaluate(() => globalThis.testTerminateWaiting === true));
+    await until(() => app.evaluate(() => globalThis.testHeld.length > 0));
     await page.evaluate(() => window.learning.cancel());
-    await app.evaluate(() => { process.getBuiltinModule('node:worker_threads').Worker.prototype.terminate = globalThis.testOriginalTerminate; globalThis.testReleaseTerminate(); });
+    await releaseWorkerMessages();
     const result = await pending;
     assert.equal(result.ok, false); assert.equal(result.code, 'CANCELLED');
     const rejected = await page.evaluate(input => window.learning.readSource(input), { projectId: first.value.id, fileId: first.value.files[0].id });
@@ -965,8 +1012,43 @@ try {
     await page.getByRole('button', { name: '주문', exact: true }).click();
     assert.equal(await page.getByRole('region', { name: 'AI 설명' }).count(), 0);
   });
+  await check('Quitting while files are parsed waits for the workers and ends cleanly', async () => {
+    // (a) Closing the window while a large folder opens.
+    await dialogTo(bigMapFixture);
+    let ended = ending();
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
+    assert.deepEqual(await ended, { code: 0, signal: null });
+    // (b) Cancel, then ask to quit twice at once.
+    await launch();
+    await dialogTo(bigMapFixture);
+    ended = ending();
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('button', { name: '작업 취소·프로젝트 닫기' }).click();
+    await app.evaluate(({ app: electronApp }) => { electronApp.quit(); electronApp.quit(); });
+    assert.deepEqual(await ended, { code: 0, signal: null });
+    // (c) While quitting waits for a worker (its answer held back), no new folder or map is started.
+    await launch();
+    await dialogTo(fixture);
+    const opened = await page.evaluate(() => window.learning.openProject());
+    assert.equal(opened.ok, true);
+    await holdWorkerMessages();
+    await dialogTo(second);
+    const reopening = page.evaluate(() => window.learning.openProject());
+    await until(() => app.evaluate(() => globalThis.testHeld.length > 0));
+    ended = ending();
+    await app.evaluate(({ app: electronApp }) => electronApp.quit());
+    const refused = await page.evaluate(id => Promise.all([window.learning.openProject(), window.learning.projectMap({ projectId: id })]), opened.value.id);
+    assert.deepEqual(refused.map(result => [result.ok, result.code]), [[false, 'CANCELLED'], [false, 'CANCELLED']]);
+    // Only the held scan answer of the folder that was opening: a refused open started no worker.
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(await app.evaluate(() => globalThis.testHeld.length), 1);
+    await releaseWorkerMessages();
+    await reopening.catch(() => undefined);
+    assert.deepEqual(await ended, { code: 0, signal: null });
+    app = undefined;
+  });
   assert.deepEqual(failures, []);
-  await app.close(); app = undefined;
   await writeFile(path.join(artifacts, 'electron-smoke.json'), JSON.stringify({ passed: checks, errors: failures }, null, 2));
 } catch (error) {
   console.error(error);

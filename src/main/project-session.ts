@@ -5,37 +5,57 @@ import type { Evidence, ProjectEvent, ProjectMap, ProjectView, Result, SourceVie
 import { AppError } from '../shared/errors';
 import type { WorkerRequest, WorkerResponse } from '../workers/analysis';
 
+// Ending a worker thread while Tree-sitter parses aborts the whole app (Napi::Error). So a worker is
+// only asked to stop, through a shared flag it checks before each parse, and is terminated once it has
+// replied. Until then its cleanup is kept here, and quitting waits for all of them.
+const cleanups = new Set<Promise<unknown>>();
+function keepUntilDone(cleanup: Promise<unknown>): void {
+  cleanups.add(cleanup);
+  const forget = () => { cleanups.delete(cleanup); };
+  cleanup.then(forget, forget);
+}
+/** Resolves once no session or map worker is left, including ones that started while waiting. */
+export async function workersStopped(): Promise<void> {
+  while (cleanups.size) await Promise.allSettled([...cleanups]);
+}
+
 export class ProjectSession {
   private worker: Worker;
+  private readonly stop = new Int32Array(new SharedArrayBuffer(4));
+  /** Settles when the worker answers the request it is working on, or ends: it is then not parsing. */
+  private idle: Promise<void> = Promise.resolve();
+  private markIdle = () => {};
   private watcher?: FSWatcher;
   private pending = new Map<number, { resolve: (result: WorkerResponse['result']) => void; timer: ReturnType<typeof setTimeout> }>();
   private requestId = 0;
   private closed = false;
-  private termination?: Promise<void>;
   private observedChanges = 0;
   private project?: ProjectView;
   /** The map being drawn and the flag that asks its worker to stop. */
   private mapRun?: { worker: Worker; stop: Int32Array };
 
-  constructor(readonly id: string, readonly root: string, private readonly workerPath: string, private notify: (event: ProjectEvent) => void) {
-    this.worker = new Worker(workerPath, { workerData: { root, projectId: id } });
+  constructor(readonly id: string, readonly root: string, private readonly workerPath: string, private notify: (event: ProjectEvent) => void,
+    private readonly requestTimeoutMs = 30_000) {
+    this.worker = new Worker(workerPath, { workerData: { root, projectId: id, stop: this.stop.buffer } });
     this.worker.on('message', (message: WorkerResponse) => {
+      this.markIdle();
       const pending = this.pending.get(message.id);
       if (!pending) return;
       clearTimeout(pending.timer);
       this.pending.delete(message.id);
       pending.resolve(message.result);
     });
-    this.worker.on('error', () => { void this.close('INTERNAL'); });
-    this.worker.on('exit', () => { if (!this.closed) void this.close('INTERNAL'); });
+    this.worker.on('error', () => { this.markIdle(); void this.close('INTERNAL'); });
+    this.worker.on('exit', () => { this.markIdle(); if (!this.closed) void this.close('INTERNAL'); });
   }
 
   private async request<T>(kind: WorkerRequest['kind'], target?: string): Promise<T> {
     if (this.closed) throw new AppError('PROJECT_CLOSED', '프로젝트가 닫혔습니다. 다시 열어 주세요.');
     if (this.pending.size) throw new AppError('INVALID_REQUEST', '진행 중인 읽기 작업이 있습니다. 잠시 뒤 다시 시도해 주세요.');
     const id = ++this.requestId;
+    this.idle = new Promise(resolve => { this.markIdle = resolve; });
     const result = await new Promise<WorkerResponse['result']>(resolve => {
-      const timer = setTimeout(() => { void this.close('LIMIT'); }, 30_000);
+      const timer = setTimeout(() => { void this.close('LIMIT'); }, this.requestTimeoutMs);
       this.pending.set(id, { resolve, timer });
       this.worker.postMessage({ id, kind, target } satisfies WorkerRequest);
     });
@@ -96,6 +116,9 @@ export class ProjectSession {
       map: { files: this.project.files, starts: this.project.overview.candidates.map(candidate => candidate.fileId), stop: stop.buffer } } });
     const run = { worker, stop };
     this.mapRun = run;
+    // Kept until this worker is terminated below, so quitting waits for it even after a cancel.
+    let ended = () => {};
+    keepUntilDone(new Promise<void>(resolve => { ended = resolve; }));
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; Atomics.store(stop, 0, 1); }, timeoutMs);
     try {
@@ -114,6 +137,7 @@ export class ProjectSession {
       if (this.mapRun === run) this.mapRun = undefined;
       // It has replied or ended, so it is not inside Tree-sitter now.
       await worker.terminate();
+      ended();
     }
   }
 
@@ -126,9 +150,15 @@ export class ProjectSession {
     this.mapRun = undefined;
   }
 
+  /**
+   * Answers waiting requests and asks the workers to stop, then returns at once: cancelling and opening
+   * the next folder do not wait for a parse to finish. The worker itself is terminated after it has
+   * replied (see `cleanups`), and quitting waits for that through `workersStopped()`.
+   */
   close(code: 'CANCELLED' | 'INTERNAL' | 'LIMIT' = 'CANCELLED'): Promise<void> {
-    if (this.termination) return this.termination;
+    if (this.closed) return Promise.resolve();
     this.closed = true;
+    Atomics.store(this.stop, 0, 1);
     this.cancelMap();
     const message = code === 'LIMIT' ? '작업 제한 시간을 넘었습니다. 더 작은 폴더를 선택해 주세요.' :
       code === 'INTERNAL' ? '분석 작업이 종료되었습니다. 폴더를 다시 열어 주세요.' : '작업을 취소했습니다.';
@@ -137,7 +167,7 @@ export class ProjectSession {
       item.resolve({ ok: false, code, message } satisfies Result<never>);
     }
     this.pending.clear();
-    this.termination = Promise.all([this.watcher?.close(), this.worker.terminate()]).then(() => undefined);
-    return this.termination;
+    keepUntilDone(Promise.all([this.watcher?.close(), this.idle.then(() => this.worker.terminate())]));
+    return Promise.resolve();
   }
 }
