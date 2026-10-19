@@ -1,22 +1,30 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { ProjectSession } from '../src/main/project-session';
+import { ProjectSession, workersStopped } from '../src/main/project-session';
 
 // A stand-in for the analysis worker. The session worker answers scan and read; a map worker (one
 // started with map in its workerData) answers after MAP_DELAY ms, or only when asked to stop if it is
 // negative. Like the real one it watches the shared stop flag and then replies CANCELLED.
 const fakeWorker = `
 const { parentPort, workerData } = require('node:worker_threads');
+const fs = require('node:fs');
+const path = require('node:path');
 const delay = Number(process.env.MAP_DELAY);
+// Leaves a file in the project folder when a worker replies after being asked to stop.
+const mark = name => fs.writeFileSync(path.join(workerData.root, name + '-' + Math.random().toString(36).slice(2)), '');
 if (workerData.map) {
   const stop = new Int32Array(workerData.map.stop);
   const started = Date.now();
   const poll = setInterval(() => {
     if (Atomics.load(stop, 0) === 1) {
       clearInterval(poll);
-      parentPort.postMessage({ id: 0, result: { ok: false, code: 'CANCELLED', message: 'stopped' } });
+      // Finishing the file it was on takes a moment.
+      setTimeout(() => {
+        mark('map-replied');
+        parentPort.postMessage({ id: 0, result: { ok: false, code: 'CANCELLED', message: 'stopped' } });
+      }, 150);
     } else if (delay >= 0 && Date.now() - started >= delay) {
       clearInterval(poll);
       parentPort.postMessage({ id: 0, result: { ok: true, value: { projectId: workerData.projectId,
@@ -25,7 +33,18 @@ if (workerData.map) {
   }, 5);
   parentPort.on('message', () => {});
 } else {
+  const stop = new Int32Array(workerData.stop);
   parentPort.on('message', request => {
+    if (request.kind === 'read' && process.env.READ_MODE === 'busy') {
+      // Like a parse that cannot be interrupted: blocked until the stop flag rises, then a little longer.
+      while (Atomics.load(stop, 0) === 0) Atomics.wait(stop, 0, 0, 10);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150);
+      mark('read-replied');
+      parentPort.postMessage({ id: request.id, result: { ok: false, code: 'CANCELLED', message: 'stopped' } });
+      return;
+    }
+    if (request.kind === 'read' && process.env.READ_MODE === 'exit') process.exit(1);
+    if (request.kind === 'read' && process.env.READ_MODE === 'error') throw new Error('worker failed');
     const file = { id: 'f1', relativePath: 'a.ts', size: 1 };
     const value = request.kind === 'scan'
       ? { id: workerData.projectId, name: 'p', files: [file], excluded: {}, warnings: [],
@@ -49,9 +68,87 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await session.close();
+  await workersStopped();
   delete process.env.MAP_DELAY;
+  delete process.env.READ_MODE;
   await rm(root, { recursive: true, force: true });
   await rm(workerPath, { force: true });
+});
+
+const markers = async (name: string) => (await readdir(root)).filter(entry => entry.startsWith(name)).length;
+// A worker reads its environment when it starts, so the mode is set before the session is made.
+async function sessionIn(mode: string, timeoutMs?: number) {
+  process.env.READ_MODE = mode;
+  const made = new ProjectSession(randomUUID(), root, workerPath, () => undefined, timeoutMs);
+  await made.open();
+  return made;
+}
+const busyRead = async (on: ProjectSession) => {
+  const reading = on.read('f1');
+  // Let the request reach the worker before closing.
+  await new Promise(resolve => setTimeout(resolve, 50));
+  return reading;
+};
+
+describe('closing never ends a worker in the middle of its work', () => {
+  it('answers at once, and ends the worker only after it has replied', async () => {
+    const busy = await sessionIn('busy');
+    const reading = busyRead(busy);
+    await new Promise(resolve => setTimeout(resolve, 60));
+    await busy.close();
+    await expect(reading).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(await markers('read-replied')).toBe(0);
+    await workersStopped();
+    expect(await markers('read-replied')).toBe(1);
+  });
+
+  it('lets the next session open and read while the closed one is still finishing', async () => {
+    const busy = await sessionIn('busy');
+    const reading = busyRead(busy);
+    await new Promise(resolve => setTimeout(resolve, 60));
+    await busy.close();
+    await expect(reading).rejects.toMatchObject({ code: 'CANCELLED' });
+    delete process.env.READ_MODE;
+    const next = new ProjectSession(randomUUID(), root, workerPath, () => undefined);
+    await next.open();
+    await expect(next.read('f1')).resolves.toMatchObject({ fileId: 'f1' });
+    expect(await markers('read-replied')).toBe(0);
+    await next.close();
+    await workersStopped();
+    expect(await markers('read-replied')).toBe(1);
+  });
+
+  it('keeps the same order when a request runs past its time limit', async () => {
+    const limited = await sessionIn('busy', 200);
+    await expect(limited.read('f1')).rejects.toMatchObject({ code: 'LIMIT' });
+    expect(await markers('read-replied')).toBe(0);
+    await workersStopped();
+    expect(await markers('read-replied')).toBe(1);
+  });
+
+  it.each(['exit', 'error'])('ends cleanly when the worker %s without answering', async mode => {
+    const failing = await sessionIn(mode);
+    await expect(failing.read('f1')).rejects.toMatchObject({ code: 'INTERNAL' });
+    await workersStopped();
+  });
+
+  it('waits for map workers too: one cancelled and closed, or cancelled and replaced before closing', async () => {
+    process.env.MAP_DELAY = '-1';
+    const cancelled = session.map();
+    session.cancelMap();
+    const replacing = session.map();
+    await session.close();
+    await expect(cancelled).rejects.toMatchObject({ code: 'CANCELLED' });
+    await expect(replacing).rejects.toMatchObject({ code: 'CANCELLED' });
+    await workersStopped();
+    expect(await markers('map-replied')).toBe(2);
+  });
+
+  it('has nothing to wait for when no worker is busy', async () => {
+    await session.close();
+    await workersStopped();
+    expect(await markers('replied')).toBe(0);
+  });
 });
 
 describe('the project map runs in a worker of its own', () => {

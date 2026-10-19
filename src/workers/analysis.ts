@@ -9,9 +9,13 @@ import { buildProjectMap, MAP_LIMITS } from '../core/analysis/project-map';
 export interface WorkerRequest { id: number; kind: 'scan' | 'read' | 'evidence'; target?: string }
 export interface WorkerResponse { id: number; result: Result<ProjectView | SourceView | ProjectMap | { source: SourceView; evidence: Evidence }> }
 
-const { root, projectId, map } = workerData as {
-  root: string; projectId: string; map?: { files: ProjectFile[]; starts: string[]; stop: SharedArrayBuffer };
+const { root, projectId, map, stop } = workerData as {
+  root: string; projectId: string; map?: { files: ProjectFile[]; starts: string[]; stop: SharedArrayBuffer }; stop?: SharedArrayBuffer;
 };
+// The session raises this when it closes; the worker stops before its next parse and replies, and only
+// then is it terminated (ending it mid-parse would abort the app).
+const stopFlag = stop ? new Int32Array(stop) : null;
+const stopped = () => stopFlag !== null && Atomics.load(stopFlag, 0) === 1;
 let project: ProjectView | undefined;
 const sources = new Map<string, SourceView>();
 
@@ -21,6 +25,7 @@ async function readSource(fileId: string): Promise<SourceView> {
   const { text, hash } = await readAllowed(root, file.relativePath);
   const previous = sources.get(fileId);
   if (previous?.hash === hash) return previous;
+  if (stopped()) throw new AppError('CANCELLED', '작업을 취소했습니다.');
   const analysis = analyzeSource(text, file.relativePath, { projectId, fileId, fileHash: hash });
   const result: SourceView = { projectId, fileId, relativePath: file.relativePath, text, hash, analysis };
   // A single active source is enough for the first reading flow; do not cache whole projects.
@@ -35,7 +40,7 @@ parentPort!.on('message', async (request: WorkerRequest) => {
     if (request.kind === 'scan') {
       // The overview rides on the scan reply: the session handles one request at a time.
       const files = await scanProject(root, projectId);
-      project = { ...files, overview: await buildOverview(root, files) };
+      project = { ...files, overview: await buildOverview(root, files, stopped) };
       result = { ok: true, value: project };
     } else if (request.kind === 'read') {
       result = { ok: true, value: await readSource(request.target!) };

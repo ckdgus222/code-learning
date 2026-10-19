@@ -1,5 +1,6 @@
 import path from 'node:path';
 import type { ProjectFile, ProjectFiles, ProjectIntro, ProjectOverview, StartCandidate } from '../../shared/contracts';
+import { AppError } from '../../shared/errors';
 import { readAllowed } from '../project/files';
 import { analyzeSource } from './syntax';
 
@@ -55,7 +56,7 @@ const byDepthThenPath = (a: ProjectFile, b: ProjectFile): number =>
  * places that look like starting points. Files are only read as text, never run, and every
  * start point is a candidate chosen from code structure, not a confirmed entry point.
  */
-export async function buildOverview(root: string, project: ProjectFiles): Promise<ProjectOverview> {
+export async function buildOverview(root: string, project: ProjectFiles, shouldStop: () => boolean = () => false): Promise<ProjectOverview> {
   const notes: string[] = [];
   const intro = await readIntro(root, project.files);
   const order = await candidateFiles(root, project.files, notes);
@@ -70,6 +71,8 @@ export async function buildOverview(root: string, project: ProjectFiles): Promis
     let source: { text: string; hash: string };
     try { source = await readAllowed(root, file.relativePath); } catch { unreadable++; continue; }
     checkedFiles++;
+    // Checked before each parse: the session ends this worker only after it stops (project-session.ts).
+    if (shouldStop()) throw new AppError('CANCELLED', '작업을 취소했습니다.');
     const analysis = analyzeSource(source.text, file.relativePath, { projectId: project.id, fileId: file.id, fileHash: source.hash });
     const base = { fileId: file.id, relativePath: file.relativePath, reason, fileHash: source.hash };
     const exported = analysis.symbols.filter(symbol => symbol.exported);
