@@ -371,13 +371,13 @@ try {
 
     // A changed file hides the old code and locks every move until the file is read again.
     await writeFile(path.join(fixture, 'loop.ts'), loopSource.replace('다시', '변경'));
-    await page.getByText('코드 변경 또는 창 복귀:', { exact: false }).waitFor();
+    await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).waitFor();
     assert.equal(await page.getByTestId('flow-snippet').count(), 0);
     for (const name of ['이전 단계', '다음 단계']) assert.equal(await card.getByRole('button', { name, exact: true }).isDisabled(), true);
     assert.equal(await card.locator('.flow-link').isDisabled(), true);
     await page.getByRole('button', { name: 'loop.ts', exact: true }).click();
     await until(async () => await page.getByRole('button', { name: '모두', exact: true }).isEnabled());
-    assert.equal(await page.getByText('코드 변경 또는 창 복귀:', { exact: false }).count(), 0);
+    assert.equal(await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).count(), 0);
 
     // Leave the following checks in code reading with order.ts open.
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
@@ -428,7 +428,7 @@ try {
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
     await page.getByRole('button', { name: '주문', exact: true }).click();
     await writeFile(path.join(fixture, 'order.ts'), source.replace('성공', '변경'));
-    await page.getByText('코드 변경 또는 창 복귀:', { exact: false }).waitFor();
+    await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).waitFor();
     assert.equal(await page.getByTestId('evidence-range').count(), 0);
     assert.equal(await page.getByRole('button', { name: '주문', exact: true }).isDisabled(), true);
     await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
@@ -440,7 +440,48 @@ try {
     await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
     await page.getByText('변경 이력과 수정 전후 비교는 아직 준비 중이에요.', { exact: true }).waitFor();
     assert.equal(await page.getByText('프로젝트를 연 뒤 감지된 변경이 없어요.', { exact: true }).count(), 0);
-    assert.equal(await page.getByText('코드 변경 또는 창 복귀:', { exact: false }).count(), 0);
+    assert.equal(await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).count(), 0);
+  });
+  await check('Returning to the window keeps the view; waking from sleep or during a scan asks for a re-check', async () => {
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+    await page.getByRole('button', { name: '주문', exact: true }).click();
+    await page.getByTestId('evidence-range').waitFor();
+    // Any window focus used to mark the project stale, clear the conversation and cancel AI work. A notice
+    // sent during the focus arrives before the reply to a later request, so one round trip is enough.
+    await app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0].emit('focus'); });
+    await page.evaluate(() => window.learning.cancelExplanation({ jobId: crypto.randomUUID() }));
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).count(), 0);
+    assert.equal(await page.getByTestId('evidence-range').count(), 1);
+    assert.equal(await page.getByRole('button', { name: '주문', exact: true }).isEnabled(), true);
+    // Changes made while the Mac slept may have been missed by the watcher.
+    await app.evaluate(({ powerMonitor }) => { powerMonitor.emit('resume'); });
+    await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).waitFor();
+    assert.equal(await page.getByRole('button', { name: '주문', exact: true }).isDisabled(), true);
+    await page.getByRole('button', { name: '파일 다시 읽기', exact: true }).click();
+    await until(async () => await page.getByRole('button', { name: '주문', exact: true }).isEnabled());
+    // Waking up while another folder is scanned: the screen does not know that project yet and would miss
+    // the notice, so the open is refused. The wake-up is sent as the scan request leaves for the worker.
+    await dialogTo(second);
+    await app.evaluate(({ powerMonitor }) => {
+      const { Worker } = process.getBuiltinModule('node:worker_threads');
+      const original = Worker.prototype.postMessage;
+      globalThis.testOriginalPostMessage = original;
+      Worker.prototype.postMessage = function (message, ...rest) {
+        const result = original.call(this, message, ...rest);
+        if (message?.kind === 'scan') { Worker.prototype.postMessage = original; powerMonitor.emit('resume'); }
+        return result;
+      };
+    });
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByText('폴더를 여는 동안 파일이 바뀌었거나 잠자기에서 돌아왔습니다. 다시 열어 주세요.', { exact: true }).waitFor();
+    await app.evaluate(() => { process.getBuiltinModule('node:worker_threads').Worker.prototype.postMessage = globalThis.testOriginalPostMessage; });
+    // Without a wake-up the same folder opens normally; then go back to the fixture for the next checks.
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '다른 프로젝트', exact: true }).waitFor();
+    await dialogTo(fixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
   });
   await check('IPC rejects path injection and another window', async () => {
     const bad = await page.evaluate(() => window.learning.readSource({ projectId: 'bad', fileId: '../../auth.json' }));
