@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { matchImport, visibleGraph } from '../src/renderer/map-layout';
+import { matchFunction, matchImport, visibleGraph } from '../src/renderer/map-layout';
 import { buildProjectMap } from '../src/core/analysis/project-map';
 import { analyzeSource } from '../src/core/analysis/syntax';
 import { readAllowed, scanProject } from '../src/core/project/files';
@@ -14,7 +14,7 @@ const edge = (from: string, to: string) => ({ fromFileId: from, toFileId: to, fi
   startLine: 1, endLine: 1, text: 'import', specifier: './x' });
 // Two folders: a→b twice, b→a once, and one import inside folder a.
 const map: ProjectMap = { projectId: 'p', files: [file('a1', 'a'), file('a2', 'a'), file('b1', 'b'), file('b2', 'b')],
-  edges: [edge('a1', 'b1'), edge('a2', 'b1'), edge('b2', 'a1'), edge('a1', 'a2')], unresolved: [], external: [], limited: false, notes: [] };
+  edges: [edge('a1', 'b1'), edge('a2', 'b1'), edge('b2', 'a1'), edge('a1', 'a2')], unresolved: [], external: [], complexFunctions: [], limited: false, notes: [] };
 const summary = (graph: ReturnType<typeof visibleGraph>) => graph.arrows.map(arrow => [arrow.source, arrow.target, arrow.items.length]);
 const backs = (graph: ReturnType<typeof visibleGraph>) => graph.arrows.filter(arrow => arrow.back).map(arrow => arrow.id);
 
@@ -69,7 +69,8 @@ describe('finding the code evidence of a map entry', () => {
     const { text: read, hash } = await readAllowed(sandbox, relativePath);
     const source: SourceView = { projectId: project.id, fileId: target.id, relativePath, text: read, hash,
       analysis: analyzeSource(read, relativePath, { projectId: project.id, fileId: target.id, fileHash: hash }) };
-    return { source, items: [...projectMap.edges, ...projectMap.unresolved, ...projectMap.external].filter(item => item.fromFileId === target.id) };
+    return { source, items: [...projectMap.edges, ...projectMap.unresolved, ...projectMap.external].filter(item => item.fromFileId === target.id),
+      functions: projectMap.complexFunctions.filter(item => item.fileId === target.id) };
   }
 
   it('picks the right one of two imports on one line by its range, including one with a syntax error', async () => {
@@ -93,5 +94,17 @@ describe('finding the code evidence of a map entry', () => {
     const functions = Array.from({ length: 201 }, (_, index) => `function f${index}() {}`).join('\n');
     const many = await entries('many.ts', `${functions}\nimport { z } from './z';\n`);
     expect(many.items.map(item => [item.text, matchImport(many.source, item).status])).toEqual([["import { z } from './z';", 'missing']]);
+  });
+
+  it('finds the function of a complexity list entry, but not in a changed file or past the analyzer limits', async () => {
+    const long = `function long() {\n${'  step();\n'.repeat(61)}}`;
+    const { source, functions } = await entries('long.ts', `function short() {}\n${long}\n`);
+    const found = matchFunction(source, functions[0]);
+    expect(found.status === 'found' && [found.symbol.name, source.text.slice(found.symbol.evidence.startUtf16, found.symbol.evidence.endUtf16)])
+      .toEqual(['long', long]);
+    expect(matchFunction({ ...source, hash: 'other' }, functions[0])).toEqual({ status: 'changed' });
+    // The analyzer lists 200 functions; the 201st is still measured for the map.
+    const many = await entries('many-long.ts', `${Array.from({ length: 200 }, (_, index) => `function f${index}() {}`).join('\n')}\n${long}\n`);
+    expect(many.functions.map(item => [item.name, matchFunction(many.source, item).status])).toEqual([['long', 'missing']]);
   });
 });

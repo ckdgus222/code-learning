@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { analyzeSource } from '../src/core/analysis/syntax';
-import type { Evidence } from '../src/shared/contracts';
+import { COMPLEXITY_LIMITS, type Evidence } from '../src/shared/contracts';
+import { complexityExpected, complexitySource, legacyExpected, legacySource } from './complexity-fixture';
 
 const context = {
   projectId: '8659dbe6-e890-454b-b75c-c70622a99e18',
@@ -290,5 +291,35 @@ describe('static source analysis', () => {
     expect(result.symbols).toHaveLength(0);
     expect(result.warnings.some(warning => warning.includes('구문 방문 20000회'))).toBe(true);
     expect(result.warnings.some(warning => warning.includes('함수가 없습니다'))).toBe(false);
+  });
+});
+
+describe('complexity signals (plan v2.3 C-1)', () => {
+  const measured = (text: string, path: string) =>
+    analyze(text, path).symbols.map(symbol => [symbol.name, symbol.complexity.lines, symbol.complexity.depth]);
+  const over = (rows: (string | number)[][]) =>
+    rows.filter(([, lines, depth]) => (lines as number) > COMPLEXITY_LIMITS.lines || (depth as number) > COMPLEXITY_LIMITS.depth);
+
+  it('counts code lines and nesting of every function as counted by hand', () => {
+    expect(measured(complexitySource, 'complexity.ts')).toEqual(complexityExpected);
+    expect(measured(legacySource, 'legacy.js')).toEqual(legacyExpected);
+  });
+
+  it('signals only what goes over a limit: not just under it, not at it', () => {
+    expect(over(measured(complexitySource, 'complexity.ts'))).toEqual([['lines61', 61, 0], ['depth5', 7, 5], ['bigInner', 61, 0]]);
+    expect(over(measured(legacySource, 'legacy.js'))).toEqual([['legacy', 6, 5]]);
+  });
+
+  it('measures deeply nested code without slowing down with the depth', () => {
+    // 1500 else-ifs, each inside the one before: walking it with sibling and parent lookups took over 2 s.
+    const deep = `function g(a) {${'if (a) {} else if (a) {'.repeat(1500)}${'}'.repeat(1500)}}`;
+    const started = Date.now();
+    expect(measured(deep, 'deep.ts')).toEqual([['g', 1, 1500]]);
+    expect(Date.now() - started).toBeLessThan(1500);
+  });
+
+  it('counts a code line once, whatever else is on it', () => {
+    expect(measured('function f() { if (a) { b(); } /* note */ c(); }', 'f.ts')).toEqual([['f', 1, 1]]);
+    expect(measured('function f() {\r\n  a();\r\n\r\n  b();\r\n}', 'f.ts')).toEqual([['f', 2, 0]]);
   });
 });

@@ -2,10 +2,10 @@ import path from 'node:path';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
-import type { MapFile, MapImport, ProjectFile, ProjectMap } from '../../shared/contracts';
+import { COMPLEXITY_LIMITS, type MapFile, type MapImport, type ProjectFile, type ProjectMap } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 import { assertAllowedFile, MAX_FILE_BYTES, readAllowed, textExtensions } from '../project/files';
-import { importOf } from './syntax';
+import { functionName, functionTypes, importOf, measureFunction } from './syntax';
 
 const codeFile = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
 // Plan v2.3 A: a relative path without an extension may name one of these files or its folder's index file.
@@ -27,24 +27,32 @@ function parse(text: string, relativePath: string): Parser.SyntaxNode {
   return parser.parse(text, undefined, { bufferSize: Math.max(32 * 1024, text.length + 1) }).rootNode;
 }
 
-/** Every import node in the file, and whether the whole tree was examined. */
-function findImports(text: string, relativePath: string, nodeBudget: number) {
+/** Every import node and every function the analyzer would list, in source order, and whether the whole tree was examined. */
+function scanTree(text: string, relativePath: string, nodeBudget: number) {
   const root = parse(text, relativePath);
   const found: { node: Parser.SyntaxNode; kind: 'static' | 'not-static' | 'syntax'; specifier: string | null }[] = [];
-  const pending = [root];
+  const functions: Parser.SyntaxNode[] = [];
+  // `inBroken`: inside a function with a syntax error, which the analyzer neither lists nor goes into.
+  const pending = [{ node: root, inBroken: false }];
   let visited = 0;
   while (pending.length) {
-    if (++visited > nodeBudget) return { found, reason: '분석량 한도에 닿아 파일 뒷부분의 import는 보지 않았어요.' };
-    const node = pending.pop()!;
-    if (node.nextNamedSibling) pending.push(node.nextNamedSibling);
+    if (++visited > nodeBudget) return { found, functions, reason: '분석량 한도에 닿아 파일 뒷부분의 import와 함수는 보지 않았어요.' };
+    const { node, inBroken } = pending.pop()!;
+    if (node.nextNamedSibling) pending.push({ node: node.nextNamedSibling, inBroken });
     // As in the analyzer, nothing inside an error node is trusted.
     if (node.isError || node.isMissing) continue;
     const imported = importOf(node);
     if (imported) found.push({ node, ...imported });
-    if (node.firstNamedChild) pending.push(node.firstNamedChild);
+    const isFunction = functionTypes.has(node.type);
+    if (isFunction && !inBroken && !node.hasError && node.childForFieldName('body')) functions.push(node);
+    if (node.firstNamedChild) pending.push({ node: node.firstNamedChild, inBroken: inBroken || (isFunction && node.hasError) });
   }
-  return { found, reason: root.hasError ? '구문 오류가 있어 오류 구역 안의 import는 놓쳤을 수 있어요.' : null };
+  return { found, functions, reason: root.hasError ? '구문 오류가 있어 오류 구역 안의 import와 함수는 놓쳤을 수 있어요.' : null };
 }
+
+// Line numbers as the analyzer's evidence gives them: a range ending at a line start does not take that line.
+const linesOf = (node: Parser.SyntaxNode) => ({ startLine: node.startPosition.row + 1,
+  endLine: Math.max(node.startPosition.row + 1, node.endPosition.row + (node.endPosition.column === 0 ? 0 : 1)) });
 
 const isRelative = (specifier: string) =>
   specifier === '.' || specifier === '..' || specifier.startsWith('./') || specifier.startsWith('../');
@@ -81,7 +89,7 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
     placed.set(file.id, { id: file.id, relativePath: file.relativePath, folder: folder === '.' ? '' : folder,
       start: starts.has(file.id), checked, reason });
   };
-  const map: ProjectMap = { projectId, files: [], edges: [], unresolved: [], external: [], limited: false, notes: [] };
+  const map: ProjectMap = { projectId, files: [], edges: [], unresolved: [], external: [], complexFunctions: [], limited: false, notes: [] };
   // A target may have been deleted, excluded or swapped for a link since the folder was opened.
   const availability = new Map<string, Promise<boolean>>();
   const available = (relative: string): Promise<boolean> => {
@@ -113,15 +121,19 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
       continue;
     }
     bytesRead += Buffer.byteLength(source.text);
-    const { found, reason } = findImports(source.text, file.relativePath, limits.nodesPerFile);
+    const { found, functions, reason } = scanTree(source.text, file.relativePath, limits.nodesPerFile);
     place(file, reason ? 'partial' : 'full', reason);
+    for (const node of functions) {
+      const { lines, depth } = measureFunction(node, source.text);
+      if (lines <= COMPLEXITY_LIMITS.lines && depth <= COMPLEXITY_LIMITS.depth) continue;
+      map.complexFunctions.push({ fileId: file.id, fileHash: source.hash, startUtf16: node.startIndex, endUtf16: node.endIndex,
+        ...linesOf(node), name: functionName(node), lines, depth });
+    }
     for (const { node, kind, specifier } of found) {
       const text = source.text.slice(node.startIndex, node.endIndex);
       // tree-sitter's Node binding reports UTF-16 indices, the same ranges the analyzer's evidence uses.
       const item: MapImport = { fromFileId: file.id, fileHash: source.hash, startUtf16: node.startIndex, endUtf16: node.endIndex,
-        startLine: node.startPosition.row + 1,
-        endLine: Math.max(node.startPosition.row + 1, node.endPosition.row + (node.endPosition.column === 0 ? 0 : 1)),
-        text: text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}…` : text, specifier };
+        ...linesOf(node), text: text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}…` : text, specifier };
       if (kind !== 'static') { map.unresolved.push({ ...item, reason: kind, candidates: [] }); continue; }
       if (specifier === null) { map.unresolved.push({ ...item, reason: 'unreadable', candidates: [] }); continue; }
       if (specifier.startsWith('/')) { map.unresolved.push({ ...item, reason: 'outside', candidates: [] }); continue; }

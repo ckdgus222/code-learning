@@ -94,6 +94,13 @@ describe('app-mediated project AI reads with real temporary files', () => {
     await expect(f.capture()).rejects.toMatchObject({ code: 'CHANGED' });
   });
 
+  it('refuses selected code over the size limit, as asking about a whole long function can hit', async () => {
+    const f = await fixture({ 'main.ts': 'a'.repeat(MAX_CONTEXT_FILE_BYTES + 1) });
+    const whole = { ...f.evidence, endUtf16: f.source.text.length };
+    await expect(f.context.capture(f.source, whole, 7, f.controller.signal))
+      .rejects.toMatchObject({ code: 'LIMIT', message: '선택한 코드가 너무 큽니다. 더 작은 구문을 선택해 주세요.' });
+  });
+
   it('omits oversized complete files while preserving the selected fragment and limitations', async () => {
     const f = await fixture({ 'main.ts': 'a'.repeat(MAX_CONTEXT_FILE_BYTES + 1), 'helper.ts': 'b'.repeat(MAX_CONTEXT_FILE_BYTES + 1) });
     const snapshot = await f.capture();

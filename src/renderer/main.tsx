@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Evidence, MapImport, ProjectView, SourceView, StartCandidate } from '../shared/contracts';
+import type { CodeSymbol, Evidence, MapFunction, MapImport, ProjectView, SourceView, StartCandidate } from '../shared/contracts';
 import { useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
 import { AiPanel } from './ai-panel';
 import { Flow } from './flow';
 import { ProjectMapView, type MapEntry } from './project-map';
-import { matchImport } from './map-layout';
+import { matchFunction, matchImport } from './map-layout';
+import { COMPLEXITY_NOTE, ComplexityTags, overLimit } from './complexity';
 import './styles.css';
 
 const views: { id: View; label: string }[] = [
@@ -19,6 +20,8 @@ const candidateReasons: Record<StartCandidate['reason'], string> = {
   'entry-name': '이름이 index·main·app인 파일',
   exported: '다른 파일에서 쓰도록 내보낸(export) 함수',
 };
+// Plan v2.3 C-1: the AI is only asked; the app never changes the code.
+const SIMPLER_QUESTION = '이 함수를 더 단순하고 읽기 쉽게 쓸 수 있을까요? 바꾼다면 어디를 어떻게 바꾸면 좋을지 알려 주세요.';
 // Code text size in px (plan 7.3: 14–16px to start, adjustable).
 const CODE_SIZE = { min: 12, start: 15, max: 20 };
 
@@ -38,6 +41,7 @@ function App() {
   const [search, setSearch] = useState('');
   const [panel, setPanel] = useState<'explain' | 'ask'>('explain');
   const [panelOpen, setPanelOpen] = useState(true);
+  const [draft, setDraft] = useState<{ text: string; id: number } | null>(null);
   // Reading settings live as long as the window: they stay across files and views, not across restarts.
   const [codeSize, setCodeSize] = useState(CODE_SIZE.start);
   const [wrap, setWrap] = useState(false);
@@ -113,20 +117,29 @@ function App() {
     else setNotice('파일이 폴더를 열 때와 달라 후보 위치를 다시 확인해야 해요. 왼쪽에서 함수를 직접 골라 주세요.');
   }
 
-  async function showEvidence(next: Evidence, nextStep: string | null, fromAnswer = false) {
-    if (!project || stale) return;
+  /** Whether the evidence was checked against the file and is now shown. */
+  async function showEvidence(next: Evidence, nextStep: string | null, fromAnswer = false): Promise<boolean> {
+    if (!project || stale) return false;
     const current = ++request.current;
     const atRevision = revision.current;
     setBusy(true); setError(''); setNotice('');
     const result = await window.learning.readEvidence({ projectId: project.id, evidenceId: next.id });
-    if (current !== request.current) return;
+    if (current !== request.current) return false;
     setBusy(false);
-    if (revision.current !== atRevision) { setStale(true); setEvidence(null); return; }
-    if (!result.ok) { setError(result.message); setEvidence(null); if (result.code === 'CHANGED' || result.code === 'NOT_ALLOWED') setStale(true); return; }
+    if (revision.current !== atRevision) { setStale(true); setEvidence(null); return false; }
+    if (!result.ok) { setError(result.message); setEvidence(null); if (result.code === 'CHANGED' || result.code === 'NOT_ALLOWED') setStale(true); return false; }
     setSource(result.value.source);
     if (fromAnswer) { setReaderEvidence(result.value.evidence); selectSymbol(null); }
     else setEvidence(result.value.evidence);
     selectStep(nextStep);
+    return true;
+  }
+
+  // The question is about the whole function, so it becomes the question's code even when a step inside it was chosen.
+  async function askSimpler(target: CodeSymbol) {
+    if (!await showEvidence(target.evidence, null)) return;
+    setPanel('ask'); setPanelOpen(true);
+    setDraft(current => ({ text: SIMPLER_QUESTION, id: (current?.id ?? 0) + 1 }));
   }
 
   function forgetMap() { mapRequest.current++; setProjectMap(null); setMapping(false); }
@@ -162,6 +175,19 @@ function App() {
     if (found.status === 'found') setEvidence(found.evidence);
     else setNotice(found.status === 'changed' ? '지도를 만든 뒤 이 파일이 바뀌어 import 위치를 강조하지 않았어요. 지도를 다시 만들어 주세요.'
       : `이 import(${item.startLine}행)는 코드 분석 범위 밖이라 강조하지 못했어요.`);
+  }
+
+  // Like showImport: the function is chosen only while the file has the hash it had for the map.
+  async function showFunction(item: MapFunction) {
+    if (busy) return;
+    setView('code');
+    const atRevision = revision.current;
+    const opened = await readFile(item.fileId);
+    if (!opened || revision.current !== atRevision) return;
+    const found = matchFunction(opened, item);
+    if (found.status === 'found') { selectSymbol(found.symbol.id); setEvidence(found.symbol.evidence); }
+    else setNotice(found.status === 'changed' ? '지도를 만든 뒤 이 파일이 바뀌어 함수를 고르지 않았어요. 지도를 다시 만들어 주세요.'
+      : `이 함수(${item.startLine}행)는 코드 분석 범위 밖이라 고르지 못했어요.`);
   }
 
   async function cancel() {
@@ -285,7 +311,7 @@ function App() {
           stale={projectMap !== null && projectMap.revision !== revision.current} mapping={mapping}
           onBuild={() => void buildMap()} onCancel={() => void cancelMap()}
           locked={busy} onOpenFile={fileId => { if (busy) return; setView('code'); void readFile(fileId); }}
-          onShowImport={item => void showImport(item)} />}
+          onShowImport={item => void showImport(item)} onShowFunction={item => void showFunction(item)} />}
 
         {view === 'flow' && <Flow source={source} symbol={symbol} step={step} evidence={evidence} locked={busy || stale}
           onSymbol={item => { selectSymbol(item.id); void showEvidence(item.evidence, null); }}
@@ -325,9 +351,15 @@ function App() {
               <h4 className="eyebrow">함수와 구문</h4>
               {source.analysis.warnings.map(message => <p key={message} className="hint">{message}</p>)}
               {source.analysis.symbols.length === 0 && <p className="hint">이 파일에서 찾은 함수가 없어요.</p>}
+              {source.analysis.symbols.some(item => overLimit(item.complexity)) && <p className="hint">{COMPLEXITY_NOTE}</p>}
               <ul className="symbols">{source.analysis.symbols.map(item => <li key={item.id}>
                 <button className="symbols__item" aria-pressed={symbolId === item.id} disabled={busy || stale}
                   onClick={() => { selectSymbol(item.id); void showEvidence(item.evidence, null); }}>{item.name}</button>
+                {overLimit(item.complexity) && <div className="symbols__signals">
+                  <ComplexityTags {...item.complexity} />
+                  {symbol?.id === item.id && <button className="btn btn--small" disabled={busy || stale}
+                    onClick={() => void askSimpler(item)}>AI에게 단순하게 쓰는 법 묻기</button>}
+                </div>}
                 {symbol?.id === item.id && <ol className="steps" aria-label={`${item.name} 내부 구문`}>
                   {item.steps.map((next, index) => <li key={next.id} style={{ paddingLeft: next.depth * 14 }}>
                     <span className="steps__no" aria-hidden="true">{index + 1}</span>
@@ -368,7 +400,7 @@ function App() {
           </section>
         </div>}
         <div hidden={panel !== 'ask'}>
-          <AiPanel key={project.id} projectId={project.id} evidence={questionEvidence} stale={stale}
+          <AiPanel key={project.id} projectId={project.id} evidence={questionEvidence} stale={stale} draft={draft}
             relativePath={project.files.find(file => file.id === questionEvidence?.fileId)?.relativePath ?? ''}
             onEvidence={next => { setView('code'); void showEvidence(next, null, true); }} />
         </div>

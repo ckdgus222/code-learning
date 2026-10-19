@@ -1,8 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import type { MapFile, MapImport, MapUnresolvedReason, ProjectMap, ProjectView } from '../shared/contracts';
+import type { MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectMap, ProjectView } from '../shared/contracts';
 import { folderName, visibleGraph, type MapArrow, type MapBox } from './map-layout';
+import { COMPLEXITY_NOTE, ComplexityTags } from './complexity';
 
 // Plan v2.3 A (user, 2026-10-19): with more code files than this the map starts in the design view.
 const FOLD_OVER = 60;
@@ -50,8 +51,8 @@ function MapNode({ data }: NodeProps<Node<{ box: MapBox }>>) {
 // Defined once, outside rendering, as React Flow expects.
 const nodeTypes = { box: MapNode };
 
-function MapBody({ map, locked, onOpenFile, onShowImport }: {
-  map: ProjectMap; locked: boolean; onOpenFile(fileId: string): void; onShowImport(item: MapImport): void;
+function MapBody({ map, locked, onOpenFile, onShowImport, onShowFunction }: {
+  map: ProjectMap; locked: boolean; onOpenFile(fileId: string): void; onShowImport(item: MapImport): void; onShowFunction(item: MapFunction): void;
 }) {
   const folders = useMemo(() => [...new Set(map.files.map(file => file.folder))], [map]);
   const paths = useMemo(() => new Map(map.files.map(file => [file.id, file.relativePath])), [map]);
@@ -120,6 +121,15 @@ function MapBody({ map, locked, onOpenFile, onShowImport }: {
       </li>)}</ul> : <p className="hint">폴더 사이에 이어진 import가 없어요.</p>}
       <Omitted count={design.length} />
     </section>
+    <section className="card" aria-label="어려운 코드 살펴볼 곳">
+      <h3>어려운 코드 살펴볼 곳 · {map.complexFunctions.length}개</h3>
+      <p className="hint">{COMPLEXITY_NOTE}</p>
+      {map.complexFunctions.length ? <ul className="map-list">{firstRows(map.complexFunctions).map(item => <li key={`${item.fileId}:${item.startUtf16}`}>
+        <span className="path">{pathOf(item.fileId)} {item.startLine}행</span> <b>{item.name}</b> <ComplexityTags lines={item.lines} depth={item.depth} />
+        <button className="btn btn--small" disabled={locked} onClick={() => onShowFunction(item)}>코드 보기</button>
+      </li>)}</ul> : <p className="hint">지도가 본 파일에서 기준을 넘는 함수가 없어요.</p>}
+      <Omitted count={map.complexFunctions.length} />
+    </section>
     <details className="card"><summary>연결 목록 · {map.edges.length}개</summary>
       <ul className="map-list">{firstRows(map.edges).map(item => <li key={`${item.fromFileId}:${item.startUtf16}`}>
         <span className="path">{pathOf(item.fromFileId)} {item.startLine}행 → {pathOf(item.toFileId)}</span> {showButton(item)}
@@ -148,11 +158,11 @@ function MapBody({ map, locked, onOpenFile, onShowImport }: {
   </>;
 }
 
-export function ProjectMapView({ project, entry, stale, mapping, locked, onBuild, onCancel, onOpenFile, onShowImport }: {
+export function ProjectMapView({ project, entry, stale, mapping, locked, onBuild, onCancel, onOpenFile, onShowImport, onShowFunction }: {
   project: ProjectView; entry: MapEntry | null; stale: boolean; mapping: boolean;
   /** A folder is opening or a file is being read, so moving to code would drop that work. */
   locked: boolean;
-  onBuild(): void; onCancel(): void; onOpenFile(fileId: string): void; onShowImport(item: MapImport): void;
+  onBuild(): void; onCancel(): void; onOpenFile(fileId: string): void; onShowImport(item: MapImport): void; onShowFunction(item: MapFunction): void;
 }) {
   return <div className="page map-page">
     <h2 className="page__title">프로젝트 지도</h2>
@@ -166,7 +176,8 @@ export function ProjectMapView({ project, entry, stale, mapping, locked, onBuild
         <button className="btn btn--small" onClick={onCancel}>지도 만들기 취소</button>
       </> : <button className="btn btn--small" onClick={onBuild}>{entry ? '지도 다시 만들기' : '지도 만들기'}</button>}
     </div>
-    {entry && <MapBody key={entry.build} map={entry.map} locked={locked} onOpenFile={onOpenFile} onShowImport={onShowImport} />}
+    {entry && <MapBody key={entry.build} map={entry.map} locked={locked} onOpenFile={onOpenFile} onShowImport={onShowImport}
+      onShowFunction={onShowFunction} />}
     <p className="hint">지도는 TS/JS 파일의 import만 봐요. 새 파일은 폴더를 다시 열어야 지도에 들어와요.</p>
   </div>;
 }

@@ -143,6 +143,8 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .card details ul { margin-top: 4px; padding-left: 16px; list-style: disc; }
 .checklist { display: grid; gap: 6px; font-size: 15px; }
 .tag--doc { background: var(--accent-soft); color: var(--accent); }
+/* A complexity signal (plan v2.3 C-1): a place to look, so the soft warning colour rather than an error. */
+.tag--look { background: var(--warn-soft); color: var(--warn); }
 /* Cards are grids; keep small labels and buttons at their own width. */
 .card > .tag, .card > .btn { justify-self: start; }
 .intro__title { font-weight: 700; }
@@ -178,6 +180,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .symbols__item:hover:not(:disabled) { border-color: var(--accent); }
 .symbols__item[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .symbols__item:disabled, .steps__item:disabled { opacity: .5; }
+.symbols__signals { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .steps { display: grid; gap: 1px; margin: 6px 0 6px 6px; padding-left: 8px; border-left: 2px solid var(--line); }
 .steps li { display: flex; align-items: baseline; gap: 6px; }
 .steps__no { min-width: 16px; color: var(--muted); font-size: 12px; text-align: right; }
