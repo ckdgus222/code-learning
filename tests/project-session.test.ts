@@ -4,9 +4,9 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { ProjectSession, workersStopped } from '../src/main/project-session';
 
-// A stand-in for the analysis worker. The session worker answers scan and read; a map worker (one
-// started with map in its workerData) answers after MAP_DELAY ms, or only when asked to stop if it is
-// negative. Like the real one it watches the shared stop flag and then replies CANCELLED.
+// A stand-in for the analysis worker. The session worker answers scan and read; a map or calls worker
+// (one started with map or calls in its workerData) answers after MAP_DELAY ms, or only when asked to
+// stop if it is negative. Like the real one it watches the shared stop flag and then replies CANCELLED.
 const fakeWorker = `
 const { parentPort, workerData } = require('node:worker_threads');
 const fs = require('node:fs');
@@ -14,21 +14,24 @@ const path = require('node:path');
 const delay = Number(process.env.MAP_DELAY);
 // Leaves a file in the project folder when a worker replies after being asked to stop.
 const mark = name => fs.writeFileSync(path.join(workerData.root, name + '-' + Math.random().toString(36).slice(2)), '');
-if (workerData.map) {
-  const stop = new Int32Array(workerData.map.stop);
+const side = workerData.map ?? workerData.calls;
+if (side) {
+  const job = workerData.map ? 'map' : 'calls';
+  const stop = new Int32Array(side.stop);
   const started = Date.now();
   const poll = setInterval(() => {
     if (Atomics.load(stop, 0) === 1) {
       clearInterval(poll);
       // Finishing the file it was on takes a moment.
       setTimeout(() => {
-        mark('map-replied');
+        mark(job + '-replied');
         parentPort.postMessage({ id: 0, result: { ok: false, code: 'CANCELLED', message: 'stopped' } });
       }, 150);
     } else if (delay >= 0 && Date.now() - started >= delay) {
       clearInterval(poll);
-      parentPort.postMessage({ id: 0, result: { ok: true, value: { projectId: workerData.projectId,
-        files: [], edges: [], unresolved: [], external: [], limited: false, notes: [] } } });
+      parentPort.postMessage({ id: 0, result: { ok: true, value: job === 'map'
+        ? { projectId: workerData.projectId, files: [], edges: [], unresolved: [], external: [], limited: false, notes: [] }
+        : { projectId: workerData.projectId, calls: [], callers: [], maybeCallers: [] } } });
     }
   }, 5);
   parentPort.on('message', () => {});
@@ -206,5 +209,40 @@ describe('the project map runs in a worker of its own', () => {
     const map = session.map();
     await session.close();
     await expect(map).rejects.toMatchObject({ code: 'CANCELLED' });
+  });
+});
+
+describe('the call search runs in a worker of its own', () => {
+  const target = { fileId: '6c8af416-7789-478e-8418-a6f851557a8d', fileHash: 'a'.repeat(64), startUtf16: 0, endUtf16: 1 };
+
+  it('replaces the search running when another starts, alongside the map and reads', async () => {
+    process.env.MAP_DELAY = '-1';
+    const map = session.map();
+    const first = session.calls(target);
+    const second = session.calls(target);
+    await expect(first).rejects.toMatchObject({ code: 'CANCELLED' });
+    await expect(session.read('f1')).resolves.toMatchObject({ fileId: 'f1' });
+    session.cancelCalls();
+    await expect(second).rejects.toMatchObject({ code: 'CANCELLED' });
+    session.cancelMap();
+    await expect(map).rejects.toMatchObject({ code: 'CANCELLED' });
+  });
+
+  it('returns what it found when nothing changed', async () => {
+    process.env.MAP_DELAY = '10';
+    await expect(session.calls(target)).resolves.toMatchObject({ calls: [], callers: [] });
+  });
+
+  it('is waited for on quitting, like the map: a replaced search and the one closed', async () => {
+    process.env.MAP_DELAY = '-1';
+    const replaced = session.calls(target);
+    const closed = session.calls(target);
+    await session.close();
+    await Promise.all([
+      expect(replaced).rejects.toMatchObject({ code: 'CANCELLED' }),
+      expect(closed).rejects.toMatchObject({ code: 'CANCELLED' }),
+    ]);
+    await workersStopped();
+    expect(await markers('calls-replied')).toBe(2);
   });
 });

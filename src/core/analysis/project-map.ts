@@ -7,7 +7,7 @@ import { AppError } from '../../shared/errors';
 import { assertAllowedFile, MAX_FILE_BYTES, readAllowed, textExtensions } from '../project/files';
 import { functionName, functionTypes, importOf, measureFunction } from './syntax';
 
-const codeFile = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
+export const codeFile = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
 // Plan v2.3 A: a relative path without an extension may name one of these files or its folder's index file.
 // TypeScript's `.js` → `.ts` substitution is deliberately not applied (not in the approved plan).
 const EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
@@ -18,7 +18,7 @@ export interface MapLimits { files: number; bytes: number; nodesPerFile: number 
 // still finishes inside the map worker's 30 seconds; the node budget keeps one huge file from taking it all.
 export const MAP_LIMITS: MapLimits = { files: 1000, bytes: 16 * 1024 * 1024, nodesPerFile: 200_000 };
 
-function parse(text: string, relativePath: string): Parser.SyntaxNode {
+export function parse(text: string, relativePath: string): Parser.SyntaxNode {
   const extension = path.extname(relativePath).toLowerCase();
   const parser = new Parser();
   parser.setLanguage(['.js', '.jsx', '.mjs', '.cjs'].includes(extension) ? JavaScript
@@ -54,7 +54,7 @@ function scanTree(text: string, relativePath: string, nodeBudget: number) {
 const linesOf = (node: Parser.SyntaxNode) => ({ startLine: node.startPosition.row + 1,
   endLine: Math.max(node.startPosition.row + 1, node.endPosition.row + (node.endPosition.column === 0 ? 0 : 1)) });
 
-const isRelative = (specifier: string) =>
+export const isRelative = (specifier: string) =>
   specifier === '.' || specifier === '..' || specifier.startsWith('./') || specifier.startsWith('../');
 
 /**
@@ -63,7 +63,7 @@ const isRelative = (specifier: string) =>
  * file type (`./b.js`, `./s.css`) names only itself; any other name, including a dotted one like
  * `./vite.config`, may also name a code file or its folder's index file.
  */
-function candidatesFor(fromPath: string, specifier: string, known: Map<string, ProjectFile>): string[] | null {
+export function candidatesFor(fromPath: string, specifier: string, known: Map<string, ProjectFile>): string[] | null {
   const last = specifier.split('/').at(-1);
   const folderOnly = last === '' || last === '.' || last === '..';
   const joined = path.posix.normalize(path.posix.join(path.posix.dirname(fromPath), specifier)).replace(/\/$/, '');

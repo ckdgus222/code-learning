@@ -1,7 +1,7 @@
 import { Worker } from 'node:worker_threads';
 import path from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
-import type { Evidence, ProjectEvent, ProjectMap, ProjectView, Result, SourceView } from '../shared/contracts';
+import type { Evidence, FunctionCalls, ProjectEvent, ProjectMap, ProjectView, Result, SourceView } from '../shared/contracts';
 import { AppError } from '../shared/errors';
 import type { WorkerRequest, WorkerResponse } from '../workers/analysis';
 
@@ -19,6 +19,15 @@ export async function workersStopped(): Promise<void> {
   while (cleanups.size) await Promise.allSettled([...cleanups]);
 }
 
+// Jobs that read the whole project in a worker of their own, so the session's worker keeps answering reads.
+type SideJob = 'map' | 'calls';
+const sideWords: Record<SideJob, { failed: string; ended: string; slow: string; changed: string }> = {
+  map: { failed: '지도를 만들지 못했어요.', ended: '지도 작업이 끝나 버렸어요.', slow: '지도를 만드는 데 너무 오래 걸려 멈췄어요.',
+    changed: '지도를 만드는 동안 파일이 바뀌었어요. 다시 만들어 주세요.' },
+  calls: { failed: '호출을 찾지 못했어요.', ended: '호출 찾기 작업이 끝나 버렸어요.', slow: '호출을 찾는 데 너무 오래 걸려 멈췄어요.',
+    changed: '호출을 찾는 동안 파일이 바뀌었어요. 다시 찾아 주세요.' },
+};
+
 export class ProjectSession {
   private worker: Worker;
   private readonly stop = new Int32Array(new SharedArrayBuffer(4));
@@ -31,8 +40,8 @@ export class ProjectSession {
   private closed = false;
   private observedChanges = 0;
   private project?: ProjectView;
-  /** The map being drawn and the flag that asks its worker to stop. */
-  private mapRun?: { worker: Worker; stop: Int32Array };
+  /** The map being drawn or calls being searched, and the flag that asks each worker to stop. The two may run together. */
+  private sideRuns: Partial<Record<SideJob, { worker: Worker; stop: Int32Array }>> = {};
 
   constructor(readonly id: string, readonly root: string, private readonly workerPath: string, private notify: (event: ProjectEvent) => void,
     private readonly requestTimeoutMs = 30_000) {
@@ -101,21 +110,35 @@ export class ProjectSession {
     return result;
   }
 
-  /**
-   * Draws the project map in a worker of its own, from the files listed when the folder was opened.
-   * Cancel, time limit and closing raise a shared flag instead of terminating the worker: ending a
-   * thread while Tree-sitter parses aborts the whole app. The worker stops after its current file and
-   * replies; only then, idle, is it terminated. The time limit stops only the map, never the session.
-   */
+  /** Draws the project map from the files listed when the folder was opened. */
   async map(timeoutMs = 30_000): Promise<ProjectMap> {
     if (this.closed || !this.project) throw new AppError('PROJECT_CLOSED', '프로젝트가 닫혔습니다. 다시 열어 주세요.');
-    if (this.mapRun) throw new AppError('INVALID_REQUEST', '이미 지도를 만드는 중입니다.');
+    if (this.sideRuns.map) throw new AppError('INVALID_REQUEST', '이미 지도를 만드는 중입니다.');
+    const { files, overview } = this.project;
+    return await this.runSide('map', stop => ({ map: { files, starts: overview.candidates.map(candidate => candidate.fileId), stop } }), timeoutMs) as ProjectMap;
+  }
+
+  /** Finds what one function calls and where it is called from. Asking for another function replaces the search. */
+  async calls(target: { fileId: string; fileHash: string; startUtf16: number; endUtf16: number }, timeoutMs = 30_000): Promise<FunctionCalls> {
+    if (this.closed || !this.project) throw new AppError('PROJECT_CLOSED', '프로젝트가 닫혔습니다. 다시 열어 주세요.');
+    this.cancelCalls();
+    const { files } = this.project;
+    return await this.runSide('calls', stop => ({ calls: { files, target, stop } }), timeoutMs) as FunctionCalls;
+  }
+
+  /**
+   * Runs one side job in a worker of its own. Cancel, time limit and closing raise a shared flag instead of
+   * terminating the worker: ending a thread while Tree-sitter parses aborts the whole app. The worker stops
+   * after its current file and replies; only then, idle, is it terminated. The time limit stops only the
+   * job, never the session.
+   */
+  private async runSide(job: SideJob, data: (stop: SharedArrayBuffer) => object, timeoutMs: number): Promise<unknown> {
+    const words = sideWords[job];
     const revision = this.observedChanges;
     const stop = new Int32Array(new SharedArrayBuffer(4));
-    const worker = new Worker(this.workerPath, { workerData: { root: this.root, projectId: this.id,
-      map: { files: this.project.files, starts: this.project.overview.candidates.map(candidate => candidate.fileId), stop: stop.buffer } } });
+    const worker = new Worker(this.workerPath, { workerData: { root: this.root, projectId: this.id, ...data(stop.buffer) } });
     const run = { worker, stop };
-    this.mapRun = run;
+    this.sideRuns[job] = run;
     // Kept until this worker is terminated below, so quitting waits for it even after a cancel.
     let ended = () => {};
     keepUntilDone(new Promise<void>(resolve => { ended = resolve; }));
@@ -124,17 +147,17 @@ export class ProjectSession {
     try {
       const result = await new Promise<WorkerResponse['result']>(resolve => {
         worker.once('message', (message: WorkerResponse) => resolve(message.result));
-        worker.once('error', () => resolve({ ok: false, code: 'INTERNAL', message: '지도를 만들지 못했어요.' }));
-        worker.once('exit', () => resolve({ ok: false, code: 'INTERNAL', message: '지도 작업이 끝나 버렸어요.' }));
+        worker.once('error', () => resolve({ ok: false, code: 'INTERNAL', message: words.failed }));
+        worker.once('exit', () => resolve({ ok: false, code: 'INTERNAL', message: words.ended }));
       });
-      if (timedOut) throw new AppError('LIMIT', '지도를 만드는 데 너무 오래 걸려 멈췄어요.');
+      if (timedOut) throw new AppError('LIMIT', words.slow);
       if (!result.ok) throw new AppError(result.code, result.message);
       if (this.closed) throw new AppError('CANCELLED', '취소한 결과는 표시하지 않습니다.');
-      if (revision !== this.observedChanges) throw new AppError('CHANGED', '지도를 만드는 동안 파일이 바뀌었어요. 다시 만들어 주세요.');
-      return result.value as ProjectMap;
+      if (revision !== this.observedChanges) throw new AppError('CHANGED', words.changed);
+      return result.value;
     } finally {
       clearTimeout(timer);
-      if (this.mapRun === run) this.mapRun = undefined;
+      if (this.sideRuns[job] === run) delete this.sideRuns[job];
       // It has replied or ended, so it is not inside Tree-sitter now.
       await worker.terminate();
       ended();
@@ -142,12 +165,15 @@ export class ProjectSession {
   }
 
   /**
-   * Asks the map worker to stop; its request then ends with CANCELLED. A new map may start at once:
+   * Asks a side job's worker to stop; its request then ends with CANCELLED. A new one may start at once:
    * the stopping worker finishes its current file and is cleaned up by its own request.
    */
-  cancelMap(): void {
-    if (this.mapRun) Atomics.store(this.mapRun.stop, 0, 1);
-    this.mapRun = undefined;
+  cancelMap(): void { this.cancelSide('map'); }
+  cancelCalls(): void { this.cancelSide('calls'); }
+  private cancelSide(job: SideJob): void {
+    const run = this.sideRuns[job];
+    if (run) Atomics.store(run.stop, 0, 1);
+    delete this.sideRuns[job];
   }
 
   /**
@@ -160,6 +186,7 @@ export class ProjectSession {
     this.closed = true;
     Atomics.store(this.stop, 0, 1);
     this.cancelMap();
+    this.cancelCalls();
     const message = code === 'LIMIT' ? '작업 제한 시간을 넘었습니다. 더 작은 폴더를 선택해 주세요.' :
       code === 'INTERNAL' ? '분석 작업이 종료되었습니다. 폴더를 다시 열어 주세요.' : '작업을 취소했습니다.';
     for (const item of this.pending.values()) {

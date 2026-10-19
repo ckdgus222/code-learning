@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { CodeSymbol, Evidence, MapFunction, MapImport, ProjectView, SourceView, StartCandidate } from '../shared/contracts';
+import type { CallSite, CodeSymbol, Evidence, MapFunction, MapImport, ProjectView, SourceView, StartCandidate } from '../shared/contracts';
 import { useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
 import { AiPanel } from './ai-panel';
 import { Flow } from './flow';
 import { ProjectMapView, type MapEntry } from './project-map';
-import { matchFunction, matchImport } from './map-layout';
+import { matchCallStep, matchFunction, matchImport } from './map-layout';
+import { CallsFacts, type CallFunction, type CallsState } from './calls';
 import { COMPLEXITY_NOTE, ComplexityTags, overLimit } from './complexity';
 import './styles.css';
 
@@ -54,6 +55,9 @@ function App() {
   const [projectMap, setProjectMap] = useState<MapEntry | null>(null);
   const [mapping, setMapping] = useState(false);
   const mapRequest = useRef(0);
+  // The call search for the function chosen in the flow view (plan v2.3 F), kept per function and file hash.
+  const [calls, setCalls] = useState<{ key: string; state: CallsState; revision: number } | null>(null);
+  const callsRequest = useRef(0);
   const { view, setView, symbolId, stepId, selectSymbol, selectStep } = useSelection();
   const symbol = source?.analysis.symbols.find(item => item.id === symbolId);
   const step = symbol?.steps.find(item => item.id === stepId);
@@ -71,6 +75,10 @@ function App() {
 
   // A newly opened project starts from its overview, not the previous project's view.
   useEffect(() => setView('overview'), [project?.id, setView]);
+  // Choosing a function in the flow view searches its calls; coming back to it reuses what was found.
+  useEffect(() => {
+    if (view === 'flow' && source && symbol && calls?.key !== callsKey(source, symbol)) void findCalls(source, symbol);
+  }, [view, source, symbol]);
   // The map is drawn the first time it is looked at after a folder opens.
   useEffect(() => {
     if (view === 'map' && project && !projectMap && !mapping) void buildMap();
@@ -83,11 +91,11 @@ function App() {
     if (current !== request.current) return;
     setBusy(false);
     if (!result.ok) {
-      setError(result.message); setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap(); return;
+      setError(result.message); setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap(); forgetCalls(); return;
     }
     if (!result.value) return;
     // Reopening the same folder keeps the project ID but gives every file a new ID, so the map goes too.
-    forgetMap();
+    forgetMap(); forgetCalls();
     setProject(result.value); setSource(null); setEvidence(null); setStale(false); setOverviewStale(false); setWatchError(false); setSearch(''); selectSymbol(null);
   }
 
@@ -190,9 +198,61 @@ function App() {
       : `이 함수(${item.startLine}행)는 코드 분석 범위 밖이라 고르지 못했어요.`);
   }
 
+  const callsKey = (from: SourceView, item: CodeSymbol) => `${from.fileId}:${from.hash}:${item.evidence.startUtf16}:${item.evidence.endUtf16}`;
+  function forgetCalls() { callsRequest.current++; setCalls(null); }
+  async function findCalls(from: SourceView, item: CodeSymbol) {
+    if (!project) return;
+    const current = ++callsRequest.current;
+    const atRevision = revision.current;
+    const key = callsKey(from, item);
+    setCalls({ key, state: { status: 'finding' }, revision: atRevision });
+    // Main replaces a search still running for another function.
+    const result = await window.learning.functionCalls({ projectId: project.id, fileId: from.fileId, fileHash: from.hash,
+      startUtf16: item.evidence.startUtf16, endUtf16: item.evidence.endUtf16 });
+    if (current !== callsRequest.current) return;
+    setCalls({ key, revision: atRevision, state: result.ok ? { status: 'done', result: result.value } : { status: 'failed', message: result.message } });
+  }
+  async function cancelCalls() {
+    if (!project) return;
+    callsRequest.current++;
+    setCalls(previous => previous && { ...previous, state: { status: 'failed', message: '호출 찾기를 취소했어요.' } });
+    const result = await window.learning.cancelFunctionCalls({ projectId: project.id });
+    if (!result.ok) setError(result.message);
+  }
+  // Like showImport: the call is highlighted only while its file has the hash it had for the search.
+  async function showCallSite(site: CallSite) {
+    if (busy) return;
+    setView('code');
+    const atRevision = revision.current;
+    const opened = await readFile(site.fileId);
+    if (!opened || revision.current !== atRevision) return;
+    const found = matchCallStep(opened, site);
+    if (found.status === 'found') { selectSymbol(found.symbol.id); selectStep(found.step.id); setEvidence(found.step.evidence); }
+    else if (found.status === 'changed') setNotice('호출을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 다시 찾아 주세요.');
+    else {
+      // A call outside the analyzer's steps (top of the file, a default value, a computed name) is only
+      // marked in the reader: the range is shown, but it is not evidence to ask the AI about.
+      setReaderEvidence({ id: crypto.randomUUID(), projectId: opened.projectId, fileId: opened.fileId, fileHash: opened.hash,
+        startUtf16: site.startUtf16, endUtf16: site.endUtf16, startLine: site.startLine, endLine: site.endLine });
+      setNotice(`이 호출(${site.startLine}행)은 함수 단계 목록에 없어 코드 위치만 강조했어요.`);
+    }
+  }
+  // The same for a function to follow: it is chosen in the flow view, which then searches its own calls.
+  async function showCallFunction(target: CallFunction) {
+    if (busy) return;
+    setView('flow');
+    const atRevision = revision.current;
+    const opened = await readFile(target.fileId);
+    if (!opened || revision.current !== atRevision) return;
+    const found = matchFunction(opened, target);
+    if (found.status === 'found') { selectSymbol(found.symbol.id); setEvidence(found.symbol.evidence); }
+    else setNotice(found.status === 'changed' ? '호출을 찾은 뒤 이 파일이 바뀌어 그 함수를 고르지 않았어요. 다시 찾아 주세요.'
+      : `그 함수(${target.startLine}행)는 코드 분석 범위 밖이라 고르지 못했어요.`);
+  }
+
   async function cancel() {
     const current = ++request.current;
-    setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap();
+    setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap(); forgetCalls();
     setBusy(true); setError(''); setNotice('');
     const result = await window.learning.cancel();
     if (current !== request.current) return;
@@ -319,7 +379,12 @@ function App() {
             if (next) void showEvidence(next.evidence, next.id);
             else if (symbol) void showEvidence(symbol.evidence, null);
           }}
-          onOpenCode={() => setView('code')} />}
+          onOpenCode={() => setView('code')}
+          calls={calls && source && symbol && calls.key === callsKey(source, symbol) && <CallsFacts state={calls.state}
+            stale={calls.revision !== revision.current} locked={busy}
+            pathOf={fileId => project.files.find(file => file.id === fileId)?.relativePath ?? '(목록에 없는 파일)'}
+            onRetry={() => void findCalls(source, symbol)} onCancel={() => void cancelCalls()}
+            onShowSite={site => void showCallSite(site)} onShowFunction={target => void showCallFunction(target)} />} />}
 
         {view === 'changes' && <div className="page page--empty">
           <h2 className="page__title">달라진 내용</h2>

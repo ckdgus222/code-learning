@@ -9,8 +9,8 @@ import { COMPLEXITY_NOTE, ComplexityTags } from './complexity';
 const FOLD_OVER = 60;
 // One file can hold thousands of imports, so each list shows this many rows and counts the rest.
 const LIST_LIMIT = 300;
-const firstRows = <T,>(items: T[]) => items.slice(0, LIST_LIMIT);
-function Omitted({ count }: { count: number }) {
+export const firstRows = <T,>(items: T[]) => items.slice(0, LIST_LIMIT);
+export function Omitted({ count }: { count: number }) {
   return count > LIST_LIMIT ? <p className="hint">처음 {LIST_LIMIT}개만 보여요. 나머지 {count - LIST_LIMIT}개는 생략했어요.</p> : null;
 }
 const checkedLabels: Record<Exclude<MapFile['checked'], 'full'>, string> = {
