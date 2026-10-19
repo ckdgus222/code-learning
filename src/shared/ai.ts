@@ -25,7 +25,9 @@ export const explanationSchema = z.object({
     input: description, action: description, output: description,
     alternatives: z.array(description).max(8), evidenceIds: references,
   }).strict()).max(32),
-  claims: z.array(z.discriminatedUnion('kind', [
+  // A plain union becomes anyOf in JSON Schema. Codex sends the schema to OpenAI's strict structured
+  // output, whose supported keywords include anyOf but not the oneOf a discriminated union becomes.
+  claims: z.array(z.union([
     z.object({ kind: z.literal('code'), text: description, evidenceIds: references }).strict(),
     z.object({ kind: z.literal('concept'), text: description }).strict(),
   ])).min(1).max(64),

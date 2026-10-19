@@ -563,22 +563,10 @@ try {
     assert.equal(await page.getByText('작업을 취소했습니다.', { exact: true }).count(), 0);
   });
   await check('Local worker defaults, real installation inspection and real IPC readiness/input gates', async () => {
-    await page.getByRole('tab', { name: '질문', exact: true }).click();
-    const selector = page.getByRole('combobox', { name: 'AI 사용 방식' });
-    assert.equal(await selector.inputValue(), 'local-worker');
-    assert.deepEqual(await selector.locator('option').evaluateAll(options => options.map(option => option.value)),
-      ['local-worker', 'codex', 'claude-code', 'antigravity']);
-    await page.getByRole('textbox', { name: '선택한 코드에 질문' }).fill('설정 보존 확인');
-    // Original production handler: fixed installation candidates and --version only.
-    // No authentication or AI request is performed by this button.
-    await page.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
-    await page.getByRole('list', { name: '로컬 AI 설치 상태' }).waitFor({ timeout: 35_000 });
-    assert.match(await page.getByTestId('ai-readiness').innerText(), /질문 전송을 잠갔습니다/);
-    assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
-    await page.getByRole('button', { name: '패널 접기', exact: true }).click();
-    await page.getByRole('button', { name: '설명 패널 펼치기', exact: true }).click();
-    assert.equal(await selector.inputValue(), 'local-worker');
-    assert.equal(await page.getByRole('textbox', { name: '선택한 코드에 질문' }).inputValue(), '설정 보존 확인');
+    // Real IPC gates, before any installation check in this app run. The local worker opens only once a
+    // check has found both Codex and Antigravity, so a valid request here must be refused. Never send a
+    // valid one after the check: it would start the real AI CLIs (this test profile's app homes have no
+    // login, so they would fail at sign-in, but they would run).
     await dialogTo(fixture);
     const gate = await page.evaluate(async () => {
       const opened = await window.learning.openProject();
@@ -590,13 +578,18 @@ try {
       const evidence = source.value.analysis.symbols[0].evidence;
       const request = { projectId: evidence.projectId, evidenceId: evidence.id, expectedFileHash: evidence.fileHash,
         question: '값을 설명해 주세요', mode: 'local-worker', consent: true };
+      const ready = await window.learning.startExplanation(request);
+      // Should the gate ever open here, stop that job at once; the assertion below then fails.
+      if (ready.ok) await window.learning.cancelExplanation({ jobId: ready.value.jobId });
       return {
-        ready: await window.learning.startExplanation(request),
+        ready,
+        single: await window.learning.startExplanation({ ...request, mode: 'codex' }),
         consent: await window.learning.startExplanation({ ...request, consent: false }),
         path: await window.learning.startExplanation({ ...request, path: '/etc/passwd' }),
       };
     });
     assert.equal(gate.ready.ok, false); assert.equal(gate.ready.code, 'AI_UNAVAILABLE');
+    assert.equal(gate.single.ok, false); assert.equal(gate.single.code, 'AI_UNAVAILABLE');
     assert.equal(gate.consent.ok, false); assert.equal(gate.consent.code, 'INVALID_REQUEST');
     assert.equal(gate.path.ok, false); assert.equal(gate.path.code, 'INVALID_REQUEST');
     // Restore renderer/main agreement after direct IPC fixture setup.
@@ -605,6 +598,27 @@ try {
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
     await page.getByRole('button', { name: '주문', exact: true }).click();
     await page.getByRole('tab', { name: '질문', exact: true }).click();
+    const selector = page.getByRole('combobox', { name: 'AI 사용 방식' });
+    assert.equal(await selector.inputValue(), 'local-worker');
+    assert.deepEqual(await selector.locator('option').evaluateAll(options => options.map(option => option.value)),
+      ['local-worker', 'codex', 'claude-code', 'antigravity']);
+    await page.getByRole('textbox', { name: '선택한 코드에 질문' }).fill('설정 보존 확인');
+    // Original production handler: fixed installation candidates and --version only.
+    // No authentication or AI request is performed by this button.
+    await page.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
+    const installs = page.getByRole('list', { name: '로컬 AI 설치 상태' });
+    await installs.waitFor({ timeout: 35_000 });
+    // With both workers installed (as on the development Mac) the local worker is ready and states its
+    // known limits; otherwise it says both are needed. Sending still waits for consent.
+    const listed = await installs.innerText();
+    const ready = /Codex · 설치 확인/.test(listed) && /Antigravity · 설치 확인/.test(listed);
+    assert.match(await page.getByTestId('ai-readiness').innerText(), ready ? /질문을 보낼 수 있어요\. 알려진 한계/ : /Codex와 Antigravity가 둘 다 필요해요/);
+    assert.equal(await page.getByRole('checkbox').isEnabled(), ready);
+    assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
+    await page.getByRole('button', { name: '패널 접기', exact: true }).click();
+    await page.getByRole('button', { name: '설명 패널 펼치기', exact: true }).click();
+    assert.equal(await selector.inputValue(), 'local-worker');
+    assert.equal(await page.getByRole('textbox', { name: '선택한 코드에 질문' }).inputValue(), '설정 보존 확인');
   });
   await check('FAKE AI IPC: completion before start response is retained across panel/tab changes', async () => {
     // Test-only replacement after ALL real IPC checks. This never starts an AI CLI.

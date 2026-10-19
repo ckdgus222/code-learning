@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { LocalWorkerWorkflow, type EvidenceSnapshot, type StageRequest, type StageResponse } from '../src/core/ai/workflow';
-import { GEMINI_MODEL, type ExplainRequest, type Explanation, type LearningEvent } from '../src/shared/ai';
+import { GEMINI_MODEL, explanationSchema, type ExplainRequest, type Explanation, type LearningEvent } from '../src/shared/ai';
 import { AppError } from '../src/shared/errors';
 import { SECRET_MASK } from '../src/core/ai/secrets';
 
@@ -82,6 +82,24 @@ describe('local worker workflow with fake adapters', () => {
     expect(f.events.filter(e => e.kind === 'progress').map(e => e.phase)).toEqual([
       'collecting', 'organizing', 'reading-related', 'explaining', 'reviewing', 'validating',
     ]);
+  });
+
+  it('sends Codex stages a schema without oneOf', async () => {
+    // Codex passes --output-schema on as an OpenAI strict schema, which lists anyOf but not oneOf.
+    // The first real local worker run (W1) failed at the reviewing stage while the claims union was a oneOf.
+    const f = fixture();
+    expect((await f.finish()).kind).toBe('completed');
+    const codexSchemas = f.run.mock.calls.map(([input]) => input).filter(input => input.provider === 'codex').map(input => JSON.stringify(input.schema));
+    expect(codexSchemas).toHaveLength(2);
+    for (const schema of codexSchemas) expect(schema).not.toContain('"oneOf"');
+  });
+
+  it.each([
+    { kind: 'code', text: '근거가 없는 코드 설명' },
+    { kind: 'concept', text: '근거를 붙인 개념', evidenceIds: [randomUUID()] },
+    { kind: 'guess', text: '모르는 종류', evidenceIds: [randomUUID()] },
+  ])('rejects the malformed claim %j', claim => {
+    expect(explanationSchema.safeParse({ ...fixture().explanation, claims: [claim] }).success).toBe(false);
   });
 
   it.each(['organizing', 'explaining', 'reviewing'] as const)('stops at malformed %s schema', async stage => {
