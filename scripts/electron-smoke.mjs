@@ -18,7 +18,8 @@ await writeFile(path.join(fixture, 'order.ts'), source);
 const loopSource = 'export function 모두(목록: string[]) {\n  for (const 항목 of 목록) {\n    if (항목) {\n      보내기(항목);\n    }\n  }\n  try {\n    throw new Error("다시");\n  } catch {\n    return 0;\n  } finally {\n    정리();\n  }\n}\n';
 await writeFile(path.join(fixture, 'loop.ts'), loopSource);
 // A plain JavaScript file for the reader's colours; not a start-candidate name.
-await writeFile(path.join(fixture, 'helper.js'), 'export function greet(name) {\n  // 인사\n  return "안녕 " + name;\n}\n');
+// Its comment line is long so wrapping can be seen; the line count and first line stay as the key checks expect.
+await writeFile(path.join(fixture, 'helper.js'), 'export function greet(name) {\n  // 인사' + ' 줄바꿈 시험용 긴 주석'.repeat(20) + '\n  return "안녕 " + name;\n}\n');
 await writeFile(path.join(fixture, '.env'), 'TEST_NOT_A_REAL_SECRET=canary');
 await writeFile(path.join(fixture, 'auth.json'), '{"test":"not-real-auth"}');
 await writeFile(path.join(fixture, 'README.md'), '# 주문 예제\n\n주문 수량을 확인하는 작은 시험 자료입니다.\n\n<script>globalThis.attacked=true</script> ![x](https://example.com/test)');
@@ -41,6 +42,21 @@ async function until(callback) {
     await new Promise(resolve => setTimeout(resolve, 40));
   }
 }
+// Where the code's caret and selection are, as line and column. It is read from the browser selection,
+// which CodeMirror keeps in step while the code has focus.
+const caret = () => page.evaluate(() => {
+  const place = (node, offset) => {
+    const line = (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement).closest('.cm-line');
+    if (!line) return null; // the selection left the code
+    const before = document.createRange();
+    before.setStart(line, 0);
+    before.setEnd(node, offset);
+    return { line: [...document.querySelectorAll('.cm-line')].indexOf(line), column: before.toString().length };
+  };
+  const selection = getSelection();
+  return { anchor: place(selection.anchorNode, selection.anchorOffset), head: place(selection.focusNode, selection.focusOffset) };
+});
+const at = (line, column) => ({ line, column });
 try {
   app = await electron.launch({ executablePath: require('electron'), args: [bootstrap], cwd: root,
     chromiumSandbox: true, timeout: 30_000 });
@@ -131,21 +147,7 @@ try {
     assert.ok(jsColours.keyword && jsColours.string && jsColours.comment);
     assert.equal(new Set([jsColours.keyword, jsColours.string, jsColours.comment]).size, 3);
     assert.notEqual(jsColours.keyword, jsColours.plain);
-    // The rest of the reading keys, in this LF file whose first line has no indentation. The caret is
-    // read from the browser selection, which CodeMirror keeps in step while the code has focus.
-    const caret = () => page.evaluate(() => {
-      const place = (node, offset) => {
-        const line = (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement).closest('.cm-line');
-        if (!line) return null; // the selection left the code
-        const before = document.createRange();
-        before.setStart(line, 0);
-        before.setEnd(node, offset);
-        return { line: [...document.querySelectorAll('.cm-line')].indexOf(line), column: before.toString().length };
-      };
-      const selection = getSelection();
-      return { anchor: place(selection.anchorNode, selection.anchorOffset), head: place(selection.focusNode, selection.focusOffset) };
-    });
-    const at = (line, column) => ({ line, column });
+    // The rest of the reading keys, in this LF file whose first line has no indentation.
     await content.focus();
     await page.keyboard.press('Meta+ArrowDown');
     assert.deepEqual(await caret(), { anchor: at(4, 0), head: at(4, 0) });
@@ -163,6 +165,141 @@ try {
     await page.keyboard.press('Meta+a');
     assert.deepEqual(await caret(), { anchor: at(0, 0), head: at(4, 0) });
     // Back to the TypeScript step: the same original range is marked again.
+    await page.getByRole('button', { name: 'order.ts', exact: true }).click();
+    await page.getByRole('button', { name: '주문', exact: true }).click();
+    await page.getByRole('button', { name: '조건 확인', exact: true }).click();
+    assert.equal(await page.getByTestId('evidence-range').innerText(), evidence);
+  });
+  await check('Code reader finds text, resizes and wraps code, fits the window, and dragging or dropping changes nothing', async () => {
+    const evidence = await page.getByTestId('evidence-range').innerText();
+    const lines = () => page.locator('.cm-line').allTextContents().then(all => all.join('\n'));
+    const before = await lines();
+    const content = page.locator('.cm-content');
+    const field = page.locator('.cm-search input[name="search"]');
+    // At the plan's window sizes, with a function chosen: every header control sits inside the header
+    // without overlapping, and the open search field is visible.
+    const layoutProblems = () => page.evaluate(() => {
+      const box = element => element.getBoundingClientRect();
+      const head = box(document.querySelector('.reader__head'));
+      const controls = [...document.querySelectorAll('.reader__head .path, .reader__head .badge, .reader__head .btn, .reader__size')];
+      const problems = [];
+      for (const control of controls) {
+        const r = box(control);
+        if (r.width === 0 || r.left < head.left - 0.5 || r.right > head.right + 0.5 || r.top < head.top - 0.5 || r.bottom > head.bottom + 0.5) problems.push(`outside: ${control.textContent}`);
+      }
+      for (let i = 0; i < controls.length; i++) for (let j = i + 1; j < controls.length; j++) {
+        const a = box(controls[i]), b = box(controls[j]);
+        if (a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5) problems.push(`overlap: ${controls[i].textContent} / ${controls[j].textContent}`);
+      }
+      const search = document.querySelector('.cm-search input[name="search"]');
+      if (search) {
+        const r = box(search), editor = box(document.querySelector('.cm-editor'));
+        if (r.width < 100 || r.left < editor.left || r.right > editor.right || r.top < editor.top || r.bottom > editor.bottom) problems.push('search field hidden');
+      }
+      return problems;
+    });
+    assert.ok(await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).isVisible());
+    for (const [width, height] of [[1280, 800], [1440, 900]]) {
+      await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(size[0], size[1]), [width, height]);
+      await until(async () => await page.evaluate(expected => window.outerWidth === expected, width));
+      await page.getByRole('button', { name: '찾기 ⌘F', exact: true }).click();
+      await field.waitFor();
+      assert.deepEqual(await layoutProblems(), [], `${width}x${height}`);
+      await page.screenshot({ path: path.join(artifacts, `reader-tools-${width}.png`) });
+      await page.keyboard.press('Escape');
+      await until(async () => await page.locator('.cm-search').count() === 0);
+    }
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
+    // Search: the button opens the panel with its field focused, in Korean and without replacing.
+    await page.getByRole('button', { name: '찾기 ⌘F', exact: true }).click();
+    await field.waitFor();
+    assert.equal(await field.evaluate(element => element === document.activeElement), true);
+    assert.equal(await field.getAttribute('aria-label'), '찾기');
+    assert.equal(await page.locator('.cm-search button[name="next"]').innerText(), '다음');
+    assert.equal(await page.locator('.cm-search [name="replace"], .cm-search [name="replaceAll"]').count(), 0);
+    // Matches are marked and Enter moves to one; the panel commits on key presses, so the text is typed.
+    await page.keyboard.type('return');
+    await until(async () => await page.locator('.cm-searchMatch').count() >= 2);
+    await page.keyboard.press('Enter');
+    await until(async () => await page.locator('.cm-searchMatch-selected').count() === 1);
+    await page.keyboard.press('Escape');
+    await until(async () => await page.locator('.cm-search').count() === 0);
+    // Cmd+F from the code opens it too.
+    await content.focus();
+    await page.keyboard.press('Meta+f');
+    await field.waitFor();
+    await page.keyboard.press('Escape');
+    await until(async () => await page.locator('.cm-search').count() === 0);
+    assert.equal(await lines(), before);
+    // Moving to a match moved the selection, as the arrow keys do. The evidence label stays, and choosing
+    // the step again marks exactly the original range (lines 2–4, from after the tab to after the brace).
+    assert.equal(await page.getByTestId('evidence-range').innerText(), evidence);
+    await page.getByRole('button', { name: '조건 확인', exact: true }).click();
+    await content.focus();
+    // CodeMirror puts its selection into the page shortly after it takes focus.
+    await until(async () => (await caret()).head !== null);
+    assert.deepEqual(await caret(), { anchor: at(1, 1), head: at(3, 2) });
+    // Code text size: one step up, kept in another file, bounded at 12 and 20px, then back to 15px.
+    const size = () => content.evaluate(element => getComputedStyle(element).fontSize);
+    const bigger = page.getByRole('button', { name: '코드 글자 크게', exact: true });
+    const smaller = page.getByRole('button', { name: '코드 글자 작게', exact: true });
+    assert.equal(await size(), '15px');
+    await bigger.click();
+    assert.equal(await size(), '16px');
+    assert.equal(await page.locator('.reader__size').innerText(), '코드 16px');
+    // CodeMirror measured the lines again: line number 1 is as tall as the first line.
+    await until(() => page.evaluate(() => {
+      const number = [...document.querySelectorAll('.cm-lineNumbers .cm-gutterElement')].find(element => element.textContent === '1');
+      return Math.abs(number.getBoundingClientRect().height - document.querySelector('.cm-line').getBoundingClientRect().height) < 0.5;
+    }));
+    await page.getByRole('button', { name: 'helper.js', exact: true }).click();
+    await page.getByRole('button', { name: 'greet', exact: true }).waitFor();
+    assert.equal(await size(), '16px');
+    while (await bigger.isEnabled()) await bigger.click();
+    assert.equal(await size(), '20px');
+    while (await smaller.isEnabled()) await smaller.click();
+    assert.equal(await size(), '12px');
+    for (let step = 0; step < 3; step++) await bigger.click();
+    assert.equal(await size(), '15px');
+    // Wrapping: the long comment scrolls sideways until wrapping is on, which stays on in another file.
+    const helperLines = await lines();
+    const overflows = () => page.locator('.cm-scroller').evaluate(element => element.scrollWidth > element.clientWidth);
+    const wrap = page.getByRole('button', { name: '줄바꿈', exact: true });
+    assert.equal(await wrap.getAttribute('aria-pressed'), 'false');
+    assert.equal(await overflows(), true);
+    await wrap.click();
+    assert.equal(await wrap.getAttribute('aria-pressed'), 'true');
+    await until(async () => !await overflows());
+    await page.getByRole('button', { name: 'order.ts', exact: true }).click();
+    await page.getByRole('button', { name: '주문', exact: true }).waitFor();
+    assert.equal(await content.evaluate(element => element.classList.contains('cm-lineWrapping')), true);
+    await page.getByRole('button', { name: 'helper.js', exact: true }).click();
+    await page.getByRole('button', { name: 'greet', exact: true }).waitFor();
+    await until(async () => !await overflows());
+    assert.equal(await page.locator('.cm-line').count(), 5);
+    await wrap.click();
+    assert.equal(await wrap.getAttribute('aria-pressed'), 'false');
+    await until(overflows);
+    // Dragging the mouse over lines selects them, and a drop that carries text changes nothing.
+    await content.focus();
+    await page.keyboard.press('Meta+ArrowUp');
+    await until(async () => await page.locator('.cm-selectionBackground').count() === 0);
+    const first = await page.locator('.cm-line').nth(0).boundingBox();
+    const third = await page.locator('.cm-line').nth(2).boundingBox();
+    await page.mouse.move(first.x + 4, first.y + first.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(third.x + 60, third.y + third.height / 2, { steps: 5 });
+    await page.mouse.up();
+    await page.locator('.cm-selectionBackground').first().waitFor();
+    assert.equal((await caret()).head.line, 2);
+    await content.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      const dataTransfer = new DataTransfer();
+      dataTransfer.setData('text/plain', 'dropped();');
+      element.dispatchEvent(new DragEvent('drop', { dataTransfer, clientX: rect.left + 20, clientY: rect.top + 10, bubbles: true, cancelable: true }));
+    });
+    assert.equal(await lines(), helperLines);
+    // Leave the following checks where they expect: order.ts with the same step chosen.
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
     await page.getByRole('button', { name: '주문', exact: true }).click();
     await page.getByRole('button', { name: '조건 확인', exact: true }).click();

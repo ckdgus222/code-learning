@@ -163,6 +163,10 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .path { min-width: 0; font: 600 14px var(--mono); overflow-wrap: anywhere; }
 .reader__head .btn { margin-left: auto; }
 .reader__head .btn + .btn { margin-left: 0; }
+/* Search, code text size and wrapping sit together after the file actions. */
+.reader__tools { display: flex; align-items: center; gap: 6px; }
+.reader__tools .btn { margin-left: 0; }
+.reader__size { min-width: 7ch; color: var(--muted); font-size: 13px; text-align: center; white-space: nowrap; }
 .reader__body { display: grid; grid-template-columns: 220px minmax(0, 1fr); flex: 1; min-height: 0; }
 .outline { display: flex; flex-direction: column; gap: 8px; padding: 12px; overflow: auto; border-right: 1px solid var(--line); }
 .outline .hint { font-size: 13px; }
@@ -184,7 +188,8 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .evidence { padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--accent-soft); color: var(--accent); font-size: 13px; }
 [data-testid="source-editor"] { flex: 1; min-height: 0; }
 .cm-editor { height: 100%; }
-.cm-scroller { overflow: auto; font: 15px/1.65 var(--mono) !important; }
+/* The size is the reader's adjustable setting, set through the editor's theme (reader.tsx). */
+.cm-scroller { overflow: auto; font-family: var(--mono) !important; line-height: 1.65 !important; }
 .cm-gutters { border-right: 1px solid var(--line) !important; background: var(--surface) !important; color: #a0a5ad !important; }
 .cm-editor.cm-focused { outline: none !important; }
 /* Keyboard focus on the code must stay visible; a mouse click does not show it. */
