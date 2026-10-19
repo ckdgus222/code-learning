@@ -133,6 +133,15 @@ describe('local worker workflow with fake adapters', () => {
     expect(f.events.some(e => e.kind === 'completed')).toBe(false);
   });
 
+  it('tells the reviewer that issues are only the problems it could not fix', async () => {
+    // Any issue discards the answer, so a fix that is also listed as an issue would discard a corrected
+    // explanation (a possible cause of the first real app question's rejection, 2026-10-19; not confirmed).
+    const f = fixture();
+    await f.finish();
+    const reviewing = f.run.mock.calls.map(([input]) => input).find(input => input.stage === 'reviewing')!;
+    expect(reviewing.prompt).toContain('issues에는 바로잡지 못하고 남은 문제만 적는다. 바로잡은 내용은 explanation에만 반영하고 issues에 적지 않는다.');
+  });
+
   it.each(['organizing', 'explaining', 'reviewing'] as const)('cancels during %s without continuing or completing', async stage => {
     const f = fixture();
     const normal = f.run.getMockImplementation()!;

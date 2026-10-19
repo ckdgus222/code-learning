@@ -151,7 +151,11 @@ export class LocalWorkerWorkflow {
     this.ensureActive(job);
     const draft = await run('explaining', explanationSchema, '다음 작업 정리를 참고해 쉬운 설명을 작성하라. 제목·입력·판단·결과·다른 경우를 코드로 확인한 범위에서 담고 모르는 것은 명시하라.\n' + JSON.stringify(organization));
     checkReferences(draft, snapshot);
-    const review = await run('reviewing', reviewSchema, '동일한 원본 코드와 다음 설명을 대조하라. 잘못된 설명을 바로잡은 explanation을 반환하라. 근거가 부족해 받아들일 수 없으면 accepted=false로 표시하라.\n' + JSON.stringify(draft));
+    // Any issue below discards the answer, so issues must hold only what is left unfixed; otherwise a
+    // corrected explanation is thrown away because its fixes were also listed.
+    const review = await run('reviewing', reviewSchema, '동일한 원본 코드와 다음 설명을 대조하라. 잘못된 설명을 바로잡은 explanation을 반환하라. '
+      + 'issues에는 바로잡지 못하고 남은 문제만 적는다. 바로잡은 내용은 explanation에만 반영하고 issues에 적지 않는다. '
+      + '근거가 부족해 받아들일 수 없으면 accepted=false로 표시하라.\n' + JSON.stringify(draft));
     if (!review.accepted || review.issues.length) throw new AppError('AI_RESPONSE', 'AI 대조에서 해결하지 못한 문제가 있어 설명을 표시하지 않았습니다.');
     checkReferences(review.explanation, snapshot);
     progress('validating');
