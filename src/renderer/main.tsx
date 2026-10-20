@@ -12,7 +12,7 @@ import { CallsFacts, type CallFunction, type CallsState } from './calls';
 import { shapeQueries, ValuesFacts, type ShapeSlot, type ShapesState } from './values';
 import { COMPLEXITY_NOTE, ComplexityTags, overLimit } from './complexity';
 import { ChangesView, type ChangesEntry, type DiffEntry, type Loaded } from './changes';
-import { OverviewAi, TopicBar, type OverviewState, type Topic } from './overview';
+import { OverviewAi, TopicBar, recordPlace, type OverviewState, type Place, type Topic } from './overview';
 import type { ConnectionReport, LearningEvent, OverviewFeature } from '../shared/ai';
 import './styles.css';
 
@@ -61,6 +61,8 @@ function App() {
   const overviewRequest = useRef(0);
   const overviewJob = useRef<{ id: string | null; starting: boolean; queued: LearningEvent[] }>({ id: null, starting: false, queued: [] });
   const [topic, setTopic] = useState<Topic | null>(null);
+  // The places looked at under the topic (the last 20).
+  const [places, setPlaces] = useState<Place[]>([]);
   const [focusAnchor, setFocusAnchor] = useState<string | null>(null);
   // Reading settings live as long as the window: they stay across files and views, not across restarts.
   const [codeSize, setCodeSize] = useState(CODE_SIZE.start);
@@ -123,6 +125,17 @@ function App() {
     target?.focus();
     setFocusAnchor(null);
   }, [view, focusAnchor, overviewAi]);
+
+  // Plan F1: while a topic is open, each settled place in the code views is recorded.
+  // A change notice clears the marks, which is no move: nothing is recorded while the code waits for a re-read.
+  useEffect(() => {
+    if (!topic || busy || stale || !source || (view !== 'flow' && view !== 'code')) return;
+    const range = evidence && evidence.fileId === source.fileId
+      ? { startUtf16: evidence.startUtf16, endUtf16: evidence.endUtf16, startLine: evidence.startLine, endLine: evidence.endLine } : null;
+    const place: Place = { view, fileId: source.fileId, fileHash: source.hash, range,
+      symbol: symbol ? { name: symbol.name, startUtf16: symbol.evidence.startUtf16, step: step ? symbol.steps.indexOf(step) : null } : null };
+    setPlaces(previous => recordPlace(previous, place));
+  }, [topic === null, busy, stale, view, source?.fileId, source?.hash, symbol?.id, stepId, evidence?.id]);
 
   // A newly opened project starts from its overview, not the previous project's view.
   useEffect(() => setView('overview'), [project?.id, setView]);
@@ -187,8 +200,40 @@ function App() {
       start: { fileId: candidate.fileId, fileHash: candidate.fileHash, relativePath: candidate.relativePath, functionName: candidate.name,
         startUtf16: candidate.name === null ? null : candidate.startUtf16 },
       anchor: `start:${candidate.fileId}:${candidate.startUtf16}` };
-    setTopic(next);
+    beginTopic(next);
     await openStart(next);
+  }
+  /** A new topic (or none) starts with no places looked at. */
+  function beginTopic(next: Topic | null) { setTopic(next); setPlaces([]); }
+  /**
+   * Back to the place before (plan F1): the file is read again, and only while it is as it was are its function and
+   * step chosen again (by name and place, by range) and its range marked. A range of no step is for looking only.
+   */
+  async function goBack() {
+    const target = places.at(-2);
+    if (!target) return;
+    setPlaces(previous => previous.slice(0, -1));
+    setView(target.view);
+    const atRevision = revision.current;
+    const opened = await readFile(target.fileId);
+    if (!opened || revision.current !== atRevision) return;
+    // Where it lands stands for the place gone back to (a file changed since too), whatever view is shown meanwhile.
+    const land = (symbol: Place['symbol'], marked: Evidence | null) => setPlaces(previous => [...previous.slice(0, -1), {
+      view: target.view, fileId: opened.fileId, fileHash: opened.hash, symbol,
+      range: marked && { startUtf16: marked.startUtf16, endUtf16: marked.endUtf16, startLine: marked.startLine, endLine: marked.endLine } }]);
+    if (opened.hash !== target.fileHash) { setNotice('그 뒤 파일이 바뀌어 위치를 되살리지 않았어요. 파일만 열었어요.'); land(null, null); return; }
+    const { range, symbol: chosen } = target;
+    const found = chosen && opened.analysis.symbols.find(item => item.name === chosen.name && item.evidence.startUtf16 === chosen.startUtf16);
+    const same = (marked: Evidence) => range !== null && marked.startUtf16 === range.startUtf16 && marked.endUtf16 === range.endUtf16;
+    // The same file as it was gives the same steps in the same order.
+    const listed = found && chosen.step !== null ? found.steps[chosen.step] : undefined;
+    const step = listed && same(listed.evidence) ? listed : undefined;
+    const marked = step ? step.evidence : found && (!range || same(found.evidence)) ? found.evidence
+      : range ? { id: crypto.randomUUID(), projectId: opened.projectId, fileId: opened.fileId, fileHash: opened.hash, ...range } : null;
+    if (found) selectSymbol(found.id);
+    if (step) selectStep(step.id);
+    setReaderEvidence(marked);
+    land(found ? { name: found.name, startUtf16: found.evidence.startUtf16, step: step ? chosen.step : null } : null, marked);
   }
 
   /**
@@ -197,7 +242,10 @@ function App() {
    */
   async function openStart(target: Topic) {
     setView('flow');
+    const atRevision = revision.current;
     const opened = await readFile(target.start.fileId);
+    // A change notice during the read (a wake from sleep included) leaves the code to be checked again.
+    if (opened && revision.current !== atRevision) return;
     const { functionName, startUtf16, fileHash } = target.start;
     if (!opened || functionName === null) {
       if (opened && target.origin === 'ai') setNotice('AI가 출발 함수를 정하지 못했어요. 이 파일에서 함수를 골라 주세요.');
@@ -266,7 +314,7 @@ function App() {
   function forgetOverview() {
     overviewRequest.current++;
     overviewJob.current = { id: null, starting: false, queued: [] };
-    setOverviewAi(null); setTopic(null); setFocusAnchor(null); setOverviewCard(count => count + 1);
+    setOverviewAi(null); beginTopic(null); setFocusAnchor(null); setOverviewCard(count => count + 1);
   }
   async function startOverview(startFileId: string | null) {
     if (!project) return;
@@ -300,12 +348,12 @@ function App() {
     const next: Topic = { name: feature.name, original: feature.name, origin: 'ai', anchor,
       start: { fileId: start.evidence.fileId, fileHash: start.evidence.fileHash, relativePath: start.relativePath,
         functionName: feature.start.functionName, startUtf16: null } };
-    setTopic(next);
+    beginTopic(next);
     void openStart(next);
   }
   function startTopicHere() {
     if (!source || !symbol) return;
-    setTopic({ name: symbol.name, original: symbol.name, origin: 'function', anchor: null,
+    beginTopic({ name: symbol.name, original: symbol.name, origin: 'function', anchor: null,
       start: { fileId: source.fileId, fileHash: source.hash, relativePath: source.relativePath, functionName: symbol.name,
         startUtf16: symbol.evidence.startUtf16 } });
   }
@@ -593,10 +641,11 @@ function App() {
       </aside>
 
       <main className="center">
-        <TopicBar topic={topic} canStartHere={(view === 'flow' || view === 'code') && !!source && !!symbol} canAsk={!!symbol && !stale}
-          locked={busy || stale} onRename={name => setTopic(current => current && { ...current, name })} onStartHere={startTopicHere}
-          onStart={() => { if (topic) void openStart(topic); }} onAsk={() => void prepareTopicQuestion()}
-          onOverview={() => { setView('overview'); setFocusAnchor(topic?.anchor ?? 'overview'); }} onClose={() => setTopic(null)} />
+        <TopicBar topic={topic} places={places.length} canStartHere={(view === 'flow' || view === 'code') && !!source && !!symbol}
+          canAsk={!!symbol && !stale} locked={busy || stale} onRename={name => setTopic(current => current && { ...current, name })}
+          onStartHere={startTopicHere} onStart={() => { if (topic) void openStart(topic); }} onBack={() => void goBack()}
+          onAsk={() => void prepareTopicQuestion()}
+          onOverview={() => { setView('overview'); setFocusAnchor(topic?.anchor ?? 'overview'); }} onClose={() => beginTopic(null)} />
         {view === 'overview' && <div className="page">
           <h2 className="page__title" tabIndex={-1} data-anchor="overview">한눈에 보기</h2>
           {overviewStale && <p className="notice notice--warn overview-stale"><b>다시 확인 필요:</b> 프로젝트를 연 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 아래 소개와 후보는 폴더를 열 때 읽은 내용이에요. 폴더를 다시 열면 새로 계산해요.</p>}
@@ -621,7 +670,7 @@ function App() {
             <OverviewAi key={overviewCard} project={project} state={overviewAi} locked={busy}
               stale={overviewAi?.status === 'done' && overviewAi.revision !== revision.current}
               readiness={connections?.modes.find(item => item.mode === 'local-worker') ?? null} checking={checking}
-              revealAnchor={topic?.anchor ?? null} onInspect={() => { void inspectConnections().then(message => { if (message) setError(message); }); }}
+              revealAnchor={topic?.anchor ?? null} topicName={topic ? topic.name.trim() || topic.original : null} onInspect={() => { void inspectConnections().then(message => { if (message) setError(message); }); }}
               onStart={startFileId => void startOverview(startFileId)} onCancel={() => void cancelOverview()}
               onEvidence={next => { setView('code'); void showEvidence(next, null, 'overview'); }}
               onFollow={followFeature} onFunction={(name, at) => void showNamedFunction(name, at)} />
