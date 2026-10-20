@@ -158,18 +158,25 @@ async function endsWithin(ended, step) {
 async function holdWorkerMessages() {
   await app.evaluate(() => {
     const { Worker } = process.getBuiltinModule('node:worker_threads');
+    const hold = { released: false, held: [] };
+    globalThis.testHold = hold;
     globalThis.testOriginalOn = Worker.prototype.on;
-    globalThis.testHeld = [];
+    globalThis.testHeld = hold.held;
     Worker.prototype.on = function (event, listener) {
       if (event !== 'message') return globalThis.testOriginalOn.call(this, event, listener);
-      return globalThis.testOriginalOn.call(this, event, (...values) => { globalThis.testHeld.push(() => listener(...values)); });
+      // A worker started while held keeps this listener: a message it sends after the release must pass, or the
+      // job never ends and quitting waits for that worker forever.
+      return globalThis.testOriginalOn.call(this, event, (...values) => {
+        if (hold.released) listener(...values);
+        else hold.held.push(() => listener(...values));
+      });
     };
   });
 }
 async function releaseWorkerMessages() {
   await app.evaluate(() => {
     process.getBuiltinModule('node:worker_threads').Worker.prototype.on = globalThis.testOriginalOn;
-    globalThis.testReleased = true;
+    globalThis.testHold.released = true;
     for (const deliver of globalThis.testHeld.splice(0)) deliver();
   });
 }
@@ -1363,6 +1370,13 @@ try {
   await writeFile(path.join(artifacts, 'electron-smoke.json'), JSON.stringify({ passed: checks, error: String(error), pageErrors: failures }, null, 2));
   process.exitCode = 1;
 } finally {
-  if (app) await app.close().catch(() => {});
+  if (app) {
+    // After a failed check the app may still wait for a worker, and close() waits for the app: end it rather than hang.
+    const child = app.process();
+    let timer;
+    await Promise.race([app.close().catch(() => {}), new Promise(resolve => { timer = setTimeout(resolve, 60_000); })]);
+    clearTimeout(timer);
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  }
   await rm(temporary, { recursive: true, force: true });
 }
