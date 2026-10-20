@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ConnectionReport, ExplainRequest, LearningEvent } from './ai';
+import type { ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest } from './ai';
 
 export const idSchema = z.string().uuid();
 export const sourceRequestSchema = z.object({ projectId: idSchema, fileId: idSchema }).strict();
@@ -318,6 +318,7 @@ export interface LearningApi {
   cancelChanges(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
   checkConnections(): Promise<Result<ConnectionReport>>;
   startExplanation(input: ExplainRequest): Promise<Result<{ jobId: string }>>;
+  startOverview(input: OverviewRequest): Promise<Result<{ jobId: string }>>;
   cancelExplanation(input: { jobId: string }): Promise<Result<null>>;
   onLearningEvent(listener: (event: LearningEvent) => void): () => void;
   onProjectEvent(listener: (event: ProjectEvent) => void): () => void;
@@ -328,6 +329,6 @@ export const channels = {
   cancel: 'learning:cancel', event: 'learning:project-event', map: 'learning:map', cancelMap: 'learning:cancel-map',
   calls: 'learning:calls', cancelCalls: 'learning:cancel-calls', shapes: 'learning:shapes', cancelShapes: 'learning:cancel-shapes',
   history: 'learning:history', changes: 'learning:changes', diff: 'learning:diff', cancelChanges: 'learning:cancel-changes',
-  connections: 'learning:connections', explain: 'learning:explain',
+  connections: 'learning:connections', explain: 'learning:explain', overview: 'learning:overview',
   cancelExplanation: 'learning:cancel-explanation', learningEvent: 'learning:ai-event',
 } as const;

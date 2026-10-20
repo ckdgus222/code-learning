@@ -12,6 +12,8 @@ import { CallsFacts, type CallFunction, type CallsState } from './calls';
 import { shapeQueries, ValuesFacts, type ShapeSlot, type ShapesState } from './values';
 import { COMPLEXITY_NOTE, ComplexityTags, overLimit } from './complexity';
 import { ChangesView, type ChangesEntry, type DiffEntry, type Loaded } from './changes';
+import { OverviewAi, TopicBar, type OverviewState, type Topic } from './overview';
+import type { ConnectionReport, LearningEvent, OverviewFeature } from '../shared/ai';
 import './styles.css';
 
 const views: { id: View; label: string }[] = [
@@ -26,6 +28,9 @@ const candidateReasons: Record<StartCandidate['reason'], string> = {
 };
 // Plan v2.3 C-1: the AI is only asked; the app never changes the code.
 const SIMPLER_QUESTION = '이 함수를 더 단순하고 읽기 쉽게 쓸 수 있을까요? 바꾼다면 어디를 어떻게 바꾸면 좋을지 알려 주세요.';
+// Plan G1·F1: the question a topic prepares about its feature; only put in the box, sent by the user.
+const featureQuestion = (name: string) => `‘${name}’ 기능이 이 함수에서 어떻게 시작하는지, 어떤 입력을 받고 어느 코드에서 주요 처리를 하며 `
+  + '무엇을 돌려주거나 저장·표시하는지 단계별로 설명해 주세요. 확인하지 못한 연결은 따로 적어 주세요.';
 // Code text size in px (plan 7.3: 14–16px to start, adjustable).
 const CODE_SIZE = { min: 12, start: 15, max: 20 };
 
@@ -45,7 +50,18 @@ function App() {
   const [search, setSearch] = useState('');
   const [panel, setPanel] = useState<'explain' | 'ask'>('explain');
   const [panelOpen, setPanelOpen] = useState(true);
-  const [draft, setDraft] = useState<{ text: string; id: number } | null>(null);
+  const [draft, setDraft] = useState<{ text: string; id: number; topic?: { name: string; evidenceId: string } } | null>(null);
+  // The AI installation check, shared by the question panel and the overview card.
+  const [connections, setConnections] = useState<ConnectionReport | null>(null);
+  const [checking, setChecking] = useState(false);
+  // Plan G1: the overview job and its result; plan F1: the topic being learned and where '한눈에 보기로' puts the focus.
+  const [overviewAi, setOverviewAi] = useState<OverviewState | null>(null);
+  // Counts opened folders (and closings): the overview card starts over, its consent unchecked, for each one.
+  const [overviewCard, setOverviewCard] = useState(0);
+  const overviewRequest = useRef(0);
+  const overviewJob = useRef<{ id: string | null; starting: boolean; queued: LearningEvent[] }>({ id: null, starting: false, queued: [] });
+  const [topic, setTopic] = useState<Topic | null>(null);
+  const [focusAnchor, setFocusAnchor] = useState<string | null>(null);
   // Reading settings live as long as the window: they stay across files and views, not across restarts.
   const [codeSize, setCodeSize] = useState(CODE_SIZE.start);
   const [wrap, setWrap] = useState(false);
@@ -86,6 +102,28 @@ function App() {
     }
   }), [project?.id]);
 
+  const overviewReceiver = useRef((_event: LearningEvent) => {});
+  overviewReceiver.current = event => {
+    const job = overviewJob.current;
+    if (event.projectId !== project?.id) return;
+    if (job.starting) { if (job.queued.length < 16) job.queued.push(event); return; }
+    if (event.jobId !== job.id) return;
+    if (event.kind === 'progress') { setOverviewAi(state => state?.status === 'running' ? { ...state, phase: event.phase } : state); return; }
+    job.id = null;
+    if (event.kind === 'failed') setOverviewAi({ status: 'failed', message: event.error.message, cancelled: event.error.code === 'CANCELLED' });
+    else if (event.kind === 'overview-completed') {
+      setOverviewAi(state => state?.status === 'running' ? { status: 'done', result: event.result, revision: state.revision } : state);
+    }
+  };
+  useEffect(() => window.learning.onLearningEvent(event => overviewReceiver.current(event)), []);
+  // Coming back to the overview puts the focus on the card the topic came from (plan U1).
+  useEffect(() => {
+    if (view !== 'overview' || !focusAnchor) return;
+    const target = document.querySelector<HTMLElement>(`[data-anchor="${CSS.escape(focusAnchor)}"]`) ?? document.querySelector<HTMLElement>('[data-anchor="overview"]');
+    target?.focus();
+    setFocusAnchor(null);
+  }, [view, focusAnchor, overviewAi]);
+
   // A newly opened project starts from its overview, not the previous project's view.
   useEffect(() => setView('overview'), [project?.id, setView]);
   // Choosing a function in the flow view searches its calls; coming back to it reuses what was found.
@@ -112,55 +150,98 @@ function App() {
     if (current !== request.current) return;
     setBusy(false);
     if (!result.ok) {
-      setError(result.message); setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap(); forgetCalls(); forgetChanges(); return;
+      setError(result.message); setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap(); forgetCalls(); forgetChanges(); forgetOverview(); return;
     }
     if (!result.value) return;
     // Reopening the same folder keeps the project ID but gives every file a new ID, so the map goes too.
-    forgetMap(); forgetCalls(); forgetChanges();
+    forgetMap(); forgetCalls(); forgetChanges(); forgetOverview();
     setProject(result.value); setSource(null); setEvidence(null); setStale(false); setOverviewStale(false); setWatchError(false); setSearch(''); selectSymbol(null);
   }
 
-  async function readFile(fileId: string): Promise<SourceView | null> {
+  /**
+   * Opens a file in the reader. Moving around (a topic, a call, a value, the map, an overview: integrated plan 6.2) keeps
+   * the question's code, and with it the answers and a question on its way; choosing code to ask about is a separate step.
+   * Only opening a file from the file list starts with no question.
+   */
+  async function readFile(fileId: string, clearQuestion = false): Promise<SourceView | null> {
     if (!project) return null;
     const current = ++request.current;
     const atRevision = revision.current;
-    setBusy(true); setError(''); setNotice(''); setEvidence(null); selectSymbol(null);
+    setBusy(true); setError(''); setNotice(''); selectSymbol(null);
+    if (clearQuestion) setEvidence(null); else setReaderEvidence(null);
     const result = await window.learning.readSource({ projectId: project.id, fileId });
     if (current !== request.current) return null;
     setBusy(false);
     if (!result.ok) { setError(result.message); setSource(null); return null; }
     setSource(result.value); setStale(revision.current !== atRevision);
+    // The question's own file, read again and changed: its code is gone, so it is not kept as the question.
+    const read = result.value;
+    setQuestionEvidence(question => question && question.fileId === read.fileId && question.fileHash !== read.hash ? null : question);
     return result.value;
   }
 
   // Candidates were found when the folder opened. Only a file whose hash is unchanged is trusted
   // to still hold the same function at the same place; otherwise the reader chooses again.
   async function startFrom(candidate: StartCandidate) {
-    setView('flow');
-    const opened = await readFile(candidate.fileId);
-    if (!opened || candidate.name === null) return;
-    const match = opened.hash === candidate.fileHash
-      ? opened.analysis.symbols.find(item => item.name === candidate.name && item.evidence.startUtf16 === candidate.startUtf16)
-      : undefined;
-    if (match) selectSymbol(match.id);
-    else setNotice('파일이 폴더를 열 때와 달라 후보 위치를 다시 확인해야 해요. 왼쪽에서 함수를 직접 골라 주세요.');
+    const next: Topic = { name: candidate.name ?? candidate.relativePath, original: candidate.name ?? candidate.relativePath, origin: 'start',
+      start: { fileId: candidate.fileId, fileHash: candidate.fileHash, relativePath: candidate.relativePath, functionName: candidate.name,
+        startUtf16: candidate.name === null ? null : candidate.startUtf16 },
+      anchor: `start:${candidate.fileId}:${candidate.startUtf16}` };
+    setTopic(next);
+    await openStart(next);
   }
 
-  /** Whether the evidence was checked against the file and is now shown. */
-  async function showEvidence(next: Evidence, nextStep: string | null, fromAnswer = false): Promise<boolean> {
-    if (!project || stale) return false;
+  /**
+   * Opens a topic's start in the flow view, keeping the question. A function is chosen only while the file has the hash
+   * it had: by name and place when the place is known, by name when that name is the file's only function by it.
+   */
+  async function openStart(target: Topic) {
+    setView('flow');
+    const opened = await readFile(target.start.fileId);
+    const { functionName, startUtf16, fileHash } = target.start;
+    if (!opened || functionName === null) {
+      if (opened && target.origin === 'ai') setNotice('AI가 출발 함수를 정하지 못했어요. 이 파일에서 함수를 골라 주세요.');
+      return;
+    }
+    if (opened.hash !== fileHash) {
+      setNotice(target.origin === 'start' ? '파일이 폴더를 열 때와 달라 후보 위치를 다시 확인해야 해요. 왼쪽에서 함수를 직접 골라 주세요.'
+        : '출발점을 정한 뒤 이 파일이 바뀌어 함수를 고르지 않았어요. 왼쪽에서 함수를 직접 골라 주세요.');
+      return;
+    }
+    const found = opened.analysis.symbols.filter(item => item.name === functionName && (startUtf16 === null || item.evidence.startUtf16 === startUtf16));
+    if (found.length !== 1) {
+      setNotice(found.length > 1 ? `이 파일에 ‘${functionName}’ 함수가 ${found.length}개라 하나로 정하지 못했어요. 왼쪽에서 직접 골라 주세요.`
+        : `‘${functionName}’ 함수를 이 파일에서 찾지 못했어요. 왼쪽에서 직접 골라 주세요.`);
+      return;
+    }
+    selectSymbol(found[0].id);
+    setReaderEvidence(found[0].evidence);
+    // Found once by name, the start is kept by place, so returning to it finds this very function.
+    if (startUtf16 === null) setTopic(current => current === target ? { ...target, start: { ...target.start, startUtf16: found[0].evidence.startUtf16 } } : current);
+  }
+
+  /**
+   * Whether the evidence was checked against the file and is now shown. Evidence from an answer or the overview is only
+   * looked at, so the question's code stays (plan G1 E1). An overview has its own freshness: one made after the last
+   * change opens code even while the reader waits for a re-read, as main reads the file again and that brings it up to date.
+   */
+  async function showEvidence(next: Evidence, nextStep: string | null, from: 'code' | 'answer' | 'overview' = 'code'): Promise<boolean> {
+    if (!project || (stale && from !== 'overview')) return false;
     const current = ++request.current;
     const atRevision = revision.current;
+    const lookedAt = from !== 'code';
+    const clear = () => { if (lookedAt) setReaderEvidence(null); else setEvidence(null); };
     setBusy(true); setError(''); setNotice('');
     const result = await window.learning.readEvidence({ projectId: project.id, evidenceId: next.id });
     if (current !== request.current) return false;
     setBusy(false);
-    if (revision.current !== atRevision) { setStale(true); setEvidence(null); return false; }
-    if (!result.ok) { setError(result.message); setEvidence(null); if (result.code === 'CHANGED' || result.code === 'NOT_ALLOWED') setStale(true); return false; }
+    if (revision.current !== atRevision) { setStale(true); clear(); return false; }
+    if (!result.ok) { setError(result.message); clear(); if (result.code === 'CHANGED' || result.code === 'NOT_ALLOWED') setStale(true); return false; }
     setSource(result.value.source);
-    if (fromAnswer) { setReaderEvidence(result.value.evidence); selectSymbol(null); }
+    if (lookedAt) { setReaderEvidence(result.value.evidence); selectSymbol(null); }
     else setEvidence(result.value.evidence);
     selectStep(nextStep);
+    if (from === 'overview') setStale(false);
     return true;
   }
 
@@ -169,6 +250,86 @@ function App() {
     if (!await showEvidence(target.evidence, null)) return;
     setPanel('ask'); setPanelOpen(true);
     setDraft(current => ({ text: SIMPLER_QUESTION, id: (current?.id ?? 0) + 1 }));
+  }
+
+  /** Resolves to an error message, or null; the result is shared with the overview card. */
+  async function inspectConnections(): Promise<string | null> {
+    // A check starts main's list of AI programs over: the overview's next stage would find none.
+    if (overviewAi?.status === 'running') return '개요를 만드는 동안에는 설치를 다시 확인할 수 없어요.';
+    setChecking(true);
+    const result = await window.learning.checkConnections();
+    setChecking(false);
+    if (!result.ok) return result.message;
+    setConnections(result.value);
+    return null;
+  }
+  function forgetOverview() {
+    overviewRequest.current++;
+    overviewJob.current = { id: null, starting: false, queued: [] };
+    setOverviewAi(null); setTopic(null); setFocusAnchor(null); setOverviewCard(count => count + 1);
+  }
+  async function startOverview(startFileId: string | null) {
+    if (!project) return;
+    const token = ++overviewRequest.current;
+    overviewJob.current = { id: null, starting: true, queued: [] };
+    setOverviewAi({ status: 'running', phase: null, revision: revision.current });
+    const result = await window.learning.startOverview({ projectId: project.id, startFileId, mode: 'local-worker', consent: true });
+    if (token !== overviewRequest.current) {
+      if (result.ok) void window.learning.cancelExplanation({ jobId: result.value.jobId });
+      return;
+    }
+    const queued = overviewJob.current.queued;
+    overviewJob.current = { id: result.ok ? result.value.jobId : null, starting: false, queued: [] };
+    if (!result.ok) { setOverviewAi({ status: 'failed', message: result.message, cancelled: false }); return; }
+    queued.forEach(event => overviewReceiver.current(event));
+  }
+  async function cancelOverview() {
+    overviewRequest.current++;
+    const jobId = overviewJob.current.id;
+    overviewJob.current = { id: null, starting: false, queued: [] };
+    setOverviewAi({ status: 'failed', message: '개요 작업을 취소했어요.', cancelled: true });
+    if (jobId) {
+      const result = await window.learning.cancelExplanation({ jobId });
+      if (!result.ok) setError(result.message);
+    }
+  }
+  function followFeature(feature: OverviewFeature, anchor: string) {
+    if (overviewAi?.status !== 'done') return;
+    const start = overviewAi.result.sources.find(item => item.evidence.id === feature.start.evidenceId);
+    if (!start) return;
+    const next: Topic = { name: feature.name, original: feature.name, origin: 'ai', anchor,
+      start: { fileId: start.evidence.fileId, fileHash: start.evidence.fileHash, relativePath: start.relativePath,
+        functionName: feature.start.functionName, startUtf16: null } };
+    setTopic(next);
+    void openStart(next);
+  }
+  function startTopicHere() {
+    if (!source || !symbol) return;
+    setTopic({ name: symbol.name, original: symbol.name, origin: 'function', anchor: null,
+      start: { fileId: source.fileId, fileHash: source.hash, relativePath: source.relativePath, functionName: symbol.name,
+        startUtf16: symbol.evidence.startUtf16 } });
+  }
+  // The function now shown becomes the question's code (a new question target), then the box is filled.
+  async function prepareTopicQuestion() {
+    if (!topic || !symbol) return;
+    const target = symbol;
+    const name = topic.name.trim() || topic.original;
+    if (!await showEvidence(target.evidence, null)) return;
+    setPanel('ask'); setPanelOpen(true);
+    setDraft(current => ({ text: featureQuestion(name), id: (current?.id ?? 0) + 1, topic: { name, evidenceId: target.evidence.id } }));
+  }
+  // A role's function, named by the AI: chosen only while the file is as read and that name is its only function.
+  async function showNamedFunction(name: string, at: Evidence) {
+    if (busy) return;
+    setView('code');
+    const atRevision = revision.current;
+    const opened = await readFile(at.fileId);
+    if (!opened || revision.current !== atRevision) return;
+    if (opened.hash !== at.fileHash) { setNotice('개요를 만든 뒤 이 파일이 바뀌어 함수를 고르지 않았어요. 개요를 다시 만들어 주세요.'); return; }
+    const found = opened.analysis.symbols.filter(item => item.name === name);
+    if (found.length === 1) { selectSymbol(found[0].id); setReaderEvidence(found[0].evidence); return; }
+    setNotice(found.length > 1 ? `이 파일에 ‘${name}’ 함수가 ${found.length}개라 하나로 정하지 못했어요. 왼쪽에서 직접 골라 주세요.`
+      : `‘${name}’은 이 파일의 함수 목록에 없어요(이름 없는 함수나 다른 종류일 수 있어요). 왼쪽에서 직접 골라 주세요.`);
   }
 
   function forgetMap() { mapRequest.current++; setProjectMap(null); setMapping(false); }
@@ -201,7 +362,7 @@ function App() {
     // A change notice during the read (a wake from sleep included) leaves the code to be checked again.
     if (!opened || revision.current !== atRevision) return;
     const found = matchImport(opened, item);
-    if (found.status === 'found') setEvidence(found.evidence);
+    if (found.status === 'found') setReaderEvidence(found.evidence);
     else setNotice(found.status === 'changed' ? '지도를 만든 뒤 이 파일이 바뀌어 import 위치를 강조하지 않았어요. 지도를 다시 만들어 주세요.'
       : `이 import(${item.startLine}행)는 코드 분석 범위 밖이라 강조하지 못했어요.`);
   }
@@ -214,7 +375,7 @@ function App() {
     const opened = await readFile(item.fileId);
     if (!opened || revision.current !== atRevision) return;
     const found = matchFunction(opened, item);
-    if (found.status === 'found') { selectSymbol(found.symbol.id); setEvidence(found.symbol.evidence); }
+    if (found.status === 'found') { selectSymbol(found.symbol.id); setReaderEvidence(found.symbol.evidence); }
     else setNotice(found.status === 'changed' ? '지도를 만든 뒤 이 파일이 바뀌어 함수를 고르지 않았어요. 지도를 다시 만들어 주세요.'
       : `이 함수(${item.startLine}행)는 코드 분석 범위 밖이라 고르지 못했어요.`);
   }
@@ -326,7 +487,7 @@ function App() {
     const opened = await readFile(site.fileId);
     if (!opened || revision.current !== atRevision) return;
     const found = matchCallStep(opened, site);
-    if (found.status === 'found') { selectSymbol(found.symbol.id); selectStep(found.step.id); setEvidence(found.step.evidence); }
+    if (found.status === 'found') { selectSymbol(found.symbol.id); selectStep(found.step.id); setReaderEvidence(found.step.evidence); }
     else if (found.status === 'changed') setNotice('호출을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 다시 찾아 주세요.');
     else {
       // A call outside the analyzer's steps (top of the file, a default value, a computed name) is only
@@ -355,14 +516,14 @@ function App() {
     const opened = await readFile(target.fileId);
     if (!opened || revision.current !== atRevision) return;
     const found = matchFunction(opened, target);
-    if (found.status === 'found') { selectSymbol(found.symbol.id); setEvidence(found.symbol.evidence); }
+    if (found.status === 'found') { selectSymbol(found.symbol.id); setReaderEvidence(found.symbol.evidence); }
     else setNotice(found.status === 'changed' ? '호출을 찾은 뒤 이 파일이 바뀌어 그 함수를 고르지 않았어요. 다시 찾아 주세요.'
       : `그 함수(${target.startLine}행)는 코드 분석 범위 밖이라 고르지 못했어요.`);
   }
 
   async function cancel() {
     const current = ++request.current;
-    setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap(); forgetCalls(); forgetChanges();
+    setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap(); forgetCalls(); forgetChanges(); forgetOverview();
     setBusy(true); setError(''); setNotice('');
     const result = await window.learning.cancel();
     if (current !== request.current) return;
@@ -426,14 +587,18 @@ function App() {
           <ul>{files.map(file =>
             <li key={file.id}><button className="files__item" disabled={busy} aria-current={source?.fileId === file.id ? 'true' : undefined}
               // The flow view picks its function from the chosen file, so it stays where it is.
-              onClick={() => { if (view !== 'flow') setView('code'); void readFile(file.id); }}>{file.relativePath}</button></li>)}</ul>
+              onClick={() => { if (view !== 'flow') setView('code'); void readFile(file.id, true); }}>{file.relativePath}</button></li>)}</ul>
           {files.length === 0 && <p className="hint">검색과 일치하는 파일이 없어요.</p>}
         </section>
       </aside>
 
       <main className="center">
+        <TopicBar topic={topic} canStartHere={(view === 'flow' || view === 'code') && !!source && !!symbol} canAsk={!!symbol && !stale}
+          locked={busy || stale} onRename={name => setTopic(current => current && { ...current, name })} onStartHere={startTopicHere}
+          onStart={() => { if (topic) void openStart(topic); }} onAsk={() => void prepareTopicQuestion()}
+          onOverview={() => { setView('overview'); setFocusAnchor(topic?.anchor ?? 'overview'); }} onClose={() => setTopic(null)} />
         {view === 'overview' && <div className="page">
-          <h2 className="page__title">한눈에 보기</h2>
+          <h2 className="page__title" tabIndex={-1} data-anchor="overview">한눈에 보기</h2>
           {overviewStale && <p className="notice notice--warn overview-stale"><b>다시 확인 필요:</b> 프로젝트를 연 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 아래 소개와 후보는 폴더를 열 때 읽은 내용이에요. 폴더를 다시 열면 새로 계산해요.</p>}
           <div className="cards">
             <section className="card" aria-labelledby="overview-intro">
@@ -453,11 +618,18 @@ function App() {
                 <ul>{Object.entries(project.excluded).map(([reason, count]) => <li key={reason}>{reason}: {count}</li>)}</ul>
               </details>
             </section>
+            <OverviewAi key={overviewCard} project={project} state={overviewAi} locked={busy}
+              stale={overviewAi?.status === 'done' && overviewAi.revision !== revision.current}
+              readiness={connections?.modes.find(item => item.mode === 'local-worker') ?? null} checking={checking}
+              revealAnchor={topic?.anchor ?? null} onInspect={() => { void inspectConnections().then(message => { if (message) setError(message); }); }}
+              onStart={startFileId => void startOverview(startFileId)} onCancel={() => void cancelOverview()}
+              onEvidence={next => { setView('code'); void showEvidence(next, null, 'overview'); }}
+              onFollow={followFeature} onFunction={(name, at) => void showNamedFunction(name, at)} />
             <section className="card card--wide card--accent" aria-labelledby="overview-start">
               <h3 id="overview-start">어디부터 읽을까요?</h3>
               {project.overview.candidates.length > 0 ? <ul className="starts">{project.overview.candidates.map(item =>
                 <li key={`${item.fileId}:${item.startUtf16}`}>
-                  <button className="starts__item" disabled={busy} onClick={() => void startFrom(item)}>
+                  <button className="starts__item" disabled={busy} data-anchor={`start:${item.fileId}:${item.startUtf16}`} onClick={() => void startFrom(item)}>
                     <b>{item.name ?? '이 파일 살펴보기'}</b> <span className="path">{item.relativePath}</span>
                   </button>
                   <span className="hint">{candidateReasons[item.reason]}</span>
@@ -582,8 +754,9 @@ function App() {
         </div>}
         <div hidden={panel !== 'ask'}>
           <AiPanel key={project.id} projectId={project.id} evidence={questionEvidence} stale={stale} draft={draft}
+            connections={connections} checking={checking} overviewRunning={overviewAi?.status === 'running'} onInspect={inspectConnections}
             relativePath={project.files.find(file => file.id === questionEvidence?.fileId)?.relativePath ?? ''}
-            onEvidence={next => { setView('code'); void showEvidence(next, null, true); }} />
+            onEvidence={next => { setView('code'); void showEvidence(next, null, 'answer'); }} />
         </div>
       </aside>
       {!panelOpen && <button className="panel-reopen btn btn--small" onClick={() => setPanelOpen(true)}>설명 패널 펼치기</button>}

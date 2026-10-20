@@ -7,7 +7,7 @@ import { channels, sourceRequestSchema, evidenceRequestSchema, projectRequestSch
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { ProjectSession, workersStopped } from './project-session';
-import { explainRequestSchema, cancelExplanationSchema } from '../shared/ai';
+import { explainRequestSchema, cancelExplanationSchema, overviewRequestSchema } from '../shared/ai';
 import { LocalAiRuntime } from '../core/ai/runtime';
 import { LocalWorkerWorkflow } from '../core/ai/workflow';
 import { ProjectAiContext } from '../core/ai/context';
@@ -36,15 +36,24 @@ const learning = new LocalWorkerWorkflow({
     if (session !== active || aiContext !== context || projectRevision !== revision) throw new AppError('CHANGED', '근거를 모으는 동안 코드가 바뀌었습니다.');
     return snapshot;
   },
+  captureOverview: async (request, signal) => {
+    const revision = projectRevision;
+    const active = current(request.projectId);
+    const context = aiContext;
+    if (!context) throw new AppError('PROJECT_CLOSED', '프로젝트를 먼저 열어 주세요.');
+    const snapshot = await context.captureOverview(request.startFileId, revision, signal);
+    if (session !== active || aiContext !== context || projectRevision !== revision) throw new AppError('CHANGED', '자료를 모으는 동안 프로젝트가 바뀌었습니다.');
+    return snapshot;
+  },
   expand: async (snapshot, ids, signal) => {
-    const active = current(snapshot.evidence.projectId);
+    const active = current(snapshot.projectId);
     const context = aiContext;
     if (!context) throw new AppError('PROJECT_CLOSED', '프로젝트가 닫혔습니다.');
     await context.expand(snapshot, ids, signal);
     if (session !== active || aiContext !== context || projectRevision !== snapshot.revision) throw new AppError('CHANGED', '관련 파일을 읽는 동안 프로젝트가 바뀌었습니다.');
   },
   revalidate: async (snapshot, signal) => {
-    const active = current(snapshot.evidence.projectId);
+    const active = current(snapshot.projectId);
     const context = aiContext;
     if (!context) throw new AppError('PROJECT_CLOSED', '프로젝트가 닫혔습니다.');
     await context.revalidate(snapshot, signal);
@@ -262,6 +271,8 @@ app.whenReady().then(async () => {
     const active = current(input.projectId);
     const result = await readEvidence(active, input.evidenceId);
     if (session !== active) throw new AppError('CANCELLED', '이전 프로젝트 결과를 버렸습니다.');
+    // Code chosen here can become the question while another file is read before sending (ProjectAiContext.keep).
+    aiContext?.keep(result.evidence);
     return result;
   });
   handle(channels.cancel, async argument => { z.undefined().parse(argument); await dispose(); return null; });
@@ -271,6 +282,12 @@ app.whenReady().then(async () => {
     if (opening) throw new AppError('INVALID_REQUEST', '프로젝트를 연 뒤 질문해 주세요.');
     current(input.projectId);
     return learning.start(input);
+  });
+  handle(channels.overview, async argument => {
+    const input = overviewRequestSchema.parse(argument);
+    if (opening) throw new AppError('INVALID_REQUEST', '프로젝트를 연 뒤 개요를 만들어 주세요.');
+    current(input.projectId);
+    return learning.startOverview(input);
   });
   handle(channels.cancelExplanation, async argument => {
     const input = cancelExplanationSchema.parse(argument);

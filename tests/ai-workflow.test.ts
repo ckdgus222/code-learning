@@ -7,8 +7,9 @@ import { SECRET_MASK } from '../src/core/ai/secrets';
 
 // These are injected fake adapters: no CLI, account, network, or real AI is used.
 function fixture() {
-  const snapshot: EvidenceSnapshot = {
-    evidence: { id: randomUUID(), projectId: randomUUID(), fileId: randomUUID(), fileHash: 'a'.repeat(64),
+  const projectId = randomUUID();
+  const snapshot: EvidenceSnapshot = { projectId,
+    evidence: { id: randomUUID(), projectId, fileId: randomUUID(), fileHash: 'a'.repeat(64),
       startUtf16: 0, endUtf16: 25, startLine: 1, endLine: 1 },
     code: 'const answer = 42;', relativePath: 'src/example.ts', revision: 1, files: [], availableFiles: [], limitations: [],
   };
@@ -27,7 +28,8 @@ function fixture() {
       : stage === 'explaining' ? structuredClone(explanation)
         : { accepted: true, issues: [], explanation: structuredClone(explanation) },
   }));
-  const workflow = new LocalWorkerWorkflow({ assertReady, capture, expand, revalidate, run, emit: event => events.push(event) });
+  const captureOverview = vi.fn(async () => { throw new Error('not an overview test'); });
+  const workflow = new LocalWorkerWorkflow({ assertReady, capture, captureOverview, expand, revalidate, run, emit: event => events.push(event) });
   const finish = async (input = request) => {
     const { jobId } = workflow.start(input);
     await vi.waitFor(() => expect(events.some(event => event.jobId === jobId && event.kind !== 'progress')).toBe(true));
