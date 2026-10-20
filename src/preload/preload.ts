@@ -19,6 +19,7 @@ const api: LearningApi = {
   cancelChanges: input => ipcRenderer.invoke(channels.cancelChanges, input),
   checkConnections: () => ipcRenderer.invoke(channels.connections),
   startExplanation: input => ipcRenderer.invoke(channels.explain, input),
+  startOverview: input => ipcRenderer.invoke(channels.overview, input),
   cancelExplanation: input => ipcRenderer.invoke(channels.cancelExplanation, input),
   onLearningEvent: listener => {
     const receive = (_event: Electron.IpcRendererEvent, value: LearningEvent) => listener(value);

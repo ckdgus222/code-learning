@@ -300,3 +300,22 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .diff-view .cm-mergeView, .diff-view .cm-editor { font: 14px/1.6 var(--mono); }
 /* Plan G1·E1: the sources a step or claim names, beside it. */
 .ai-panel ul.sources, ul.sources { display: flex; flex-wrap: wrap; gap: 6px; }
+/* Plan G1: the AI overview card. */
+.overview-form { display: grid; gap: 8px; font-size: 14px; }
+.overview-form label { display: grid; gap: 6px; }
+.overview-form select { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; }
+.overview-form .ai-consent { display: flex; align-items: flex-start; gap: 6px; }
+.overview-answer { display: grid; gap: 14px; }
+.overview-answer h4 { font-size: 14px; margin-bottom: 6px; }
+.overview-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.overview-items .fact { background: var(--surface); }
+/* Plan F1·U1: the topic being learned, above every view. */
+.topic { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 12px 24px 0; padding: 10px 14px; border: 1px solid #c8d5f5; border-radius: var(--radius); background: var(--accent-soft); font-size: 14px; }
+.topic--empty { background: var(--bg); border-color: var(--line); }
+.topic__name { display: inline-flex; align-items: center; gap: 6px; }
+.topic__name input { width: 14em; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+.topic__actions { display: flex; flex-wrap: wrap; gap: 6px; }
+/* The topic bar sits above every view: the code views share the height left under it, and on a long page it stays in sight. */
+.center { display: flex; flex-direction: column; }
+.center > .reader, .center > .flow { flex: 1 1 0; height: auto; min-height: 0; }
+.center > .topic { position: sticky; top: 0; z-index: 3; flex: none; }

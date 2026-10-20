@@ -41,21 +41,34 @@ export function SourceButtons({ ids, sources, selectionId, stale, label, onEvide
   </li>)}</ul>;
 }
 
-export function AiPanel({ projectId, evidence, relativePath, stale, draft, onEvidence }: {
+export function AiPanel({ projectId, evidence, relativePath, stale, draft, connections, checking, overviewRunning, onInspect, onEvidence }: {
   projectId: string; evidence: Evidence | null; relativePath: string; stale: boolean;
-  /** A question to put in the box, put again whenever the id changes (not on mount). */
-  draft: { text: string; id: number } | null;
+  /**
+   * A question to put in the box, put again whenever the id changes (not on mount). A feature question (plan F1) also
+   * carries the topic and the code it was prepared for.
+   */
+  draft: { text: string; id: number; topic?: { name: string; evidenceId: string } } | null;
+  /** The installation check, shared with the overview card (App). */
+  connections: ConnectionReport | null; checking: boolean;
+  /** A check starts the list of AI programs over, so none runs while the overview's stages still need it. */
+  overviewRunning: boolean;
+  /** Runs the check; resolves to an error message, or null. */
+  onInspect(): Promise<string | null>;
   onEvidence(evidence: Evidence): void;
 }) {
   const [mode, setMode] = useState<LearningMode>('local-worker');
-  const [connections, setConnections] = useState<ConnectionReport | null>(null);
-  const [checking, setChecking] = useState(false);
   const [question, setQuestion] = useState('');
   const [consent, setConsent] = useState(false);
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
   const [answers, setAnswers] = useState<LearningResult[]>([]);
+  // The topic each answer's question was prepared under (integrated plan 4.4), by job.
+  const [answerTopics, setAnswerTopics] = useState<Record<string, string>>({});
+  const prepared = useRef<{ topic: string; evidenceId: string; text: string } | null>(null);
+  // A prepared feature question stays prepared until its answer arrives, so sending it again after a failure or a cancel
+  // keeps its topic and a new conversation.
+  const jobTopics = useRef(new Map<string, string>());
   const active = useRef<string | null>(null);
   const starting = useRef(false);
   const sequence = useRef(0);
@@ -67,6 +80,19 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, onEvi
     if (!draft || draft.id === draftShown.current) return;
     draftShown.current = draft.id;
     setQuestion(draft.text);
+    if (draft.topic) {
+      // A feature question is a new question: one still on its way is cancelled and its answer not shown (integrated
+      // plan T10). It asks for its material and consent again, and starts a new conversation.
+      if (active.current || starting.current) {
+        sequence.current++;
+        if (active.current) void window.learning.cancelExplanation({ jobId: active.current });
+        active.current = null; starting.current = false; queued.current = [];
+        setRunning(false);
+        setStatus('기능 질문을 새로 준비해 진행 중이던 질문을 취소했어요.');
+      } else setStatus('');
+      prepared.current = { topic: draft.topic.name, evidenceId: draft.topic.evidenceId, text: draft.text };
+      setConsent(false);
+    }
   }, [draft]);
 
   function receive(event: LearningEvent) {
@@ -77,6 +103,8 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, onEvi
       setStatus(event.phase === 'explaining' && mode === 'codex' ? 'Codex에 설명 요청 중' : phases[event.phase]);
       return;
     }
+    // The overview's events belong to its own card (the panel never starts one), so its job ID never matches here.
+    if (event.kind === 'overview-completed') return;
     active.current = null;
     setRunning(false);
     if (event.kind === 'failed') {
@@ -86,6 +114,11 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, onEvi
     }
     if (stale || event.result.evidence.id !== evidence?.id || event.result.evidence.fileHash !== evidence?.fileHash) return;
     setAnswers(previous => [...previous.slice(-3), event.result]);
+    const topic = jobTopics.current.get(event.jobId);
+    if (topic !== undefined) {
+      setAnswerTopics(previous => ({ ...previous, [event.jobId]: topic }));
+      prepared.current = null;
+    }
     setQuestion('');
     setStatus(`${event.result.review} · 설명의 정확성을 보장하지 않습니다.`);
   }
@@ -105,25 +138,31 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, onEvi
     sequence.current++;
     if (active.current) void window.learning.cancelExplanation({ jobId: active.current });
     active.current = null; starting.current = false; queued.current = [];
-    setRunning(false); setAnswers([]); setConsent(false); setStatus(''); setError('');
+    setRunning(false); setAnswers([]); setAnswerTopics({}); setConsent(false); setStatus(''); setError('');
+    // A feature question belongs to the code it was prepared for: once that changes, an untouched one goes.
+    if (prepared.current && prepared.current.evidenceId !== evidence?.id) {
+      if (question === prepared.current.text) {
+        setQuestion('');
+        setStatus('질문 대상이 바뀌어 준비한 기능 질문을 지웠어요. 다시 준비해 주세요.');
+      }
+      prepared.current = null;
+    }
   }, [projectId, evidence?.id, evidence?.fileHash, stale, mode]);
 
   async function inspect() {
-    setChecking(true); setError('');
-    const result = await window.learning.checkConnections();
-    if (!mounted.current) return;
-    setChecking(false);
-    if (result.ok) setConnections(result.value);
-    else setError(result.message);
+    setError('');
+    const message = await onInspect();
+    if (message && mounted.current) setError(message);
   }
   async function ask() {
     if (!evidence || stale || !consent || !ready?.ready || running || !question.trim()) return;
     const token = ++sequence.current;
     starting.current = true; queued.current = [];
     setRunning(true); setError(''); setStatus('AI 작업 시작 중');
+    const topic = prepared.current?.evidenceId === evidence.id ? prepared.current.topic : null;
     const result = await window.learning.startExplanation({ projectId, evidenceId: evidence.id,
       expectedFileHash: evidence.fileHash, question, mode, consent: true,
-      ...(answers.length ? { conversationId: answers[answers.length - 1].conversationId } : {}),
+      ...(answers.length && topic === null ? { conversationId: answers[answers.length - 1].conversationId } : {}),
     });
     if (token !== sequence.current || !mounted.current) {
       if (result.ok) void window.learning.cancelExplanation({ jobId: result.value.jobId });
@@ -132,6 +171,7 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, onEvi
     starting.current = false;
     if (!result.ok) { setError(result.message); setRunning(false); setStatus(''); queued.current = []; return; }
     active.current = result.value.jobId;
+    if (topic !== null) jobTopics.current.set(result.value.jobId, topic);
     const events = queued.current; queued.current = [];
     events.forEach(event => receiver.current(event));
   }
@@ -155,7 +195,7 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, onEvi
     </label>
     <p className="hint">Mac에 설치된 공식 프로그램을 실행합니다. 답변 생성은 각 AI 제공자 서버에서 이뤄집니다.</p>
     <p className="hint">{mode === 'local-worker' && '선택한 프로젝트에서 관련 파일을 찾아 읽습니다. '}원본 파일은 수정·생성·삭제하지 않습니다. 민감 파일·제외 파일·폴더 밖 파일은 읽기 대상에서 제외합니다.</p>
-    <button className="btn" disabled={checking || running} onClick={inspect}>{checking ? '설치 확인 중…' : '로컬 AI 설치 확인'}</button>
+    <button className="btn" disabled={checking || running || overviewRunning} onClick={inspect}>{checking ? '설치 확인 중…' : '로컬 AI 설치 확인'}</button>
     {connections && <ul aria-label="로컬 AI 설치 상태">
       {connections.providers.map(item => <li key={item.provider} className="fact fact--muted">
         <b>{names[item.provider]} · {item.installation === 'found' ? `설치 확인 (${item.version})` : item.installation === 'missing' ? '찾지 못함' : '실행 확인 실패'}</b>
@@ -184,6 +224,7 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, onEvi
     {error && <p role="alert" className="notice">{error}</p>}
     <p className="hint">대화는 앱 실행 중에만 보관합니다. 코드 범위를 바꾸면 새 대화로 시작합니다.</p>
     {answers.map(answer => <section key={answer.jobId} className="fact" aria-label="AI 설명">
+      {answerTopics[answer.jobId] && <span className="tag tag--doc">학습 주제: {answerTopics[answer.jobId]}</span>}
       <b>{answer.question}</b><p>{answer.explanation.summary}</p>
       <span className="tag tag--unknown">{answer.review}</span>
       <ol>{answer.explanation.steps.map((step, index) => <li key={index}>

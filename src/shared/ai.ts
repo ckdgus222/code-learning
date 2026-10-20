@@ -43,6 +43,37 @@ export const reviewSchema = z.object({
   accepted: z.boolean(), issues: z.array(description).max(16), explanation: explanationSchema,
 }).strict();
 
+/**
+ * Plan G1: an overview of the whole folder, asked by the local worker only (user decision 2026-10-20). It starts from
+ * at most one file the user chose, or none, and reads at most four more that Codex picks from the list.
+ */
+export const overviewRequestSchema = z.object({
+  projectId: idSchema, startFileId: idSchema.nullable(), mode: z.literal('local-worker'), consent: z.literal(true),
+}).strict();
+export type OverviewRequest = z.infer<typeof overviewRequestSchema>;
+const itemName = z.string().trim().min(1).max(80);
+const functionName = z.string().trim().min(1).max(120);
+// Like CodeBoarding's key entities, a function is named, never placed: the app finds it in the file (no line numbers).
+export const overviewSchema = z.object({
+  intro: z.object({ text: description, evidenceIds: references }).strict().nullable(),
+  features: z.array(z.object({
+    name: itemName, summary: description, evidenceIds: references,
+    start: z.object({ evidenceId: idSchema, functionName: functionName.nullable() }).strict(),
+  }).strict()).max(8),
+  roles: z.array(z.object({
+    name: itemName, summary: description, evidenceIds: references,
+    functions: z.array(z.object({ name: functionName, evidenceId: idSchema }).strict()).max(5),
+  }).strict()).max(8),
+  unknowns: z.array(description).max(16),
+}).strict();
+export type ProjectOverviewAnswer = z.infer<typeof overviewSchema>;
+export type OverviewFeature = ProjectOverviewAnswer['features'][number];
+export type OverviewRole = ProjectOverviewAnswer['roles'][number];
+export const overviewOrganizationSchema = z.object({ focus: description, requestedFileIds: z.array(idSchema).max(4) }).strict();
+export const overviewReviewSchema = z.object({
+  accepted: z.boolean(), issues: z.array(description).max(16), overview: overviewSchema,
+}).strict();
+
 export interface ProviderConnection {
   provider: ProviderId;
   installation: 'found' | 'missing' | 'unusable';
@@ -76,7 +107,19 @@ export interface LearningResult {
   review: 'AI 검토됨' | 'AI 대조 없음';
   models: ModelRun[];
 }
+export interface OverviewResult {
+  jobId: string;
+  projectId: string;
+  overview: ProjectOverviewAnswer;
+  /** The files actually read for it; a name only seen in the file list was not read. */
+  sources: { evidence: Evidence; relativePath: string }[];
+  limitations: string[];
+  /** With nothing read no overview is written, so nothing was checked either. */
+  review: 'AI 검토됨' | '개요 작성 안 함';
+  models: ModelRun[];
+}
 export type LearningEvent =
   | { kind: 'progress'; jobId: string; projectId: string; phase: LearningPhase }
   | { kind: 'completed'; jobId: string; projectId: string; result: LearningResult }
+  | { kind: 'overview-completed'; jobId: string; projectId: string; result: OverviewResult }
   | { kind: 'failed'; jobId: string; projectId: string; error: { code: import('./contracts').AppErrorCode; message: string } };

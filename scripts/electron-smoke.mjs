@@ -49,6 +49,16 @@ for (let index = 0; index < 65; index++) {
   await mkdir(path.join(bigMapFixture, folder), { recursive: true });
   await writeFile(path.join(bigMapFixture, folder, `file${index}.ts`), `import { step } from '../part${(index + 1) % 5}/file${(index + 1) % 65}';\n${bigBody}`);
 }
+// Plan G1: a feature to follow, two methods of one name, and a source file that is no start candidate.
+const featureFixture = path.join(temporary, '기능 프로젝트');
+const featureFiles = {
+  'README.md': '# 배너 관리\n\n배너를 등록하고 목록을 보여 줍니다.\n',
+  'banner.ts': 'export function registerBanner(title: string) {\n  return save(title);\n}\nexport function listBanners() {\n  return [];\n}\nfunction save(title: string) {\n  return { title };\n}\n',
+  'dup.ts': 'class First {\n  run() { return 1; }\n}\nclass Second {\n  run() { return 2; }\n}\nexport function helper() {\n  return new First().run() + new Second().run();\n}\n',
+  'settings.ts': 'const limit = 3;\n',
+};
+await mkdir(featureFixture);
+for (const [name, text] of Object.entries(featureFiles)) await writeFile(path.join(featureFixture, name), text);
 // Plan v2.3 C-1: one function of 61 code lines (over the limit of 60) next to a short one.
 const hardFixture = path.join(temporary, '어려운 코드 프로젝트');
 const hardSource = `export function short() { return 1; }\n\nexport function long() {\n  if (ready()) {\n    step(0);\n  }\n${
@@ -106,6 +116,18 @@ let page;
 const checks = [];
 const failures = [];
 async function check(name, action) { await action(); checks.push(name); console.log(`PASS ${name}`); }
+// One write can send a second change notice after the map was drawn again; the map then rightly asks again, so it is
+// drawn again (at most three times) until it is fresh.
+async function rebuildFreshMap() {
+  for (let attempt = 1; ; attempt++) {
+    await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).click();
+    try {
+      await until(async () => await page.getByText('지도를 만든 뒤 파일이 바뀌었거나', { exact: false }).count() === 0
+        && await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).isVisible());
+      return;
+    } catch (error) { if (attempt === 3) throw error; }
+  }
+}
 async function dialogTo(folder) {
   await app.evaluate(({ dialog }, folder) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] }); }, folder);
 }
@@ -668,9 +690,7 @@ try {
     assert.equal(await page.getByTestId('evidence-range').count(), 0);
     // A fresh map, so the next change is the only thing marking it.
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
-    await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).click();
-    await until(async () => await page.getByText('지도를 만든 뒤 파일이 바뀌었거나', { exact: false }).count() === 0
-      && await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).isVisible());
+    await rebuildFreshMap();
     // A change after the map was drawn: the map asks for a re-check and the old position is not highlighted.
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
     await writeFile(path.join(mapFixture, 'store/load.ts'), "\n" + mapFiles['store/load.ts']);
@@ -680,17 +700,13 @@ try {
     await page.getByText('지도를 만든 뒤 이 파일이 바뀌어 import 위치를 강조하지 않았어요.', { exact: false }).waitFor();
     assert.equal(await page.getByTestId('evidence-range').count(), 0);
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
-    await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).click();
-    await until(async () => await page.getByText('지도를 만든 뒤 파일이 바뀌었거나', { exact: false }).count() === 0
-      && await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).isVisible());
+    await rebuildFreshMap();
     // Two more changes with a fresh map between them and no file read: the screen's other change states are
     // already set by then, and the map must still be marked each time.
     for (const blankLines of ['\n\n', '\n\n\n']) {
       await writeFile(path.join(mapFixture, 'store/load.ts'), blankLines + mapFiles['store/load.ts']);
       await page.getByText('지도를 만든 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요.', { exact: false }).waitFor();
-      await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).click();
-      await until(async () => await page.getByText('지도를 만든 뒤 파일이 바뀌었거나', { exact: false }).count() === 0
-        && await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).isVisible());
+      await rebuildFreshMap();
     }
     // Waking from sleep while the map is drawn: the map is dropped (sent as the map worker starts).
     await app.evaluate(({ powerMonitor }) => {
@@ -1112,6 +1128,300 @@ try {
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
     await page.getByRole('button', { name: '주문', exact: true }).click();
     assert.equal(await page.getByRole('region', { name: 'AI 설명' }).count(), 0);
+  });
+  // Plan G1·E1·F1·U1. A test-only overview handler, after all real IPC checks: it never starts an AI CLI. It answers from
+  // the opened folder's real files (read through the app), so following a feature reads real code.
+  await check('Overview (fake AI): prepared with consent, its cards and sources, and back to the overview by keyboard', async () => {
+    await app.evaluate(({ ipcMain }) => {
+      const open = ipcMain._invokeHandlers.get('learning:open');
+      ipcMain.removeHandler('learning:open');
+      ipcMain.handle('learning:open', async (event, request) => {
+        const result = await open(event, request);
+        if (result.ok && result.value) globalThis.testOpenedProject = result.value;
+        return result;
+      });
+      ipcMain.removeHandler('learning:overview');
+      globalThis.testOverviewCalls = [];
+      ipcMain.handle('learning:overview', async (event, request) => {
+        const { randomUUID } = process.getBuiltinModule('node:crypto');
+        const read = ipcMain._invokeHandlers.get('learning:read');
+        const jobId = randomUUID();
+        const evidence = {};
+        for (const file of globalThis.testOpenedProject.files.filter(item => ['README.md', 'banner.ts', 'dup.ts'].includes(item.relativePath))) {
+          const { value } = await read(event, { projectId: request.projectId, fileId: file.id });
+          const lines = value.text.split('\n').length - (value.text.endsWith('\n') ? 1 : 0);
+          evidence[file.relativePath] = { id: randomUUID(), projectId: request.projectId, fileId: file.id, fileHash: value.hash,
+            startUtf16: 0, endUtf16: value.text.length, startLine: 1, endLine: lines };
+          globalThis.testFakeAiEvidence.set(evidence[file.relativePath].id, { evidence: evidence[file.relativePath], source: value });
+        }
+        const at = name => evidence[name].id;
+        const feature = (name, file, functionName) => ({ name, summary: `${name} 설명`, evidenceIds: [at(file)], start: { evidenceId: at(file), functionName } });
+        const result = { jobId, projectId: request.projectId, review: 'AI 검토됨', models: [],
+          sources: ['README.md', 'banner.ts', 'dup.ts'].map(name => ({ evidence: evidence[name], relativePath: name })),
+          limitations: ['관련 파일 탐색은 한 번, 최대 4개입니다. 제공되지 않은 파일의 동작은 확인하지 않았습니다.'],
+          overview: {
+            intro: { text: '배너를 등록하고 보여 주는 앱이에요.', evidenceIds: [at('README.md')] },
+            features: [feature('배너 등록', 'banner.ts', 'registerBanner'), feature('같은 이름 실행', 'dup.ts', 'run'),
+              feature('목록 보기', 'banner.ts', 'listBanners'), feature('함수 모름', 'banner.ts', null),
+              ...[5, 6, 7].map(index => feature(`기능 ${index}`, 'banner.ts', null))],
+            roles: [{ name: '배너 저장', summary: '배너를 담아 둬요.', evidenceIds: [at('banner.ts'), at('dup.ts')],
+              functions: [{ name: 'save', evidenceId: at('banner.ts') }, { name: 'run', evidenceId: at('dup.ts') }] }],
+            unknowns: ['배너를 화면에 그리는 코드는 확인하지 못했어요.'],
+          } };
+        globalThis.testOverviewCalls.push(request);
+        const send = () => {
+          event.sender.send('learning:ai-event', { kind: 'progress', jobId, projectId: request.projectId, phase: 'organizing' });
+          event.sender.send('learning:ai-event', { kind: 'overview-completed', jobId, projectId: request.projectId, result });
+        };
+        if (globalThis.testOverviewHold) globalThis.testOverviewLate = send;
+        else setTimeout(send, 50);
+        return { ok: true, value: { jobId } };
+      });
+    });
+    await dialogTo(featureFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '기능 프로젝트', exact: true }).waitFor();
+    const card = page.getByRole('region', { name: '기능과 구성 (AI 개요)' });
+    await card.getByText('개요 미생성', { exact: true }).waitFor();
+    // The installation check is shared with the question panel, where the fake one already ran.
+    assert.match(await page.getByTestId('overview-readiness').innerText(), /테스트 전용/);
+    const startFile = card.getByRole('combobox', { name: '개요 시작 파일' });
+    assert.equal(await startFile.evaluate(element => element.selectedOptions[0].textContent), 'README.md · 문서에 적힌 소개');
+    // A source file that is no start candidate can be the start too.
+    await startFile.selectOption({ label: 'settings.ts' });
+    const create = card.getByRole('button', { name: '개요 만들기', exact: true });
+    assert.equal(await create.isDisabled(), true);
+    await card.getByRole('checkbox').check();
+    // While the overview runs, the shared installation check is closed in the question panel too.
+    await app.evaluate(() => { globalThis.testOverviewHold = true; });
+    await create.click();
+    await card.getByText('개요 작업 시작 중', { exact: true }).waitFor();
+    assert.equal(await page.locator('.ai-panel').getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).isDisabled(), true);
+    await app.evaluate(() => { globalThis.testOverviewHold = false; globalThis.testOverviewLate(); });
+    await card.getByText('배너를 등록하고 보여 주는 앱이에요.', { exact: true }).waitFor();
+    assert.equal(await page.locator('.ai-panel').getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).isDisabled(), false);
+    const opened = await app.evaluate(() => ({ id: globalThis.testOpenedProject.id,
+      files: Object.fromEntries(globalThis.testOpenedProject.files.map(file => [file.relativePath, file.id])) }));
+    assert.deepEqual(await app.evaluate(() => globalThis.testOverviewCalls), [
+      { projectId: opened.id, startFileId: opened.files['settings.ts'], mode: 'local-worker', consent: true }]);
+    assert.equal(await card.getByRole('checkbox').isChecked(), false);
+    await card.getByText('문서에서 읽은 소개(AI 요약)', { exact: true }).waitFor();
+    await card.getByText('AI 검토됨 · 개요의 정확성을 보장하지 않습니다.', { exact: true }).waitFor();
+    const features = card.getByRole('region', { name: '주요 기능 후보' });
+    assert.equal(await features.locator('.overview-items > li').count(), 6);
+    await features.getByRole('button', { name: '1개 더 보기', exact: true }).click();
+    assert.equal(await features.locator('.overview-items > li').count(), 7);
+    assert.deepEqual(await features.getByRole('list', { name: '‘배너 등록’의 근거' }).getByRole('button').allInnerTexts(),
+      ['banner.ts · 파일 전체 근거 · 세부 위치 미확인']);
+    const roles = card.getByRole('region', { name: '큰 구성과 역할' });
+    assert.deepEqual(await roles.getByRole('list', { name: '‘배너 저장’의 관련 함수' }).getByRole('button').allInnerTexts(), ['save · banner.ts', 'run · dup.ts']);
+    await card.getByRole('region', { name: '개요에서 확인하지 못한 것' }).getByText('배너를 화면에 그리는 코드는 확인하지 못했어요.').waitFor();
+    await card.getByText('조사 범위 · AI가 실제로 읽은 파일 3개', { exact: true }).waitFor();
+    await card.evaluate(element => element.scrollIntoView({ block: 'start' }));
+    await page.screenshot({ path: path.join(artifacts, 'overview-ai.png') });
+    // Keyboard only: a source opens the code, the side menu comes back, a feature is followed and the bar returns the focus.
+    await card.getByRole('list', { name: '소개의 근거' }).getByRole('button', { name: 'README.md · 문서 전체', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await until(async () => await page.getByTestId('evidence-range').count() === 1
+      && (await page.getByTestId('evidence-range').innerText()).startsWith('근거: README.md · 1–3줄'));
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await card.getByText('배너를 등록하고 보여 주는 앱이에요.', { exact: true }).waitFor();
+    await features.getByRole('button', { name: '이 기능 따라가기', exact: true }).first().focus();
+    await page.keyboard.press('Enter');
+    const topicBar = page.getByRole('region', { name: '학습 주제' });
+    await topicBar.getByText('학습 주제 · AI가 제안한 기능 후보', { exact: true }).waitFor();
+    await topicBar.getByText('출발점: banner.ts › registerBanner', { exact: true }).waitFor();
+    await until(async () => await page.getByRole('button', { name: 'registerBanner', exact: true }).getAttribute('aria-pressed') === 'true');
+    await page.screenshot({ path: path.join(artifacts, 'topic-flow.png') });
+    await topicBar.getByRole('button', { name: '한눈에 보기로', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await until(() => page.evaluate(() => document.activeElement?.getAttribute('data-anchor') === 'feature:0'));
+  });
+  await check('Topic (fake AI): the feature question keeps its topic, asks consent again, starts a new conversation and keeps answers while moving', async () => {
+    const card = page.getByRole('region', { name: '기능과 구성 (AI 개요)' });
+    const features = card.getByRole('region', { name: '주요 기능 후보' });
+    const topicBar = page.getByRole('region', { name: '학습 주제' });
+    const box = page.getByRole('textbox', { name: '선택한 코드에 질문' });
+    const consent = page.locator('.ai-panel').getByRole('checkbox');
+    const send = page.getByRole('button', { name: '질문 보내기', exact: true });
+    const prepare = topicBar.getByRole('button', { name: '시작·처리·결과 질문 준비', exact: true });
+    const lastRequest = () => app.evaluate(() => globalThis.testFakeAiCalls.at(-1).request);
+    await features.getByRole('button', { name: '이 기능 따라가기', exact: true }).first().click();
+    await until(async () => await page.getByRole('button', { name: 'registerBanner', exact: true }).getAttribute('aria-pressed') === 'true');
+    await prepare.click();
+    await until(async () => (await box.inputValue()) !== '');
+    const askA = await box.inputValue();
+    assert.match(askA, /^‘배너 등록’ 기능이 이 함수에서 어떻게 시작하는지/);
+    assert.equal(await consent.isChecked(), false);
+    await consent.check();
+    await send.click();
+    await page.getByText(`가짜 설명: ${askA}`, { exact: true }).waitFor();
+    assert.equal((await lastRequest()).conversationId, undefined);
+    const answers = page.getByRole('region', { name: 'AI 설명' });
+    await answers.last().getByText('학습 주제: 배너 등록', { exact: true }).waitFor();
+    // A follow-up continues the conversation; preparing the feature question again asks consent again and starts anew.
+    await box.fill('이어서 묻기');
+    await send.click();
+    await page.getByText('가짜 설명: 이어서 묻기', { exact: true }).waitFor();
+    assert.notEqual((await lastRequest()).conversationId, undefined);
+    assert.equal(await answers.last().getByText('학습 주제: 배너 등록', { exact: true }).count(), 0);
+    assert.equal(await consent.isChecked(), true);
+    await prepare.click();
+    await until(async () => (await box.inputValue()) === askA);
+    assert.equal(await consent.isChecked(), false);
+    await consent.check();
+    // Cancelled first: sent again, it still starts a new conversation under its topic.
+    await app.evaluate(() => { globalThis.testFakeAiBehavior = 'hold'; });
+    const callsBefore = await app.evaluate(() => globalThis.testFakeAiCalls.length);
+    await send.click();
+    await until(() => app.evaluate((_electron, count) => globalThis.testFakeAiCalls.length === count + 1, callsBefore));
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.getByRole('button', { name: 'AI 작업 취소', exact: true }).click();
+    await page.getByText('AI 작업을 취소했습니다.', { exact: true }).waitFor();
+    await app.evaluate(() => { globalThis.testFakeAiBehavior = 'early'; });
+    assert.equal(await box.inputValue(), askA);
+    await send.click();
+    await until(async () => await answers.count() === 3);
+    assert.equal((await lastRequest()).conversationId, undefined);
+    await answers.last().getByText('학습 주제: 배너 등록', { exact: true }).waitFor();
+    // Preparing again while a feature question is on its way cancels it; its late answer does not clear the new draft.
+    await app.evaluate(() => { globalThis.testFakeAiBehavior = 'hold'; });
+    const held = await app.evaluate(() => globalThis.testFakeAiCalls.length);
+    await prepare.click();
+    await until(async () => (await box.inputValue()) === askA);
+    await consent.check();
+    await send.click();
+    await until(() => app.evaluate((_electron, count) => globalThis.testFakeAiCalls.length === count + 1, held));
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await topicBar.getByRole('textbox', { name: '학습 이름' }).fill('배너 올리기');
+    await prepare.click();
+    await page.getByText('기능 질문을 새로 준비해 진행 중이던 질문을 취소했어요.', { exact: true }).waitFor();
+    await until(() => app.evaluate(() => globalThis.testFakeAiCancelled.includes(globalThis.testFakeAiCalls.at(-1).jobId)));
+    await app.evaluate(() => globalThis.testFakeAiLate());
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.match(await box.inputValue(), /^‘배너 올리기’ 기능이/);
+    assert.equal(await answers.count(), 3);
+    await app.evaluate(() => { globalThis.testFakeAiBehavior = 'early'; });
+    await topicBar.getByRole('textbox', { name: '학습 이름' }).fill('배너 등록');
+    // A step's source, then back to the start: the answers and the question's code stay.
+    const scope = await page.getByTestId('question-scope').innerText();
+    await answers.last().getByRole('list', { name: '‘가짜 단계’의 근거' }).getByRole('button').nth(1).click();
+    await until(async () => (await page.locator('.cm-line').allTextContents()).join('\n').includes('export const related'));
+    await topicBar.getByRole('button', { name: '출발점으로', exact: true }).click();
+    await until(async () => await page.getByRole('button', { name: 'registerBanner', exact: true }).getAttribute('aria-pressed') === 'true');
+    assert.equal(await answers.count(), 3);
+    assert.equal(await page.getByTestId('question-scope').innerText(), scope);
+    // Following a call is looking around too (integrated plan 6.2): the answers and the question's code stay.
+    await page.getByRole('list', { name: '이 함수가 부르는 것' }).getByRole('button', { name: '그 함수로', exact: true }).click();
+    await until(async () => await page.getByRole('button', { name: 'save', exact: true }).getAttribute('aria-pressed') === 'true');
+    assert.equal(await answers.count(), 3);
+    assert.equal(await page.getByTestId('question-scope').innerText(), scope);
+    // So is opening a file from the map.
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByRole('button', { name: '파일 보기', exact: true }).click();
+    await page.locator('.react-flow__node').filter({ hasText: 'dup.ts' }).click();
+    await page.getByRole('heading', { name: 'dup.ts', exact: true }).waitFor();
+    assert.equal(await answers.count(), 3);
+    assert.equal(await page.getByTestId('question-scope').innerText(), scope);
+    await topicBar.getByRole('button', { name: '출발점으로', exact: true }).click();
+    await until(async () => await page.getByRole('button', { name: 'registerBanner', exact: true }).getAttribute('aria-pressed') === 'true');
+    // A question prepared for feature A stays while feature B is only looked at, and goes once B's code is chosen.
+    await box.fill('');
+    await prepare.click();
+    await until(async () => (await box.inputValue()) === askA);
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await features.getByRole('button', { name: '이 기능 따라가기', exact: true }).nth(1).click();
+    await page.getByText('이 파일에 ‘run’ 함수가 2개라 하나로 정하지 못했어요. 왼쪽에서 직접 골라 주세요.', { exact: true }).waitFor();
+    assert.equal(await box.inputValue(), askA);
+    assert.equal(await page.getByTestId('question-scope').innerText(), scope);
+    // Sending A reads A again in the analysis worker (as the real capture does through readEvidence); B, still on screen,
+    // keeps its evidence, so choosing B's function below works.
+    const questionCode = await app.evaluate(() => globalThis.testFakeAiCalls.at(-1).request);
+    assert.equal((await page.evaluate(input => window.learning.readEvidence(input), { projectId: questionCode.projectId, evidenceId: questionCode.evidenceId })).ok, true);
+    await page.getByRole('button', { name: 'helper', exact: true }).click();
+    await page.getByText('질문 대상이 바뀌어 준비한 기능 질문을 지웠어요. 다시 준비해 주세요.', { exact: true }).waitFor();
+    assert.equal(await box.inputValue(), '');
+    await prepare.click();
+    await until(async () => /^‘같은 이름 실행’ 기능이/.test(await box.inputValue()));
+    await consent.check();
+    await send.click();
+    await answers.last().getByText('학습 주제: 같은 이름 실행', { exact: true }).waitFor();
+    // A start with no function, and a role's functions: one found by its only name, one name with two functions.
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await features.getByRole('button', { name: '이 기능 따라가기', exact: true }).nth(3).click();
+    await page.getByText('AI가 출발 함수를 정하지 못했어요. 이 파일에서 함수를 골라 주세요.', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    const roleFunctions = card.getByRole('region', { name: '큰 구성과 역할' }).getByRole('list', { name: '‘배너 저장’의 관련 함수' });
+    await roleFunctions.getByRole('button', { name: 'save · banner.ts', exact: true }).click();
+    await until(async () => await page.getByRole('button', { name: 'save', exact: true }).getAttribute('aria-pressed') === 'true');
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await roleFunctions.getByRole('button', { name: 'run · dup.ts', exact: true }).click();
+    await page.getByText('이 파일에 ‘run’ 함수가 2개라 하나로 정하지 못했어요. 왼쪽에서 직접 골라 주세요.', { exact: true }).waitFor();
+  });
+  await check('Topic: code chosen to ask about stays usable after another file is read; a change stales the overview; reopening clears it', async () => {
+    const opened = await app.evaluate(() => ({ projectId: globalThis.testOpenedProject.id,
+      banner: globalThis.testOpenedProject.files.find(file => file.relativePath === 'banner.ts').id,
+      settings: globalThis.testOpenedProject.files.find(file => file.relativePath === 'settings.ts').id }));
+    const readAgain = () => page.evaluate(async ({ projectId, banner, settings }) => {
+      const source = await window.learning.readSource({ projectId, fileId: banner });
+      const evidenceId = source.value.analysis.symbols.find(item => item.name === 'registerBanner').evidence.id;
+      const checked = await window.learning.readEvidence({ projectId, evidenceId });
+      // The analysis worker now holds only settings.ts; main kept the evidence it checked.
+      await window.learning.readSource({ projectId, fileId: settings });
+      const later = await window.learning.readEvidence({ projectId, evidenceId });
+      return { checked: checked.ok, later: later.ok, evidenceId };
+    }, opened);
+    const kept = await readAgain();
+    assert.deepEqual([kept.checked, kept.later], [true, true]);
+    await writeFile(path.join(featureFixture, 'banner.ts'), featureFiles['banner.ts'].replace('return [];', 'return [1];'));
+    await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).waitFor();
+    // On a change notice main forgets all AI evidence, the kept one too; the worker still knows the old analysis of the
+    // file, reads it again and refuses the evidence as changed.
+    const changed = await page.evaluate(input => window.learning.readEvidence(input), { projectId: opened.projectId, evidenceId: kept.evidenceId });
+    assert.deepEqual([changed.ok, changed.code], [false, 'CHANGED']);
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    const card = page.getByRole('region', { name: '기능과 구성 (AI 개요)' });
+    await card.getByText('다시 확인 필요:', { exact: false }).waitFor();
+    assert.equal(await card.getByRole('button', { name: '이 기능 따라가기', exact: true }).first().isDisabled(), true);
+    // An overview made after the change opens its sources although the reader still waits for a re-read.
+    await card.getByRole('checkbox').check();
+    await card.getByRole('button', { name: '개요 다시 만들기', exact: true }).click();
+    await until(async () => await card.getByText('다시 확인 필요:', { exact: false }).count() === 0
+      && await card.getByRole('button', { name: '이 기능 따라가기', exact: true }).first().isEnabled());
+    await card.getByRole('list', { name: '‘배너 등록’의 근거' }).getByRole('button').click();
+    await until(async () => await page.getByTestId('evidence-range').count() === 1
+      && (await page.getByTestId('evidence-range').innerText()).startsWith('근거: banner.ts'));
+    assert.equal(await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).count(), 0);
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    // Opening the same folder again gives new file IDs: the overview and the topic go, and so does the consent.
+    await card.getByRole('checkbox').check();
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await card.getByText('개요 미생성', { exact: true }).waitFor();
+    assert.equal(await card.getByRole('checkbox').isChecked(), false);
+    assert.equal(await page.getByRole('region', { name: '학습 주제' }).count(), 0);
+  });
+  await check('Topic without an overview: from a start candidate and from the chosen function, each found again by its place', async () => {
+    const topicBar = page.getByRole('region', { name: '학습 주제' });
+    await page.locator('.starts__item').filter({ hasText: 'registerBanner' }).click();
+    await topicBar.getByText('학습 주제 · 코드 구조로 고른 시작점 후보', { exact: true }).waitFor();
+    await until(async () => await page.getByRole('button', { name: 'registerBanner', exact: true }).getAttribute('aria-pressed') === 'true');
+    await topicBar.getByRole('button', { name: '한눈에 보기로', exact: true }).click();
+    await until(() => page.evaluate(() => document.activeElement?.getAttribute('data-anchor')?.startsWith('start:') === true
+      && document.activeElement.textContent.includes('registerBanner')));
+    await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    await topicBar.getByRole('button', { name: '주제 닫기', exact: true }).click();
+    await page.getByRole('button', { name: 'dup.ts', exact: true }).click();
+    const runs = page.getByRole('button', { name: 'run', exact: true });
+    await runs.nth(1).click();
+    await topicBar.getByRole('button', { name: '이 함수에서 학습 시작', exact: true }).click();
+    await topicBar.getByText('학습 주제 · 지금 고른 함수', { exact: true }).waitFor();
+    await topicBar.getByRole('textbox', { name: '학습 이름' }).fill('두 번째 실행');
+    await topicBar.getByText('원래 이름: run', { exact: true }).waitFor();
+    await runs.nth(0).click();
+    await topicBar.getByRole('button', { name: '출발점으로', exact: true }).click();
+    await until(async () => await runs.nth(1).getAttribute('aria-pressed') === 'true');
+    assert.equal(await runs.nth(0).getAttribute('aria-pressed'), 'false');
   });
   await check('Hard code: the map lists a long function, the reader marks it, and the AI button asks about all of it', async () => {
     await dialogTo(hardFixture);

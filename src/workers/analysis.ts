@@ -26,6 +26,9 @@ const { root, projectId, map, calls, shapes, git, stop } = workerData as {
 const stopFlag = stop ? new Int32Array(stop) : null;
 const stopped = () => stopFlag !== null && Atomics.load(stopFlag, 0) === 1;
 let project: ProjectView | undefined;
+// The screen and an AI question can each need a different file (the code shown, the code asked about), so the last few
+// files read keep their evidence; whole projects are not cached.
+const KEPT_SOURCES = 4;
 const sources = new Map<string, SourceView>();
 
 async function readSource(fileId: string): Promise<SourceView> {
@@ -33,13 +36,13 @@ async function readSource(fileId: string): Promise<SourceView> {
   if (!file) throw new AppError('NOT_ALLOWED', '현재 프로젝트에 등록된 파일이 아닙니다.');
   const { text, hash } = await readAllowed(root, file.relativePath);
   const previous = sources.get(fileId);
-  if (previous?.hash === hash) return previous;
+  sources.delete(fileId);
+  if (previous?.hash === hash) { sources.set(fileId, previous); return previous; }
   if (stopped()) throw new AppError('CANCELLED', '작업을 취소했습니다.');
   const analysis = analyzeSource(text, file.relativePath, { projectId, fileId, fileHash: hash });
   const result: SourceView = { projectId, fileId, relativePath: file.relativePath, text, hash, analysis };
-  // A single active source is enough for the first reading flow; do not cache whole projects.
-  sources.clear();
   sources.set(fileId, result);
+  while (sources.size > KEPT_SOURCES) sources.delete(sources.keys().next().value!);
   return result;
 }
 
