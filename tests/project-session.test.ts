@@ -40,6 +40,25 @@ if (workerData.shapes) {
     watch: JSON.parse(process.env.SHAPES_WATCH || '{"files":[],"links":[]}') } }), delay);
   else exited.then(() => finish(stopped));
   parentPort.on('message', () => {});
+} else if (workerData.git) {
+  // A git worker (plan v2.3 C-2): it answers after MAP_DELAY ms, or only when asked to stop if it is negative.
+  const stop = new Int32Array(workerData.git.stop);
+  const job = workerData.git.job;
+  const started = Date.now();
+  const value = job.mode === 'history' ? { projectId: workerData.projectId, available: true, reason: null, commits: [] }
+    : job.mode === 'changes' ? { projectId: workerData.projectId, commit: job.commit, changes: [], notCompared: [], notes: [] }
+    : { projectId: workerData.projectId, commit: job.commit, old: { text: 'old' }, now: null };
+  const poll = setInterval(() => {
+    if (Atomics.load(stop, 0) === 1) {
+      clearInterval(poll);
+      mark('git-' + job.mode + '-replied');
+      parentPort.postMessage({ id: 0, result: { ok: false, code: 'CANCELLED', message: 'stopped' } });
+    } else if (delay >= 0 && Date.now() - started >= delay) {
+      clearInterval(poll);
+      parentPort.postMessage({ id: 0, result: { ok: true, value } });
+    }
+  }, 5);
+  parentPort.on('message', () => {});
 } else if (side) {
   const job = workerData.map ? 'map' : 'calls';
   const stop = new Int32Array(side.stop);
@@ -420,5 +439,33 @@ describe('the value-shape search runs in a worker of its own and ends its checke
     await writeFile(newer, 'export declare const y: 2;\n');
     await until(() => events.includes('changed'));
     await made.close();
+  });
+});
+
+describe('the changes view runs git in workers of its own (plan v2.3 C-2)', () => {
+  const commit = 'a'.repeat(40);
+
+  it('replaces a comparison when another starts, cancels only the comparison, and closing stops the rest', async () => {
+    process.env.MAP_DELAY = '-1';
+    const first = session.changes(commit);
+    const old = session.fileDiff(commit, 'a.ts', null);
+    const second = session.changes(commit);
+    await expect(first).rejects.toMatchObject({ code: 'CANCELLED' });
+    session.cancelChanges();
+    await expect(second).rejects.toMatchObject({ code: 'CANCELLED' });
+    await session.close();
+    await expect(old).rejects.toMatchObject({ code: 'CANCELLED' });
+    await workersStopped();
+    expect(await markers('git-changes-replied')).toBe(2);
+    expect(await markers('git-diff-replied')).toBe(1);
+  });
+
+  it('returns the commits, the comparison and old code when nothing changed', async () => {
+    process.env.MAP_DELAY = '10';
+    await expect(session.gitHistory()).resolves.toMatchObject({ available: true });
+    await expect(session.changes(commit)).resolves.toMatchObject({ commit, changes: [] });
+    await expect(session.fileDiff(commit, 'a.ts', null)).resolves.toMatchObject({ old: { text: 'old' }, now: null });
+    // A file now must be one listed when the folder opened.
+    await expect(session.fileDiff(commit, null, '6c8af416-7789-478e-8418-a6f851557a8d')).rejects.toMatchObject({ code: 'NOT_ALLOWED' });
   });
 });

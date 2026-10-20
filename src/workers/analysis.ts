@@ -1,5 +1,6 @@
 import { parentPort, workerData } from 'node:worker_threads';
-import type { Evidence, FunctionCalls, ProjectFile, ProjectMap, ProjectView, Result, ShapeQuery, SourceView, ValueShapes } from '../shared/contracts';
+import type { Evidence, FileDiff, FunctionCalls, GitHistory, ProjectChanges, ProjectFile, ProjectMap, ProjectView, Result, ShapeQuery, SourceView,
+  ValueShapes } from '../shared/contracts';
 import { AppError, failure } from '../shared/errors';
 import { readAllowed, scanProject } from '../core/project/files';
 import { analyzeSource } from '../core/analysis/syntax';
@@ -7,15 +8,17 @@ import { buildOverview } from '../core/analysis/overview';
 import { buildProjectMap, MAP_LIMITS } from '../core/analysis/project-map';
 import { findFunctionCalls } from '../core/analysis/calls';
 import { findValueShapes, type ShapesTarget, type TypeWatch } from '../core/analysis/shapes';
+import { gitJob, type GitJob } from '../core/project/git';
 
 export interface WorkerRequest { id: number; kind: 'scan' | 'read' | 'evidence'; target?: string }
 export interface WorkerResponse { id: number; result: Result<ProjectView | SourceView | ProjectMap | FunctionCalls | { source: SourceView; evidence: Evidence }
-  | { shapes: ValueShapes; watch: TypeWatch }> }
+  | { shapes: ValueShapes; watch: TypeWatch } | GitHistory | ProjectChanges | FileDiff> }
 
-const { root, projectId, map, calls, shapes, stop } = workerData as {
+const { root, projectId, map, calls, shapes, git, stop } = workerData as {
   root: string; projectId: string; map?: { files: ProjectFile[]; starts: string[]; stop: SharedArrayBuffer };
   calls?: { files: ProjectFile[]; target: { fileId: string; fileHash: string; startUtf16: number; endUtf16: number }; stop: SharedArrayBuffer };
   shapes?: { files: ProjectFile[]; target: ShapesTarget; names: ShapeQuery[]; stop: SharedArrayBuffer };
+  git?: { job: GitJob; stop: SharedArrayBuffer };
   stop?: SharedArrayBuffer;
 };
 // The session raises this when it closes; the worker stops before its next parse and replies, and only
@@ -86,6 +89,14 @@ if (calls) {
 // session may end that process to stop it (side-stop.ts); the worker replies only once it has ended.
 if (shapes) {
   findValueShapes(root, projectId, shapes.files, shapes.target, shapes.names, new Int32Array(shapes.stop)).then(
+    value => parentPort!.postMessage({ id: 0, result: { ok: true, value } } satisfies WorkerResponse),
+    error => parentPort!.postMessage({ id: 0, result: failure(error) } satisfies WorkerResponse));
+}
+// A git worker answers one request of the changes view (plan v2.3 C-2). It waits for git asynchronously and ends its own
+// git process when the session raises the flag.
+if (git) {
+  const stop = new Int32Array(git.stop);
+  gitJob(root, projectId, git.job, () => Atomics.load(stop, 0) === 1).then(
     value => parentPort!.postMessage({ id: 0, result: { ok: true, value } } satisfies WorkerResponse),
     error => parentPort!.postMessage({ id: 0, result: failure(error) } satisfies WorkerResponse));
 }

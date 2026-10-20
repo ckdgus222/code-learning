@@ -101,11 +101,12 @@ export async function readStable(root: string, relative: string, limit = MAX_FIL
   } finally { await handle.close(); }
 }
 
-async function addRules(root: string, base: string, inherited: Rules): Promise<Rules> {
+/** A folder's .gitignore added to the rules above it; `composed` keeps its patterns and folder in NFC (pathPolicy). */
+async function addRules(root: string, base: string, inherited: Rules, composed = false): Promise<Rules> {
   const relative = base ? `${base}/.gitignore` : '.gitignore';
   try {
     const { text } = await readStable(root, relative, 64 * 1024);
-    return [...inherited, { base, matcher: ignore().add(text) }];
+    return [...inherited, composed ? { base: base.normalize('NFC'), matcher: ignore().add(text.normalize('NFC')) } : { base, matcher: ignore().add(text) }];
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return inherited;
     throw new AppError('NOT_ALLOWED', '.gitignore 규칙을 안전하게 읽을 수 없어 이 범위를 열지 않습니다.');
@@ -147,6 +148,43 @@ export async function assertAllowed(root: string, relative: string): Promise<voi
     }
     if (directory) rules = await addRules(root, current, rules);
   }
+}
+
+/**
+ * The judgement of assertAllowed for many paths at once, by path only (plan v2.3 C-2: a path in a commit need not
+ * exist now): why a path is excluded under the current rules, or null. Each folder's .gitignore is read once.
+ * A Korean name may be spelled composed (NFC) or decomposed (NFD), or both mixed, in git, on disk and in a .gitignore.
+ * So a path is judged twice: as written against the patterns as written, and with both path and patterns in NFC.
+ * Excluded by either is excluded.
+ */
+export function pathPolicy(root: string): (relative: string) => Promise<string | null> {
+  const rulesOf = new Map<string, Promise<Rules>>();
+  // `dir` is the folder as the path spells it, which is how its .gitignore is read.
+  const rulesFor = (dir: string, composed: boolean): Promise<Rules> => {
+    let rules = rulesOf.get(`${composed}:${dir}`);
+    if (!rules) {
+      rules = dir ? rulesFor(dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : '', composed).then(inherited => addRules(root, dir, inherited, composed))
+        : addRules(root, '', [], composed);
+      rulesOf.set(`${composed}:${dir}`, rules);
+    }
+    return rules;
+  };
+  const judge = async (relative: string, composed: boolean) => {
+    try { validateRelative(relative); } catch { return '경로 형식'; }
+    const parts = relative.split('/');
+    for (let i = 0; i < parts.length; i++) {
+      const written = parts.slice(0, i + 1).join('/');
+      const current = composed ? written.normalize('NFC') : written;
+      const directory = i < parts.length - 1;
+      const reason = exclusionReason(current, directory);
+      if (reason) return reason;
+      let rules: Rules;
+      try { rules = await rulesFor(parts.slice(0, i).join('/'), composed); } catch { return '.gitignore를 읽을 수 없음'; }
+      if (ignored(current, directory, rules)) return '.gitignore';
+    }
+    return null;
+  };
+  return async relative => await judge(relative, false) ?? await judge(relative, true);
 }
 
 export async function readAllowed(root: string, relative: string, limit = MAX_FILE_BYTES) {

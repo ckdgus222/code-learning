@@ -3,7 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { mkdir, realpath } from 'node:fs/promises';
 import { z } from 'zod';
-import { channels, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, shapesRequestSchema, type Result, type Evidence } from '../shared/contracts';
+import { channels, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, shapesRequestSchema, changesRequestSchema, diffRequestSchema, type Result, type Evidence } from '../shared/contracts';
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { ProjectSession, workersStopped } from './project-session';
@@ -222,6 +222,32 @@ app.whenReady().then(async () => {
   handle(channels.cancelShapes, async argument => {
     const input = projectRequestSchema.parse(argument);
     current(input.projectId).cancelShapes();
+    return null;
+  });
+  // Plan v2.3 C-2. Like the calls: refused while quitting, and dropped when the folder changed meanwhile.
+  const fresh = async <T>(projectId: string, work: (active: ProjectSession) => Promise<T>, changed: string): Promise<T> => {
+    if (quitting) throw new AppError('CANCELLED', '앱을 끝내는 중이에요.');
+    const active = current(projectId);
+    const revision = projectRevision;
+    const value = await work(active);
+    if (session !== active || projectRevision !== revision) throw new AppError('CHANGED', changed);
+    return value;
+  };
+  handle(channels.history, async argument => {
+    const { projectId } = projectRequestSchema.parse(argument);
+    return fresh(projectId, active => active.gitHistory(), 'Git 기록을 읽는 동안 파일이 바뀌었거나 잠자기에서 돌아왔어요. 다시 읽어 주세요.');
+  });
+  handle(channels.changes, async argument => {
+    const { projectId, commit } = changesRequestSchema.parse(argument);
+    return fresh(projectId, active => active.changes(commit), '비교하는 동안 파일이 바뀌었거나 잠자기에서 돌아왔어요. 다시 비교해 주세요.');
+  });
+  handle(channels.diff, async argument => {
+    const { projectId, commit, oldPath, fileId } = diffRequestSchema.parse(argument);
+    return fresh(projectId, active => active.fileDiff(commit, oldPath, fileId), '코드를 여는 동안 파일이 바뀌었거나 잠자기에서 돌아왔어요. 다시 열어 주세요.');
+  });
+  handle(channels.cancelChanges, async argument => {
+    const input = projectRequestSchema.parse(argument);
+    current(input.projectId).cancelChanges();
     return null;
   });
   handle(channels.read, async argument => {

@@ -71,6 +71,33 @@ await mkdir(path.join(valuesFixture, 'node_modules/money'), { recursive: true })
 await writeFile(path.join(valuesFixture, 'node_modules/money/package.json'), JSON.stringify({ name: 'money', types: 'index.d.ts' }));
 await writeFile(path.join(valuesFixture, 'node_modules/money/index.d.ts'), 'export declare function format(amount: number): string;\n');
 await writeFile(path.join(valuesFixture, 'src/label.ts'), "import { format } from 'money';\nexport function label(amount: number) { return format(amount); }\n");
+// Plan v2.3 C-2: a Git repository whose files changed after its one commit in all five ways. The test's own git uses no user config.
+const gitFixture = path.join(temporary, '변경 프로젝트');
+await mkdir(path.join(gitFixture, 'src'), { recursive: true });
+const gitHere = (...args) => execFileSync('git', args, { cwd: gitFixture, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+gitHere('init', '-q');
+for (const [name, text] of [['edit.ts', 'export const edit = 1;\n'], ['deleted.ts', 'export const gone = 1;\n'], ['old-name.ts', 'export const moved = 1;\n'],
+  ['func.ts', 'export function run(x: number) {\n  if (x > 1) return x;\n  return 0;\n}\n']]) {
+  await writeFile(path.join(gitFixture, 'src', name), text);
+}
+gitHere('add', '-A');
+gitHere('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'first version');
+await writeFile(path.join(gitFixture, 'src/edit.ts'), 'export const edit = 2;\n');
+await rm(path.join(gitFixture, 'src/deleted.ts'));
+gitHere('mv', 'src/old-name.ts', 'src/new-name.ts');
+await writeFile(path.join(gitFixture, 'src/added.ts'), 'export const added = 1;\n');
+gitHere('add', 'src/added.ts');
+await writeFile(path.join(gitFixture, 'src/untracked.ts'), 'export const fresh = 1;\n');
+// Many changes, and a file whose old version is over the read limit while the new one is not.
+const manyFixture = path.join(temporary, '많은 변경 프로젝트');
+await mkdir(manyFixture, { recursive: true });
+const gitMany = (...args) => execFileSync('git', args, { cwd: manyFixture, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+gitMany('init', '-q');
+await writeFile(path.join(manyFixture, 'big.txt'), 'x'.repeat(300 * 1024));
+gitMany('add', '-A');
+gitMany('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'big');
+await writeFile(path.join(manyFixture, 'big.txt'), 'small now\n');
+for (let index = 0; index < 301; index++) await writeFile(path.join(manyFixture, `new${String(index).padStart(3, '0')}.txt`), `${index}\n`);
 // Test harness lives outside the shipped app. Production IPC has no path injection/test API.
 const bootstrap = path.join(temporary, 'bootstrap.cjs');
 await writeFile(bootstrap, `const { app } = require('electron');\napp.setPath('userData', ${JSON.stringify(profile)});\nrequire(${JSON.stringify(path.join(root, '.vite/build/main.cjs'))});\n`);
@@ -526,13 +553,13 @@ try {
     assert.equal(await page.getByTestId('evidence-range').count(), 0);
     assert.equal(await page.getByRole('button', { name: '주문', exact: true }).isDisabled(), true);
     await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
-    await page.getByText('프로젝트를 연 뒤 코드가 바뀌었을 수 있어요. 파일을 다시 읽어 최신 코드를 확인해 주세요.', { exact: true }).waitFor();
-    await page.getByText('변경 이력과 수정 전후 비교는 아직 준비 중이에요.', { exact: true }).waitFor();
+    // This folder is no Git repository, so the changes view says so (plan v2.3 C-2).
+    await page.getByText('이 폴더는 Git 저장소가 아니에요.', { exact: true }).waitFor();
     await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
     await page.getByRole('button', { name: '파일 다시 읽기', exact: true }).click();
     await until(async () => await page.getByRole('button', { name: '주문', exact: true }).isEnabled());
     await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
-    await page.getByText('변경 이력과 수정 전후 비교는 아직 준비 중이에요.', { exact: true }).waitFor();
+    await page.getByText('이 폴더는 Git 저장소가 아니에요.', { exact: true }).waitFor();
     assert.equal(await page.getByText('프로젝트를 연 뒤 감지된 변경이 없어요.', { exact: true }).count(), 0);
     assert.equal(await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).count(), 0);
   });
@@ -1207,6 +1234,75 @@ try {
     await returns.getByText('string', { exact: true }).waitFor();
     await summary.getByRole('group', { name: '바깥 이름' }).getByRole('button', { name: 'format', exact: true }).click();
     await summary.getByRole('region', { name: 'format 값' }).getByText('(amount: number) => string', { exact: true }).waitFor();
+  });
+  await check('Changes: the last commit against the files now, five kinds listed and marked on the map, old code side by side, read only', async () => {
+    await dialogTo(gitFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '변경 프로젝트', exact: true }).waitFor();
+    const gitBefore = execFileSync('find', [path.join(gitFixture, '.git'), '-exec', 'stat', '-f', '%N %z %m', '{}', '+']).toString();
+    // A function chosen in the reader first: opening a change of another file must leave it usable.
+    await page.getByRole('button', { name: 'src/func.ts', exact: true }).click();
+    await page.getByRole('button', { name: 'run', exact: true }).click();
+    await page.getByTestId('evidence-range').waitFor();
+    await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
+    const listed = page.getByRole('region', { name: '바뀐 파일 목록' }).getByRole('list', { name: '바뀐 파일' });
+    await listed.waitFor();
+    assert.deepEqual(await listed.locator('li').allInnerTexts(), ['추가 src/added.ts 비교 보기', '삭제 src/deleted.ts 비교 보기', '수정 src/edit.ts 비교 보기',
+      '이름 변경 src/old-name.ts → src/new-name.ts 비교 보기', '미추적 src/untracked.ts 비교 보기']);
+    assert.match(await page.getByRole('combobox', { name: '기준 커밋' }).locator('option:checked').innerText(), /^[0-9a-f]{7} · .+ · HEAD · first version$/);
+    // A modification: the commit's code next to the code now.
+    await listed.locator('li').nth(2).getByRole('button', { name: '비교 보기', exact: true }).click();
+    const diff = page.getByRole('region', { name: '고른 변경 비교' });
+    await diff.getByText('왼쪽은 고른 커밋, 오른쪽은 지금 파일이에요. 바뀌지 않은 부분은 접어 두었어요.', { exact: true }).waitFor();
+    await diff.getByRole('textbox', { name: '고른 커밋의 코드 (읽기 전용)' }).getByText('export const edit = 1;').waitFor();
+    await diff.getByRole('textbox', { name: '지금 코드 (읽기 전용)' }).getByText('export const edit = 2;').waitFor();
+    await page.screenshot({ path: path.join(artifacts, 'changes-diff.png') });
+    // A deleted file and a rename's old path have no file now; their code from the commit opens.
+    await listed.locator('li').nth(1).getByRole('button', { name: '비교 보기', exact: true }).click();
+    await diff.getByText('고른 커밋의 코드예요. 지금은 이 경로에 파일이 없어요.', { exact: true }).waitFor();
+    await diff.getByText('export const gone = 1;').waitFor();
+    await listed.locator('li').nth(3).getByRole('button', { name: '비교 보기', exact: true }).click();
+    await diff.getByRole('textbox', { name: '고른 커밋의 코드 (읽기 전용)' }).getByText('export const moved = 1;').waitFor();
+    // Back in the reader, the function's steps still lead to their code.
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+    await page.getByRole('button', { name: '조건 확인', exact: true }).click();
+    await until(async () => (await page.getByTestId('evidence-range').innerText()).includes('2–2줄'));
+    assert.equal(await page.getByRole('alert').count(), 0);
+    // The map marks the boxes of files now and lists every change, the deleted one too.
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    const box = name => page.locator('.react-flow__node').filter({ hasText: name });
+    await box('edit.ts').getByText('수정', { exact: true }).waitFor({ timeout: 30_000 });
+    for (const [name, kind] of [['added.ts', '추가'], ['new-name.ts', '이름 변경'], ['untracked.ts', '미추적']]) await box(name).getByText(kind, { exact: true }).waitFor();
+    assert.equal(await page.getByRole('region', { name: '변경 목록' }).getByRole('list', { name: '바뀐 파일' }).locator('li').count(), 5);
+    await page.screenshot({ path: path.join(artifacts, 'changes-map.png') });
+    // Comparing changed nothing in the repository; a file changed afterwards marks the comparison.
+    assert.equal(execFileSync('find', [path.join(gitFixture, '.git'), '-exec', 'stat', '-f', '%N %z %m', '{}', '+']).toString(), gitBefore);
+    await writeFile(path.join(gitFixture, 'src/edit.ts'), 'export const edit = 3;\n');
+    await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
+    await page.getByText('비교한 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 다시 비교해 주세요.', { exact: false }).waitFor();
+    // After a new commit, comparing again reads the commits again and moves to the new HEAD.
+    gitHere('add', 'src/edit.ts');
+    gitHere('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'second version', '--', 'src/edit.ts');
+    await page.getByRole('button', { name: '다시 비교', exact: true }).click();
+    await until(async () => /HEAD · second version$/.test(await page.getByRole('combobox', { name: '기준 커밋' }).locator('option:checked').innerText()));
+    await until(async () => !(await listed.locator('li').allInnerTexts()).includes('수정 src/edit.ts 비교 보기'));
+    assert.equal(await page.getByRole('combobox', { name: '기준 커밋' }).locator('option').count(), 2);
+  });
+  await check('Changes: every change reachable past 300, and a side that cannot be opened is said, not taken as added or deleted', async () => {
+    await dialogTo(manyFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '많은 변경 프로젝트', exact: true }).waitFor();
+    await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
+    const listed = page.getByRole('region', { name: '바뀐 파일 목록' }).getByRole('list', { name: '바뀐 파일' });
+    await listed.waitFor();
+    assert.equal(await listed.locator('li').count(), 300);
+    await page.getByRole('region', { name: '바뀐 파일 목록' }).getByRole('button', { name: '2개 더 보기', exact: true }).click();
+    assert.equal(await listed.locator('li').count(), 302);
+    await listed.locator('li').filter({ hasText: 'big.txt' }).getByRole('button', { name: '비교 보기', exact: true }).click();
+    const diff = page.getByRole('region', { name: '고른 변경 비교' });
+    await diff.getByText('이전 코드를 열 수 없어요: 이전 코드가 256 KiB를 넘어 열지 않아요.', { exact: true }).waitFor();
+    await diff.getByText('지금 코드만 열 수 있어 그것만 보여요.', { exact: true }).waitFor();
+    assert.equal(await diff.getByText('고른 커밋에는 없던 파일이에요. 지금 코드예요.', { exact: true }).count(), 0);
   });
   await check('Quitting while files are parsed waits for the workers and ends cleanly', async () => {
     // (a) Closing the window while a large folder opens.

@@ -2,7 +2,8 @@ import { Worker } from 'node:worker_threads';
 import { lstat, readlink } from 'node:fs/promises';
 import path from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
-import type { Evidence, FunctionCalls, ProjectEvent, ProjectMap, ProjectView, Result, ShapeQuery, SourceView, ValueShapes } from '../shared/contracts';
+import type { Evidence, FileDiff, FunctionCalls, GitHistory, ProjectChanges, ProjectEvent, ProjectMap, ProjectView, Result, ShapeQuery, SourceView,
+  ValueShapes } from '../shared/contracts';
 import { AppError } from '../shared/errors';
 import type { WorkerRequest, WorkerResponse } from '../workers/analysis';
 import type { TypeWatch } from '../core/analysis/shapes';
@@ -23,7 +24,7 @@ export async function workersStopped(): Promise<void> {
 }
 
 // Jobs that read the whole project in a worker of their own, so the session's worker keeps answering reads.
-type SideJob = 'map' | 'calls' | 'shapes';
+type SideJob = 'map' | 'calls' | 'shapes' | 'history' | 'changes' | 'diff';
 const sideWords: Record<SideJob, { failed: string; ended: string; slow: string; changed: string }> = {
   map: { failed: '지도를 만들지 못했어요.', ended: '지도 작업이 끝나 버렸어요.', slow: '지도를 만드는 데 너무 오래 걸려 멈췄어요.',
     changed: '지도를 만드는 동안 파일이 바뀌었어요. 다시 만들어 주세요.' },
@@ -31,6 +32,12 @@ const sideWords: Record<SideJob, { failed: string; ended: string; slow: string; 
     changed: '호출을 찾는 동안 파일이 바뀌었어요. 다시 찾아 주세요.' },
   shapes: { failed: '값의 모양을 찾지 못했어요.', ended: '값의 모양 찾기 작업이 끝나 버렸어요.', slow: '값의 모양을 찾는 데 너무 오래 걸려 멈췄어요.',
     changed: '값의 모양을 찾는 동안 파일이 바뀌었어요. 다시 찾아 주세요.' },
+  history: { failed: 'Git 기록을 읽지 못했어요.', ended: 'Git 기록 읽기 작업이 끝나 버렸어요.', slow: 'Git 기록을 읽는 데 너무 오래 걸려 멈췄어요.',
+    changed: 'Git 기록을 읽는 동안 파일이 바뀌었어요. 다시 읽어 주세요.' },
+  changes: { failed: '변경을 비교하지 못했어요.', ended: '비교 작업이 끝나 버렸어요.', slow: '비교하는 데 너무 오래 걸려 멈췄어요.',
+    changed: '비교하는 동안 파일이 바뀌었어요. 다시 비교해 주세요.' },
+  diff: { failed: '코드를 열지 못했어요.', ended: '코드 열기 작업이 끝나 버렸어요.', slow: '코드를 여는 데 너무 오래 걸려 멈췄어요.',
+    changed: '코드를 여는 동안 파일이 바뀌었어요. 다시 열어 주세요.' },
 };
 const changedTypes = '모양을 찾는 동안 외부 패키지 타입 파일이 바뀌었어요. 다시 찾아 주세요.';
 
@@ -153,6 +160,35 @@ export class ProjectSession {
     return await this.watchTypes(found.shapes, found.watch, watchTimeoutMs, run);
   }
 
+  /** The commits that changed the opened folder (plan v2.3 C-2), or why its Git history cannot be used. */
+  async gitHistory(timeoutMs = 30_000): Promise<GitHistory> {
+    if (this.closed || !this.project) throw new AppError('PROJECT_CLOSED', '프로젝트가 닫혔습니다. 다시 열어 주세요.');
+    this.cancelSide('history');
+    return await this.runSide('history', stop => ({ git: { job: { mode: 'history' }, stop } }), timeoutMs) as GitHistory;
+  }
+
+  /** The files listed when the folder opened, compared with a commit. Asking again replaces the comparison. */
+  async changes(commit: string, timeoutMs = 30_000): Promise<ProjectChanges> {
+    if (this.closed || !this.project) throw new AppError('PROJECT_CLOSED', '프로젝트가 닫혔습니다. 다시 열어 주세요.');
+    this.cancelChanges();
+    const { files } = this.project;
+    return await this.runSide('changes', stop => ({ git: { job: { mode: 'changes', files, commit }, stop } }), timeoutMs) as ProjectChanges;
+  }
+
+  /**
+   * One change's two sides: the old path in a commit and a listed file now, both read in a side worker. The reader's
+   * own worker is not used, so the file open there and its evidence stay as they are. Opening another replaces it.
+   */
+  async fileDiff(commit: string, oldPath: string | null, fileId: string | null, timeoutMs = 30_000): Promise<FileDiff> {
+    if (this.closed || !this.project) throw new AppError('PROJECT_CLOSED', '프로젝트가 닫혔습니다. 다시 열어 주세요.');
+    const file = fileId === null ? null : this.project.files.find(item => item.id === fileId);
+    if (file === undefined) throw new AppError('NOT_ALLOWED', '현재 프로젝트에 등록된 파일이 아닙니다.');
+    if (oldPath === null && file === null) throw new AppError('INVALID_REQUEST', '열 코드가 없어요.');
+    this.cancelSide('diff');
+    return await this.runSide('diff', stop => ({ git: { job: { mode: 'diff', commit, oldPath, nowPath: file?.relativePath ?? null }, stop } }),
+      timeoutMs) as FileDiff;
+  }
+
   /**
    * Starts watching the type files a result was read from, and checks them again once the watch is ready: a file
    * changed in between makes the result CHANGED. Until then the request is still running and can be cancelled.
@@ -273,6 +309,7 @@ export class ProjectSession {
    */
   cancelMap(): void { this.cancelSide('map'); }
   cancelCalls(): void { this.cancelSide('calls'); }
+  cancelChanges(): void { this.cancelSide('changes'); }
   cancelShapes(): void {
     this.shapesRun++;
     this.cancelSide('shapes');
@@ -296,6 +333,9 @@ export class ProjectSession {
     this.cancelMap();
     this.cancelCalls();
     this.cancelShapes();
+    this.cancelSide('history');
+    this.cancelChanges();
+    this.cancelSide('diff');
     const message = code === 'LIMIT' ? '작업 제한 시간을 넘었습니다. 더 작은 폴더를 선택해 주세요.' :
       code === 'INTERNAL' ? '분석 작업이 종료되었습니다. 폴더를 다시 열어 주세요.' : '작업을 취소했습니다.';
     for (const item of this.pending.values()) {
