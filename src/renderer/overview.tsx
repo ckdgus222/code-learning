@@ -22,6 +22,31 @@ export interface Topic {
   /** What '한눈에 보기로' puts the focus back on. */
   anchor: string | null;
 }
+/** One place looked at in the code views while a topic is open (plan F1): enough to find it again in the same file. */
+export interface Place {
+  view: 'flow' | 'code';
+  fileId: string;
+  fileHash: string;
+  /** A step is kept by its order in the function: two steps can cover the same range (`first()` and its call). */
+  symbol: { name: string; startUtf16: number; step: number | null } | null;
+  range: { startUtf16: number; endUtf16: number; startLine: number; endLine: number } | null;
+}
+const HISTORY = 20;
+const samePlace = (a: Place, b: Place) => a.view === b.view && a.fileId === b.fileId && a.fileHash === b.fileHash
+  && a.symbol?.name === b.symbol?.name && a.symbol?.startUtf16 === b.symbol?.startUtf16 && a.symbol?.step === b.symbol?.step
+  && a.range?.startUtf16 === b.range?.startUtf16 && a.range?.endUtf16 === b.range?.endUtf16;
+/**
+ * The last 20 places, the newest last. Opening the file of the last place again without choosing anything is no move,
+ * and a file just opened and then a function or range chosen in it is one move.
+ */
+export function recordPlace(history: Place[], place: Place): Place[] {
+  const last = history.at(-1);
+  if (last && samePlace(last, place)) return history;
+  const nothingChosen = !place.symbol && !place.range;
+  if (last && last.fileId === place.fileId && nothingChosen) return history;
+  const chosenIn = last && last.fileId === place.fileId && !last.symbol && !last.range;
+  return [...(chosenIn ? history.slice(0, -1) : history), place].slice(-HISTORY);
+}
 const origins: Record<Topic['origin'], string> = {
   ai: 'AI가 제안한 기능 후보', start: '코드 구조로 고른 시작점 후보', function: '지금 고른 함수',
 };
@@ -32,9 +57,11 @@ const phases: Record<LearningPhase, string> = {
 const SHOWN = 6;
 const documentFile = /\.(?:md|txt)$/i;
 
-export function OverviewAi({ project, state, stale, locked, readiness, checking, revealAnchor, onInspect, onStart, onCancel,
+export function OverviewAi({ project, state, stale, locked, readiness, checking, revealAnchor, topicName, onInspect, onStart, onCancel,
   onEvidence, onFollow, onFunction }: {
   project: ProjectView; state: OverviewState | null; stale: boolean; locked: boolean;
+  /** The topic's name, searched with the overview's items. */
+  topicName: string | null;
   readiness: { ready: boolean; reason: string } | null; checking: boolean;
   /** A feature card to keep shown even past the first six, as the focus returns to it. */
   revealAnchor: string | null;
@@ -79,25 +106,33 @@ export function OverviewAi({ project, state, stale, locked, readiness, checking,
     {!state && <p className="unknown"><span className="tag tag--unknown">개요 미생성</span>아직 AI 개요를 만들지 않았어요. 위의 시작점 후보와 코드 읽기로 먼저 살펴볼 수 있어요.</p>}
     {running && <p role="status" className="hint">{state.phase ? phases[state.phase] : '개요 작업 시작 중'}</p>}
     {state?.status === 'failed' && <p role={state.cancelled ? 'status' : 'alert'} className={state.cancelled ? 'hint' : 'notice'}>{state.message}</p>}
-    {state?.status === 'done' && <OverviewAnswer result={state.result} stale={stale} locked={locked} revealAnchor={revealAnchor}
+    {state?.status === 'done' && <OverviewAnswer result={state.result} stale={stale} locked={locked} revealAnchor={revealAnchor} topicName={topicName}
       onEvidence={onEvidence} onFollow={onFollow} onFunction={onFunction} />}
   </section>;
 }
 
-function OverviewAnswer({ result, stale, locked, revealAnchor, onEvidence, onFollow, onFunction }: {
-  result: OverviewResult; stale: boolean; locked: boolean; revealAnchor: string | null;
+function OverviewAnswer({ result, stale, locked, revealAnchor, topicName, onEvidence, onFollow, onFunction }: {
+  result: OverviewResult; stale: boolean; locked: boolean; revealAnchor: string | null; topicName: string | null;
   onEvidence(evidence: Evidence): void; onFollow(feature: OverviewFeature, anchor: string): void; onFunction(name: string, at: Evidence): void;
 }) {
   const [allFeatures, setAllFeatures] = useState(false);
   const [allRoles, setAllRoles] = useState(false);
+  // Plan F1: a search within this overview's items and the topic's name only, never the whole project.
+  const [query, setQuery] = useState('');
+  const term = query.trim().toLowerCase();
+  const matches = (text: string) => !term || text.toLowerCase().includes(term);
   const { overview, sources } = result;
   const blocked = stale || locked;
   const sourceOf = (id: string) => sources.find(item => item.evidence.id === id)!;
   const buttons = (ids: string[], label: string) =>
     <SourceButtons ids={ids} sources={sources} selectionId={null} stale={blocked} label={label} onEvidence={onEvidence} />;
   const revealed = revealAnchor?.startsWith('feature:') ? Number(revealAnchor.slice('feature:'.length)) : -1;
-  const features = allFeatures || revealed >= SHOWN ? overview.features : overview.features.slice(0, SHOWN);
-  const roles = allRoles ? overview.roles : overview.roles.slice(0, SHOWN);
+  // Each feature keeps its place in the overview: its anchor names it whatever the search shows.
+  const foundFeatures = overview.features.map((feature, index) => ({ feature, index })).filter(({ feature }) => matches(`${feature.name} ${feature.summary}`));
+  const foundRoles = overview.roles.filter(role => matches(`${role.name} ${role.summary}`));
+  const features = term || allFeatures || revealed >= SHOWN ? foundFeatures : foundFeatures.slice(0, SHOWN);
+  const roles = term || allRoles ? foundRoles : foundRoles.slice(0, SHOWN);
+  const topicFound = !!term && !!topicName && topicName.toLowerCase().includes(term);
   const fromDocuments = overview.intro?.evidenceIds.every(id => documentFile.test(sourceOf(id).relativePath));
   return <div className="overview-answer">
     {stale && <p className="notice notice--warn"><b>다시 확인 필요:</b> 개요를 만든 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 이전 코드 기준이라 근거 보기와 따라가기를 막았어요. 개요를 다시 만들어 주세요.</p>}
@@ -110,10 +145,17 @@ function OverviewAnswer({ result, stale, locked, revealAnchor, onEvidence, onFol
         {buttons(overview.intro.evidenceIds, '소개의 근거')}
       </> : <p className="unknown"><span className="tag tag--unknown">확인하지 못함</span>읽은 자료로 이 프로그램이 하는 일을 확인하지 못했어요.</p>}
     </section>
+    <section aria-label="기능·역할 찾기">
+      <input className="search" type="search" aria-label="기능·역할 찾기" placeholder="기능·역할 이름으로 찾기" value={query}
+        onChange={event => setQuery(event.target.value)} />
+      <p className="hint">이번 개요의 기능 후보 {overview.features.length}개·구성 역할 {overview.roles.length}개{topicName ? '와 지금 학습 주제 이름' : ''}에서만 찾아요. 프로젝트 전체 검색이 아니에요.</p>
+      {topicFound && <p className="hint">지금 학습 주제 ‘{topicName}’의 이름과 맞아요. 화면 위 주제 바에 있어요.</p>}
+      {term && !foundFeatures.length && !foundRoles.length && !topicFound && <p className="hint">이 범위에는 없어요.</p>}
+    </section>
     <section aria-label="주요 기능 후보">
-      <h4>주요 기능 후보 · {overview.features.length}개</h4>
+      <h4>주요 기능 후보 · {term ? `찾은 ${foundFeatures.length}개 / ` : ''}{overview.features.length}개</h4>
       {overview.features.length === 0 && <p className="hint">읽은 범위에서 기능 후보를 찾지 못했어요. 기능이 없다는 뜻은 아니에요.</p>}
-      <ul className="overview-items">{features.map((feature, index) => {
+      <ul className="overview-items">{features.map(({ feature, index }) => {
         const start = sourceOf(feature.start.evidenceId);
         const anchor = `feature:${index}`;
         return <li key={anchor} className="fact">
@@ -125,10 +167,10 @@ function OverviewAnswer({ result, stale, locked, revealAnchor, onEvidence, onFol
           <button className="btn btn--small" data-anchor={anchor} disabled={blocked} onClick={() => onFollow(feature, anchor)}>이 기능 따라가기</button>
         </li>;
       })}</ul>
-      {features.length < overview.features.length && <button className="btn btn--small" onClick={() => setAllFeatures(true)}>{overview.features.length - features.length}개 더 보기</button>}
+      {features.length < foundFeatures.length && <button className="btn btn--small" onClick={() => setAllFeatures(true)}>{foundFeatures.length - features.length}개 더 보기</button>}
     </section>
     <section aria-label="큰 구성과 역할">
-      <h4>큰 구성과 역할 · {overview.roles.length}개</h4>
+      <h4>큰 구성과 역할 · {term ? `찾은 ${foundRoles.length}개 / ` : ''}{overview.roles.length}개</h4>
       <p className="hint">역할로 묶은 것은 AI 해석이에요. 지도의 선은 코드에서 확인한 import만 그대로예요.</p>
       <ul className="overview-items">{roles.map((role, index) => <li key={index} className="fact">
         <span className="tag tag--unknown">AI 해석 · 구성 역할</span>
@@ -142,7 +184,7 @@ function OverviewAnswer({ result, stale, locked, revealAnchor, onEvidence, onFol
           </li>;
         })}</ul>}
       </li>)}</ul>
-      {roles.length < overview.roles.length && <button className="btn btn--small" onClick={() => setAllRoles(true)}>{overview.roles.length - roles.length}개 더 보기</button>}
+      {roles.length < foundRoles.length && <button className="btn btn--small" onClick={() => setAllRoles(true)}>{foundRoles.length - roles.length}개 더 보기</button>}
     </section>
     {overview.unknowns.length > 0 && <section aria-label="개요에서 확인하지 못한 것">
       <h4>확인하지 못한 것</h4>
@@ -157,10 +199,10 @@ function OverviewAnswer({ result, stale, locked, revealAnchor, onEvidence, onFol
   </div>;
 }
 
-/** Plan F1·U1: the topic being learned, above every view, and the ways back to its start and to the overview. */
-export function TopicBar({ topic, canStartHere, canAsk, locked, onRename, onStartHere, onStart, onAsk, onOverview, onClose }: {
-  topic: Topic | null; canStartHere: boolean; canAsk: boolean; locked: boolean;
-  onRename(name: string): void; onStartHere(): void; onStart(): void; onAsk(): void; onOverview(): void; onClose(): void;
+/** Plan F1·U1: the topic being learned, above every view, and the ways back to its start, the place before and the overview. */
+export function TopicBar({ topic, places, canStartHere, canAsk, locked, onRename, onStartHere, onStart, onBack, onAsk, onOverview, onClose }: {
+  topic: Topic | null; places: number; canStartHere: boolean; canAsk: boolean; locked: boolean;
+  onRename(name: string): void; onStartHere(): void; onStart(): void; onBack(): void; onAsk(): void; onOverview(): void; onClose(): void;
 }) {
   if (!topic) {
     return canStartHere ? <section className="topic topic--empty" aria-label="학습 주제">
@@ -176,8 +218,10 @@ export function TopicBar({ topic, canStartHere, canAsk, locked, onRename, onStar
     </label>
     {topic.name.trim() !== topic.original && <span className="hint">원래 이름: {topic.original}</span>}
     <span className="hint">출발점: {start}</span>
+    <span className="hint" data-testid="topic-places">본 곳 {places}개(최근 {HISTORY}개까지)</span>
     <div className="topic__actions">
       <button className="btn btn--small" disabled={locked} onClick={onStart}>출발점으로</button>
+      <button className="btn btn--small" disabled={locked || places < 2} onClick={onBack}>이전 위치</button>
       <button className="btn btn--small" disabled={locked || !canAsk} title={canAsk ? undefined : '함수를 먼저 골라 주세요.'}
         onClick={onAsk}>시작·처리·결과 질문 준비</button>
       <button className="btn btn--small" onClick={onOverview}>한눈에 보기로</button>

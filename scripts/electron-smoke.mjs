@@ -54,7 +54,7 @@ const featureFixture = path.join(temporary, '기능 프로젝트');
 const featureFiles = {
   'README.md': '# 배너 관리\n\n배너를 등록하고 목록을 보여 줍니다.\n',
   'banner.ts': 'export function registerBanner(title: string) {\n  return save(title);\n}\nexport function listBanners() {\n  return [];\n}\nfunction save(title: string) {\n  return { title };\n}\n',
-  'dup.ts': 'class First {\n  run() { return 1; }\n}\nclass Second {\n  run() { return 2; }\n}\nexport function helper() {\n  return new First().run() + new Second().run();\n}\n',
+  'dup.ts': 'class First {\n  run() { return 1; }\n}\nclass Second {\n  run() { return 2; }\n}\nexport function helper() {\n  return new First().run() + new Second().run();\n}\nfunction notify() {\n  helper()\n}\n',
   'settings.ts': 'const limit = 3;\n',
 };
 await mkdir(featureFixture);
@@ -1422,6 +1422,165 @@ try {
     await topicBar.getByRole('button', { name: '출발점으로', exact: true }).click();
     await until(async () => await runs.nth(1).getAttribute('aria-pressed') === 'true');
     assert.equal(await runs.nth(0).getAttribute('aria-pressed'), 'false');
+  });
+  await check('Topic history and search: the place before comes back (a range without a function too), not a changed one; the last 20; search only within the overview', async () => {
+    const topicBar = page.getByRole('region', { name: '학습 주제' });
+    const card = page.getByRole('region', { name: '기능과 구성 (AI 개요)' });
+    const placesShown = () => page.getByTestId('topic-places').innerText();
+    // A move is recorded once its code has been checked and the screen is drawn again.
+    const settle = async () => {
+      await until(async () => await page.locator('.busy').count() === 0);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    };
+    const back = topicBar.getByRole('button', { name: '이전 위치', exact: true });
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await card.getByRole('checkbox').check();
+    await card.getByRole('button', { name: '개요 만들기', exact: true }).click();
+    await card.getByText('배너를 등록하고 보여 주는 앱이에요.', { exact: true }).waitFor();
+    // Search: this overview's items and the topic's name only.
+    const search = card.getByRole('searchbox', { name: '기능·역할 찾기' });
+    await card.getByText('이번 개요의 기능 후보 7개·구성 역할 1개와 지금 학습 주제 이름에서만 찾아요. 프로젝트 전체 검색이 아니에요.', { exact: true }).waitFor();
+    await search.fill('등록');
+    await card.getByText('주요 기능 후보 · 찾은 1개 / 7개', { exact: true }).waitFor();
+    assert.deepEqual(await card.getByRole('region', { name: '주요 기능 후보' }).locator('.overview-items > li b').allInnerTexts(), ['배너 등록']);
+    await card.getByText('큰 구성과 역할 · 찾은 0개 / 1개', { exact: true }).waitFor();
+    await search.fill('두 번째');
+    await card.getByText('지금 학습 주제 ‘두 번째 실행’의 이름과 맞아요. 화면 위 주제 바에 있어요.', { exact: true }).waitFor();
+    await search.fill('없는 이름');
+    await card.getByText('이 범위에는 없어요.', { exact: true }).waitFor();
+    await search.fill('');
+    // History: start, a called function, a document range, back to the start; then back one by one.
+    const features = card.getByRole('region', { name: '주요 기능 후보' });
+    await features.getByRole('button', { name: '이 기능 따라가기', exact: true }).first().click();
+    await until(async () => await page.getByRole('button', { name: 'registerBanner', exact: true }).getAttribute('aria-pressed') === 'true');
+    await until(async () => await placesShown() === '본 곳 1개(최근 20개까지)');
+    assert.equal(await back.isDisabled(), true);
+    await page.getByRole('list', { name: '이 함수가 부르는 것' }).getByRole('button', { name: '그 함수로', exact: true }).click();
+    await until(async () => await page.getByRole('button', { name: 'save', exact: true }).getAttribute('aria-pressed') === 'true');
+    await until(async () => await placesShown() === '본 곳 2개(최근 20개까지)');
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await card.getByRole('list', { name: '소개의 근거' }).getByRole('button', { name: 'README.md · 문서 전체', exact: true }).click();
+    await until(async () => await page.getByTestId('evidence-range').count() === 1
+      && (await page.getByTestId('evidence-range').innerText()).startsWith('근거: README.md · 1–3줄'));
+    await until(async () => await placesShown() === '본 곳 3개(최근 20개까지)');
+    await topicBar.getByRole('button', { name: '출발점으로', exact: true }).click();
+    await until(async () => await page.getByRole('button', { name: 'registerBanner', exact: true }).getAttribute('aria-pressed') === 'true');
+    await until(async () => await placesShown() === '본 곳 4개(최근 20개까지)');
+    await back.click();
+    await until(async () => await page.getByTestId('evidence-range').count() === 1
+      && (await page.getByTestId('evidence-range').innerText()).startsWith('근거: README.md · 1–3줄'));
+    assert.equal(await placesShown(), '본 곳 3개(최근 20개까지)');
+    await back.click();
+    await until(async () => await page.getByRole('button', { name: 'save', exact: true }).getAttribute('aria-pressed') === 'true');
+    await back.click();
+    await until(async () => await page.getByRole('button', { name: 'registerBanner', exact: true }).getAttribute('aria-pressed') === 'true');
+    await until(async () => await placesShown() === '본 곳 1개(최근 20개까지)');
+    assert.equal(await back.isDisabled(), true);
+    // A place whose file changed afterwards: only the file opens, and that is said.
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await card.getByRole('list', { name: '소개의 근거' }).getByRole('button', { name: 'README.md · 문서 전체', exact: true }).click();
+    await until(async () => await placesShown() === '본 곳 2개(최근 20개까지)');
+    await page.getByRole('button', { name: 'settings.ts', exact: true }).click();
+    await page.getByRole('heading', { name: 'settings.ts', exact: true }).waitFor();
+    await until(async () => await placesShown() === '본 곳 3개(최근 20개까지)');
+    await writeFile(path.join(featureFixture, 'README.md'), `${featureFiles['README.md']}\n덧붙인 줄\n`);
+    await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).waitFor();
+    await page.getByRole('button', { name: '파일 다시 읽기', exact: true }).click();
+    await until(async () => await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).count() === 0);
+    await back.click();
+    await page.getByText('그 뒤 파일이 바뀌어 위치를 되살리지 않았어요. 파일만 열었어요.', { exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'README.md', exact: true }).waitFor();
+    assert.equal(await page.getByTestId('evidence-range').count(), 0);
+    // The changed file now stands for that place, so going back goes on past it.
+    assert.equal(await placesShown(), '본 곳 2개(최근 20개까지)');
+    await back.click();
+    await until(async () => await page.getByRole('button', { name: 'registerBanner', exact: true }).getAttribute('aria-pressed') === 'true');
+    await until(async () => await placesShown() === '본 곳 1개(최근 20개까지)');
+    // A step comes back as that step, and the flow goes on from it.
+    const steps = page.getByRole('list', { name: 'registerBanner 단계' });
+    await steps.getByRole('button', { name: '반환문', exact: true }).click();
+    await until(async () => await steps.getByRole('button', { name: '반환문', exact: true }).getAttribute('aria-current') === 'step');
+    await steps.getByRole('button', { name: '호출 표현식', exact: true }).click();
+    await until(async () => await steps.getByRole('button', { name: '호출 표현식', exact: true }).getAttribute('aria-current') === 'step');
+    await back.click();
+    await until(async () => await steps.getByRole('button', { name: '반환문', exact: true }).getAttribute('aria-current') === 'step');
+    await page.getByRole('button', { name: '다음 단계', exact: true }).click();
+    await until(async () => await steps.getByRole('button', { name: '호출 표현식', exact: true }).getAttribute('aria-current') === 'step');
+    // A change notice and reading the file again are no moves: back goes to the place really seen before.
+    await settle();
+    await page.getByRole('button', { name: 'listBanners', exact: true }).click();
+    await settle();
+    const beforeChange = await placesShown();
+    await writeFile(path.join(featureFixture, 'settings.ts'), 'const limit = 4;\n');
+    await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).waitFor();
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+    await page.getByRole('button', { name: '파일 다시 읽기', exact: true }).click();
+    await until(async () => await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).count() === 0);
+    await settle();
+    assert.equal(await placesShown(), beforeChange);
+    await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    await back.click();
+    await until(async () => await steps.getByRole('button', { name: '호출 표현식', exact: true }).getAttribute('aria-current') === 'step');
+    // Two steps over the same range (a call written without a semicolon) come back as the one that was chosen.
+    await page.getByRole('button', { name: 'dup.ts', exact: true }).click();
+    await page.getByRole('button', { name: 'notify', exact: true }).click();
+    const notifySteps = page.getByRole('list', { name: 'notify 단계' });
+    await notifySteps.getByRole('button', { name: '호출 표현식', exact: true }).click();
+    await until(async () => await notifySteps.getByRole('button', { name: '호출 표현식', exact: true }).getAttribute('aria-current') === 'step');
+    await page.getByRole('button', { name: 'helper', exact: true }).click();
+    await until(async () => await page.getByRole('button', { name: 'helper', exact: true }).getAttribute('aria-pressed') === 'true');
+    await back.click();
+    await until(async () => await notifySteps.getByRole('button', { name: '호출 표현식', exact: true }).getAttribute('aria-current') === 'step');
+    assert.equal(await notifySteps.getByRole('button', { name: '표현식', exact: true }).getAttribute('aria-current'), null);
+    // Going back while its file is still read, to the overview meanwhile, then another file: back still finds that place.
+    await page.getByRole('button', { name: 'helper', exact: true }).click();
+    await settle();
+    await app.evaluate(({ ipcMain }) => {
+      if (!globalThis.testReadGated) {
+        const read = ipcMain._invokeHandlers.get('learning:read');
+        ipcMain.removeHandler('learning:read');
+        ipcMain.handle('learning:read', async (event, request) => { await globalThis.testReadGate; return read(event, request); });
+        globalThis.testReadGated = true;
+      }
+      globalThis.testReadGate = new Promise(resolve => { globalThis.testReadRelease = resolve; });
+    });
+    await back.click();
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await app.evaluate(() => globalThis.testReadRelease());
+    await settle();
+    await page.getByRole('button', { name: 'settings.ts', exact: true }).click();
+    await page.getByRole('heading', { name: 'settings.ts', exact: true }).waitFor();
+    await settle();
+    await back.click();
+    await until(async () => await notifySteps.getByRole('button', { name: '호출 표현식', exact: true }).getAttribute('aria-current') === 'step');
+    // A wake from sleep while going back or to the start is read: nothing is marked or chosen from before.
+    for (const action of ['이전 위치', '출발점으로']) {
+      await page.getByRole('button', { name: 'helper', exact: true }).click();
+      await settle();
+      await app.evaluate(() => { globalThis.testReadGate = new Promise(resolve => { globalThis.testReadRelease = resolve; }); });
+      await topicBar.getByRole('button', { name: action, exact: true }).click();
+      await app.evaluate(({ powerMonitor }) => powerMonitor.emit('resume'));
+      await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).waitFor();
+      await app.evaluate(() => globalThis.testReadRelease());
+      await settle();
+      assert.equal(await page.getByTestId('evidence-range').count(), 0, action);
+      assert.equal(await page.locator('.symbols__item[aria-pressed="true"]').count(), 0, action);
+      await page.getByRole('button', { name: '파일 다시 읽기', exact: true }).or(page.getByRole('button', { name: 'dup.ts', exact: true })).first().click();
+      await until(async () => await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).count() === 0);
+    }
+    await page.getByRole('button', { name: 'notify', exact: true }).click();
+    await settle();
+    // Only the last 20 places are kept; the start stays reachable through its own button.
+    await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    await page.getByRole('button', { name: 'banner.ts', exact: true }).click();
+    for (let index = 0; index < 22; index++) {
+      const name = index % 2 ? 'listBanners' : 'registerBanner';
+      await page.getByRole('button', { name, exact: true }).click();
+      await until(async () => await page.getByRole('button', { name, exact: true }).getAttribute('aria-pressed') === 'true' && !await page.getByRole('status').filter({ hasText: '처리 중' }).count());
+    }
+    await until(async () => await placesShown() === '본 곳 20개(최근 20개까지)');
+    await topicBar.getByRole('button', { name: '출발점으로', exact: true }).click();
+    await until(async () => await page.getByRole('button', { name: 'registerBanner', exact: true }).getAttribute('aria-pressed') === 'true');
   });
   await check('Hard code: the map lists a long function, the reader marks it, and the AI button asks about all of it', async () => {
     await dialogTo(hardFixture);
