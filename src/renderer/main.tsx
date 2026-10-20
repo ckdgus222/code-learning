@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { CallSite, ValueSite, CodeSymbol, Evidence, MapFunction, MapImport, ProjectView, SourceView, StartCandidate } from '../shared/contracts';
+import type { CallSite, ValueSite, CodeSymbol, Evidence, FunctionCalls, MapFunction, MapImport, ProjectView, SourceView, StartCandidate } from '../shared/contracts';
 import { useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
 import { AiPanel } from './ai-panel';
@@ -8,7 +8,7 @@ import { Flow } from './flow';
 import { ProjectMapView, type MapEntry } from './project-map';
 import { matchCallStep, matchFunction, matchImport } from './map-layout';
 import { CallsFacts, type CallFunction, type CallsState } from './calls';
-import { ValuesFacts } from './values';
+import { shapeQueries, ValuesFacts, type ShapeSlot, type ShapesState } from './values';
 import { COMPLEXITY_NOTE, ComplexityTags, overLimit } from './complexity';
 import './styles.css';
 
@@ -59,6 +59,9 @@ function App() {
   // The call search for the function chosen in the flow view (plan v2.3 F), kept per function and file hash.
   const [calls, setCalls] = useState<{ key: string; state: CallsState; revision: number } | null>(null);
   const callsRequest = useRef(0);
+  // The value shapes for those calls (plan v2.3 V-2), asked for once the calls are found, under the same key.
+  const [shapes, setShapes] = useState<{ key: string; state: ShapesState; slots: ShapeSlot[] } | null>(null);
+  const shapesRequest = useRef(0);
   const { view, setView, symbolId, stepId, selectSymbol, selectStep } = useSelection();
   const symbol = source?.analysis.symbols.find(item => item.id === symbolId);
   const step = symbol?.steps.find(item => item.id === stepId);
@@ -80,6 +83,10 @@ function App() {
   useEffect(() => {
     if (view === 'flow' && source && symbol && calls?.key !== callsKey(source, symbol)) void findCalls(source, symbol);
   }, [view, source, symbol]);
+  // The calls found lead to their value shapes; coming back to a function reuses both.
+  useEffect(() => {
+    if (calls?.state.status === 'done' && shapes?.key !== calls.key) void findShapes(calls.key, calls.state.result);
+  }, [calls]);
   // The map is drawn the first time it is looked at after a folder opens.
   useEffect(() => {
     if (view === 'map' && project && !projectMap && !mapping) void buildMap();
@@ -200,9 +207,12 @@ function App() {
   }
 
   const callsKey = (from: SourceView, item: CodeSymbol) => `${from.fileId}:${from.hash}:${item.evidence.startUtf16}:${item.evidence.endUtf16}`;
-  function forgetCalls() { callsRequest.current++; setCalls(null); }
+  function forgetCalls() { callsRequest.current++; setCalls(null); forgetShapes(); }
+  // A search still running is replaced by the next one, so only its result is dropped here.
+  function forgetShapes() { shapesRequest.current++; setShapes(null); }
   async function findCalls(from: SourceView, item: CodeSymbol) {
     if (!project) return;
+    forgetShapes();
     const current = ++callsRequest.current;
     const atRevision = revision.current;
     const key = callsKey(from, item);
@@ -212,6 +222,16 @@ function App() {
       startUtf16: item.evidence.startUtf16, endUtf16: item.evidence.endUtf16 });
     if (current !== callsRequest.current) return;
     setCalls({ key, revision: atRevision, state: result.ok ? { status: 'done', result: result.value } : { status: 'failed', message: result.message } });
+  }
+  async function findShapes(key: string, found: FunctionCalls) {
+    if (!project) return;
+    const current = ++shapesRequest.current;
+    const { queries, slots } = shapeQueries(found.values, found.fileId);
+    setShapes({ key, slots, state: { status: 'finding' } });
+    const result = await window.learning.valueShapes({ projectId: project.id, fileId: found.fileId, fileHash: found.fileHash,
+      startUtf16: found.startUtf16, endUtf16: found.endUtf16, names: queries });
+    if (current !== shapesRequest.current) return;
+    setShapes({ key, slots, state: result.ok ? { status: 'done', result: result.value } : { status: 'failed', message: result.message } });
   }
   async function cancelCalls() {
     if (!project) return;
@@ -398,6 +418,8 @@ function App() {
               onRetry={() => void findCalls(source, symbol)} onCancel={() => void cancelCalls()}
               onShowSite={site => void showCallSite(site)} onShowFunction={target => void showCallFunction(target)} />
             {calls.state.status === 'done' && <ValuesFacts key={calls.key} result={calls.state.result} locked={busy} pathOf={pathOf}
+              shapes={shapes?.key === calls.key ? shapes : null}
+              onRetryShapes={() => { if (calls.state.status === 'done') void findShapes(calls.key, calls.state.result); }}
               onShowSite={site => void showValueSite(site)} onShowFunction={target => void showCallFunction(target)} />}
           </>} />}
 

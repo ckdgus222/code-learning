@@ -14,6 +14,11 @@ const text = 'export function packaged(value: number) { if (value < 0) return "�
 await writeFile(path.join(project, 'sample.ts'), text);
 // Uses sample.ts, so the project map has one arrow to draw.
 await writeFile(path.join(project, 'helper.ts'), "import { packaged } from './sample';\nexport const twice = (value: number) => packaged(value);\n");
+// Plan v2.3 V-2: a package with only a type file, which the TypeScript checker may read.
+await mkdir(path.join(project, 'node_modules/money'), { recursive: true });
+await writeFile(path.join(project, 'node_modules/money/package.json'), JSON.stringify({ name: 'money', types: 'index.d.ts' }));
+await writeFile(path.join(project, 'node_modules/money/index.d.ts'), 'export declare function format(amount: number): string;\n');
+await writeFile(path.join(project, 'price.ts'), "import { format } from 'money';\nexport function label(amount: number) { return format(amount); }\n");
 let app;
 try {
   app = await electron.launch({
@@ -52,13 +57,23 @@ try {
   assert.equal(db.prepare('SELECT count(*) AS n FROM projects').get().n, 1);
   db.close();
   await page.screenshot({ path: path.join(root, 'test-results/packaged-code-flow.png') });
+  // The TypeScript checker runs from outside the archive and reads the package's type file.
+  await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+  await page.getByRole('button', { name: 'price.ts', exact: true }).click();
+  await page.getByRole('button', { name: 'label', exact: true }).click();
+  const summary = page.getByRole('article', { name: '함수 요약' });
+  await summary.getByRole('region', { name: '돌려주는 값의 모양' }).getByText('string', { exact: true }).waitFor({ timeout: 30_000 });
+  await summary.getByRole('group', { name: '바깥 이름' }).getByRole('button', { name: 'format', exact: true }).click();
+  await summary.getByRole('region', { name: 'format 값' }).getByText('(amount: number) => string', { exact: true }).waitFor();
+  await page.screenshot({ path: path.join(root, 'test-results/packaged-value-shapes.png') });
   // The project map's library and its stylesheet are in the bundle and work under the packaged CSP.
   await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
   // The one arrow runs straight down inside one folder, a box of zero width that Playwright calls hidden,
   // so the drawn path itself is checked.
   const arrow = page.locator('.react-flow__edge-path');
   await arrow.first().waitFor({ state: 'attached', timeout: 30_000 });
-  assert.equal(await page.locator('.react-flow__node').count(), 2);
+  // sample.ts, helper.ts and price.ts; price.ts imports only a package, which draws no arrow.
+  assert.equal(await page.locator('.react-flow__node').count(), 3);
   assert.equal(await arrow.count(), 1);
   assert.match(await arrow.getAttribute('d'), /^M[\d.\s,-]+/);
   assert.equal(await page.locator('.react-flow__node').first().evaluate(node => getComputedStyle(node).position), 'absolute');
@@ -87,7 +102,7 @@ try {
   assert.match(await cancellation.getAttribute('class'), /(?:^|\s)notice--info(?:\s|$)/);
   assert.equal(await page.getByRole('alert').count(), 0);
   await app.close(); app = undefined;
-  const report = { passed: true, checks: ['packaged app startup', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel'], state };
+  const report = { passed: true, checks: ['packaged app startup', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel'], state };
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

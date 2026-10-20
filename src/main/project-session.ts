@@ -1,9 +1,12 @@
 import { Worker } from 'node:worker_threads';
+import { lstat, readlink } from 'node:fs/promises';
 import path from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
-import type { Evidence, FunctionCalls, ProjectEvent, ProjectMap, ProjectView, Result, SourceView } from '../shared/contracts';
+import type { Evidence, FunctionCalls, ProjectEvent, ProjectMap, ProjectView, Result, ShapeQuery, SourceView, ValueShapes } from '../shared/contracts';
 import { AppError } from '../shared/errors';
 import type { WorkerRequest, WorkerResponse } from '../workers/analysis';
+import type { TypeWatch } from '../core/analysis/shapes';
+import { newStopSlots, requestStop } from '../core/analysis/side-stop';
 
 // Ending a worker thread while Tree-sitter parses aborts the whole app (Napi::Error). So a worker is
 // only asked to stop, through a shared flag it checks before each parse, and is terminated once it has
@@ -20,13 +23,16 @@ export async function workersStopped(): Promise<void> {
 }
 
 // Jobs that read the whole project in a worker of their own, so the session's worker keeps answering reads.
-type SideJob = 'map' | 'calls';
+type SideJob = 'map' | 'calls' | 'shapes';
 const sideWords: Record<SideJob, { failed: string; ended: string; slow: string; changed: string }> = {
   map: { failed: '지도를 만들지 못했어요.', ended: '지도 작업이 끝나 버렸어요.', slow: '지도를 만드는 데 너무 오래 걸려 멈췄어요.',
     changed: '지도를 만드는 동안 파일이 바뀌었어요. 다시 만들어 주세요.' },
   calls: { failed: '호출을 찾지 못했어요.', ended: '호출 찾기 작업이 끝나 버렸어요.', slow: '호출을 찾는 데 너무 오래 걸려 멈췄어요.',
     changed: '호출을 찾는 동안 파일이 바뀌었어요. 다시 찾아 주세요.' },
+  shapes: { failed: '값의 모양을 찾지 못했어요.', ended: '값의 모양 찾기 작업이 끝나 버렸어요.', slow: '값의 모양을 찾는 데 너무 오래 걸려 멈췄어요.',
+    changed: '값의 모양을 찾는 동안 파일이 바뀌었어요. 다시 찾아 주세요.' },
 };
+const changedTypes = '모양을 찾는 동안 외부 패키지 타입 파일이 바뀌었어요. 다시 찾아 주세요.';
 
 export class ProjectSession {
   private worker: Worker;
@@ -40,8 +46,15 @@ export class ProjectSession {
   private closed = false;
   private observedChanges = 0;
   private project?: ProjectView;
-  /** The map being drawn or calls being searched, and the flag that asks each worker to stop. The two may run together. */
+  /** The side jobs running, one per job, and the slots that ask each worker to stop (side-stop.ts). They may run together. */
   private sideRuns: Partial<Record<SideJob, { worker: Worker; stop: Int32Array }>> = {};
+  /** The dependency type files the shown shapes were read from (plan v2.3 V-2), and a wait for a new watch to be ready. */
+  private typeWatcher?: FSWatcher;
+  private abortTypeWatch?: () => void;
+  /** Counts shape searches and their cancels: a search adopts its watch only while it is still the latest. */
+  private shapesRun = 0;
+  /** Tests only: holds a new type watch back after it is ready and checked, just before it would be adopted. */
+  holdTypeWatch?: (watcher: FSWatcher) => Promise<void>;
 
   constructor(readonly id: string, readonly root: string, private readonly workerPath: string, private notify: (event: ProjectEvent) => void,
     private readonly requestTimeoutMs = 30_000) {
@@ -127,6 +140,96 @@ export class ProjectSession {
   }
 
   /**
+   * Finds the shapes the TypeScript checker reads for one function and the names asked (plan v2.3 V-2). Asking
+   * for another function replaces the search. The type files it read are then watched like the project's files.
+   */
+  async shapes(target: { fileId: string; fileHash: string; startUtf16: number; endUtf16: number }, names: ShapeQuery[],
+    timeoutMs = 30_000, watchTimeoutMs = 10_000): Promise<ValueShapes> {
+    if (this.closed || !this.project) throw new AppError('PROJECT_CLOSED', '프로젝트가 닫혔습니다. 다시 열어 주세요.');
+    this.cancelShapes();
+    const run = this.shapesRun;
+    const { files } = this.project;
+    const found = await this.runSide('shapes', stop => ({ shapes: { files, target, names, stop } }), timeoutMs) as { shapes: ValueShapes; watch: TypeWatch };
+    return await this.watchTypes(found.shapes, found.watch, watchTimeoutMs, run);
+  }
+
+  /**
+   * Starts watching the type files a result was read from, and checks them again once the watch is ready: a file
+   * changed in between makes the result CHANGED. Until then the request is still running and can be cancelled.
+   * Only then does the new watch replace the one for the shapes shown before.
+   */
+  private async watchTypes(shapes: ValueShapes, watch: TypeWatch, timeoutMs: number, run: number): Promise<ValueShapes> {
+    // A search cancelled or replaced while it waited must not touch the watch of the shapes shown now.
+    const current = () => run === this.shapesRun && !this.closed;
+    const paths = [...watch.files.map(file => file.path), ...watch.links.map(link => link.path)];
+    if (!paths.length) {
+      if (!current()) throw new AppError('CANCELLED', '취소한 결과는 표시하지 않습니다.');
+      // chokidar never reports an empty watch ready.
+      await this.replaceTypeWatcher(undefined);
+      return shapes;
+    }
+    const revision = this.observedChanges;
+    // A link is watched as itself, so pointing it elsewhere counts as a change.
+    const watcher = chokidar.watch(paths, { persistent: true, ignoreInitial: true, followSymlinks: false, depth: 0 });
+    let ready = false;
+    let adopted = false;
+    let changedEarly = false;
+    // Until the watch is adopted, an error, the time limit or a cancel fails the whole wait, checks included.
+    let fail = (_error: AppError) => {};
+    const failed = new Promise<never>((_, reject) => { fail = reject; });
+    failed.catch(() => {});
+    watcher.on('all', () => {
+      // Before 'ready' chokidar reports what it first finds (a watched link as 'add', even with ignoreInitial); a change
+      // in that time is caught by the check after 'ready'.
+      if (!ready) return;
+      if (!adopted) changedEarly = true;
+      else if (!this.closed && this.typeWatcher === watcher) { this.observedChanges++; this.notify({ projectId: this.id, kind: 'changed' }); }
+    });
+    watcher.on('error', () => {
+      if (!adopted) fail(new AppError('IO', '타입 파일을 감시하지 못했어요.'));
+      else if (!this.closed && this.typeWatcher === watcher) { this.observedChanges++; this.notify({ projectId: this.id, kind: 'watch-error' }); }
+    });
+    const abort = () => fail(new AppError('CANCELLED', '취소한 결과는 표시하지 않습니다.'));
+    this.abortTypeWatch = abort;
+    const timer = setTimeout(() => fail(new AppError('LIMIT', '타입 파일 감시를 준비하는 데 너무 오래 걸려 멈췄어요.')), timeoutMs);
+    const readyAndChecked = async () => {
+      await new Promise<void>(resolve => watcher.once('ready', () => { ready = true; resolve(); }));
+      const same = await Promise.all([
+        ...watch.files.map(async file => {
+          const now = await lstat(file.path).catch(() => null);
+          return !!now && now.isFile() && now.size === file.size && now.mtimeMs === file.mtimeMs && now.ctimeMs === file.ctimeMs &&
+            now.dev === file.dev && now.ino === file.ino;
+        }),
+        ...watch.links.map(async link => await readlink(link.path).catch(() => null) === link.target),
+      ]);
+      await this.holdTypeWatch?.(watcher);
+      return same;
+    };
+    try {
+      const same = await Promise.race([readyAndChecked(), failed]);
+      if (!current()) throw new AppError('CANCELLED', '취소한 결과는 표시하지 않습니다.');
+      if (changedEarly || same.includes(false)) throw new AppError('CHANGED', changedTypes);
+      if (revision !== this.observedChanges) throw new AppError('CHANGED', sideWords.shapes.changed);
+    } catch (error) {
+      await watcher.close();
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      if (this.abortTypeWatch === abort) this.abortTypeWatch = undefined;
+    }
+    // Adopted in the same turn as the last check, so no event falls between them.
+    adopted = true;
+    await this.replaceTypeWatcher(watcher);
+    return shapes;
+  }
+
+  private async replaceTypeWatcher(next: FSWatcher | undefined): Promise<void> {
+    const previous = this.typeWatcher;
+    this.typeWatcher = next;
+    await previous?.close();
+  }
+
+  /**
    * Runs one side job in a worker of its own. Cancel, time limit and closing raise a shared flag instead of
    * terminating the worker: ending a thread while Tree-sitter parses aborts the whole app. The worker stops
    * after its current file and replies; only then, idle, is it terminated. The time limit stops only the
@@ -135,7 +238,7 @@ export class ProjectSession {
   private async runSide(job: SideJob, data: (stop: SharedArrayBuffer) => object, timeoutMs: number): Promise<unknown> {
     const words = sideWords[job];
     const revision = this.observedChanges;
-    const stop = new Int32Array(new SharedArrayBuffer(4));
+    const stop = newStopSlots();
     const worker = new Worker(this.workerPath, { workerData: { root: this.root, projectId: this.id, ...data(stop.buffer) } });
     const run = { worker, stop };
     this.sideRuns[job] = run;
@@ -143,7 +246,7 @@ export class ProjectSession {
     let ended = () => {};
     keepUntilDone(new Promise<void>(resolve => { ended = resolve; }));
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; Atomics.store(stop, 0, 1); }, timeoutMs);
+    const timer = setTimeout(() => { timedOut = true; requestStop(stop); }, timeoutMs);
     try {
       const result = await new Promise<WorkerResponse['result']>(resolve => {
         worker.once('message', (message: WorkerResponse) => resolve(message.result));
@@ -170,9 +273,14 @@ export class ProjectSession {
    */
   cancelMap(): void { this.cancelSide('map'); }
   cancelCalls(): void { this.cancelSide('calls'); }
+  cancelShapes(): void {
+    this.shapesRun++;
+    this.cancelSide('shapes');
+    this.abortTypeWatch?.();
+  }
   private cancelSide(job: SideJob): void {
     const run = this.sideRuns[job];
-    if (run) Atomics.store(run.stop, 0, 1);
+    if (run) requestStop(run.stop);
     delete this.sideRuns[job];
   }
 
@@ -187,6 +295,7 @@ export class ProjectSession {
     Atomics.store(this.stop, 0, 1);
     this.cancelMap();
     this.cancelCalls();
+    this.cancelShapes();
     const message = code === 'LIMIT' ? '작업 제한 시간을 넘었습니다. 더 작은 폴더를 선택해 주세요.' :
       code === 'INTERNAL' ? '분석 작업이 종료되었습니다. 폴더를 다시 열어 주세요.' : '작업을 취소했습니다.';
     for (const item of this.pending.values()) {
@@ -194,7 +303,7 @@ export class ProjectSession {
       item.resolve({ ok: false, code, message } satisfies Result<never>);
     }
     this.pending.clear();
-    keepUntilDone(Promise.all([this.watcher?.close(), this.idle.then(() => this.worker.terminate())]));
+    keepUntilDone(Promise.all([this.watcher?.close(), this.replaceTypeWatcher(undefined), this.idle.then(() => this.worker.terminate())]));
     return Promise.resolve();
   }
 }

@@ -8,6 +8,16 @@ export const projectRequestSchema = z.object({ projectId: idSchema }).strict();
 /** A function as the analyzer listed it: its file, the hash the file had and the function's range. */
 export const callsRequestSchema = z.object({ projectId: idSchema, fileId: idSchema, fileHash: z.string().regex(/^[a-f0-9]{64}$/),
   startUtf16: z.number().int().min(0), endUtf16: z.number().int().min(0) }).strict();
+/**
+ * The same function and the names to find the shapes of (plan v2.3 V-2). `at` is where a name of the chosen file
+ * is declared; null for an import, found by its name. `expect` is where V-1 followed an import to.
+ */
+export const SHAPE_QUERY_LIMITS = { names: 500, nameLength: 200 } as const;
+export const shapesRequestSchema = callsRequestSchema.extend({
+  names: z.array(z.object({ name: z.string().min(1).max(SHAPE_QUERY_LIMITS.nameLength), at: z.number().int().min(0).nullable(),
+    expect: z.object({ fileId: idSchema, startUtf16: z.number().int().min(0) }).strict().nullable() }).strict()).max(SHAPE_QUERY_LIMITS.names),
+}).strict();
+export type ShapeQuery = z.infer<typeof shapesRequestSchema>['names'][number];
 
 // Offsets refer to the unchanged decoded source: UTF-16, start inclusive/end exclusive.
 export interface Evidence {
@@ -245,6 +255,24 @@ export interface FunctionCalls {
   notes: string[];
 }
 
+/**
+ * A shape the TypeScript checker reads from the code (plan v2.3 V-2): `text` as it prints it, and whether a real
+ * `any` type shows in it. Never a value from running the code.
+ */
+export type Shape = { text: string; hasAny: boolean } | { unknown: string };
+export interface ValueShapes {
+  projectId: string;
+  fileId: string;
+  fileHash: string;
+  startUtf16: number;
+  endUtf16: number;
+  /** What the chosen function returns. */
+  returns: Shape;
+  /** One for each name asked, in the order asked. */
+  names: Shape[];
+  notes: string[];
+}
+
 export type AppErrorCode = 'CANCELLED' | 'INVALID_REQUEST' | 'PROJECT_CLOSED' | 'NOT_ALLOWED' |
   'CHANGED' | 'UNSUPPORTED' | 'LIMIT' | 'IO' | 'INTERNAL' | 'AI_UNAVAILABLE' | 'AI_AUTH' | 'AI_RESPONSE';
 export type Result<T> = { ok: true; value: T } | { ok: false; code: AppErrorCode; message: string };
@@ -259,6 +287,8 @@ export interface LearningApi {
   cancelProjectMap(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
   functionCalls(input: z.infer<typeof callsRequestSchema>): Promise<Result<FunctionCalls>>;
   cancelFunctionCalls(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
+  valueShapes(input: z.infer<typeof shapesRequestSchema>): Promise<Result<ValueShapes>>;
+  cancelValueShapes(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
   checkConnections(): Promise<Result<ConnectionReport>>;
   startExplanation(input: ExplainRequest): Promise<Result<{ jobId: string }>>;
   cancelExplanation(input: { jobId: string }): Promise<Result<null>>;
@@ -269,7 +299,7 @@ export interface LearningApi {
 export const channels = {
   open: 'learning:open', read: 'learning:read', evidence: 'learning:evidence',
   cancel: 'learning:cancel', event: 'learning:project-event', map: 'learning:map', cancelMap: 'learning:cancel-map',
-  calls: 'learning:calls', cancelCalls: 'learning:cancel-calls',
+  calls: 'learning:calls', cancelCalls: 'learning:cancel-calls', shapes: 'learning:shapes', cancelShapes: 'learning:cancel-shapes',
   connections: 'learning:connections', explain: 'learning:explain',
   cancelExplanation: 'learning:cancel-explanation', learningEvent: 'learning:ai-event',
 } as const;

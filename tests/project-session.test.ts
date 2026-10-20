@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { ProjectSession, workersStopped } from '../src/main/project-session';
@@ -15,7 +15,32 @@ const delay = Number(process.env.MAP_DELAY);
 // Leaves a file in MARK_DIR (outside the project folder) when a worker replies after being asked to stop.
 const mark = name => fs.writeFileSync(path.join(process.env.MARK_DIR, name + '-' + Math.random().toString(36).slice(2)), '');
 const side = workerData.map ?? workerData.calls;
-if (side) {
+if (workerData.shapes) {
+  // A shapes worker with a stand-in for the checker process: one that only waits until it is ended. It follows
+  // side-stop.ts: whoever takes the number from the slot ends the process, and the reply comes after its exit.
+  const slots = new Int32Array(workerData.shapes.stop);
+  const child = require('node:child_process').spawn('sleep', ['30'], { stdio: 'ignore' });
+  mark('shapes-pid-' + child.pid);
+  const exited = new Promise(resolve => child.once('exit', resolve));
+  Atomics.store(slots, 1, child.pid);
+  let finished = false;
+  const finish = async result => {
+    if (finished) return;
+    finished = true;
+    if (Atomics.compareExchange(slots, 1, child.pid, 0) === child.pid) child.kill('SIGKILL');
+    else Atomics.wait(slots, 2, 0);
+    await exited;
+    parentPort.postMessage({ id: 0, result });
+  };
+  const stopped = { ok: false, code: 'CANCELLED', message: 'stopped' };
+  // Asked to stop before the number was there: the session could not end the process, so the worker does.
+  if (Atomics.load(slots, 0) === 1) finish(stopped);
+  else if (delay >= 0) setTimeout(() => finish({ ok: true, value: {
+    shapes: { projectId: workerData.projectId, returns: { text: 'number', hasAny: false }, names: [], notes: [] },
+    watch: JSON.parse(process.env.SHAPES_WATCH || '{"files":[],"links":[]}') } }), delay);
+  else exited.then(() => finish(stopped));
+  parentPort.on('message', () => {});
+} else if (side) {
   const job = workerData.map ? 'map' : 'calls';
   const stop = new Int32Array(side.stop);
   const started = Date.now();
@@ -78,6 +103,7 @@ afterEach(async () => {
   await workersStopped();
   delete process.env.MAP_DELAY;
   delete process.env.READ_MODE;
+  delete process.env.SHAPES_WATCH;
   await rm(root, { recursive: true, force: true });
   await rm(marks, { recursive: true, force: true });
   delete process.env.MARK_DIR;
@@ -250,5 +276,149 @@ describe('the call search runs in a worker of its own', () => {
     ]);
     await workersStopped();
     expect(await markers('calls-replied')).toBe(2);
+  });
+});
+
+describe('the value-shape search runs in a worker of its own and ends its checker process', () => {
+  const target = { fileId: '6c8af416-7789-478e-8418-a6f851557a8d', fileHash: 'a'.repeat(64), startUtf16: 0, endUtf16: 1 };
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const checkerPids = async () => (await readdir(marks)).filter(entry => entry.startsWith('shapes-pid-')).map(entry => Number(entry.split('-')[2]));
+  const until = async (done: () => boolean | Promise<boolean>) => {
+    for (let i = 0; i < 300 && !await done(); i++) await new Promise(resolve => setTimeout(resolve, 10));
+    expect(await done()).toBe(true);
+  };
+  let deps: string;
+  beforeEach(async () => { deps = await mkdtemp('/private/tmp/learning-session-deps-'); });
+  afterEach(async () => { await rm(deps, { recursive: true, force: true }); });
+  const stateOf = async (file: string) => {
+    const state = await lstat(file);
+    return { path: file, size: state.size, mtimeMs: state.mtimeMs, ctimeMs: state.ctimeMs, dev: state.dev, ino: state.ino };
+  };
+  async function watching(files: string[], links: { path: string; target: string }[], events: string[]) {
+    process.env.SHAPES_WATCH = JSON.stringify({ files: await Promise.all(files.map(stateOf)), links });
+    process.env.MAP_DELAY = '10';
+    const made = new ProjectSession(randomUUID(), root, workerPath, event => events.push(event.kind));
+    await made.open();
+    return made;
+  }
+
+  it('returns what it found and ends the checker; with no type files read it sets up no watch', async () => {
+    process.env.MAP_DELAY = '10';
+    await expect(session.shapes(target, [])).resolves.toMatchObject({ returns: { text: 'number' } });
+    const pids = await checkerPids();
+    expect(pids.length).toBe(1);
+    expect(alive(pids[0])).toBe(false);
+  });
+
+  it('ends the checker of a replaced, cancelled, timed-out or closed search, even one stuck in a request', async () => {
+    process.env.MAP_DELAY = '-1';
+    const replaced = session.shapes(target, []);
+    const cancelled = session.shapes(target, []);
+    await expect(replaced).rejects.toMatchObject({ code: 'CANCELLED' });
+    await until(async () => (await checkerPids()).length === 2);
+    session.cancelShapes();
+    await expect(cancelled).rejects.toMatchObject({ code: 'CANCELLED' });
+    await expect(session.shapes(target, [], 200)).rejects.toMatchObject({ code: 'LIMIT' });
+    const closed = session.shapes(target, []);
+    await until(async () => (await checkerPids()).length === 4);
+    await session.close();
+    await expect(closed).rejects.toMatchObject({ code: 'CANCELLED' });
+    await workersStopped();
+    expect((await checkerPids()).filter(alive)).toEqual([]);
+  });
+
+  it('watches the type files read: changing one after the result is a project change', async () => {
+    const file = path.join(deps, 'index.d.ts');
+    await writeFile(file, 'export declare const x: 1;\n');
+    const events: string[] = [];
+    const made = await watching([file], [], events);
+    await made.shapes(target, []);
+    await writeFile(file, 'export declare const x: 2;\n');
+    await until(() => events.includes('changed'));
+    await made.close();
+  });
+
+  it('watches a link passed on the way: pointing it at another version is a change even though the old files stay', async () => {
+    await mkdir(path.join(deps, 'v1'));
+    await mkdir(path.join(deps, 'v2'));
+    const link = path.join(deps, 'pkg');
+    await symlink('v1', link);
+    const events: string[] = [];
+    const made = await watching([], [{ path: link, target: 'v1' }], events);
+    await made.shapes(target, []);
+    await unlink(link);
+    await symlink('v2', link);
+    await until(() => events.includes('changed'));
+    await made.close();
+  });
+
+  it('refuses a result whose type files changed between reading and the watch being ready', async () => {
+    const file = path.join(deps, 'index.d.ts');
+    await writeFile(file, 'export declare const x: 1;\n');
+    const made = await watching([file], [], []);
+    await writeFile(file, 'export declare const x: 22;\n');
+    await expect(made.shapes(target, [])).rejects.toMatchObject({ code: 'CHANGED' });
+    await made.close();
+  });
+
+  it('can be cancelled or closed while the new watch gets ready, which then watches nothing', async () => {
+    const file = path.join(deps, 'index.d.ts');
+    await writeFile(file, 'export declare const x: 1;\n');
+    const events: string[] = [];
+    const made = await watching([file], [], events);
+    let waiting = 0;
+    made.holdTypeWatch = () => { waiting++; return new Promise(resolve => setTimeout(resolve, 300)); };
+    const cancelled = made.shapes(target, []);
+    await until(() => waiting === 1);
+    made.cancelShapes();
+    await expect(cancelled).rejects.toMatchObject({ code: 'CANCELLED' });
+    const closed = made.shapes(target, []);
+    await until(() => waiting === 2);
+    await made.close();
+    await expect(closed).rejects.toMatchObject({ code: 'CANCELLED' });
+    await writeFile(file, 'export declare const x: 2;\n');
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect(events).toEqual([]);
+  });
+
+  it('fails a result whose watch reports an error or runs out of time after it was ready, before it is adopted', async () => {
+    const file = path.join(deps, 'index.d.ts');
+    await writeFile(file, 'export declare const x: 1;\n');
+    const events: string[] = [];
+    const made = await watching([file], [], events);
+    made.holdTypeWatch = async watcher => { watcher.emit('error', new Error('watch failed')); };
+    await expect(made.shapes(target, [])).rejects.toMatchObject({ code: 'IO' });
+    made.holdTypeWatch = () => new Promise(resolve => setTimeout(resolve, 300));
+    await expect(made.shapes(target, [], 30_000, 100)).rejects.toMatchObject({ code: 'LIMIT' });
+    // Neither watch was kept: a later change is no event.
+    made.holdTypeWatch = undefined;
+    await writeFile(file, 'export declare const x: 2;\n');
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect(events).toEqual([]);
+    await made.close();
+  });
+
+  it('keeps the watch of the newer search when a replaced one finishes its checks later', async () => {
+    const older = path.join(deps, 'older.d.ts');
+    const newer = path.join(deps, 'newer.d.ts');
+    await writeFile(older, 'export declare const x: 1;\n');
+    await writeFile(newer, 'export declare const y: 1;\n');
+    const events: string[] = [];
+    const made = await watching([older], [], events);
+    // The first search is held after its watch is ready and checked; the second one runs through meanwhile.
+    let release = () => {};
+    let held = false;
+    made.holdTypeWatch = () => { made.holdTypeWatch = undefined; held = true; return new Promise(resolve => { release = resolve; }); };
+    // Replacing it cancels it at once, so its result is taken from the start.
+    const first = made.shapes(target, []).then(() => null, (error: unknown) => error);
+    await until(() => held);
+    process.env.SHAPES_WATCH = JSON.stringify({ files: [await stateOf(newer)], links: [] });
+    // A session's workers read their environment when they start, so the second one sees the newer file.
+    await made.shapes(target, []);
+    expect(await first).toMatchObject({ code: 'CANCELLED' });
+    release();
+    await writeFile(newer, 'export declare const y: 2;\n');
+    await until(() => events.includes('changed'));
+    await made.close();
   });
 });

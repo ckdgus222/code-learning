@@ -2,6 +2,7 @@ import { _electron as electron } from 'playwright';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -65,6 +66,11 @@ await mkdir(path.join(valuesFixture, 'src'), { recursive: true });
 await writeFile(path.join(valuesFixture, 'src/price.ts'), 'const RATE = 0.1;\nlet total = 0;\nexport function price(amount: number, qty = 1) {\n  let sum = amount * qty;\n  sum = sum + sum * RATE;\n  total = total + sum;\n  return sum;\n}\n');
 await writeFile(path.join(valuesFixture, 'src/shop.ts'), "import { price } from './price';\nexport function buy() { return price(100, 2); }\n");
 await writeFile(path.join(valuesFixture, 'src/price.test.ts'), "import { price } from './price';\nprice(5);\n");
+// Plan v2.3 V-2: a package with only a type file, which the TypeScript checker may read.
+await mkdir(path.join(valuesFixture, 'node_modules/money'), { recursive: true });
+await writeFile(path.join(valuesFixture, 'node_modules/money/package.json'), JSON.stringify({ name: 'money', types: 'index.d.ts' }));
+await writeFile(path.join(valuesFixture, 'node_modules/money/index.d.ts'), 'export declare function format(amount: number): string;\n');
+await writeFile(path.join(valuesFixture, 'src/label.ts'), "import { format } from 'money';\nexport function label(amount: number) { return format(amount); }\n");
 // Test harness lives outside the shipped app. Production IPC has no path injection/test API.
 const bootstrap = path.join(temporary, 'bootstrap.cjs');
 await writeFile(bootstrap, `const { app } = require('electron');\napp.setPath('userData', ${JSON.stringify(profile)});\nrequire(${JSON.stringify(path.join(root, '.vite/build/main.cjs'))});\n`);
@@ -106,6 +112,11 @@ async function launch() {
   await page.getByRole('heading', { name: 'Code Learning', exact: true }).waitFor();
 }
 // How the app process ended: a worker ended while Tree-sitter parses aborts it (SIGABRT, Napi::Error).
+// The TypeScript checker processes (plan v2.3 V-2) running from this checkout.
+function checkerProcesses() {
+  try { return execFileSync('pgrep', ['-f', path.join(root, 'node_modules/@typescript/')]).toString().trim().split('\n').length; }
+  catch { return 0; }
+}
 function ending() {
   const child = app.process();
   return new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
@@ -1167,7 +1178,8 @@ try {
     await page.screenshot({ path: path.join(artifacts, 'values-parameter.png') });
     // A const written as a literal is a fixed value; a let shows its first value and its writes.
     await summary.getByRole('group', { name: '바깥 이름' }).getByRole('button', { name: 'RATE', exact: true }).click();
-    await summary.getByRole('region', { name: 'RATE 값' }).getByText('0.1', { exact: true }).waitFor();
+    // The first is the fixed value; its shape (V-2) shows the same literal below once found.
+    await summary.getByRole('region', { name: 'RATE 값' }).getByText('0.1', { exact: true }).first().waitFor();
     await summary.getByRole('group', { name: '안에서 만든 이름' }).getByRole('button', { name: 'sum', exact: true }).click();
     const sum = summary.getByRole('region', { name: 'sum 값' });
     await sum.getByText('amount * qty', { exact: true }).waitFor();
@@ -1176,6 +1188,25 @@ try {
     // Showing a write marks its range in the reader.
     await writes.getByRole('button', { name: '코드 보기', exact: true }).click();
     await until(async () => (await page.getByTestId('evidence-range').innerText()).includes('5–5줄'));
+  });
+  await check('Value shapes: the TypeScript checker\'s shapes for the return and the names, a package\'s types read, never run values', async () => {
+    await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    await page.getByRole('button', { name: 'price', exact: true }).click();
+    const summary = page.getByRole('article', { name: '함수 요약' });
+    const returns = summary.getByRole('region', { name: '돌려주는 값의 모양' });
+    await returns.getByText('number', { exact: true }).waitFor();
+    await returns.getByText('모양은 TypeScript가 코드에서 읽은 타입이에요. 실행해서 확인한 값이 아니에요.', { exact: true }).waitFor();
+    await summary.getByRole('group', { name: '바깥 이름' }).getByRole('button', { name: 'RATE', exact: true }).click();
+    await summary.getByRole('region', { name: 'RATE 값' }).getByText('0.1', { exact: true }).nth(1).waitFor();
+    await summary.getByRole('group', { name: '받는 값' }).getByRole('button', { name: 'qty', exact: true }).click();
+    await summary.getByRole('region', { name: 'qty 값' }).getByText('number', { exact: true }).waitFor();
+    await page.screenshot({ path: path.join(artifacts, 'values-shape.png') });
+    // A package's type file is read for its types only.
+    await page.getByRole('button', { name: 'src/label.ts', exact: true }).click();
+    await page.getByRole('button', { name: 'label', exact: true }).click();
+    await returns.getByText('string', { exact: true }).waitFor();
+    await summary.getByRole('group', { name: '바깥 이름' }).getByRole('button', { name: 'format', exact: true }).click();
+    await summary.getByRole('region', { name: 'format 값' }).getByText('(amount: number) => string', { exact: true }).waitFor();
   });
   await check('Quitting while files are parsed waits for the workers and ends cleanly', async () => {
     // (a) Closing the window while a large folder opens.
@@ -1211,6 +1242,21 @@ try {
     await releaseWorkerMessages();
     await reopening.catch(() => undefined);
     assert.deepEqual(await endsWithin(ended, '(c) quit while a worker answer is held back'), { code: 0, signal: null });
+    // (d) Quitting while the TypeScript checker of a value-shape search runs: the process is ended, the app ends cleanly.
+    await launch();
+    await dialogTo(bigMapFixture);
+    const big = await page.evaluate(() => window.learning.openProject());
+    assert.equal(big.ok, true);
+    const file = big.value.files.find(item => item.relativePath === 'part0/file0.ts');
+    const read = await page.evaluate(input => window.learning.readSource(input), { projectId: big.value.id, fileId: file.id });
+    const fn = read.value.analysis.symbols[0].evidence;
+    ended = ending();
+    void page.evaluate(input => window.learning.valueShapes(input).catch(() => null), { projectId: big.value.id, fileId: file.id,
+      fileHash: read.value.hash, startUtf16: fn.startUtf16, endUtf16: fn.endUtf16, names: [] }).catch(() => {});
+    await until(() => checkerProcesses() > 0);
+    await app.evaluate(({ app: electronApp }) => electronApp.quit());
+    assert.deepEqual(await endsWithin(ended, '(d) quit while the value-shape checker runs'), { code: 0, signal: null });
+    assert.equal(checkerProcesses(), 0);
     app = undefined;
   });
   assert.deepEqual(failures, []);
