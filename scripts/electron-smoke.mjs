@@ -560,8 +560,13 @@ try {
     assert.equal(await page.getByTestId('evidence-range').count(), 0);
     assert.equal(await page.getByRole('button', { name: '주문', exact: true }).isDisabled(), true);
     await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
-    // This folder is no Git repository, so the changes view says so (plan v2.3 C-2).
-    await page.getByText('이 폴더는 Git 저장소가 아니에요.', { exact: true }).waitFor();
+    // This folder is no Git repository, so the changes view says so (plan v2.3 C-2). One write can send a second change
+    // notice while the history is read; the view then rightly asks to read again.
+    const notRepository = page.getByText('이 폴더는 Git 저장소가 아니에요.', { exact: true });
+    const readAgain = page.getByText('Git 기록을 읽는 동안 파일이 바뀌었어요. 다시 읽어 주세요.', { exact: true });
+    await notRepository.or(readAgain).waitFor();
+    if (await readAgain.isVisible()) await page.getByRole('button', { name: '다시 읽기', exact: true }).click();
+    await notRepository.waitFor();
     await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
     await page.getByRole('button', { name: '파일 다시 읽기', exact: true }).click();
     await until(async () => await page.getByRole('button', { name: '주문', exact: true }).isEnabled());
@@ -1012,13 +1017,18 @@ try {
           projectId: request.projectId, fileId: related.fileId, relativePath: 'related.ts', hash: related.fileHash,
           text: relatedText, analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] },
         } });
+        // Like the real workflow, the selection is the first source and steps and claims name sources by ID.
+        const selection = { id: request.evidenceId, projectId: request.projectId, fileId: randomUUID(),
+          fileHash: request.expectedFileHash, startUtf16: 0, endUtf16: 1, startLine: 1, endLine: 1 };
         const result = { jobId, conversationId: request.conversationId ?? randomUUID(), projectId: request.projectId,
-          question: request.question,
-          evidence: { id: request.evidenceId, projectId: request.projectId, fileId: randomUUID(),
-            fileHash: request.expectedFileHash, startUtf16: 0, endUtf16: 1, startLine: 1, endLine: 1 },
-          sources: [{ evidence: related, relativePath: 'related.ts' }], limitations: ['시험용 관련 파일 자료입니다.'],
-          explanation: { summary: `가짜 설명: ${request.question}`, steps: [],
-            claims: [{ kind: 'code', text: '테스트용 설명입니다.', evidenceIds: [request.evidenceId] }], terms: [], unknowns: [] },
+          question: request.question, evidence: selection,
+          sources: [{ evidence: selection, relativePath: 'order.ts' }, { evidence: related, relativePath: 'related.ts' }],
+          limitations: ['시험용 관련 파일 자료입니다.'],
+          explanation: { summary: `가짜 설명: ${request.question}`,
+            steps: [{ title: '가짜 단계', input: '수량', action: '비교', output: '결과', alternatives: [],
+              evidenceIds: [request.evidenceId, related.id, request.evidenceId] }],
+            claims: [{ kind: 'code', text: '테스트용 설명입니다.', evidenceIds: [request.evidenceId] },
+              { kind: 'concept', text: '일반 개념 설명입니다.' }], terms: [], unknowns: [] },
           review: 'AI 검토됨', models: [{ stage: 'explaining', provider: 'antigravity',
             requestedModel: 'gemini-3.8-flash-high', reportedModel: null }],
         };
@@ -1085,6 +1095,20 @@ try {
     assert.equal(lastRequest.evidenceId, requestsBefore.at(-1).evidenceId);
     assert.equal(lastRequest.conversationId, requestsBefore.at(-1).conversationId);
     await page.screenshot({ path: path.join(artifacts, 'fake-ai-related-evidence.png') });
+    // Plan G1·E1: each step and code claim names its own sources, a repeated one once; a whole file says so.
+    const answer = page.getByRole('region', { name: 'AI 설명' }).last();
+    const stepSources = answer.getByRole('list', { name: '‘가짜 단계’의 근거' }).getByRole('button');
+    assert.deepEqual(await stepSources.allInnerTexts(), ['order.ts · 1–1행', 'related.ts · 파일 전체 근거 · 세부 위치 미확인']);
+    assert.deepEqual(await answer.getByRole('list', { name: '이 설명의 근거' }).getByRole('button').allInnerTexts(), ['order.ts · 1–1행']);
+    assert.equal(await answer.getByRole('list', { name: '이 설명의 근거' }).count(), 1);
+    await answer.screenshot({ path: path.join(artifacts, 'ai-step-sources.png') });
+    await stepSources.nth(0).click();
+    await until(async () => (await page.getByTestId('evidence-range').innerText()).startsWith('근거: order.ts'));
+    assert.equal(await page.getByRole('region', { name: 'AI 설명' }).count(), 3);
+    assert.equal(await page.getByTestId('question-scope').innerText(), scope);
+    await stepSources.nth(1).click();
+    await until(async () => (await page.locator('.cm-line').allTextContents()).join('\n').includes('export const related'));
+    assert.equal(await page.getByRole('region', { name: 'AI 설명' }).count(), 3);
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
     await page.getByRole('button', { name: '주문', exact: true }).click();
     assert.equal(await page.getByRole('region', { name: 'AI 설명' }).count(), 0);

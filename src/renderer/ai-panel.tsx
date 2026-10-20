@@ -18,6 +18,29 @@ const phases: Record<LearningPhase, string> = {
   reviewing: 'Codex가 원본 코드와 대조 중', validating: '근거와 코드 변경 여부 확인 중',
 };
 
+const documentFile = /\.(?:md|txt)$/i;
+/**
+ * How one source of an answer is named: the selected code by its lines; a file given whole (a related file, or the
+ * selection's own file) says that no finer place was checked.
+ */
+export function sourceLabel(source: { evidence: Evidence; relativePath: string }, selectionId: string | null): string {
+  if (source.evidence.id === selectionId) return `${source.relativePath} · ${source.evidence.startLine}–${source.evidence.endLine}행`;
+  return documentFile.test(source.relativePath) ? `${source.relativePath} · 문서 전체`
+    : `${source.relativePath} · 파일 전체 근거 · 세부 위치 미확인`;
+}
+
+/** The evidence a step or claim names, each opened like the answer's files: the question and answer stay as they are. */
+export function SourceButtons({ ids, sources, selectionId, stale, label, onEvidence }: {
+  ids: string[]; sources: { evidence: Evidence; relativePath: string }[]; selectionId: string | null; stale: boolean; label: string;
+  onEvidence(evidence: Evidence): void;
+}) {
+  // main accepts only IDs it gave for this answer, so every one is among the sources; a repeated one is shown once.
+  const named = [...new Set(ids)].flatMap(id => sources.filter(item => item.evidence.id === id).slice(0, 1));
+  return <ul className="sources" aria-label={label}>{named.map(source => <li key={source.evidence.id}>
+    <button className="btn btn--small" disabled={stale} onClick={() => onEvidence(source.evidence)}>{sourceLabel(source, selectionId)}</button>
+  </li>)}</ul>;
+}
+
 export function AiPanel({ projectId, evidence, relativePath, stale, draft, onEvidence }: {
   projectId: string; evidence: Evidence | null; relativePath: string; stale: boolean;
   /** A question to put in the box, put again whenever the id changes (not on mount). */
@@ -166,8 +189,13 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, onEvi
       <ol>{answer.explanation.steps.map((step, index) => <li key={index}>
         <b>{step.title}</b><p>입력: {step.input}</p><p>처리: {step.action}</p><p>결과: {step.output}</p>
         {step.alternatives.map((alternative, i) => <p key={i}>다른 경우: {alternative}</p>)}
+        <SourceButtons ids={step.evidenceIds} sources={answer.sources} selectionId={answer.evidence.id} stale={stale}
+          label={`‘${step.title}’의 근거`} onEvidence={onEvidence} />
       </li>)}</ol>
-      <ul>{answer.explanation.claims.map((claim, index) => <li key={index}>{claim.kind === 'concept' ? '일반 개념: ' : ''}{claim.text}</li>)}</ul>
+      <ul>{answer.explanation.claims.map((claim, index) => <li key={index}>{claim.kind === 'concept' ? '일반 개념: ' : ''}{claim.text}
+        {claim.kind === 'code' && <SourceButtons ids={claim.evidenceIds} sources={answer.sources} selectionId={answer.evidence.id}
+          stale={stale} label="이 설명의 근거" onEvidence={onEvidence} />}
+      </li>)}</ul>
       <dl>{answer.explanation.terms.map((term, index) => <React.Fragment key={index}><dt>{term.term}</dt><dd>{term.meaning}</dd></React.Fragment>)}</dl>
       {answer.explanation.unknowns.map((unknown, index) => <p key={index}>확인하지 못함: {unknown}</p>)}
       {answer.limitations.map((limitation, index) => <p className="hint" key={index}>읽기 범위: {limitation}</p>)}
