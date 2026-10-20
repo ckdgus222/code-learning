@@ -288,3 +288,13 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .map-canvas .react-flow__edge-text { fill: var(--ink); font-size: 12px; }
 .map-list { display: grid; gap: 6px; font-size: 14px; }
 .map-list code { font: 13px var(--mono); overflow-wrap: anywhere; }
+
+/* Plan v2.3 C-2: kinds of change, and the read-only comparison. */
+.tag--change { background: var(--sunken); color: var(--ink); }
+.tag--modified { background: var(--warn-soft); color: var(--warn); }
+.tag--added, .tag--untracked { background: var(--ok-soft); color: var(--ok); }
+.tag--renamed { background: var(--accent-soft); color: var(--accent); }
+.tag--deleted { background: #fde2e1; color: #8a1f17; }
+.diff-card { margin-top: 12px; }
+.diff-view { border: 1px solid var(--line); border-radius: 6px; margin-top: 8px; max-height: 70vh; overflow: auto; }
+.diff-view .cm-mergeView, .diff-view .cm-editor { font: 14px/1.6 var(--mono); }

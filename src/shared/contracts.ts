@@ -18,6 +18,10 @@ export const shapesRequestSchema = callsRequestSchema.extend({
     expect: z.object({ fileId: idSchema, startUtf16: z.number().int().min(0) }).strict().nullable() }).strict()).max(SHAPE_QUERY_LIMITS.names),
 }).strict();
 export type ShapeQuery = z.infer<typeof shapesRequestSchema>['names'][number];
+/** A commit chosen to compare with (plan v2.3 C-2): its full object number, SHA-1 or SHA-256. */
+export const changesRequestSchema = projectRequestSchema.extend({ commit: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/) }).strict();
+/** One change to show: the old path in that commit (none for a new file) and the file now (none for a deleted one). */
+export const diffRequestSchema = changesRequestSchema.extend({ oldPath: z.string().min(1).max(1024).nullable(), fileId: idSchema.nullable() }).strict();
 
 // Offsets refer to the unchanged decoded source: UTF-16, start inclusive/end exclusive.
 export interface Evidence {
@@ -273,6 +277,25 @@ export interface ValueShapes {
   notes: string[];
 }
 
+/** A commit that changed the opened folder (plan v2.3 C-2); HEAD is also listed, without its subject when it did not. */
+export interface GitCommit { oid: string; time: number; subject: string | null; head: boolean }
+/** The commits to compare with, or why the folder's Git history cannot be used. */
+export interface GitHistory { projectId: string; available: boolean; reason: string | null; commits: GitCommit[] }
+export type ChangeKind = 'modified' | 'added' | 'untracked' | 'deleted' | 'renamed';
+/** A change of one path in the opened folder: a rename's path is the new one; a deleted file has no file now. */
+export interface FileChange { kind: ChangeKind; path: string; oldPath: string | null; fileId: string | null }
+export interface ProjectChanges {
+  projectId: string;
+  commit: string;
+  changes: FileChange[];
+  /** Paths left out of the comparison or not comparable, counted by reason; nothing of an excluded path is read. */
+  notCompared: { reason: string; count: number }[];
+  notes: string[];
+}
+/** One side of a change: its text, or why it could not be opened under the app's rules. */
+export type CodeSide = { text: string } | { code: AppErrorCode; message: string };
+export interface FileDiff { projectId: string; commit: string; old: CodeSide | null; now: CodeSide | null }
+
 export type AppErrorCode = 'CANCELLED' | 'INVALID_REQUEST' | 'PROJECT_CLOSED' | 'NOT_ALLOWED' |
   'CHANGED' | 'UNSUPPORTED' | 'LIMIT' | 'IO' | 'INTERNAL' | 'AI_UNAVAILABLE' | 'AI_AUTH' | 'AI_RESPONSE';
 export type Result<T> = { ok: true; value: T } | { ok: false; code: AppErrorCode; message: string };
@@ -289,6 +312,10 @@ export interface LearningApi {
   cancelFunctionCalls(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
   valueShapes(input: z.infer<typeof shapesRequestSchema>): Promise<Result<ValueShapes>>;
   cancelValueShapes(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
+  gitHistory(input: z.infer<typeof projectRequestSchema>): Promise<Result<GitHistory>>;
+  projectChanges(input: z.infer<typeof changesRequestSchema>): Promise<Result<ProjectChanges>>;
+  fileDiff(input: z.infer<typeof diffRequestSchema>): Promise<Result<FileDiff>>;
+  cancelChanges(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
   checkConnections(): Promise<Result<ConnectionReport>>;
   startExplanation(input: ExplainRequest): Promise<Result<{ jobId: string }>>;
   cancelExplanation(input: { jobId: string }): Promise<Result<null>>;
@@ -300,6 +327,7 @@ export const channels = {
   open: 'learning:open', read: 'learning:read', evidence: 'learning:evidence',
   cancel: 'learning:cancel', event: 'learning:project-event', map: 'learning:map', cancelMap: 'learning:cancel-map',
   calls: 'learning:calls', cancelCalls: 'learning:cancel-calls', shapes: 'learning:shapes', cancelShapes: 'learning:cancel-shapes',
+  history: 'learning:history', changes: 'learning:changes', diff: 'learning:diff', cancelChanges: 'learning:cancel-changes',
   connections: 'learning:connections', explain: 'learning:explain',
   cancelExplanation: 'learning:cancel-explanation', learningEvent: 'learning:ai-event',
 } as const;

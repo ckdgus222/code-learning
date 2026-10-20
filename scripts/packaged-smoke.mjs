@@ -2,6 +2,7 @@ import { _electron as electron } from 'playwright';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -19,6 +20,12 @@ await mkdir(path.join(project, 'node_modules/money'), { recursive: true });
 await writeFile(path.join(project, 'node_modules/money/package.json'), JSON.stringify({ name: 'money', types: 'index.d.ts' }));
 await writeFile(path.join(project, 'node_modules/money/index.d.ts'), 'export declare function format(amount: number): string;\n');
 await writeFile(path.join(project, 'price.ts'), "import { format } from 'money';\nexport function label(amount: number) { return format(amount); }\n");
+// Plan v2.3 C-2: the folder is a Git repository with one commit, and price.ts changed after it.
+const gitHere = (...args) => execFileSync('git', args, { cwd: project, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+gitHere('init', '-q');
+gitHere('add', 'sample.ts', 'helper.ts', 'price.ts');
+gitHere('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'packaged');
+await writeFile(path.join(project, 'price.ts'), "import { format } from 'money';\nexport function label(amount: number) { return format(amount); }\n// changed\n");
 let app;
 try {
   app = await electron.launch({
@@ -78,6 +85,11 @@ try {
   assert.match(await arrow.getAttribute('d'), /^M[\d.\s,-]+/);
   assert.equal(await page.locator('.react-flow__node').first().evaluate(node => getComputedStyle(node).position), 'absolute');
   await page.screenshot({ path: path.join(root, 'test-results/packaged-project-map.png') });
+  // git runs from the packaged app inside its sandbox and finds the change.
+  await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
+  const changed = page.getByRole('region', { name: '바뀐 파일 목록' }).getByRole('list', { name: '바뀐 파일' });
+  await changed.waitFor({ timeout: 30_000 });
+  assert.deepEqual(await changed.locator('li').allInnerTexts(), ['수정 price.ts 비교 보기']);
   await page.getByRole('tab', { name: '질문', exact: true }).click();
   assert.equal(await page.getByRole('combobox', { name: 'AI 사용 방식' }).inputValue(), 'local-worker');
   await page.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
@@ -102,7 +114,7 @@ try {
   assert.match(await cancellation.getAttribute('class'), /(?:^|\s)notice--info(?:\s|$)/);
   assert.equal(await page.getByRole('alert').count(), 0);
   await app.close(); app = undefined;
-  const report = { passed: true, checks: ['packaged app startup', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel'], state };
+  const report = { passed: true, checks: ['packaged app startup', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', 'changes from git inside its sandbox', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel'], state };
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

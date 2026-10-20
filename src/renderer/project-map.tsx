@@ -1,9 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import type { MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectMap, ProjectView } from '../shared/contracts';
+import type { ChangeKind, FileChange, MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectChanges, ProjectMap, ProjectView } from '../shared/contracts';
 import { folderName, visibleGraph, type MapArrow, type MapBox } from './map-layout';
 import { COMPLEXITY_NOTE, ComplexityTags } from './complexity';
+import { ChangeList, kindLabels } from './changes';
 
 // Plan v2.3 A (user, 2026-10-19): with more code files than this the map starts in the design view.
 const FOLD_OVER = 60;
@@ -24,12 +25,18 @@ const unresolvedLabels: Record<MapUnresolvedReason, string> = {
 };
 export interface MapEntry { map: ProjectMap; revision: number; build: number }
 
-function BoxLabel({ box }: { box: MapBox }) {
+/** A comparison with a commit shown on the map (plan v2.3 C-2), and whether files changed after it. */
+export interface MapChanges { result: ProjectChanges; stale: boolean }
+interface BoxData { box: MapBox; change: ChangeKind | null; changed: number }
+
+function BoxLabel({ box, change, changed }: BoxData) {
   const status = box.file && box.file.checked !== 'full' ? checkedLabels[box.file.checked] : null;
   return <span className="map-box__label">
     <b>{box.label}</b>
     {box.file?.start && <span className="tag tag--doc">시작점 후보</span>}
     {status && <span className="tag tag--unknown">{status}</span>}
+    {change && <span className={`tag tag--change tag--${change}`}>{kindLabels[change]}</span>}
+    {changed > 0 && <span className="tag tag--change">바뀐 파일 {changed}개</span>}
   </span>;
 }
 
@@ -37,12 +44,12 @@ function BoxLabel({ box }: { box: MapBox }) {
  * A box with a way in and out on each side. Arrows between columns leave on the right and enter on the
  * left; arrows inside one column go straight up or down instead of looping around the boxes.
  */
-function MapNode({ data }: NodeProps<Node<{ box: MapBox }>>) {
+function MapNode({ data }: NodeProps<Node<BoxData & Record<string, unknown>>>) {
   return <>
     <Handle type="target" id="in-left" position={Position.Left} />
     <Handle type="target" id="in-top" position={Position.Top} />
     <Handle type="target" id="in-bottom" position={Position.Bottom} />
-    <BoxLabel box={data.box} />
+    <BoxLabel box={data.box} change={data.change} changed={data.changed} />
     <Handle type="source" id="out-right" position={Position.Right} />
     <Handle type="source" id="out-bottom" position={Position.Bottom} />
     <Handle type="source" id="out-top" position={Position.Top} />
@@ -51,8 +58,9 @@ function MapNode({ data }: NodeProps<Node<{ box: MapBox }>>) {
 // Defined once, outside rendering, as React Flow expects.
 const nodeTypes = { box: MapNode };
 
-function MapBody({ map, locked, onOpenFile, onShowImport, onShowFunction }: {
-  map: ProjectMap; locked: boolean; onOpenFile(fileId: string): void; onShowImport(item: MapImport): void; onShowFunction(item: MapFunction): void;
+function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunction, onShowChange }: {
+  map: ProjectMap; changes: MapChanges | null; locked: boolean; onOpenFile(fileId: string): void; onShowImport(item: MapImport): void;
+  onShowFunction(item: MapFunction): void; onShowChange(change: FileChange): void;
 }) {
   const folders = useMemo(() => [...new Set(map.files.map(file => file.folder))], [map]);
   const paths = useMemo(() => new Map(map.files.map(file => [file.id, file.relativePath])), [map]);
@@ -63,7 +71,12 @@ function MapBody({ map, locked, onOpenFile, onShowImport, onShowFunction }: {
   // The folder-to-folder arrows are the design at a glance, so they are also listed as text.
   const design = useMemo(() => visibleGraph(map, new Set()).arrows, [map]);
   const pathOf = (id: string) => paths.get(id) ?? '(목록에 없는 파일)';
-  const nodes: Node[] = graph.boxes.map(box => ({ id: box.id, type: 'box', position: { x: box.x, y: box.y }, data: { box },
+  // A file now has a box; a deleted file and a rename's old path have none and are only in the list below.
+  const changeOf = useMemo(() => new Map((changes?.result.changes ?? []).flatMap(change => change.fileId ? [[change.fileId, change.kind] as const] : [])),
+    [changes]);
+  const changedIn = (folder: string) => map.files.filter(file => file.folder === folder && changeOf.has(file.id)).length;
+  const nodes: Node[] = graph.boxes.map(box => ({ id: box.id, type: 'box', position: { x: box.x, y: box.y },
+    data: { box, change: box.file ? changeOf.get(box.file.id) ?? null : null, changed: box.kind === 'folder' ? changedIn(box.folder) : 0 },
     className: `map-box map-box--${box.kind}`, draggable: false, connectable: false }));
   const placeOf = new Map(graph.boxes.map(box => [box.id, box]));
   const handlesFor = (arrow: MapArrow) => {
@@ -107,6 +120,14 @@ function MapBody({ map, locked, onOpenFile, onShowImport, onShowFunction }: {
         <Controls showInteractive={false} />
       </ReactFlow>
     </div>
+    <section className="card" aria-label="변경 목록">
+      <h3>변경 목록{changes && ` · ${changes.result.changes.length}개`}</h3>
+      {changes ? <>
+        <p className="hint">기준 커밋 {changes.result.commit.slice(0, 7)} ↔ 지금 파일. 상자가 없는 삭제·이름 변경 전 경로는 이 목록에만 있어요.</p>
+        {changes.stale && <p className="notice notice--warn"><b>다시 확인 필요:</b> 비교한 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 달라진 내용에서 다시 비교해 주세요.</p>}
+        <ChangeList result={changes.result} locked={locked} onOpen={onShowChange} />
+      </> : <p className="hint">달라진 내용에서 기준 커밋을 고르면 바뀐 파일이 여기와 지도 상자에 보여요.</p>}
+    </section>
     {selected && <section className="card" aria-label="고른 화살표의 근거">
       <h3>고른 화살표의 근거 · import {selected.items.length}개</h3>
       <ul className="map-list">{firstRows(selected.items).map(item => <li key={`${item.fromFileId}:${item.startUtf16}`}>
@@ -158,8 +179,9 @@ function MapBody({ map, locked, onOpenFile, onShowImport, onShowFunction }: {
   </>;
 }
 
-export function ProjectMapView({ project, entry, stale, mapping, locked, onBuild, onCancel, onOpenFile, onShowImport, onShowFunction }: {
-  project: ProjectView; entry: MapEntry | null; stale: boolean; mapping: boolean;
+export function ProjectMapView({ project, entry, stale, mapping, locked, changes, onBuild, onCancel, onOpenFile, onShowImport, onShowFunction,
+  onShowChange }: {
+  project: ProjectView; entry: MapEntry | null; stale: boolean; mapping: boolean; changes: MapChanges | null; onShowChange(change: FileChange): void;
   /** A folder is opening or a file is being read, so moving to code would drop that work. */
   locked: boolean;
   onBuild(): void; onCancel(): void; onOpenFile(fileId: string): void; onShowImport(item: MapImport): void; onShowFunction(item: MapFunction): void;
@@ -176,8 +198,8 @@ export function ProjectMapView({ project, entry, stale, mapping, locked, onBuild
         <button className="btn btn--small" onClick={onCancel}>지도 만들기 취소</button>
       </> : <button className="btn btn--small" onClick={onBuild}>{entry ? '지도 다시 만들기' : '지도 만들기'}</button>}
     </div>
-    {entry && <MapBody key={entry.build} map={entry.map} locked={locked} onOpenFile={onOpenFile} onShowImport={onShowImport}
-      onShowFunction={onShowFunction} />}
+    {entry && <MapBody key={entry.build} map={entry.map} changes={changes} locked={locked} onOpenFile={onOpenFile} onShowImport={onShowImport}
+      onShowFunction={onShowFunction} onShowChange={onShowChange} />}
     <p className="hint">지도는 TS/JS 파일의 import만 봐요. 새 파일은 폴더를 다시 열어야 지도에 들어와요.</p>
   </div>;
 }
