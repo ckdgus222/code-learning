@@ -2,7 +2,8 @@ import { VitePlugin } from '@electron-forge/plugin-vite';
 
 export default {
   packagerConfig: {
-    asar: { unpack: '**/*.{node,dylib}' },
+    // The TypeScript checker (plan v2.3 V-2) runs as a binary and reads its own lib files directly, so it stays unpacked.
+    asar: { unpack: '{**/*.node,**/*.dylib,**/node_modules/@typescript/typescript-*/lib/**}' },
     appBundleId: 'local.codelearning.app',
     executableName: 'Code Learning',
     ignore: (file: string) => !!file && !/^\/(?:\.vite|node_modules)(?:\/|$)/.test(file),

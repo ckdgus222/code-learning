@@ -1,4 +1,4 @@
-import { constants } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readlinkSync, realpathSync } from 'node:fs';
 import { lstat, open, realpath, opendir } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -10,7 +10,9 @@ export const MAX_FILE_BYTES = 256 * 1024;
 const MAX_FILES = 1000;
 const MAX_ENTRIES = 5000;
 const MAX_DEPTH = 20;
-const excludedDirs = new Set(['.git', '.svn', '.hg', '.ssh', '.aws', '.azure', '.gcloud', '.codex', '.claude', '.gemini',
+// Folders of secrets and tool state: never read, not even inside a dependency folder (plan v2.3 V-2).
+const secretDirs = new Set(['.git', '.svn', '.hg', '.ssh', '.aws', '.azure', '.gcloud', '.codex', '.claude', '.gemini']);
+const excludedDirs = new Set([...secretDirs,
   '.idea', '.vscode', 'node_modules', 'vendor', 'dist', 'build', 'out', 'coverage', '.next', '.venv', 'venv', '__pycache__']);
 /** The file types a project scan lists; anything else is excluded as unsupported or binary. */
 export const textExtensions = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.json', '.md', '.txt', '.py', '.java', '.dart',
@@ -25,17 +27,22 @@ export function validateRelative(relative: string): void {
   }
 }
 
+/** Whether the last part of a path names a secret, a key or a data dump, or any part is an .env file or folder. */
+export function isSecretPath(relative: string): boolean {
+  const parts = relative.split('/');
+  const name = parts.at(-1)!;
+  return parts.some(part => /^\.env(?:\.|$)/i.test(part)) ||
+    /(?:^|[._-])(?:credentials?|secrets?|tokens?|id_rsa|id_ed25519|dump|backup)(?:[._-]|$)/i.test(name) ||
+    /\.(?:pem|key|p12|pfx|keystore|db|sqlite|sqlite3|dump|bak)$/i.test(name) ||
+    ['.npmrc', '.netrc', '.pypirc', 'auth.json'].includes(name.toLowerCase()) ||
+    name.toLowerCase() === 'config.json' && relative.startsWith('.');
+}
+
 export function exclusionReason(relative: string, directory: boolean): string | null {
   const parts = relative.split('/');
   const name = parts.at(-1)!;
   if (parts.some(part => excludedDirs.has(part.toLowerCase()))) return '의존성·생성물·설정 폴더';
-  if (parts.some(part => /^\.env(?:\.|$)/i.test(part)) ||
-      /(?:^|[._-])(?:credentials?|secrets?|tokens?|id_rsa|id_ed25519|dump|backup)(?:[._-]|$)/i.test(name) ||
-      /\.(?:pem|key|p12|pfx|keystore|db|sqlite|sqlite3|dump|bak)$/i.test(name) ||
-      ['.npmrc', '.netrc', '.pypirc', 'auth.json'].includes(name.toLowerCase()) ||
-      name.toLowerCase() === 'config.json' && relative.startsWith('.')) {
-    return '인증·비밀·데이터 파일';
-  }
+  if (isSecretPath(relative)) return '인증·비밀·데이터 파일';
   if (!directory && !textNames.has(name) && !textExtensions.has(path.extname(name).toLowerCase())) return '미지원·바이너리 파일';
   return null;
 }
@@ -193,4 +200,120 @@ export async function scanProject(root: string, projectId: string): Promise<Proj
   if (limited) result.warnings.push('초기 탐색 제한(파일 1,000개·항목 5,000개·깊이 20)에 도달했습니다. 더 작은 폴더를 선택해 주세요.');
   result.warnings.push('파일별 최대 256 KiB. UTF-8 텍스트만 읽으며 소스·설정·스크립트를 실행하지 않습니다.');
   return result;
+}
+
+/*
+ * Plan v2.3 V-2: the one exception the user allowed to "dependency folders are not read". The type checker may
+ * read type files (`.d.ts`, `.d.mts`, `.d.cts`, `package.json`) in a `node_modules` folder, for types only:
+ * their text is never shown or sent anywhere. It asks through synchronous callbacks, so this part is synchronous.
+ */
+export const TYPE_FILE_BYTES = 4 * 1024 * 1024;
+export const isTypeFileName = (name: string) => /\.d\.(?:ts|mts|cts)$/.test(name) || name === 'package.json';
+
+/**
+ * Whether a project-relative path lies in a dependency folder the type checker may look into: the part before
+ * its first `node_modules` is the project folder ('') or one of `allowedDirs` (folders allowed by the current
+ * rules), and no part after it is a secret folder or a secret name.
+ */
+export function inDependencyFolder(relative: string, allowedDirs: ReadonlySet<string>): boolean {
+  const parts = relative.split('/');
+  const at = parts.indexOf('node_modules');
+  if (at === -1 || parts.some(part => !part || part === '.' || part === '..')) return false;
+  if (!allowedDirs.has(parts.slice(0, at).join('/'))) return false;
+  for (let i = at + 1; i < parts.length; i++) {
+    if (secretDirs.has(parts[i].toLowerCase()) || isSecretPath(parts.slice(0, i + 1).join('/'))) return false;
+  }
+  return true;
+}
+
+export interface LinkStep { path: string; target: string }
+const partsInside = (root: string, absolute: string) =>
+  absolute === root ? [] : absolute.startsWith(root + '/') ? absolute.slice(root.length + 1).split('/') : null;
+
+/**
+ * Follows a path in the project folder part by part and resolves each link itself, so that every link on the way
+ * and where it pointed are known (a package manager such as pnpm links packages inside node_modules). Null when a
+ * part is missing, a link points out of the folder, or there are more than 40 links. The path returned has no links.
+ */
+export function resolveInside(root: string, absolute: string): { real: string; links: LinkStep[] } | null {
+  let pending = path.resolve(absolute) === absolute ? partsInside(root, absolute) : null;
+  if (!pending) return null;
+  const links: LinkStep[] = [];
+  let current = root;
+  while (pending.length) {
+    const next = path.join(current, pending.shift()!);
+    let stat;
+    try { stat = lstatSync(next); } catch { return null; }
+    if (stat.isSymbolicLink()) {
+      if (links.length >= 40) return null;
+      const target = readlinkSync(next);
+      const parts = partsInside(root, path.resolve(path.dirname(next), target));
+      if (!parts) return null;
+      links.push({ path: next, target });
+      pending = [...parts, ...pending];
+      current = root;
+    } else if (pending.length && !stat.isDirectory()) return null;
+    else current = next;
+  }
+  return { real: current, links };
+}
+
+export interface FileState { size: number; mtimeMs: number; ctimeMs: number; dev: number; ino: number }
+
+/** The synchronous twin of inspectPath for a path that has no links (see resolveInside). */
+function inspectSync(root: string, relative: string) {
+  const rootStat = lstatSync(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || realpathSync(root) !== root) {
+    throw new AppError('NOT_ALLOWED', '프로젝트 폴더가 바뀌었습니다. 다시 열어 주세요.');
+  }
+  const identities = [`${rootStat.dev}:${rootStat.ino}`];
+  const parts = relative.split('/');
+  for (let i = 0; i < parts.length; i++) {
+    let stat;
+    try { stat = lstatSync(path.join(root, ...parts.slice(0, i + 1))); }
+    catch { throw new AppError('CHANGED', '읽는 동안 파일이 바뀌었습니다.'); }
+    // The path was resolved without links a moment ago: a link or a file in the way now means it changed.
+    if (stat.isSymbolicLink() || (i < parts.length - 1 && !stat.isDirectory())) throw new AppError('CHANGED', '읽는 동안 파일 경로가 바뀌었습니다.');
+    identities.push(`${stat.dev}:${stat.ino}`);
+  }
+  return { absolute: path.join(root, relative), identity: identities.join('/'), fileIdentity: identities.at(-1)! };
+}
+
+/**
+ * The synchronous twin of readStable for a type file at a path without links: the same checks before and after
+ * reading, opened without following a link or waiting on a special file. `hooks` lets tests change the file midway.
+ */
+export function readTypeFile(root: string, real: string, limit = TYPE_FILE_BYTES,
+  hooks: { beforeOpen?(): void; afterRead?(): void } = {}): { text: string; state: FileState } {
+  const relative = real.slice(root.length + 1);
+  const first = inspectSync(root, relative);
+  hooks.beforeOpen?.();
+  let fd: number;
+  try { fd = openSync(first.absolute, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  catch { throw new AppError('CHANGED', '읽는 동안 파일이 바뀌었습니다.'); }
+  try {
+    const before = fstatSync(fd);
+    if (`${before.dev}:${before.ino}` !== first.fileIdentity) throw new AppError('CHANGED', '읽는 동안 파일이 바뀌었습니다.');
+    if (!before.isFile() || before.nlink !== 1) throw new AppError('NOT_ALLOWED', '일반 파일만 읽을 수 있습니다. 링크·특수 파일은 제외합니다.');
+    if (before.size > limit) throw new AppError('LIMIT', '타입 파일이 크기 제한을 넘습니다.');
+    // One byte more than the size it had: a file that grew while being read is caught below.
+    const bytes = Buffer.alloc(before.size + 1);
+    let count = 0;
+    while (count < bytes.length) {
+      const read = readSync(fd, bytes, count, bytes.length - count, count);
+      if (!read) break;
+      count += read;
+    }
+    hooks.afterRead?.();
+    const after = fstatSync(fd);
+    const last = inspectSync(root, relative);
+    if (count !== before.size || after.size !== count || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs ||
+        first.identity !== last.identity) throw new AppError('CHANGED', '읽는 동안 파일이 바뀌었습니다.');
+    const data = bytes.subarray(0, count);
+    let text: string;
+    try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(data); }
+    catch { throw new AppError('UNSUPPORTED', 'UTF-8로 읽을 수 없는 파일입니다.'); }
+    if (text.includes('\0')) throw new AppError('UNSUPPORTED', '바이너리 파일은 읽지 않습니다.');
+    return { text, state: { size: before.size, mtimeMs: before.mtimeMs, ctimeMs: before.ctimeMs, dev: before.dev, ino: before.ino } };
+  } finally { closeSync(fd); }
 }

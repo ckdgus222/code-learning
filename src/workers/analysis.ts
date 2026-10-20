@@ -1,18 +1,21 @@
 import { parentPort, workerData } from 'node:worker_threads';
-import type { Evidence, FunctionCalls, ProjectFile, ProjectMap, ProjectView, Result, SourceView } from '../shared/contracts';
+import type { Evidence, FunctionCalls, ProjectFile, ProjectMap, ProjectView, Result, ShapeQuery, SourceView, ValueShapes } from '../shared/contracts';
 import { AppError, failure } from '../shared/errors';
 import { readAllowed, scanProject } from '../core/project/files';
 import { analyzeSource } from '../core/analysis/syntax';
 import { buildOverview } from '../core/analysis/overview';
 import { buildProjectMap, MAP_LIMITS } from '../core/analysis/project-map';
 import { findFunctionCalls } from '../core/analysis/calls';
+import { findValueShapes, type ShapesTarget, type TypeWatch } from '../core/analysis/shapes';
 
 export interface WorkerRequest { id: number; kind: 'scan' | 'read' | 'evidence'; target?: string }
-export interface WorkerResponse { id: number; result: Result<ProjectView | SourceView | ProjectMap | FunctionCalls | { source: SourceView; evidence: Evidence }> }
+export interface WorkerResponse { id: number; result: Result<ProjectView | SourceView | ProjectMap | FunctionCalls | { source: SourceView; evidence: Evidence }
+  | { shapes: ValueShapes; watch: TypeWatch }> }
 
-const { root, projectId, map, calls, stop } = workerData as {
+const { root, projectId, map, calls, shapes, stop } = workerData as {
   root: string; projectId: string; map?: { files: ProjectFile[]; starts: string[]; stop: SharedArrayBuffer };
   calls?: { files: ProjectFile[]; target: { fileId: string; fileHash: string; startUtf16: number; endUtf16: number }; stop: SharedArrayBuffer };
+  shapes?: { files: ProjectFile[]; target: ShapesTarget; names: ShapeQuery[]; stop: SharedArrayBuffer };
   stop?: SharedArrayBuffer;
 };
 // The session raises this when it closes; the worker stops before its next parse and replies, and only
@@ -76,6 +79,13 @@ if (map) {
 if (calls) {
   const stop = new Int32Array(calls.stop);
   findFunctionCalls(root, projectId, calls.files, calls.target, MAP_LIMITS, () => Atomics.load(stop, 0) === 1).then(
+    value => parentPort!.postMessage({ id: 0, result: { ok: true, value } } satisfies WorkerResponse),
+    error => parentPort!.postMessage({ id: 0, result: failure(error) } satisfies WorkerResponse));
+}
+// A shapes worker runs the TypeScript checker as a process of its own for one function (plan v2.3 V-2). The
+// session may end that process to stop it (side-stop.ts); the worker replies only once it has ended.
+if (shapes) {
+  findValueShapes(root, projectId, shapes.files, shapes.target, shapes.names, new Int32Array(shapes.stop)).then(
     value => parentPort!.postMessage({ id: 0, result: { ok: true, value } } satisfies WorkerResponse),
     error => parentPort!.postMessage({ id: 0, result: failure(error) } satisfies WorkerResponse));
 }

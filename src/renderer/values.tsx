@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import type { CallSite, FunctionCalls, NameValue, ValueSite } from '../shared/contracts';
+import { SHAPE_QUERY_LIMITS, type CallSite, type FunctionCalls, type NameValue, type Shape, type ShapeQuery, type ValueShapes,
+  type ValueSite } from '../shared/contracts';
 import type { CallFunction } from './calls';
 import { firstRows, Omitted } from './project-map';
 
@@ -15,6 +16,39 @@ const initialLabels: Record<NonNullable<NameValue['initial']>['kind'], string> =
   loop: '반복할 때마다 꺼내는 값', export: '내보낼 때의 값(뒤의 대입은 가져오는 쪽에 반영되지 않아요)',
 };
 
+/** Where a name card finds its shape (plan v2.3 V-2): a query's place in the request, why it was not asked, or no shape row. */
+export type ShapeSlot = { query: number } | { skipped: string } | null;
+export type ShapesState =
+  | { status: 'finding' }
+  | { status: 'failed'; message: string }
+  | { status: 'done'; result: ValueShapes };
+export interface ShapesView { state: ShapesState; slots: ShapeSlot[] }
+
+/**
+ * The names of a V-1 result to ask the TypeScript checker about. A name V-1 could not settle, or a class-like
+ * declaration, gets no shape: the checker's answer could be another declaration's. An import is found by its name
+ * and, if V-1 followed it, checked against where V-1 went; any other name by where the chosen file declares it.
+ * A name over the request's limits is left out with the reason, never cut short.
+ */
+export function shapeQueries(values: NameValue[], fileId: string): { queries: ShapeQuery[]; slots: ShapeSlot[] } {
+  const queries: ShapeQuery[] = [];
+  const slots = values.map((value): ShapeSlot => {
+    if (value.unknown || value.role === 'other') return null;
+    let query: ShapeQuery;
+    if (value.role === 'import') {
+      const followed = value.declaredAt && !value.external;
+      query = { name: value.name, at: null, expect: followed ? { fileId: value.declaredAt!.fileId, startUtf16: value.declaredAt!.startUtf16 } : null };
+    } else if (value.declaredAt?.fileId === fileId) {
+      query = { name: value.name, at: value.declaredAt.startUtf16, expect: null };
+    } else return null;
+    if (value.name.length > SHAPE_QUERY_LIMITS.nameLength) return { skipped: `이름이 ${SHAPE_QUERY_LIMITS.nameLength}자를 넘어요` };
+    if (queries.length >= SHAPE_QUERY_LIMITS.names) return { skipped: `이름이 많아 앞의 ${SHAPE_QUERY_LIMITS.names}개만 찾았어요` };
+    queries.push(query);
+    return { query: queries.length - 1 };
+  });
+  return { queries, slots };
+}
+
 /** The argument a call passes at a parameter's position, or why it cannot be told. */
 function argument(site: CallSite, index: number, hasDefault: boolean): React.ReactNode {
   if (!site.args) return <span className="hint">확인 못 함(태그 템플릿 호출이라 자리가 달라요)</span>;
@@ -28,19 +62,28 @@ function argument(site: CallSite, index: number, hasDefault: boolean): React.Rea
  * Plan v2.3 V-1 in the flow view's function summary: the names the chosen function uses and what the code
  * writes for them. Values from running the code are never shown.
  */
-export function ValuesFacts({ result, locked, pathOf, onShowSite, onShowFunction }: {
-  result: FunctionCalls; locked: boolean; pathOf(fileId: string): string;
-  onShowSite(site: ValueSite | CallSite): void; onShowFunction(target: CallFunction): void;
+export function ValuesFacts({ result, shapes, locked, pathOf, onShowSite, onShowFunction, onRetryShapes }: {
+  result: FunctionCalls; shapes: ShapesView | null; locked: boolean; pathOf(fileId: string): string;
+  onShowSite(site: ValueSite | CallSite): void; onShowFunction(target: CallFunction): void; onRetryShapes(): void;
 }) {
   const [chosen, setChosen] = useState<number | null>(null);
   const value = chosen === null ? null : result.values[chosen];
   const showButton = (site: ValueSite | CallSite) =>
     <button className="btn btn--small" disabled={locked} onClick={() => onShowSite(site)}>코드 보기</button>;
   const at = (site: ValueSite | CallSite) => <span className="path">{pathOf(site.fileId)} {site.startLine}행</span>;
+  const shapeRow = (index: number) => {
+    const slot = shapes?.slots[index];
+    if (!shapes || !slot) return null;
+    return <><dt>모양</dt><dd>{'skipped' in slot ? <span className="hint">모양을 찾지 않았어요({slot.skipped}).</span>
+      : shapes.state.status === 'finding' ? <span className="hint">모양을 찾는 중…</span>
+      : shapes.state.status === 'failed' ? <span className="hint">모양을 찾지 못했어요.</span>
+      : <ShapeText shape={shapes.state.result.names[slot.query]} />}</dd></>;
+  };
   return <>
     <dt>값 따라가기</dt>
     <dd>
       <p className="hint">실행한 값이 아니에요. 코드에 적힌 값과 식이에요.</p>
+      {shapes && <ReturnShape shapes={shapes} locked={locked} onRetry={onRetryShapes} />}
       {result.values.length === 0 && <p>값 따라가기로 볼 이름이 없어요.</p>}
       {groups.map(group => {
         const items = result.values.flatMap((item, index) => item.group === group.id ? [{ item, index }] : []);
@@ -57,9 +100,10 @@ export function ValuesFacts({ result, locked, pathOf, onShowSite, onShowFunction
           <dt>선언</dt>
           <dd>{roles[value.role]}{value.declaredAt && <> · {at(value.declaredAt)} {showButton(value.declaredAt)}</>}</dd>
           {value.unknown ? <><dt>값</dt><dd><span className="tag tag--unknown">확인 못 함</span>{value.unknown}</dd></>
-            : value.external ? <><dt>값</dt><dd><span className="tag tag--doc">외부 패키지 또는 경로 별칭</span><code>{value.external}</code></dd></>
+            : value.external ? <><dt>값</dt><dd><span className="tag tag--doc">외부 패키지 또는 경로 별칭</span><code>{value.external}</code></dd>{shapeRow(chosen!)}</>
             : <>
               <dt>적힌 타입</dt><dd>{value.type ? <code>{value.type}</code> : '적힌 타입 없음'}</dd>
+              {shapeRow(chosen!)}
               {value.fixed !== null && <><dt>고정 값</dt><dd><code>{value.fixed}</code></dd></>}
               {value.role === 'catch' && <><dt>값</dt><dd>try 안에서 오류가 났을 때 받는 값이에요.</dd></>}
               {value.initial && <><dt>{initialLabels[value.initial.kind]}</dt><dd><code>{value.initial.text}</code> {at(value.initial)} {showButton(value.initial)}</dd></>}
@@ -80,6 +124,25 @@ export function ValuesFacts({ result, locked, pathOf, onShowSite, onShowFunction
       </section>}
     </dd>
   </>;
+}
+
+/** Plan v2.3 V-2: what the chosen function returns, as the TypeScript checker reads it, and the notes on the whole search. */
+function ReturnShape({ shapes, locked, onRetry }: { shapes: ShapesView; locked: boolean; onRetry(): void }) {
+  const { state } = shapes;
+  return <section className="value-shape" aria-label="돌려주는 값의 모양">
+    <span className="eyebrow">돌려주는 값의 모양</span>
+    {state.status === 'finding' ? <span role="status" className="busy"><span className="spinner" aria-hidden="true" />모양을 찾는 중…</span>
+      : state.status === 'failed' ? <p>{state.message} <button className="btn btn--small" disabled={locked} onClick={onRetry}>다시 찾기</button></p>
+      : <ShapeText shape={state.result.returns} />}
+    <p className="hint">모양은 TypeScript가 코드에서 읽은 타입이에요. 실행해서 확인한 값이 아니에요.</p>
+    {state.status === 'done' && state.result.notes.map(note => <p key={note} className="hint">{note}</p>)}
+  </section>;
+}
+
+function ShapeText({ shape }: { shape: Shape }) {
+  if ('unknown' in shape) return <><span className="tag tag--unknown">확인 못 함</span>{shape.unknown}</>;
+  return <><code>{shape.text}</code>
+    {shape.hasAny && <p className="hint">any는 모양을 알 수 없는 부분이에요(적힌 타입이 없거나, 읽지 않은 파일·외부 패키지에서 왔어요).</p>}</>;
 }
 
 /** What the calls found pass at the chosen function's parameter, test files apart. */

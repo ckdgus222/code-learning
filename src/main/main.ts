@@ -3,7 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { mkdir, realpath } from 'node:fs/promises';
 import { z } from 'zod';
-import { channels, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, type Result, type Evidence } from '../shared/contracts';
+import { channels, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, shapesRequestSchema, type Result, type Evidence } from '../shared/contracts';
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { ProjectSession, workersStopped } from './project-session';
@@ -205,6 +205,23 @@ app.whenReady().then(async () => {
   handle(channels.cancelCalls, async argument => {
     const input = projectRequestSchema.parse(argument);
     current(input.projectId).cancelCalls();
+    return null;
+  });
+  handle(channels.shapes, async argument => {
+    const { projectId, names, ...target } = shapesRequestSchema.parse(argument);
+    if (quitting) throw new AppError('CANCELLED', '앱을 끝내는 중이에요.');
+    const active = current(projectId);
+    const revision = projectRevision;
+    const shapes = await active.shapes(target, names);
+    // As with the calls: waking from sleep raises only projectRevision.
+    if (session !== active || projectRevision !== revision) {
+      throw new AppError('CHANGED', '값의 모양을 찾는 동안 파일이 바뀌었거나 잠자기에서 돌아왔어요. 다시 찾아 주세요.');
+    }
+    return shapes;
+  });
+  handle(channels.cancelShapes, async argument => {
+    const input = projectRequestSchema.parse(argument);
+    current(input.projectId).cancelShapes();
     return null;
   });
   handle(channels.read, async argument => {
