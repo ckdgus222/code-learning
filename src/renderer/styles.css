@@ -298,3 +298,5 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .diff-card { margin-top: 12px; }
 .diff-view { border: 1px solid var(--line); border-radius: 6px; margin-top: 8px; max-height: 70vh; overflow: auto; }
 .diff-view .cm-mergeView, .diff-view .cm-editor { font: 14px/1.6 var(--mono); }
+/* Plan G1·E1: the sources a step or claim names, beside it. */
+.ai-panel ul.sources, ul.sources { display: flex; flex-wrap: wrap; gap: 6px; }
