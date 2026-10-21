@@ -1,5 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads';
-import type { Evidence, FileDiff, FunctionCalls, GitHistory, ProjectChanges, ProjectFile, ProjectMap, ProjectView, Result, ShapeQuery, SourceView,
+import type { ProjectRoutes, FeatureFlow, Evidence, FileDiff, FunctionCalls, GitHistory, ProjectChanges, ProjectFile, ProjectMap, ProjectView, Result, ShapeQuery, SourceView,
   ValueShapes } from '../shared/contracts';
 import { AppError, failure } from '../shared/errors';
 import { readAllowed, scanProject } from '../core/project/files';
@@ -8,18 +8,22 @@ import { describeFile } from '../core/analysis/file-guide';
 import { buildOverview } from '../core/analysis/overview';
 import { buildProjectMap, MAP_LIMITS } from '../core/analysis/project-map';
 import { findFunctionCalls } from '../core/analysis/calls';
+import { findProjectRoutes } from '../core/analysis/routes';
+import { buildFeatureFlow } from '../core/analysis/feature-flow';
 import { findValueShapes, type ShapesTarget, type TypeWatch } from '../core/analysis/shapes';
 import { gitJob, type GitJob } from '../core/project/git';
 
 export interface WorkerRequest { id: number; kind: 'scan' | 'read' | 'evidence'; target?: string }
-export interface WorkerResponse { id: number; result: Result<ProjectView | SourceView | ProjectMap | FunctionCalls | { source: SourceView; evidence: Evidence }
+export interface WorkerResponse { id: number; result: Result<ProjectRoutes | FeatureFlow | ProjectView | SourceView | ProjectMap | FunctionCalls | { source: SourceView; evidence: Evidence }
   | { shapes: ValueShapes; watch: TypeWatch } | GitHistory | ProjectChanges | FileDiff> }
 
-const { root, projectId, map, calls, shapes, git, stop } = workerData as {
+const { root, projectId, map, calls, shapes, git, routes, flow, stop } = workerData as {
   root: string; projectId: string; map?: { files: ProjectFile[]; starts: string[]; stop: SharedArrayBuffer };
   calls?: { files: ProjectFile[]; target: { fileId: string; fileHash: string; startUtf16: number; endUtf16: number }; stop: SharedArrayBuffer };
   shapes?: { files: ProjectFile[]; target: ShapesTarget; names: ShapeQuery[]; stop: SharedArrayBuffer };
   git?: { job: GitJob; stop: SharedArrayBuffer };
+  routes?: { files: ProjectFile[]; stop: SharedArrayBuffer };
+  flow?: { files: ProjectFile[]; routes: ProjectRoutes; routeIndex: number; stop: SharedArrayBuffer };
   stop?: SharedArrayBuffer;
 };
 // The session raises this when it closes; the worker stops before its next parse and replies, and only
@@ -106,6 +110,19 @@ if (shapes) {
 if (git) {
   const stop = new Int32Array(git.stop);
   gitJob(root, projectId, git.job, () => Atomics.load(stop, 0) === 1).then(
+    value => parentPort!.postMessage({ id: 0, result: { ok: true, value } } satisfies WorkerResponse),
+    error => parentPort!.postMessage({ id: 0, result: failure(error) } satisfies WorkerResponse));
+}
+
+if (routes) {
+  const stop = new Int32Array(routes.stop);
+  findProjectRoutes(root, projectId, routes.files, MAP_LIMITS, () => Atomics.load(stop, 0) === 1).then(
+    value => parentPort!.postMessage({ id: 0, result: { ok: true, value } } satisfies WorkerResponse),
+    error => parentPort!.postMessage({ id: 0, result: failure(error) } satisfies WorkerResponse));
+}
+if (flow) {
+  const stop = new Int32Array(flow.stop);
+  buildFeatureFlow(root, projectId, flow.files, flow.routes, flow.routeIndex, MAP_LIMITS, () => Atomics.load(stop, 0) === 1).then(
     value => parentPort!.postMessage({ id: 0, result: { ok: true, value } } satisfies WorkerResponse),
     error => parentPort!.postMessage({ id: 0, result: failure(error) } satisfies WorkerResponse));
 }

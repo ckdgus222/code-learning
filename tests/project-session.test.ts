@@ -14,7 +14,7 @@ const path = require('node:path');
 const delay = Number(process.env.MAP_DELAY);
 // Leaves a file in MARK_DIR (outside the project folder) when a worker replies after being asked to stop.
 const mark = name => fs.writeFileSync(path.join(process.env.MARK_DIR, name + '-' + Math.random().toString(36).slice(2)), '');
-const side = workerData.map ?? workerData.calls;
+const side = workerData.map ?? workerData.calls ?? workerData.routes ?? workerData.flow;
 if (workerData.shapes) {
   // A shapes worker with a stand-in for the checker process: one that only waits until it is ended. It follows
   // side-stop.ts: whoever takes the number from the slot ends the process, and the reply comes after its exit.
@@ -60,11 +60,12 @@ if (workerData.shapes) {
   }, 5);
   parentPort.on('message', () => {});
 } else if (side) {
-  const job = workerData.map ? 'map' : 'calls';
+  const job = workerData.routes ? 'routes' : workerData.flow ? 'flow' : workerData.map ? 'map' : 'calls';
+  mark(job + '-started');
   const stop = new Int32Array(side.stop);
   const started = Date.now();
   const poll = setInterval(() => {
-    if (Atomics.load(stop, 0) === 1) {
+    if (Atomics.load(stop, 0) === 1 && !process.env.SIDE_IGNORE_STOP) {
       clearInterval(poll);
       // Finishing the file it was on takes a moment.
       setTimeout(() => {
@@ -73,7 +74,9 @@ if (workerData.shapes) {
       }, 150);
     } else if (delay >= 0 && Date.now() - started >= delay) {
       clearInterval(poll);
-      parentPort.postMessage({ id: 0, result: { ok: true, value: job === 'map'
+      parentPort.postMessage({ id: 0, result: { ok: true, value: job === 'routes' ? { projectId: workerData.projectId, routesId: require('node:crypto').randomUUID(), routes: [{ handler: { fileId: 'f1' } }], requests: [], links: [], prefix: null, limited: false, notes: [] }
+        : job === 'flow' ? { projectId: workerData.projectId, routesId: side.routes.routesId, routeIndex: side.routeIndex, nodes: [], edges: [], limited: false, notes: [] }
+        : job === 'map'
         ? { projectId: workerData.projectId, files: [], edges: [], unresolved: [], external: [], limited: false, notes: [] }
         : { projectId: workerData.projectId, calls: [], callers: [], maybeCallers: [] } } });
     }
@@ -122,6 +125,7 @@ afterEach(async () => {
   await workersStopped();
   delete process.env.MAP_DELAY;
   delete process.env.READ_MODE;
+  delete process.env.SIDE_IGNORE_STOP;
   delete process.env.SHAPES_WATCH;
   await rm(root, { recursive: true, force: true });
   await rm(marks, { recursive: true, force: true });
@@ -468,4 +472,74 @@ describe('the changes view runs git in workers of its own (plan v2.3 C-2)', () =
     // A file now must be one listed when the folder opened.
     await expect(session.fileDiff(commit, null, '6c8af416-7789-478e-8418-a6f851557a8d')).rejects.toMatchObject({ code: 'NOT_ALLOWED' });
   });
+});
+
+describe('saved routes and feature flow sessions', () => {
+  it('accepts only the latest routes ID, valid index and unchanged revision', async () => {
+    process.env.MAP_DELAY = '0';
+    const first = await session.routes(3);
+    await expect(session.featureFlow(first.routesId, 0, 3)).resolves.toMatchObject({ routesId: first.routesId, routeIndex: 0 });
+    for (const index of [-1, .5, 1]) await expect(session.featureFlow(first.routesId, index, 3)).rejects.toMatchObject({ code: 'CHANGED' });
+    await expect(session.featureFlow(first.routesId, 0, 4)).rejects.toMatchObject({ code: 'CHANGED' });
+    const second = await session.routes(3);
+    expect(second.routesId).not.toBe(first.routesId);
+    await expect(session.featureFlow(first.routesId, 0, 3)).rejects.toMatchObject({ code: 'CHANGED' });
+  });
+  it.each(['routes', 'flow'] as const)('cancels %s without blocking source reads', async job => {
+    process.env.MAP_DELAY = '0';
+    const routes = await session.routes();
+    process.env.MAP_DELAY = '-1';
+    const pending = job === 'routes' ? session.routes() : session.featureFlow(routes.routesId, 0);
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
+    await expect(session.read('f1')).resolves.toMatchObject({ fileId: 'f1' });
+    if (job === 'routes') session.cancelRoutes(); else session.cancelFeatureFlow();
+    await rejected;
+  });
+  it.each(['routes', 'flow'] as const)('rejects a project change during %s', async job => {
+    process.env.MAP_DELAY = '0';
+    const routes = await session.routes();
+    process.env.MAP_DELAY = '250';
+    const before = await markers(job + '-started');
+    const pending = job === 'routes' ? session.routes() : session.featureFlow(routes.routesId, 0);
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'CHANGED' });
+    await expect.poll(() => markers(job + '-started')).toBeGreaterThan(before);
+    await writeFile(path.join(root, 'a.ts'), 'export const changed = 2;');
+    await rejected;
+    await expect(session.featureFlow(routes.routesId, 0)).rejects.toMatchObject({ code: 'CHANGED' });
+  });
+  it.each(['routes', 'flow'] as const)('drops %s from a closed project and permits another session', async job => {
+    process.env.MAP_DELAY = '0';
+    const routes = await session.routes();
+    process.env.MAP_DELAY = '-1';
+    const pending = job === 'routes' ? session.routes() : session.featureFlow(routes.routesId, 0);
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
+    await session.close();
+    const next = new ProjectSession(randomUUID(), root, workerPath, () => undefined);
+    try {
+      await next.open();
+      await expect(next.read('f1')).resolves.toMatchObject({ fileId: 'f1' });
+      await expect(next.featureFlow(routes.routesId, 0)).rejects.toMatchObject({ code: 'CHANGED' });
+      await rejected;
+    } finally { await next.close(); }
+  });
+  it('a replacement routes search cannot be overwritten by an older result', async () => {
+    process.env.MAP_DELAY = '100';
+    const older = session.routes();
+    const rejected = expect(older).rejects.toMatchObject({ code: 'CANCELLED' });
+    process.env.MAP_DELAY = '0';
+    const current = await session.routes();
+    await rejected;
+    await expect(session.featureFlow(current.routesId, 0)).resolves.toMatchObject({ routesId: current.routesId });
+  });
+});
+
+it.each(['routes', 'flow'] as const)('drops a late successful %s result after cancellation', async job => {
+  process.env.MAP_DELAY = '0';
+  const routes = await session.routes();
+  process.env.SIDE_IGNORE_STOP = '1';
+  process.env.MAP_DELAY = '100';
+  const pending = job === 'routes' ? session.routes() : session.featureFlow(routes.routesId, 0);
+  const rejected = expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
+  if (job === 'routes') session.cancelRoutes(); else session.cancelFeatureFlow();
+  await rejected;
 });
