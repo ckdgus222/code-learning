@@ -16,7 +16,44 @@ export const explainRequestSchema = z.object({
 export const cancelExplanationSchema = z.object({ jobId: idSchema }).strict();
 export type ExplainRequest = z.infer<typeof explainRequestSchema>;
 
+export const fileExplanationRequestSchema = z.object({
+  projectId: idSchema, fileId: idSchema,
+  expectedFileHash: z.string().regex(/^[a-f0-9]{64}$/),
+  mode: learningModeSchema, consent: z.literal(true),
+}).strict();
+export type FileExplanationRequest = z.infer<typeof fileExplanationRequestSchema>;
+
 const description = z.string().trim().min(1).max(2000);
+export const fileExplanationSchema = z.object({
+  summary: description,
+  chunks: z.array(z.object({ chunkId: idSchema, summary: description }).strict()).max(80),
+  unknowns: z.array(description).max(16),
+}).strict();
+export type FileExplanation = z.infer<typeof fileExplanationSchema>;
+export const fileExplanationReviewSchema = z.object({
+  accepted: z.boolean(), issues: z.array(description).max(16), explanation: fileExplanationSchema,
+}).strict();
+/** Stored with the explanation, independent of the AI and analysis workers' evidence caches. */
+export type FileExplanationRange = Pick<Evidence, 'fileId' | 'fileHash' | 'startUtf16' | 'endUtf16' | 'startLine' | 'endLine'>;
+export interface FileChunk {
+  id: string;
+  kind: 'imports' | 'class' | 'function' | 'field' | 'variable' | 'statement';
+  name: string;
+  range: FileExplanationRange;
+  functionRange: { startUtf16: number; endUtf16: number } | null;
+}
+export interface FileExplanationResult {
+  jobId: string;
+  projectId: string;
+  relativePath: string;
+  range: FileExplanationRange;
+  chunks: FileChunk[];
+  explanation: FileExplanation;
+  limitations: string[];
+  mode: LearningMode;
+  review: 'AI 검토됨' | 'AI 대조 없음';
+  models: ModelRun[];
+}
 const references = z.array(idSchema).min(1).max(16);
 export const explanationSchema = z.object({
   summary: description,
@@ -122,4 +159,5 @@ export type LearningEvent =
   | { kind: 'progress'; jobId: string; projectId: string; phase: LearningPhase }
   | { kind: 'completed'; jobId: string; projectId: string; result: LearningResult }
   | { kind: 'overview-completed'; jobId: string; projectId: string; result: OverviewResult }
+  | { kind: 'file-explanation-completed'; jobId: string; projectId: string; result: FileExplanationResult }
   | { kind: 'failed'; jobId: string; projectId: string; error: { code: import('./contracts').AppErrorCode; message: string } };

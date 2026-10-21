@@ -254,6 +254,7 @@ describe('Codex connection through the app runtime (real account, non-secret fix
         assertReady: mode => runtime.assertReady(mode), run: request => runtime.run(request), emit: event => events.push(event),
         capture: (_request, signal) => context.capture(source, evidence, 1, signal),
         captureOverview: (request, signal) => context.captureOverview(request.startFileId, 1, signal),
+        captureFile: (request, signal) => context.captureFile(request, 1, signal),
         expand: (snapshot, ids, signal) => context.expand(snapshot, ids, signal),
         revalidate: (snapshot, signal) => context.revalidate(snapshot, signal),
       });
