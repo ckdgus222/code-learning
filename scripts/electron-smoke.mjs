@@ -264,6 +264,7 @@ try {
     assert.equal(await page.getByRole('button', { name: '한눈에 보기', exact: true }).getAttribute('aria-current'), 'page');
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
     await page.getByRole('button', { name: '주문', exact: true }).waitFor();
+    assert.equal(await page.locator('.code-step-marker').count(), 0);
     assert.equal(await page.getByRole('button', { name: '코드 읽기', exact: true }).getAttribute('aria-current'), 'page');
   });
   await check('Function → branch → exact original code range (CRLF/emoji/BOM)', async () => {
@@ -279,6 +280,51 @@ try {
     assert.equal(await page.locator('.cm-selectionBackground').first().evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(51, 44, 28)');
     assert.equal(await page.locator('.cm-editor').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(31, 34, 40)');
     await page.screenshot({ path: path.join(artifacts, 'local-code-flow.png') });
+  });
+  await check('Step gutter matches the outline, selects evidence and locks while busy', async () => {
+    const markers = page.locator('.code-step-marker');
+    assert.deepEqual(await markers.allTextContents(), ['1', '2', '3']);
+    assert.equal(await markers.count(), await page.locator('.steps__item').count());
+    assert.equal(await markers.nth(0).getAttribute('title'), '1단계 · 조건 확인');
+    assert.equal(await markers.nth(0).getAttribute('aria-pressed'), 'true');
+    assert.deepEqual(await markers.evaluateAll(elements => elements.map(element => element.tabIndex)), [-1, -1, -1]);
+    assert.ok(await page.locator('.cm-step-gutter').evaluate(element =>
+      element.getBoundingClientRect().right <= document.querySelector('.cm-lineNumbers').getBoundingClientRect().left));
+    assert.deepEqual(await markers.nth(0).evaluate(element => [getComputedStyle(element).backgroundColor, getComputedStyle(element).color]),
+      ['rgb(240, 180, 76)', 'rgb(26, 19, 0)']);
+    assert.equal(await markers.nth(1).evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(35, 39, 46)');
+    await markers.nth(1).click();
+    await until(async () => /order.ts · 3–3줄/.test(await page.getByTestId('evidence-range').innerText()));
+    assert.equal(await page.locator('.steps__item').nth(1).getAttribute('aria-pressed'), 'true');
+    assert.equal(await markers.nth(1).getAttribute('aria-pressed'), 'true');
+    await page.screenshot({ path: path.join(artifacts, 'reader-step-markers.png') });
+    // Delay the existing evidence handler so another marker click happens while the reader is busy.
+    await app.evaluate(({ ipcMain }) => {
+      globalThis.testStepEvidence = ipcMain._invokeHandlers.get('learning:evidence');
+      globalThis.testStepCalls = 0;
+      const gate = new Promise(resolve => { globalThis.releaseStepEvidence = resolve; });
+      ipcMain.removeHandler('learning:evidence');
+      ipcMain.handle('learning:evidence', async (event, request) => {
+        globalThis.testStepCalls++;
+        await gate;
+        return globalThis.testStepEvidence(event, request);
+      });
+    });
+    try {
+      await markers.nth(0).click();
+      await until(async () => await markers.nth(2).isDisabled());
+      await markers.nth(2).evaluate(element => element.click());
+      assert.equal(await app.evaluate(() => globalThis.testStepCalls), 1);
+      assert.equal(await page.locator('.steps__item').nth(1).getAttribute('aria-pressed'), 'true');
+    } finally {
+      await app.evaluate(({ ipcMain }) => {
+        globalThis.releaseStepEvidence();
+        ipcMain.removeHandler('learning:evidence');
+        ipcMain.handle('learning:evidence', globalThis.testStepEvidence);
+      });
+    }
+    await until(async () => await markers.nth(0).isEnabled() && await markers.nth(0).getAttribute('aria-pressed') === 'true');
+    assert.match(await page.getByTestId('evidence-range').innerText(), /order.ts · 2–4줄/);
   });
   await check('Code reader colours syntax, takes keyboard focus, reads with keys and stays read-only', async () => {
     const evidence = await page.getByTestId('evidence-range').innerText();
@@ -323,6 +369,7 @@ try {
     // JavaScript gets the same colours.
     await page.getByRole('button', { name: 'helper.js', exact: true }).click();
     await page.getByRole('button', { name: 'greet', exact: true }).waitFor();
+    assert.equal(await page.locator('.code-step-marker').count(), 0);
     const jsColours = await page.evaluate(() => {
       const spans = [...document.querySelectorAll('.cm-content span')];
       const colourOf = element => element ? getComputedStyle(element).color : null;
@@ -644,6 +691,11 @@ try {
     await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).waitFor();
     assert.equal(await page.getByTestId('evidence-range').count(), 0);
     assert.equal(await page.getByRole('button', { name: '주문', exact: true }).isDisabled(), true);
+    assert.equal(await page.locator('.code-step-marker').count(), 3);
+    assert.equal(await page.locator('.code-step-marker:not(:disabled)').count(), 0);
+    await page.locator('.code-step-marker').first().evaluate(element => element.click());
+    assert.equal(await page.getByTestId('evidence-range').count(), 0);
+    assert.equal(await page.locator('.steps__item[aria-pressed="true"]').count(), 0);
     await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
     // This folder is no Git repository, so the changes view says so (plan v2.3 C-2). One write can send a second change
     // notice while the history is read; the view then rightly asks to read again.
@@ -1967,8 +2019,11 @@ try {
     assert.equal(await card.getByRole('button', { name: '코드 보기', exact: true }).count(), 6);
     await card.getByText('설명 없음', { exact: true }).waitFor();
     assert.equal(await app.evaluate(() => globalThis.testFileExplanationCalls.at(-1).mode), 'codex');
+    assert.ok(await page.locator('.code-step-marker').count() > 0);
     await card.getByRole('button', { name: '코드 보기', exact: true }).first().click();
     await until(async () => /chunks.ts · 1–1줄/.test(await page.getByTestId('evidence-range').innerText()));
+    assert.equal(await page.locator('.symbols__item[aria-pressed="true"]').count(), 0);
+    assert.equal(await page.locator('.code-step-marker').count(), 0);
     assert.equal(await page.getByTestId('question-scope').innerText(), scope);
     assert.equal(await page.getByText('가짜 설명: 파일 설명을 열어도 남을 질문', { exact: true }).count(), 1);
     await card.getByRole('button', { name: '파일 전체 근거', exact: true }).click();

@@ -45,6 +45,20 @@ try {
   await page.getByRole('button', { name: 'packaged', exact: true }).click();
   await page.getByRole('button', { name: '조건 확인', exact: true }).click();
   await page.getByTestId('evidence-range').waitFor();
+  // All three steps start on line 1: the marker selects the first even when another is current.
+  const markers = page.locator('.code-step-marker');
+  assert.deepEqual(await markers.allTextContents(), ['1+']);
+  assert.equal(await markers.first().getAttribute('title'), '1단계 · 조건 확인');
+  assert.equal(await markers.first().getAttribute('tabindex'), '-1');
+  assert.equal(await markers.first().getAttribute('aria-pressed'), 'true');
+  const firstEvidence = await page.getByTestId('evidence-range').innerText();
+  await page.locator('.steps__item').nth(1).click();
+  await page.waitForFunction(() => document.querySelectorAll('.steps__item')[1]?.getAttribute('aria-pressed') === 'true');
+  assert.equal(await markers.first().getAttribute('aria-pressed'), 'true');
+  assert.notEqual(await page.getByTestId('evidence-range').innerText(), firstEvidence);
+  await markers.first().click();
+  await page.waitForFunction(expected => document.querySelector('[data-testid="evidence-range"]')?.textContent === expected, firstEvidence);
+  assert.equal(await page.locator('.steps__item').first().getAttribute('aria-pressed'), 'true');
   assert.equal(await page.locator('.statusbar').getByText('파일 3개', { exact: true }).count(), 1);
   assert.equal(await page.locator('.views__item').count(), 5);
   // The packaged reader colours syntax and takes keyboard focus, as in development.
@@ -70,6 +84,7 @@ try {
   await page.screenshot({ path: path.join(root, 'test-results/packaged-code-flow.png') });
   // The TypeScript checker runs from outside the archive and reads the package's type file.
   await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+  assert.equal(await page.locator('.code-step-marker').count(), 0);
   await page.getByRole('button', { name: 'price.ts', exact: true }).click();
   await page.getByRole('button', { name: 'label', exact: true }).click();
   const summary = page.getByRole('article', { name: '함수 요약' });
