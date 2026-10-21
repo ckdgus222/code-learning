@@ -114,6 +114,7 @@ function useIf(x) {
   'src/broken-error.ts': 'function a() {}\nfunction b() { a(); }\n@@@;\n',
   'src/anon.ts': 'export default () => 1;\n',
   'src/use-anon.ts': "import anon from './anon';\nexport function useAnon() { anon(); }\n",
+  'src/chained.ts': 'function chained() { a().b().c(); }\n',
   'src/classy.ts': `function key() { return 'k'; }
 function target() {}
 export function build(key2: string) {
@@ -215,6 +216,15 @@ const callers = (result: FunctionCalls) => result.callers?.map(item => [pathOf(i
 const maybe = (result: FunctionCalls) => result.maybeCallers.map(item => [pathOf(item.fileId), item.startLine, item.reason]);
 
 describe('what a function calls (plan v2.3 F)', () => {
+  it('keeps all chained calls with the same start and distinct ends', async () => {
+    const { calls } = await callsOf('src/chained.ts', 'chained');
+    expect(calls).toHaveLength(3);
+    expect(new Set(calls.map(call => call.startUtf16)).size).toBe(1);
+    expect(new Set(calls.map(call => call.endUtf16)).size).toBe(3);
+    expect(calls.map(call => files['src/chained.ts'].slice(call.startUtf16, call.endUtf16)).sort())
+      .toEqual(['a()', 'a().b()', 'a().b().c()']);
+  });
+
   it('settles each call by its nearest declaration and says why the rest are not settled', async () => {
     const main = 'src/main.ts';
     const at = (piece: string) => lineOf(main, piece);
@@ -406,7 +416,7 @@ describe('where a function is called from (plan v2.3 F)', () => {
       ['src/scopes.ts', 18, 'member']]);
     const helper = await callsOf(main, 'helper');
     expect(callers(helper)).toEqual([[main, lineOf(main, '  helper(order);'), 'run'],
-      [main, lineOf(main, '  items.map('), `이름 없는 함수 (${lineOf(main, '  items.map(')}행)`], [main, lineOf(main, 'const arrow'), 'arrow']]);
+      [main, lineOf(main, '  items.map('), `map에 넘긴 함수 (${lineOf(main, '  items.map(')}행)`], [main, lineOf(main, 'const arrow'), 'arrow']]);
     expect(maybe(helper)).toEqual([[main, lineOf(main, '  helper();'), 'not-function']]);
     expect(callers(await callsOf(main, 'run'))).toEqual([[main, lineOf(main, "run('a'"), null]]);
   });
@@ -416,7 +426,7 @@ describe('where a function is called from (plan v2.3 F)', () => {
     expect([callers(other), maybe(other)]).toEqual([[], []]);
     expect(callers(await callsOf('src/id.ts', 'makeId'))).toEqual([[main, lineOf(main, '  makeId();'), 'run']]);
     // A default export without a name is still found by its imports.
-    const anon = await callsOf('src/anon.ts', '이름 없는 함수 (1행)');
+    const anon = await callsOf('src/anon.ts', '기본 내보내기 함수 (1행)');
     expect([anon.names, callers(anon)]).toEqual([{ local: [], exported: ['default'], property: [] }, [['src/use-anon.ts', 2, 'useAnon']]]);
     // Renamed on import and reassigned where it is exported: listed as not settled.
     const persist = await callsOf('src/persist.ts', 'persist');
@@ -435,7 +445,7 @@ describe('where a function is called from (plan v2.3 F)', () => {
   });
 
   it('does not search for a function called by no name', async () => {
-    const callback = await callsOf(main, `이름 없는 함수 (${lineOf(main, '  items.map(')}행)`);
+    const callback = await callsOf(main, `map에 넘긴 함수 (${lineOf(main, '  items.map(')}행)`);
     expect([callback.callers, callback.names]).toEqual([null, { local: [], exported: [], property: [] }]);
   });
 });

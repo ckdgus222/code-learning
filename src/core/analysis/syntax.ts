@@ -62,13 +62,29 @@ const nestingTypes = new Set([
   'if_statement', 'for_statement', 'for_in_statement', 'while_statement', 'do_statement', 'switch_statement', 'try_statement',
 ]);
 
-/** The name a function is listed under: its own, the variable, field or key it is assigned to, or its line. */
+/** The name a function is listed under: its own, its assigned name, or its context and line. */
 export function functionName(node: Parser.SyntaxNode): string {
   const parent = node.parent;
   const assignedName = parent && ['variable_declarator', 'public_field_definition', 'field_definition'].includes(parent.type)
     ? parent.childForFieldName('name')
     : parent?.type === 'pair' ? parent.childForFieldName('key') : null;
-  return node.childForFieldName('name')?.text ?? assignedName?.text ?? `이름 없는 함수 (${node.startPosition.row + 1}행)`;
+  const name = node.childForFieldName('name')?.text ?? assignedName?.text;
+  if (name !== undefined) return name;
+  const line = `(${node.startPosition.row + 1}행)`;
+  if (parent?.type === 'arguments') {
+    const call = parent.parent;
+    const target = call?.type === 'call_expression' ? call.childForFieldName('function')
+      : call?.type === 'new_expression' ? call.childForFieldName('constructor') : null;
+    const receiver = target?.type === 'identifier' ? target
+      : target?.type === 'member_expression' ? target.childForFieldName('property') : null;
+    if (receiver) return `${clip(receiver.text)}에 넘긴 함수 ${line}`;
+  }
+  if (parent?.type === 'jsx_expression' && parent.parent?.type === 'jsx_attribute') {
+    const attribute = parent.parent.namedChildren[0];
+    if (attribute) return `${clip(attribute.text)} 함수 ${line}`;
+  }
+  if (parent?.type === 'export_statement') return `기본 내보내기 함수 ${line}`;
+  return `이름 없는 함수 ${line}`;
 }
 
 /**

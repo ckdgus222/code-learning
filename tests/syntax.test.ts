@@ -12,6 +12,48 @@ const analyze = (text: string, path = 'sample.ts') => analyzeSource(text, path, 
 const slice = (source: string, evidence: Evidence) => source.slice(evidence.startUtf16, evidence.endUtf16);
 
 describe('static source analysis', () => {
+  it.each([
+    ['useEffect(() => {});', 'useEffect에 넘긴 함수'],
+    ['items.map(item => item);', 'map에 넘긴 함수'],
+    ['refresh().catch(error => error);', 'catch에 넘긴 함수'],
+    ['new Promise(resolve => resolve());', 'Promise에 넘긴 함수'],
+    ['new tasks.Worker(() => {});', 'Worker에 넘긴 함수'],
+    ['class Model { @Transform(({ value }) => value) field: string; }', 'Transform에 넘긴 함수'],
+    ['export default function () {}', '기본 내보내기 함수'],
+    ['export default () => 1;', '기본 내보내기 함수'],
+    ['(async () => {})();', '이름 없는 함수'],
+    ['a()(() => {});', '이름 없는 함수'],
+    ['a[b](() => {});', '이름 없는 함수'],
+    ['new a[b](() => {});', '이름 없는 함수'],
+    ['처리(() => {});', '처리에 넘긴 함수'],
+  ])('labels an unnamed function by its direct context in %s', (source, label) => {
+    const result = analyze(`\n\n${source}`);
+    expect(result.warnings.some(warning => warning.includes('구문 오류'))).toBe(false);
+    expect(result.symbols.map(symbol => symbol.name)).toEqual([`${label} (3행)`]);
+  });
+
+  it.each(['view.tsx', 'view.jsx'])('labels an inline JSX handler in %s', path => {
+    const result = analyze('\n<button onClick={() => send()}>Send</button>;', path);
+    expect(result.warnings.some(warning => warning.includes('구문 오류'))).toBe(false);
+    expect(result.symbols.map(symbol => symbol.name)).toEqual(['onClick 함수 (2행)']);
+  });
+
+  it.each([
+    ['useEffect(function named() {});', 'named'],
+    ['export default function named() {}', 'named'],
+    ['const variable = () => {};', 'variable'],
+    ['class Model { field = () => {}; }', 'field'],
+    ['const object = { key: () => {} };', 'key'],
+    ['const variable = function own() {};', 'own'],
+  ])('keeps the existing own and assigned names in %s', (source, name) => {
+    expect(analyze(source).symbols.map(symbol => symbol.name)).toEqual([name]);
+  });
+
+  it('clips long context names while retaining the line number', () => {
+    const name = 'a'.repeat(301);
+    expect(analyze(`${name}(() => {});`).symbols[0].name).toBe(`${name.slice(0, 300)}…에 넘긴 함수 (1행)`);
+  });
+
   it('preserves native UTF-16 evidence for Korean, emoji, combining text, BOM and CRLF', () => {
     const source = '\uFEFF// 한글🙂e\u0301\r\nimport { 읽기 } from "./파일";\r\nfunction 인사() {\r\n  return "🙂e\u0301";\r\n}\r\n';
     const result = analyze(source);

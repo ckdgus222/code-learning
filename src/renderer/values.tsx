@@ -109,7 +109,7 @@ export function ValuesFacts({ result, shapes, locked, pathOf, onShowSite, onShow
               {value.initial && <><dt>{initialLabels[value.initial.kind]}</dt><dd><code>{value.initial.text}</code> {at(value.initial)} {showButton(value.initial)}</dd></>}
               {value.fixed === null && <><dt>대입 · {value.assignments.length}개</dt><dd>
                 {value.assignments.length ? <ul className="map-list" aria-label={`${value.name}에 대입하는 곳`}>
-                  {firstRows(value.assignments).map(item => <li key={item.startUtf16}>{at(item)} <code>{item.text}</code> {showButton(item)}</li>)}
+                  {firstRows(value.assignments).map(item => <li key={`${item.startUtf16}:${item.endUtf16}`}>{at(item)} <code>{item.text}</code> {showButton(item)}</li>)}
                 </ul> : <p>이 선언에 대입하는 곳이 없어요.</p>}
                 <Omitted count={value.assignments.length} />
               </dd></>}
