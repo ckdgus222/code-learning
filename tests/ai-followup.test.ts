@@ -25,7 +25,7 @@ async function setup(habit: Habit) {
   const file = project.files.find(item => item.relativePath === 'a.ts')!;
   const { text, hash } = await readAllowed(root, file.relativePath);
   const source: SourceView = { projectId: project.id, fileId: file.id, relativePath: file.relativePath, text, hash,
-    analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] } };
+    guide: null, analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] } };
   const evidence: Evidence = { id: randomUUID(), projectId: project.id, fileId: file.id, fileHash: hash,
     startUtf16: 0, endUtf16: text.indexOf('\n'), startLine: 1, endLine: 1 };
   const context = new ProjectAiContext(root, project);

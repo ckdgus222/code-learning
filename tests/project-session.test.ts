@@ -97,7 +97,7 @@ if (workerData.shapes) {
       ? { id: workerData.projectId, name: 'p', files: [file], excluded: {}, warnings: [],
         overview: { intro: null, candidates: [], checkedFiles: 0, limited: false, notes: [] } }
       : { projectId: workerData.projectId, fileId: 'f1', relativePath: 'a.ts', hash: 'h', text: 'x',
-        analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] } };
+        guide: null, analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] } };
     parentPort.postMessage({ id: request.id, result: { ok: true, value } });
   });
 }`;

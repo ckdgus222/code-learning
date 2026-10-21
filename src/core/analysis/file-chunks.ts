@@ -6,9 +6,9 @@ import { codeFile, parse } from './project-map';
 import { functionName, functionTypes } from './syntax';
 
 /** Only top-level statements and direct class members; nested callbacks stay inside their chunk. */
-export function splitFileChunks(text: string, relativePath: string, fileId: string, fileHash: string) {
+export function splitFileChunks(text: string, relativePath: string, fileId: string, fileHash: string, parsedRoot?: Parser.SyntaxNode) {
   if (!codeFile.test(relativePath)) throw new AppError('UNSUPPORTED', 'TS/JS 파일만 설명할 수 있어요.');
-  const root = parse(text, relativePath);
+  const root = parsedRoot ?? parse(text, relativePath);
   const chunks: FileChunk[] = [];
   let total = 0;
   const add = (start: number, end: number, kind: FileChunk['kind'], name: string | null, fn: Parser.SyntaxNode | null = null) => {
