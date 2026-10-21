@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import type { Evidence, ProjectView } from '../shared/contracts';
 import type { LearningPhase, OverviewFeature, OverviewResult } from '../shared/ai';
 import { SourceButtons } from './ai-panel';
@@ -74,6 +74,7 @@ export function OverviewAi({ project, state, stale, locked, readiness, checking,
   // App remounts this card for every opened folder, so a choice or a consent never carries over to another one.
   const [startFileId, setStartFileId] = useState(intro?.fileId ?? '');
   const [consent, setConsent] = useState(false);
+  const consentDescriptionId = useId();
   const running = state?.status === 'running';
   const candidates = [...new Map(project.overview.candidates.filter(item => item.fileId !== intro?.fileId)
     .map(item => [item.fileId, item.relativePath])).entries()];
@@ -96,7 +97,11 @@ export function OverviewAi({ project, state, stale, locked, readiness, checking,
       <p className="hint" data-testid="overview-readiness">{readiness?.reason ?? '먼저 로컬 AI 설치 상태를 확인해 주세요. 설치 확인만으로 로그인이나 실제 AI 연결이 검증되는 것은 아니에요.'}</p>
       {!readiness?.ready && <button className="btn btn--small" disabled={checking || running} onClick={onInspect}>{checking ? '설치 확인 중…' : '로컬 AI 설치 확인'}</button>}
       <label className="ai-consent"><input type="checkbox" checked={consent} disabled={running || !readiness?.ready}
-        onChange={event => setConsent(event.target.checked)} />프로젝트 파일 목록, 고른 시작 파일, Codex가 고른 관련 파일(최대 4개)을 Codex와 Gemini에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.</label>
+        aria-describedby={consentDescriptionId} onChange={event => setConsent(event.target.checked)} />보낼 자료에 동의</label>
+      <details className="consent-details">
+        <summary>무엇을 보내나요?</summary>
+        <p id={consentDescriptionId}>프로젝트 파일 목록, 고른 시작 파일, Codex가 고른 관련 파일(최대 4개)을 Codex와 Gemini에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.</p>
+      </details>
       <div className="ai-actions">
         <button className="btn btn--primary" disabled={!readiness?.ready || !consent || running || locked}
           onClick={() => { setConsent(false); onStart(startFileId || null); }}>{state?.status === 'done' ? '개요 다시 만들기' : '개요 만들기'}</button>

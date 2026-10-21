@@ -126,6 +126,26 @@ let page;
 const checks = [];
 const failures = [];
 async function check(name, action) { await action(); checks.push(name); console.log(`PASS ${name}`); }
+// All three consent forms keep the full disclosure available through the checkbox even while it is folded.
+async function checkConsentDisclosure(container, expectedText) {
+  const checkbox = container.getByRole('checkbox', { name: '보낼 자료에 동의', exact: true });
+  const details = container.locator('.consent-details');
+  const description = details.locator('p');
+  assert.equal(await details.evaluate(element => element.open), false);
+  assert.equal(await description.isVisible(), false);
+  assert.equal(await checkbox.isChecked(), false);
+  assert.equal(await checkbox.getAttribute('aria-describedby'), await description.getAttribute('id'));
+  assert.equal(await description.textContent(), expectedText);
+  const summary = details.locator('summary');
+  assert.equal(await summary.innerText(), '무엇을 보내나요?');
+  await summary.focus();
+  await summary.press('Enter');
+  assert.equal(await description.isVisible(), true);
+  assert.equal(await description.innerText(), expectedText);
+  assert.equal(await checkbox.isChecked(), false);
+  await summary.press('Enter');
+  assert.equal(await description.isVisible(), false);
+}
 // One write can send a second change notice after the map was drawn again; the map then rightly asks again, so it is
 // drawn again (at most three times) until it is fresh.
 async function rebuildFreshMap() {
@@ -1022,23 +1042,21 @@ try {
     assert.equal(await page.getByRole('checkbox').isEnabled(), ready);
     assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
     // The consent names what capture sends: the selection's whole file too, and related files only here.
-    const consentText = () => page.locator('.ai-consent').innerText();
-    assert.match(await consentText(), /선택한 코드와 그 파일 전체\(크기 제한 안\)·프로젝트 파일 목록·관련 파일\(추가 최대 4개\)·질문·최근 답변을 Codex와 Gemini에 보내는/);
+    await checkConsentDisclosure(page.locator('.ai-panel'), '선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·관련 파일(추가 최대 4개)·질문·최근 답변을 Codex와 Gemini에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.');
     // Each single mode opens with its own CLI, names it, and reads no other file.
-    for (const [mode, binary, recipient] of [['codex', 'Codex', 'Codex'], ['antigravity', 'Antigravity', 'Gemini\\(Antigravity\\)']]) {
+    for (const [mode, binary, recipient] of [['codex', 'Codex', 'Codex'], ['antigravity', 'Antigravity', 'Gemini(Antigravity)']]) {
       await selector.selectOption(mode);
       assert.equal(await page.locator('.statusbar').getByText(await selector.locator('option:checked').innerText(), { exact: true }).count(), 1);
       const found = new RegExp(`${binary} · 설치 확인`).test(listed);
       assert.match(await page.getByTestId('ai-readiness').innerText(), found ? /한 AI가 바로 설명하고 다른 AI의 대조는 없어요/ : /단독에는 .+ 필요해요/);
       assert.equal(await page.getByRole('checkbox').isEnabled(), found);
-      const consent = await consentText();
-      assert.match(consent, new RegExp(`선택한 코드와 그 파일 전체\\(크기 제한 안\\)·프로젝트 파일 목록·질문·최근 답변을 ${recipient}에 보내는 데 동의합니다\\. 다른 파일은 더 읽지 않습니다\\.`));
-      assert.doesNotMatch(consent, /관련 파일/);
+      await checkConsentDisclosure(page.locator('.ai-panel'), `선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·질문·최근 답변을 ${recipient}에 보내는 데 동의합니다. 다른 파일은 더 읽지 않습니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.`);
       assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
     }
     await selector.selectOption('claude-code');
     assert.equal(await page.getByTestId('ai-readiness').innerText(), 'Claude Code 단독은 아직 준비 중이에요.');
     assert.equal(await page.getByRole('checkbox').isEnabled(), false);
+    await checkConsentDisclosure(page.locator('.ai-panel'), '선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·질문·최근 답변을 Claude Code에 보내는 데 동의합니다. 다른 파일은 더 읽지 않습니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.');
     await selector.selectOption('local-worker');
     await page.getByRole('button', { name: '패널 접기', exact: true }).click();
     await page.getByRole('button', { name: '설명 패널 펼치기', exact: true }).click();
@@ -1234,6 +1252,8 @@ try {
     // A source file that is no start candidate can be the start too.
     await startFile.selectOption({ label: 'settings.ts' });
     const create = card.getByRole('button', { name: '개요 만들기', exact: true });
+    assert.equal(await create.isDisabled(), true);
+    await checkConsentDisclosure(card, '프로젝트 파일 목록, 고른 시작 파일, Codex가 고른 관련 파일(최대 4개)을 Codex와 Gemini에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.');
     assert.equal(await create.isDisabled(), true);
     await card.getByRole('checkbox').check();
     // While the overview runs, the shared installation check is closed in the question panel too.
@@ -1916,6 +1936,13 @@ try {
     await page.getByRole('button', { name: 'run', exact: true }).click();
     await page.getByRole('tab', { name: '질문', exact: true }).click();
     const panel = page.locator('.ai-panel');
+    for (const [mode, recipient] of [['local-worker', 'Gemini와 Codex'], ['antigravity', 'Gemini(Antigravity)'], ['claude-code', 'Claude Code']]) {
+      await panel.getByRole('combobox', { name: 'AI 사용 방식' }).selectOption(mode);
+      await card.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
+      await checkConsentDisclosure(card, `이 파일의 경로와 원문(비밀값처럼 보이는 형태는 가림)·덩어리 목록(ID·종류·이름·행 범위)을 ${recipient}에 보내는 데 동의합니다. 다른 파일은 보내지 않습니다. 모든 비밀값을 찾는다고 보장하지는 않습니다.`);
+      assert.equal(await card.getByRole('button', { name: '동의하고 파일 설명 만들기', exact: true }).isDisabled(), true);
+      if (mode === 'claude-code') assert.equal(await card.getByRole('checkbox').isDisabled(), true);
+    }
     await panel.getByRole('combobox', { name: 'AI 사용 방식' }).selectOption('codex');
     await panel.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
     await until(async () => (await page.getByTestId('ai-readiness').innerText()).includes('테스트 전용'));
@@ -1928,10 +1955,15 @@ try {
     const create = card.getByRole('button', { name: '동의하고 파일 설명 만들기', exact: true });
     assert.equal(await create.isDisabled(), true);
     assert.match(await card.innerText(), /Codex 단독/);
-    assert.match(await card.innerText(), /다른 파일은 보내지 않습니다/);
+    await checkConsentDisclosure(card, '이 파일의 경로와 원문(비밀값처럼 보이는 형태는 가림)·덩어리 목록(ID·종류·이름·행 범위)을 Codex에 보내는 데 동의합니다. 다른 파일은 보내지 않습니다. 모든 비밀값을 찾는다고 보장하지는 않습니다.');
+    assert.equal(await create.isDisabled(), true);
     await card.getByRole('checkbox').check();
     await create.click();
     await card.getByTestId('file-summary').waitFor();
+    await card.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
+    assert.equal(await card.getByRole('checkbox').isChecked(), false);
+    assert.equal(await card.locator('.consent-details').evaluate(element => element.open), false);
+    assert.equal(await create.isDisabled(), true);
     assert.equal(await card.getByRole('button', { name: '코드 보기', exact: true }).count(), 6);
     await card.getByText('설명 없음', { exact: true }).waitFor();
     assert.equal(await app.evaluate(() => globalThis.testFileExplanationCalls.at(-1).mode), 'codex');

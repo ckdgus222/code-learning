@@ -270,6 +270,8 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .ai-panel select, .ai-panel textarea { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; }
 .ai-panel textarea { min-height: 96px; resize: vertical; }
 .ai-panel .ai-consent { display: flex; align-items: flex-start; }
+.consent-details { font-size: 14px; color: var(--muted); }
+.consent-details summary { cursor: pointer; }
 .ai-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .ai-panel ul { display: grid; gap: 8px; }
 .ai-panel .fact { overflow-wrap: anywhere; }
