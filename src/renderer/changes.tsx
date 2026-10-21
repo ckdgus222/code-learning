@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView, lineNumbers } from '@codemirror/view';
-import { defaultHighlightStyle, syntaxHighlighting } from '@codemirror/language';
+import { syntaxHighlighting } from '@codemirror/language';
+import { codeTheme, codeHighlightStyle } from './code-theme';
 import { javascript } from '@codemirror/lang-javascript';
 import { MergeView } from '@codemirror/merge';
 import type { ChangeKind, FileChange, GitCommit, GitHistory, ProjectChanges } from '../shared/contracts';
@@ -123,9 +124,9 @@ function readOnly(file: string, label: string): Extension[] {
   const extension = file.slice(file.lastIndexOf('.')).toLowerCase();
   const typescript = ['.ts', '.tsx', '.mts', '.cts'].includes(extension);
   const code = typescript || ['.js', '.jsx', '.mjs', '.cjs'].includes(extension);
-  return [EditorState.lineSeparator.of('\n'), EditorState.readOnly.of(true), EditorView.editable.of(false), lineNumbers(),
+  return [EditorState.lineSeparator.of('\n'), EditorState.readOnly.of(true), EditorView.editable.of(false), codeTheme, lineNumbers(),
     EditorView.contentAttributes.of({ 'aria-label': label, role: 'textbox', 'aria-readonly': 'true', tabindex: '0' }),
-    ...(code ? [javascript({ typescript, jsx: true }), syntaxHighlighting(defaultHighlightStyle)] : [])];
+    ...(code ? [javascript({ typescript, jsx: true }), syntaxHighlighting(codeHighlightStyle)] : [])];
 }
 
 function Merge({ before, after, file }: { before: string; after: string; file: string }) {

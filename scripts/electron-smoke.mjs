@@ -223,10 +223,22 @@ try {
     assert.equal(await page.evaluate(() => typeof window.require), 'undefined');
     assert.ok((await readFile(path.join(profile, 'learning.sqlite'))).length > 0);
   });
+  await check('Dark welcome shows only factual status before opening a project', async () => {
+    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme), 'dark');
+    const status = page.getByRole('contentinfo', { name: '작업 상태' });
+    assert.match(await status.innerText(), /읽기 전용/);
+    assert.match(await status.innerText(), /Codex → Gemini → Codex/);
+    assert.doesNotMatch(await status.innerText(), /파일 \d+개|파일 해시 확인됨|UTF-8|LF/);
+    assert.equal(await page.locator('.topbar').getByText('AI는 동의한 질문만').count(), 0);
+    assert.equal(await status.getByText('AI는 동의한 질문만').getAttribute('title'), '질문 탭에서 동의하고 보낸 질문만 Codex·Gemini에 보냅니다. 알려진 한계는 README에 있습니다.');
+    await page.screenshot({ path: path.join(artifacts, 'dark-welcome.png') });
+  });
   await dialogTo(fixture);
   await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
   await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
   await check('Open a real folder; secret filenames excluded', async () => {
+    assert.equal(await page.locator('.views__item').count(), 5);
+    assert.equal(await page.locator('.statusbar').getByText(await page.locator('.files h3').innerText(), { exact: true }).count(), 1);
     assert.equal(await page.getByRole('button', { name: '.env', exact: true }).count(), 0);
     assert.equal(await page.getByRole('button', { name: 'auth.json', exact: true }).count(), 0);
     assert.equal(await page.getByRole('button', { name: '한눈에 보기', exact: true }).getAttribute('aria-current'), 'page');
@@ -244,6 +256,8 @@ try {
     assert.equal(selected, 'if (수량 < 1) {\r\n\t\treturn "실패 📦";\r\n\t}');
     assert.equal(await page.locator('.cm-line').allTextContents().then(lines => lines.join('\n')), source.slice(0, -2) + '\r\n');
     await page.locator('.cm-selectionBackground').first().waitFor();
+    assert.equal(await page.locator('.cm-selectionBackground').first().evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(51, 44, 28)');
+    assert.equal(await page.locator('.cm-editor').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(31, 34, 40)');
     await page.screenshot({ path: path.join(artifacts, 'local-code-flow.png') });
   });
   await check('Code reader colours syntax, takes keyboard focus, reads with keys and stays read-only', async () => {
@@ -351,7 +365,7 @@ try {
       return problems;
     });
     assert.ok(await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).isVisible());
-    for (const [width, height] of [[1280, 800], [1440, 900]]) {
+    for (const [width, height] of [[1280, 800], [1440, 900], [1000, 900]]) {
       // The resize is asked for again while waiting: a single request was sometimes not applied (cause not found).
       await until(async () => {
         await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(size[0], size[1]), [width, height]);
@@ -360,6 +374,25 @@ try {
       await page.getByRole('button', { name: '찾기 ⌘F', exact: true }).click();
       await field.waitFor();
       assert.deepEqual(await layoutProblems(), [], `${width}x${height}`);
+      const workspaceProblems = await page.evaluate(() => {
+        const elements = [...document.querySelectorAll('.views__item, .topbar .btn, .statusbar__group > span, .reader__head .btn')];
+        const problems = [];
+        for (const element of elements) {
+          const r = element.getBoundingClientRect();
+          if (!r.width || !r.height || r.left < 0 || r.top < 0 || r.right > innerWidth || r.bottom > innerHeight || element.scrollWidth > element.clientWidth + 1) problems.push(`clipped: ${element.textContent || element.ariaLabel}`);
+        }
+        for (let i = 0; i < elements.length; i++) for (let j = i + 1; j < elements.length; j++) {
+          const a = elements[i].getBoundingClientRect(), b = elements[j].getBoundingClientRect();
+          if (a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5) problems.push(`overlap: ${elements[i].textContent} / ${elements[j].textContent}`);
+        }
+        const center = document.querySelector('.center').getBoundingClientRect();
+        const panel = document.querySelector('.panel').getBoundingClientRect();
+        const status = document.querySelector('.statusbar').getBoundingClientRect();
+        if (panel.bottom > status.top + 0.5 || center.bottom > status.top + 0.5) problems.push('workspace overlaps status');
+        if (innerWidth <= 1100 && panel.top < center.bottom - 0.5) problems.push('panel did not stack');
+        return problems;
+      });
+      assert.deepEqual(workspaceProblems, [], `workspace ${width}x${height}`);
       await page.screenshot({ path: path.join(artifacts, `reader-tools-${width}.png`) });
       // Escape closes the panel from its field; focus is put back there first in case it moved away meanwhile.
       await field.focus();
@@ -994,6 +1027,7 @@ try {
     // Each single mode opens with its own CLI, names it, and reads no other file.
     for (const [mode, binary, recipient] of [['codex', 'Codex', 'Codex'], ['antigravity', 'Antigravity', 'Gemini\\(Antigravity\\)']]) {
       await selector.selectOption(mode);
+      assert.equal(await page.locator('.statusbar').getByText(await selector.locator('option:checked').innerText(), { exact: true }).count(), 1);
       const found = new RegExp(`${binary} · 설치 확인`).test(listed);
       assert.match(await page.getByTestId('ai-readiness').innerText(), found ? /한 AI가 바로 설명하고 다른 AI의 대조는 없어요/ : /단독에는 .+ 필요해요/);
       assert.equal(await page.getByRole('checkbox').isEnabled(), found);

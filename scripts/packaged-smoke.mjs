@@ -37,12 +37,16 @@ try {
   assert.equal(state.userData, profile, 'Packaged test must use isolated userData');
   const page = await app.firstWindow();
   await page.getByRole('heading', { name: 'Code Learning', exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme), 'dark');
+  assert.doesNotMatch(await page.locator('.statusbar').innerText(), /파일 \d+개/);
   await app.evaluate(({ dialog }, project) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [project] }); }, project);
   await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
   await page.getByRole('button', { name: 'sample.ts', exact: true }).click();
   await page.getByRole('button', { name: 'packaged', exact: true }).click();
   await page.getByRole('button', { name: '조건 확인', exact: true }).click();
   await page.getByTestId('evidence-range').waitFor();
+  assert.equal(await page.locator('.statusbar').getByText('파일 3개', { exact: true }).count(), 1);
+  assert.equal(await page.locator('.views__item').count(), 5);
   // The packaged reader colours syntax and takes keyboard focus, as in development.
   const reader = await page.evaluate(() => {
     const keyword = [...document.querySelectorAll('.cm-content span')].find(span => span.textContent === 'return');
@@ -113,8 +117,9 @@ try {
   assert.equal(await cancellation.innerText(), '작업을 취소했습니다.');
   assert.match(await cancellation.getAttribute('class'), /(?:^|\s)notice--info(?:\s|$)/);
   assert.equal(await page.getByRole('alert').count(), 0);
+  assert.doesNotMatch(await page.locator('.statusbar').innerText(), /파일 \d+개/);
   await app.close(); app = undefined;
-  const report = { passed: true, checks: ['packaged app startup', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', 'changes from git inside its sandbox', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel'], state };
+  const report = { passed: true, checks: ['dark theme, navigation rail and factual project status', 'packaged app startup', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', 'changes from git inside its sandbox', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel'], state };
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

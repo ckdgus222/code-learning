@@ -1,12 +1,13 @@
 import React, { useEffect, useImperativeHandle, useRef, type Ref } from 'react';
 import { Compartment, EditorState } from '@codemirror/state';
 import { EditorView, lineNumbers, drawSelection, keymap, type KeyBinding } from '@codemirror/view';
-import { defaultHighlightStyle, syntaxHighlighting } from '@codemirror/language';
+import { syntaxHighlighting } from '@codemirror/language';
 import {
   cursorCharLeft, cursorCharRight, cursorDocEnd, cursorDocStart, cursorLineBoundaryBackward, cursorLineBoundaryForward, cursorLineDown,
   cursorLineUp, cursorPageDown, cursorPageUp, selectAll, selectCharLeft, selectCharRight, selectDocEnd, selectDocStart,
   selectLineBoundaryBackward, selectLineBoundaryForward, selectLineDown, selectLineUp, selectPageDown, selectPageUp,
 } from '@codemirror/commands';
+import { codeTheme, codeHighlightStyle } from './code-theme';
 import { javascript } from '@codemirror/lang-javascript';
 import { openSearchPanel, search, searchKeymap } from '@codemirror/search';
 import type { Evidence, SourceView } from '../shared/contracts';
@@ -54,14 +55,14 @@ export function Reader({ source, evidence, codeSize, wrap, ref }: {
       extensions: [
         // Keep CR and BOM characters rather than silently changing raw-source offsets.
         EditorState.lineSeparator.of('\n'), EditorState.readOnly.of(true), EditorView.editable.of(false),
-        lineNumbers(), drawSelection(), keymap.of([...readingKeys, ...searchKeymap]), search({ top: true }), searchPhrases,
+        codeTheme, lineNumbers(), drawSelection(), keymap.of([...readingKeys, ...searchKeymap]), search({ top: true }), searchPhrases,
         // A new editor is made for each file and starts with the current choices; later changes reconfigure it.
         wrapping.of(wrap ? EditorView.lineWrapping : []), sizing.of(sizeTheme(codeSize)),
         // A non-editable element takes keyboard focus only with a tabindex (CodeMirror read-only example).
         EditorView.contentAttributes.of({ 'aria-label': '원본 코드 (읽기 전용)', role: 'textbox', 'aria-readonly': 'true', tabindex: '0' }),
         ...(source.analysis.language !== 'text' ? [javascript({ typescript: source.analysis.language === 'typescript', jsx: true }),
           // The language support parses; this is what colours keywords, strings and comments.
-          syntaxHighlighting(defaultHighlightStyle)] : []),
+          syntaxHighlighting(codeHighlightStyle)] : []),
       ],
     }) });
     view.current = editor;

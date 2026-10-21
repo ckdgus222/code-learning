@@ -180,7 +180,7 @@ function OverviewAnswer({ result, stale, locked, revealAnchor, topicName, onEvid
         {role.functions.length > 0 && <ul className="sources" aria-label={`‘${role.name}’의 관련 함수`}>{role.functions.map(item => {
           const at = sourceOf(item.evidenceId);
           return <li key={`${item.name}:${item.evidenceId}`}>
-            <button className="btn btn--small" disabled={blocked} onClick={() => onFunction(item.name, at.evidence)}>{item.name} · {at.relativePath}</button>
+            <button className="btn btn--chip" disabled={blocked} onClick={() => onFunction(item.name, at.evidence)}>{item.name} · {at.relativePath}</button>
           </li>;
         })}</ul>}
       </li>)}</ul>
