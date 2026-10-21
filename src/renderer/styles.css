@@ -139,11 +139,15 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .files { display: flex; flex: 1; flex-direction: column; min-height: 0; padding: 12px 8px 8px; }
 .files .eyebrow { padding: 0 8px; }
 .search { margin: 8px 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-size: 14px; }
-.files ul { overflow: auto; }
-.files__item {
+.files > ul { overflow: auto; }
+.files ul ul { padding-left: 12px; }
+.files__item, .files__folder {
+  display: block;
   width: 100%; padding: 4px 10px; border: 0; border-radius: 6px; background: none;
-  font: 13px/1.5 var(--mono); text-align: left; overflow-wrap: anywhere;
+  font: 13px/1.5 var(--mono); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.files__folder { color: var(--muted); }
+.files button.files__folder:hover { background: var(--raised); }
 .files__item:hover:not(:disabled) { background: var(--raised); }
 .files__item[aria-current="true"] { background: var(--raised); color: var(--ink); }
 .files .hint { padding: 0 8px; }

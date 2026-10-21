@@ -1,10 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { CallSite, ValueSite, CodeSide, CodeSymbol, Evidence, FileChange, FunctionCalls, GitHistory, MapFunction, MapImport, ProjectView, SourceView,
   StartCandidate } from '../shared/contracts';
 import { useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
 import { Icon } from './icons';
+import { ancestorFolderPaths, buildFileTree, filterFileTree, type TreeFolder } from './file-tree';
 import { AiPanel, modes } from './ai-panel';
 import { FileExplanationCard, rememberFileExplanation, type FileExplanationEntry, type FileExplanationState } from './file-explanation';
 import { Flow } from './flow';
@@ -36,6 +37,31 @@ const featureQuestion = (name: string) => `‘${name}’ 기능이 이 함수에
 // Code text size in px (plan 7.3: 14–16px to start, adjustable).
 const CODE_SIZE = { min: 12, start: 15, max: 20 };
 
+function FileTreeList({ folder, expanded, searching, currentFileId, busy, onToggle, onFile, hidden = false }: {
+  folder: TreeFolder; expanded: Set<string>; searching: boolean; currentFileId?: string; busy: boolean;
+  onToggle: (path: string) => void; onFile: (fileId: string) => void; hidden?: boolean;
+}) {
+  return <ul id={`file-folder-${encodeURIComponent(folder.path)}`} hidden={hidden}>
+    {!hidden && folder.children.map(child => {
+      if (child.kind === 'file') return <li key={child.file.id}>
+        <button className="files__item" disabled={busy} aria-label={child.file.relativePath} title={child.file.relativePath}
+          aria-current={currentFileId === child.file.id ? 'true' : undefined}
+          onClick={() => onFile(child.file.id)}>{child.name}</button>
+      </li>;
+      const open = searching || expanded.has(child.path);
+      const label = <><span aria-hidden="true">{open ? '▾' : '▸'}</span> {child.name}</>;
+      return <li key={`folder:${child.path}`}>
+        {searching ? <span className="files__folder" title={child.path}>{label}</span>
+          : <button className="files__folder" title={child.path} aria-label={`폴더 ${child.path}`}
+            aria-expanded={open} aria-controls={`file-folder-${encodeURIComponent(child.path)}`}
+            onClick={() => onToggle(child.path)}>{label}</button>}
+        <FileTreeList folder={child} expanded={expanded} searching={searching} currentFileId={currentFileId}
+          busy={busy} onToggle={onToggle} onFile={onFile} hidden={!open} />
+      </li>;
+    })}
+  </ul>;
+}
+
 function App() {
   const [project, setProject] = useState<ProjectView | null>(null);
   const [source, setSource] = useState<SourceView | null>(null);
@@ -50,6 +76,7 @@ function App() {
   const [overviewStale, setOverviewStale] = useState(false);
   const [watchError, setWatchError] = useState(false);
   const [search, setSearch] = useState('');
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [panel, setPanel] = useState<'explain' | 'ask'>('explain');
   const [panelOpen, setPanelOpen] = useState(true);
   const [draft, setDraft] = useState<{ text: string; id: number; topic?: { name: string; evidenceId: string } } | null>(null);
@@ -109,6 +136,11 @@ function App() {
   const functionExplanation = symbol && fileExplanation && !fileExplanationStale
     ? functionChunk ? fileExplanation.result.explanation.chunks.find(chunk => chunk.chunkId === functionChunk.id)?.summary ?? '설명 없음'
       : '이 함수는 따로 설명한 덩어리가 없어요' : null;
+
+  useEffect(() => {
+    if (!source) return;
+    setExpandedFolders(current => new Set([...current, ...ancestorFolderPaths(source.relativePath)]));
+  }, [source]);
 
   useEffect(() => window.learning.onProjectEvent(event => {
     if (event.projectId === project?.id) {
@@ -209,6 +241,7 @@ function App() {
     if (!result.value) return;
     // Reopening the same folder keeps the project ID but gives every file a new ID, so the map goes too.
     forgetMap(); forgetCalls(); forgetChanges(); forgetOverview();
+    setExpandedFolders(new Set());
     setProject(result.value); setSource(null); setEvidence(null); setStale(false); setOverviewStale(false); setWatchError(false); setSearch(''); selectSymbol(null);
   }
 
@@ -662,7 +695,8 @@ function App() {
   }
 
   const pathOf = (fileId: string) => project?.files.find(file => file.id === fileId)?.relativePath ?? '(목록에 없는 파일)';
-  const files = project?.files.filter(file => file.relativePath.toLowerCase().includes(search.toLowerCase())) ?? [];
+  const fileTree = useMemo(() => buildFileTree(project?.files ?? []), [project?.files]);
+  const visibleFileTree = useMemo(() => filterFileTree(fileTree, search), [fileTree, search]);
   const intro = project?.overview.intro;
   const scope = [project?.name, source?.relativePath, symbol?.name, step?.title].filter(Boolean);
 
@@ -714,11 +748,15 @@ function App() {
           <h3 className="eyebrow">파일 {project.files.length}개</h3>
           <input className="search" type="search" aria-label="파일명 검색" placeholder="파일명 검색"
             value={search} onChange={event => setSearch(event.target.value)} />
-          <ul>{files.map(file =>
-            <li key={file.id}><button className="files__item" disabled={busy} aria-current={source?.fileId === file.id ? 'true' : undefined}
-              // The flow view picks its function from the chosen file, so it stays where it is.
-              onClick={() => { if (view !== 'flow') setView('code'); void readFile(file.id, true); }}>{file.relativePath}</button></li>)}</ul>
-          {files.length === 0 && <p className="hint">검색과 일치하는 파일이 없어요.</p>}
+          <FileTreeList folder={visibleFileTree} expanded={expandedFolders} searching={search.length > 0}
+            currentFileId={source?.fileId} busy={busy} onToggle={path => setExpandedFolders(current => {
+              const next = new Set(current);
+              if (next.has(path)) next.delete(path); else next.add(path);
+              return next;
+            })}
+            // The flow view picks its function from the chosen file, so it stays where it is.
+            onFile={fileId => { if (view !== 'flow') setView('code'); void readFile(fileId, true); }} />
+          {visibleFileTree.children.length === 0 && <p className="hint">검색과 일치하는 파일이 없어요.</p>}
         </section>
       </aside>
 
