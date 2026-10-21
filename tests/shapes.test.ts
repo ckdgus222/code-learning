@@ -52,7 +52,7 @@ export function label(order, discount = 0.1) {
   'src/use-live.ts': "import { live } from './live';\nexport function useLive() { return live; }\n",
   'src/data.js': 'export const limit = 3;\n',
   'src/data.ts': 'export const limit = "different";\n',
-  'src/use-data.ts': "import { limit } from './data.js';\nexport function useData() { return limit; }\n",
+  'src/use-data.js': "import { limit } from './data.js';\nexport function useData() { return limit; }\n",
   'src/any.ts': `interface Company { name: string }
 type Box = { value: any };
 export function kinds(a: any, b: any[], c: "any", d: Company, e: { company: any }, f: Box) { return [a, b, c, d, e, f] as const; }
@@ -156,7 +156,7 @@ describe('value shapes (plan v2.3 V-2)', () => {
 
   it('finds the return of an arrow function and a method, and the shapes of plain JavaScript', async () => {
     expect((await shapesOf('src/order.ts', 'label')).returns).toBe('"bad" | "fine"');
-    expect((await shapesOf('src/order.ts', 'checkout')).returns).toBe('boolean');
+    expect((await shapesOf('src/order.ts', 'Shop.checkout')).returns).toBe('boolean');
     const total = await shapesOf('src/cart.js', 'total');
     expect(total.returns).toBe('number');
     expect(total.names.items).toBe('{ price: number; qty: number; }[]');
@@ -179,8 +179,18 @@ describe('value shapes (plan v2.3 V-2)', () => {
     expect((await shapesOf('src/use-live.ts', 'useLive')).names).toEqual({ live: 'number' });
   });
 
+  it('does not request a shape when a TS import has both JS and TS candidates', async () => {
+    await writeFile(at('src/ambiguous-data.ts'), files['src/use-data.js']);
+    project = await scanProject(root, project.id);
+    const target = await targetOf('src/ambiguous-data.ts', 'useData');
+    const result = await findFunctionCalls(root, project.id, project.files, target, MAP_LIMITS);
+    expect(result.values.find(value => value.name === 'limit')?.unknown).toContain('후보가 여럿');
+    expect(shapeQueries(result.values, target.fileId).queries).toEqual([]);
+  });
+
+  // A JS importer keeps the original path; the checker may still substitute data.ts.
   it('shows no shape when the checker found another declaration than the one V-1 followed', async () => {
-    const found = await shapesOf('src/use-data.ts', 'useData');
+    const found = await shapesOf('src/use-data.js', 'useData');
     expect(found.names.limit).toBe('? 타입 검사기가 찾은 선언이 값 따라가기의 선언과 같은지 확인하지 못해 모양을 붙이지 않았어요.');
   });
 

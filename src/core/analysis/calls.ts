@@ -3,10 +3,10 @@ import type { CallLink, CallSite, CallUnknownReason, FunctionCalls, ProjectFile 
 import { AppError } from '../../shared/errors';
 import { assertAllowedFile, MAX_FILE_BYTES, readAllowed } from '../project/files';
 import { candidatesFor, codeFile, isRelative, type MapLimits } from './project-map';
-import { functionName } from './syntax';
+import { functionName, functionTypes } from './syntax';
 import { valuesOf } from './values';
-import { calledProperty, firstLine, isMemberCall, lineRange, nearest, propertyName, readFacts, reassigned, sameRange,
-  type CallFact, type FileFacts } from './names';
+import { calledProperty, firstLine, hasToken, isMemberCall, lineRange, nearest, propertyName, readFacts, reassigned, sameRange,
+  type CallFact, type FileFacts, type Scope } from './names';
 
 /*
  * Plan v2.3 F: which function a call by name leads to, read from the code only. A name is settled by its
@@ -16,11 +16,48 @@ import { calledProperty, firstLine, isMemberCall, lineRange, nearest, propertyNa
 
 type Found =
   | { kind: 'linked'; facts: FileFacts; fn: Parser.SyntaxNode }
+  | { kind: 'typed'; facts: FileFacts; fn: Parser.SyntaxNode; basis: string }
   | { kind: 'external'; specifier: string }
   | { kind: 'unknown'; reason: CallUnknownReason; detail: string | null };
 const unknown = (reason: CallUnknownReason, detail: string | null = null): Found => ({ kind: 'unknown', reason, detail });
 
 
+const namespaceTypes = new Set(['internal_module', 'module', 'enum_declaration']);
+const memberName = (node: Parser.SyntaxNode) => propertyName(node.childForFieldName('name') ?? node.childForFieldName('property') ?? node.childForFieldName('pattern'));
+
+/** Follow assignment wrappers/patterns, but not reads such as the object in `this.f.x = …`. */
+function memberWrite(node: Parser.SyntaxNode): boolean {
+  let part = node;
+  for (let parent = part.parent; parent; parent = part.parent) {
+    const fieldIsPart = (field: string) => { const child = parent.childForFieldName(field); return !!child && sameRange(child, part); };
+    switch (parent.type) {
+      case 'parenthesized_expression': case 'non_null_expression': case 'as_expression': case 'satisfies_expression':
+      case 'type_assertion': case 'array_pattern': case 'object_pattern': case 'rest_pattern':
+        part = parent; continue;
+      case 'pair_pattern':
+        if (!fieldIsPart('value')) return false;
+        part = parent; continue;
+      case 'assignment_pattern': case 'object_assignment_pattern':
+        if (!fieldIsPart('left')) return false;
+        part = parent; continue;
+      case 'assignment_expression': case 'augmented_assignment_expression': case 'for_in_statement': return fieldIsPart('left');
+      case 'update_expression': return true;
+      case 'unary_expression': return hasToken(parent, 'delete');
+      // In these expressions/statements the member supplies a value; it is not an assignment target.
+      case 'call_expression': case 'new_expression': case 'arguments': case 'member_expression': case 'subscript_expression':
+      case 'expression_statement': case 'return_statement': case 'throw_statement': case 'await_expression': case 'yield_expression':
+      case 'binary_expression': case 'ternary_expression': case 'sequence_expression': case 'array': case 'pair':
+      case 'spread_element': case 'template_substitution': case 'computed_property_name': case 'jsx_expression':
+      case 'variable_declarator': case 'public_field_definition': case 'field_definition': case 'required_parameter': case 'optional_parameter':
+      case 'if_statement': case 'while_statement': case 'do_statement': case 'for_statement': case 'switch_statement': case 'switch_case':
+        return false;
+      default: return true;
+    }
+  }
+  return true;
+}
+
+interface ClassMembers { members: Parser.SyntaxNode[]; writes: Set<string>; blocked: string | null }
 /** The one function exported by this name and not written to again in its file. */
 function exportedFunction(facts: FileFacts, name: string): Found {
   if (facts.unclear) return unknown('export', '가져온 파일에 with·eval·이스케이프로 쓴 이름·전역 객체의 동적 키·using 선언이 있어요.');
@@ -154,13 +191,155 @@ export async function findFunctionCalls(root: string, projectId: string, files: 
     if (!source) return unknown('export', '가져온 파일을 읽지 못했어요.');
     return exportedFunction(factsOf(file, source), imported);
   };
+  const classes = new Map<string, ClassMembers>();
+  const membersOf = (owner: Parser.SyntaxNode, facts: FileFacts) => {
+    const key = `${facts.file.id}:${owner.startIndex}`;
+    const cached = classes.get(key);
+    if (cached) return cached;
+    const body = owner.childForFieldName('body');
+    const members = (body?.namedChildren ?? []).filter(node => !['comment', 'method_signature', 'abstract_method_signature'].includes(node.type));
+    const result: ClassMembers = { members, writes: new Set(), blocked: null };
+    for (let node = owner.parent; node; node = node.parent) {
+      if (namespaceTypes.has(node.type)) result.blocked = 'namespace 안의 클래스는 따라가지 않아요';
+    }
+    if (body?.namedChildren.some(node => node.childForFieldName('name')?.type === 'computed_property_name')) {
+      result.blocked = '클래스에 계산된 이름의 멤버가 있어요';
+    }
+    const pending = body ? [body] : [];
+    while (pending.length) {
+      const node = pending.pop()!;
+      if (node.type === 'class_body' && node !== body) continue;
+      if (isMemberCall(node) && node.childForFieldName('object')?.type === 'this' && memberWrite(node)) {
+        if (node.type === 'subscript_expression') result.blocked = 'this[…]에 쓰는 곳이 있어요';
+        else { const name = calledProperty(node); if (name) result.writes.add(name); }
+      }
+      pending.push(...node.namedChildren);
+    }
+    // Constructor parameter properties are declarations of instance members too.
+    for (const method of [...members]) if (method.type === 'method_definition' && memberName(method) === 'constructor') {
+      for (const parameter of method.childForFieldName('parameters')?.namedChildren ?? []) {
+        if (parameter.namedChildren.some(child => child.type === 'accessibility_modifier') || hasToken(parameter, 'readonly')) members.push(parameter);
+      }
+    }
+    classes.set(key, result);
+    return result;
+  };
+  const hiddenTypes = new Map<string, { declarations: Set<string>; parameters: Set<string> }>();
+  const typeHidden = (facts: FileFacts, name: string, anchor: Parser.SyntaxNode, includeParameters = true) => {
+    if (!hiddenTypes.has(facts.file.id)) {
+      let root = anchor;
+      while (root.parent) root = root.parent;
+      const hidden = { declarations: new Set<string>(), parameters: new Set<string>() };
+      const pending = [root];
+      while (pending.length) {
+        const node = pending.pop()!;
+        if (['type_parameter', 'type_alias_declaration', 'interface_declaration', ...namespaceTypes].includes(node.type)) {
+          const declared = node.childForFieldName('name');
+          if (declared) (node.type === 'type_parameter' ? hidden.parameters : hidden.declarations).add(declared.text);
+        }
+        pending.push(...node.namedChildren);
+      }
+      hiddenTypes.set(facts.file.id, hidden);
+    }
+    const hidden = hiddenTypes.get(facts.file.id)!;
+    return hidden.declarations.has(name) || includeParameters && hidden.parameters.has(name);
+  };
+  const methodOf = (owner: Parser.SyntaxNode, facts: FileFacts, name: string, basis: string): Found => {
+    if (facts.unclear) return unknown('unclear-file');
+    if (!facts.complete) return unknown('incomplete');
+    const info = membersOf(owner, facts);
+    if (info.blocked) return unknown('member', info.blocked);
+    if (info.writes.has(name)) return unknown('member', `this.${name}에 다시 대입하거나 쓰는 곳이 있어요`);
+    const members = info.members.filter(node => memberName(node) === name);
+    if (!members.length) return unknown('member', '물려받은 메서드는 따라가지 않아요');
+    if (members.length !== 1) return unknown('member', '같은 이름의 멤버 선언이 여럿이에요');
+    const [method] = members;
+    if (method.type !== 'method_definition' || ['static', 'get', 'set'].some(token => hasToken(method, token)) || !method.childForFieldName('body')) {
+      return unknown('member', '본문 있는 인스턴스 메서드로 정할 수 없어요');
+    }
+    return { kind: 'typed', facts, fn: method, basis };
+  };
+  const resolveMember = async (call: CallFact, facts: FileFacts, callee: Parser.SyntaxNode): Promise<Found> => {
+    const receiver = callee.childForFieldName('object');
+    const method = callee.childForFieldName('property');
+    if (callee.type !== 'member_expression' || !method || !receiver
+      || (receiver.type !== 'this' && !(receiver.type === 'member_expression' && receiver.childForFieldName('object')?.type === 'this'))) {
+      return unknown('member');
+    }
+    // Arrows keep `this`; fields, static blocks and non-method functions stop the search.
+    let owner: Parser.SyntaxNode | null = null;
+    for (let node = call.node.parent; node; node = node.parent) {
+      if (['computed_property_name', 'decorator', 'class_heritage', 'class_body', 'class_static_block'].includes(node.type)) break;
+      if (!functionTypes.has(node.type) || node.type === 'arrow_function') continue;
+      if (node.type === 'method_definition' && !hasToken(node, 'static') && node.parent?.type === 'class_body') owner = node.parent.parent;
+      break;
+    }
+    const className = owner?.childForFieldName('name');
+    if (!owner || !className) return unknown('member', 'this가 가리키는 이름 있는 인스턴스 클래스를 정하지 못했어요');
+    const info = membersOf(owner, facts);
+    if (info.blocked) return unknown('member', info.blocked);
+    if (receiver.type === 'this') return methodOf(owner, facts, method.text, `같은 클래스 ${className.text}의 메서드로 찾았어요`);
+    const field = receiver.childForFieldName('property')!.text;
+    if (info.writes.has(field)) return unknown('member', `this.${field}에 다시 대입하거나 쓰는 곳이 있어요`);
+    const declarations = info.members.filter(node => memberName(node) === field);
+    if (declarations.length !== 1) return unknown('member', `this.${field}의 선언을 하나로 정하지 못했어요`);
+    const [declaration] = declarations;
+    if (hasToken(declaration, 'static') || !['public_field_definition', 'field_definition', 'required_parameter', 'optional_parameter'].includes(declaration.type)) {
+      return unknown('member', `this.${field}를 인스턴스 필드로 정하지 못했어요`);
+    }
+    const types = declaration.childForFieldName('type')?.namedChildren.filter(node => node.type !== 'comment') ?? [];
+    if (types.length !== 1 || types[0].type !== 'type_identifier') return unknown('member', `this.${field}의 타입이 이름 하나로 적혀 있지 않아요`);
+    const type = types[0].text;
+    for (const decorator of declaration.namedChildren.filter(node => node.type === 'decorator')) {
+      const expression = decorator.namedChildren[0];
+      const args = expression?.childForFieldName('arguments')?.namedChildren.filter(node => node.type !== 'comment') ?? [];
+      if (expression?.type !== 'call_expression' || expression.childForFieldName('function')?.text !== 'Inject'
+        || args.length !== 1 || args[0].type !== 'identifier' || args[0].text !== type) {
+        return unknown('member', '@Inject에 다른 값을 넣거나 다른 데코레이터를 써요');
+      }
+    }
+    if (typeHidden(facts, type, owner)) return unknown('member', `${type} 이름을 가리는 타입 선언이 있어요`);
+    // Look up the type where the field is declared, outside method parameters and nested functions.
+    let scope: Scope | null = call.scope;
+    while (scope && !(scope.names.get(className.text) ?? []).some(item => item.kind === 'variable' && item.at && sameRange(item.at, className))) scope = scope.parent;
+    const found = scope && nearest(scope, type);
+    if (!found || found.declared.length !== 1) return unknown('member', `${type}의 클래스 선언을 하나로 정하지 못했어요`);
+    if (reassigned(facts, type, found.scope)) return unknown('member', `${type}에 다시 대입해요`);
+    const [named] = found.declared;
+    let targetFacts = facts;
+    let targetClass: Parser.SyntaxNode | null = null;
+    if (named.kind === 'variable') targetClass = named.at?.parent ?? null;
+    else if (named.kind === 'import' && named.imported !== '*') {
+      const file = await importedFile(facts, named.specifier);
+      if ('kind' in file) return unknown('member', file.kind === 'unknown' ? file.detail : '외부 패키지의 클래스는 따라가지 않아요');
+      if (shouldStop()) throw new AppError('CANCELLED', '호출 찾기를 취소했어요.');
+      const source = await read(file);
+      if (!source) return unknown('member', '가져온 클래스 파일을 읽지 못했어요');
+      targetFacts = factsOf(file, source);
+      if (targetFacts.unclear) return unknown('unclear-file');
+      if (!targetFacts.complete) return unknown('incomplete');
+      const exports = targetFacts.exports.get(named.imported) ?? [];
+      if (exports.length !== 1 || !exports[0].local) return unknown('member', '내보낸 클래스를 하나로 정하지 못했어요(다시 내보내기는 따라가지 않아요)');
+      const local = exports[0].local;
+      const declared = targetFacts.program.names.get(local) ?? [];
+      if (declared.length !== 1 || declared[0].kind !== 'variable' || reassigned(targetFacts, local, targetFacts.program)) {
+        return unknown('member', '내보낸 쪽 클래스 선언이 여럿이거나 다시 대입돼요');
+      }
+      targetClass = declared[0].at?.parent ?? null;
+      if (targetClass && (typeHidden(targetFacts, local, targetClass, false) || typeHidden(targetFacts, named.imported, targetClass, false))) return unknown('member', `${local} 이름을 가리는 타입 선언이 있어요`);
+    }
+    if (!targetClass || !['class_declaration', 'abstract_class_declaration'].includes(targetClass.type) || !targetClass.childForFieldName('name')) {
+      return unknown('member', `${type}를 이름 있는 클래스 선언으로 정하지 못했어요`);
+    }
+    return methodOf(targetClass, targetFacts, method.text, `this.${field}에 적힌 타입 ${type}로 찾았어요`);
+  };
   const resolve = async (call: CallFact, facts: FileFacts): Promise<Found> => {
     const callee = call.node.childForFieldName('function')!;
-    if (isMemberCall(callee)) return unknown('member');
-    if (callee.type !== 'identifier') return unknown('expression');
+    if (!isMemberCall(callee) && callee.type !== 'identifier') return unknown('expression');
     if (call.inNamespace) return unknown('namespace');
     if (facts.unclear) return unknown('unclear-file');
     if (!facts.complete) return unknown('incomplete');
+    if (isMemberCall(callee)) return resolveMember(call, facts, callee);
     const found = nearest(call.scope, callee.text);
     if (!found) return unknown('undeclared');
     if (found.declared.length > 1) return unknown('duplicate');
@@ -180,7 +359,7 @@ export async function findFunctionCalls(root: string, projectId: string, files: 
     const at = site(call, facts);
     if (found.kind === 'external') return { ...at, status: 'external', specifier: found.specifier };
     if (found.kind === 'unknown') return { ...at, status: 'unknown', reason: found.reason, detail: found.detail };
-    return { ...at, status: 'linked', target: { fileId: found.facts.file.id, fileHash: found.facts.hash, startUtf16: found.fn.startIndex,
+    return { ...at, ...(found.kind === 'typed' ? { status: 'typed' as const, basis: found.basis } : { status: 'linked' as const }), target: { fileId: found.facts.file.id, fileHash: found.facts.hash, startUtf16: found.fn.startIndex,
       endUtf16: found.fn.endIndex, startLine: found.fn.startPosition.row + 1, name: functionName(found.fn) } };
   };
 
@@ -199,6 +378,7 @@ export async function findFunctionCalls(root: string, projectId: string, files: 
   const names = namesOf(fn, chosen);
   const anyName = new Set([...names.local, ...names.exported.filter(name => name !== 'default'), ...names.property]);
   const callers: CallSite[] = [];
+  const typedCallers: FunctionCalls['typedCallers'] = [];
   const maybeCallers: FunctionCalls['maybeCallers'] = [];
   const searched = names.local.length + names.exported.length + names.property.length > 0;
   if (searched) {
@@ -215,7 +395,13 @@ export async function findFunctionCalls(root: string, projectId: string, files: 
         const callee = call.node.childForFieldName('function')!;
         if (isMemberCall(callee)) {
           const property = calledProperty(callee);
-          if (property && anyName.has(property)) maybeCallers.push({ ...site(call, facts), reason: 'member', detail: null });
+          if (property && anyName.has(property)) {
+            const found = fn.type === 'method_definition' ? await resolve(call, facts) : unknown('member');
+            if (found.kind === 'typed' && found.facts.file.id === chosenFile.id && sameRange(found.fn, fn)) {
+              typedCallers.push({ ...site(call, facts), basis: found.basis });
+            } else maybeCallers.push({ ...site(call, facts), reason: found.kind === 'unknown' ? found.reason : 'member',
+              detail: found.kind === 'unknown' ? found.detail : '다른 클래스의 메서드로 찾았어요' });
+          }
           continue;
         }
         if (callee.type !== 'identifier') continue;
@@ -252,5 +438,5 @@ export async function findFunctionCalls(root: string, projectId: string, files: 
 
   const notes = result.limited ? [`부르는 곳은 파일 ${limits.files}개·합계 ${limits.bytes / 1024 / 1024} MiB까지만 찾아요. 나머지 파일은 보지 않았어요.`] : [];
   return { projectId, fileId: chosenFile.id, fileHash: chosen.hash, startUtf16: fn.startIndex, endUtf16: fn.endIndex, name: functionName(fn),
-    calls, callers: searched ? callers : null, maybeCallers, names, unexamined: [...result.unexamined.values()], values, limited: result.limited, notes };
+    calls, callers: searched ? callers : null, typedCallers, maybeCallers, names, unexamined: [...result.unexamined.values()], values, limited: result.limited, notes };
 }

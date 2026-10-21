@@ -202,6 +202,7 @@ export type CallUnknownReason = 'member' | 'expression' | 'not-function' | 'var'
 export interface CallTarget { fileId: string; fileHash: string; startUtf16: number; endUtf16: number; startLine: number; name: string }
 export type CallLink = CallSite & (
   | { status: 'linked'; target: CallTarget }
+  | { status: 'typed'; target: CallTarget; basis: string }
   | { status: 'unknown'; reason: CallUnknownReason; detail: string | null }
   | { status: 'external'; specifier: string });
 /** A place in a file shown by V-1; like CallSite it is re-read before use. */
@@ -248,6 +249,8 @@ export interface FunctionCalls {
   calls: CallLink[];
   /** Calls that lead to it; null when it has no name to be called by, so none were searched for. */
   callers: CallSite[] | null;
+  /** Calls found from a written type or the same class, excluded from confirmed callers and incoming values. */
+  typedCallers: (CallSite & { basis: string })[];
   /** Calls by one of its names that the rules could not settle. */
   maybeCallers: (CallSite & { reason: CallUnknownReason; detail: string | null })[];
   /** In its file (settles calls), exported (settles imports), property names (member calls only). */

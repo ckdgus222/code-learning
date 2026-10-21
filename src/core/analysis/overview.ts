@@ -9,7 +9,7 @@ const MAX_CHECKED_FILES = 20;
 const MAX_CANDIDATES = 8;
 const MAX_INTRO = 400;
 const codeFile = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
-const entryName = /^(?:src\/)?(?:index|main|app)\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
+const entryName = /^(?:[^/]+\/)?(?:src\/)?(?:index|main|app)\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
 // An extensionless README is excluded by the file policy, so it is not looked for here.
 const readmeName = /^readme\.(?:md|txt)$/i;
 const atxHeading = /^#{1,6}(?:\s|$)/;

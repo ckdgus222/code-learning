@@ -82,6 +82,7 @@ describe('project map from static imports', () => {
         ['src/main.ts', 7, 'src/re.ts'],
         ['src/main.ts', 8, 'src/types.ts'],
         ['src/main.ts', 9, 'styles.css'],
+        ['src/main.ts', 13, 'src/x.ts'],
         // `.config` is not a listed file type, so the name may still take a code extension.
         ['src/main.ts', 15, 'src/vite.config.ts'],
         // A trailing slash names a folder: only dir/index.ts, not dir.ts.
@@ -93,8 +94,7 @@ describe('project map from static imports', () => {
         [11, 'not-found', []],
         // Excluded by .gitignore, so it is not in the opened folder's list.
         [12, 'not-found', []],
-        // No TypeScript `.js` → `.ts` substitution: x.ts and e.js.ts are not taken.
-        [13, 'not-found', []],
+        // Substitution follows x.ts, but never appends .ts to e.js.
         [14, 'not-found', []],
         [16, 'not-static', []],
         [17, 'not-static', []],
@@ -244,5 +244,27 @@ describe('project map from static imports', () => {
     const project = await scanProject(root, randomUUID());
     await mapOf(project);
     expect(await readFile(path.join(root, 'src/main.ts'), 'utf8')).toBe(before);
+  });
+});
+
+describe('TypeScript counterparts for explicit JavaScript extensions', () => {
+  it.each([
+    ['a.ts', './b.js', ['b.ts'], 'b.ts'],
+    ['a.tsx', './b.js', ['b.tsx'], 'b.tsx'],
+    ['a.ts', './c.jsx', ['c.tsx'], 'c.tsx'],
+    ['a.mts', './d.mjs', ['d.mts'], 'd.mts'],
+    ['a.cts', './e.cjs', ['e.cts'], 'e.cts'],
+    ['a.js', './b.js', ['b.ts'], null],
+    ['a.ts', './b.js', ['b.js', 'b.ts'], null],
+    ['a.ts', './b.js', ['b.ts', 'b.tsx'], null],
+    ['a.ts', './b.js', ['b.d.ts'], null],
+  ])('%s importing %s considers %j', async (from, specifier, targets, expected) => {
+    await put(`extensions/${from}`, `import '${specifier}';`);
+    for (const target of targets) await put(`extensions/${target}`, 'export const value = 1;');
+    const project = await scanProject(root, randomUUID());
+    const result = await buildProjectMap(root, project.id, project.files, []);
+    const fileId = project.files.find(file => file.relativePath === `extensions/${from}`)!.id;
+    if (expected) expect(result.edges.find(item => item.fromFileId === fileId)).toMatchObject({ toFileId: project.files.find(file => file.relativePath === `extensions/${expected}`)!.id });
+    else expect(result.unresolved.find(item => item.fromFileId === fileId)).toMatchObject({ reason: targets.length > 1 ? 'ambiguous' : 'not-found' });
   });
 });

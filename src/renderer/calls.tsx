@@ -10,7 +10,7 @@ export type CallsState =
 export interface CallFunction { fileId: string; fileHash: string; startUtf16: number; endUtf16: number; startLine: number }
 
 const reasons: Record<CallUnknownReason, string> = {
-  member: '멤버 호출(obj.f())이라 대상을 정할 수 없어요',
+  member: '멤버 호출이라 대상을 정하지 못했어요',
   expression: '이름이 아닌 식을 불러 대상을 정할 수 없어요',
   'not-function': '가장 가까운 선언이 매개변수나 변수라 들어오는 함수를 정할 수 없어요',
   var: 'var로 선언된 이름이라 범위를 정할 수 없어요',
@@ -61,7 +61,7 @@ export function CallsFacts({ state, stale, locked, pathOf, onRetry, onCancel, on
     <dd>
       {result.calls.length ? <ul className="map-list" aria-label="이 함수가 부르는 것">{firstRows(result.calls).map(call => <li key={`${call.startUtf16}:${call.endUtf16}`}>
         {at(call, false)}
-        {call.status === 'linked' ? <> → <b>{call.target.name}</b> <span className="path">{pathOf(call.target.fileId)}</span> {functionButton(call.target)}</>
+        {call.status === 'linked' || call.status === 'typed' ? <> → <b>{call.target.name}</b> <span className="path">{pathOf(call.target.fileId)}</span>{call.status === 'typed' && <span title={call.basis}> · 타입으로 찾음</span>} {functionButton(call.target)}</>
           : call.status === 'external' ? <> · <span className="tag tag--doc">외부 패키지 또는 경로 별칭</span><code>{call.specifier}</code></>
           : <> · <span className="tag tag--unknown">확인 못 함</span>{reasons[call.reason]}{call.detail && ` · ${call.detail}`}</>}
         {' '}{siteButton(call)}
@@ -77,6 +77,13 @@ export function CallsFacts({ state, stale, locked, pathOf, onRetry, onCancel, on
           {' '}{site.inFunction && functionButton({ ...site.inFunction, fileId: site.fileId, fileHash: site.fileHash })} {siteButton(site)}
         </li>)}</ul> : <p>이 함수로 이어진 호출을 찾지 못했어요.</p>}
       {result.callers && <Omitted count={result.callers.length} />}
+      {result.typedCallers.length > 0 && <>
+        <p>타입으로 찾은 부르는 곳 · {result.typedCallers.length}개</p>
+        <ul className="map-list" aria-label="타입으로 찾은 부르는 곳">{firstRows(result.typedCallers).map(site => <li key={`${site.fileId}:${site.startUtf16}`}>
+          {at(site, true)} · <span title={site.basis}>{site.inFunction ? `${site.inFunction.name} 안` : '함수 밖'}</span> {siteButton(site)}
+        </li>)}</ul>
+        <Omitted count={result.typedCallers.length} />
+      </>}
       {result.maybeCallers.length > 0 && <details><summary>이름이 같지만 잇지 못한 호출 · {result.maybeCallers.length}개</summary>
         <ul className="map-list" aria-label="이름이 같지만 잇지 못한 호출">{firstRows(result.maybeCallers).map(site => <li key={`${site.fileId}:${site.startUtf16}`}>
           {at(site, true)} · <span className="tag tag--unknown">확인 못 함</span>{reasons[site.reason]}{site.detail && ` · ${site.detail}`} {siteButton(site)}
@@ -89,6 +96,7 @@ export function CallsFacts({ state, stale, locked, pathOf, onRetry, onCancel, on
       </details>}
       {result.notes.map(note => <p key={note} className="hint">{note}</p>)}
       {searchedFor && <p className="hint">{searchedFor}</p>}
+      <p className="hint">타입으로 찾음은 적힌 타입 기준이라 실제로 다른 객체가 들어올 수 있어요.</p>
       <p className="hint">코드에 적힌 이름으로 찾은 호출이에요. 실제로 불리는지, 몇 번 불리는지, 어떤 순서인지는 아니에요.</p>
     </dd>
   </>;

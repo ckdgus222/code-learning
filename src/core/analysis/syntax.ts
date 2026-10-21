@@ -62,13 +62,20 @@ const nestingTypes = new Set([
   'if_statement', 'for_statement', 'for_in_statement', 'while_statement', 'do_statement', 'switch_statement', 'try_statement',
 ]);
 
-/** The name a function is listed under: its own, its assigned name, or its context and line. */
+/** The name a function is listed under: `Class.member` in a named class, its own or assigned name, or its context and line. */
 export function functionName(node: Parser.SyntaxNode): string {
   const parent = node.parent;
   const assignedName = parent && ['variable_declarator', 'public_field_definition', 'field_definition'].includes(parent.type)
     ? parent.childForFieldName('name')
     : parent?.type === 'pair' ? parent.childForFieldName('key') : null;
-  const name = node.childForFieldName('name')?.text ?? assignedName?.text;
+  const ownName = node.childForFieldName('name');
+  const name = ownName?.text ?? assignedName?.text;
+  const member = node.type === 'method_definition' ? node
+    : parent && ['public_field_definition', 'field_definition'].includes(parent.type) ? parent : null;
+  const owner = member?.parent?.type === 'class_body' ? member.parent.parent : null;
+  const className = owner && classTypes.has(owner.type) ? owner.childForFieldName('name')?.text : null;
+  const memberName = member?.childForFieldName('name');
+  if (className && memberName && memberName.type !== 'computed_property_name') return `${className}.${memberName.text}`;
   if (name !== undefined) return name;
   const line = `(${node.startPosition.row + 1}행)`;
   if (parent?.type === 'arguments') {
@@ -146,7 +153,7 @@ export function measureFunction(node: Parser.SyntaxNode, text: string): { lines:
 
 /**
  * `export function f`, `export default …`, or a function assigned in `export const f = …`.
- * `export { f }` lists, re-exports, class methods and CommonJS `module.exports` are not followed.
+ * `export { f }` lists, re-exports and CommonJS `module.exports` are not followed; exported classes expose public methods.
  */
 /**
  * Whether a node is an import, and of which kind. The analyzer's import evidence and the project map
@@ -180,6 +187,14 @@ export function importOf(node: Parser.SyntaxNode): { kind: 'static' | 'not-stati
 function isExported(node: Parser.SyntaxNode): boolean {
   const parent = node.parent;
   if (parent?.type === 'export_statement') return true;
+  if (node.type === 'method_definition' && parent?.type === 'class_body') {
+    const owner = parent.parent;
+    const name = node.childForFieldName('name');
+    return !!owner && classTypes.has(owner.type) && owner.parent?.type === 'export_statement'
+      && name?.text !== 'constructor' && name?.type !== 'private_property_identifier'
+      && !node.children.some(child => child.type === 'accessibility_modifier' && ['private', 'protected'].includes(child.text)
+        || !child.isNamed && ['get', 'set'].includes(child.type));
+  }
   const declaration = parent?.type === 'variable_declarator' ? parent.parent : null;
   return !!declaration && ['lexical_declaration', 'variable_declaration'].includes(declaration.type)
     && declaration.parent?.type === 'export_statement';

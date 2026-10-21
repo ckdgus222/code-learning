@@ -121,6 +121,7 @@ describe('start candidates', () => {
       ['bin/cli.ts', null, 'package-bin'],
       ['src/index.ts', 'boot', 'entry-name'],
       ['src/deep/util.ts', 'helper', 'exported'],
+      ['src/deep/util.ts', 'C.m', 'exported'],
     ]);
     const result = await overview();
     expect(result.notes).toEqual(['package.json의 bin(dist/cli.js)은 제외되었거나 없는 파일이라 살펴보지 않았어요.']);
@@ -163,5 +164,24 @@ describe('start candidates', () => {
     const result = await overview();
     expect(result.candidates.map(item => item.name)).toEqual(['ok']);
     expect(result.notes).toEqual(['읽지 못한 파일 1개는 건너뛰었어요.']);
+  });
+});
+
+describe('nested entry files and exported class methods', () => {
+  it('includes one project folder, preserving depth and path order', async () => {
+    for (const file of ['api/src/main.ts', 'web/src/index.tsx', 'server/main.ts', 'main.ts', 'src/app.ts', 'web/src/components/index.ts']) await put(file, 'const value = 1;');
+    expect((await picked()).map(([file]) => file)).toEqual(['main.ts', 'server/main.ts', 'src/app.ts', 'api/src/main.ts', 'web/src/index.tsx']);
+  });
+
+  it('includes public exported methods but not constructors, accessors or private methods', async () => {
+    await put('controller.ts', `export class Controller {
+      constructor() {} public login() {} private hidden() {} protected internal() {} #secret() {}
+      get value() { return 1; } set value(x: number) {} handle = () => {};
+    }
+    class Local { run() {} }
+    export default class Default { run() {} }
+    export abstract class Abstract { public run() {} }
+    export class Keywords { private() {} protected() {} get() {} set() {} }`);
+    expect((await picked()).map(([, name]) => name)).toEqual(['Controller.login', 'Default.run', 'Abstract.run', 'Keywords.private', 'Keywords.protected', 'Keywords.get', 'Keywords.set']);
   });
 });

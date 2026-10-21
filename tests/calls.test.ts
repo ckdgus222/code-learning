@@ -210,7 +210,8 @@ async function callsOf(relative: string, name: string, limits = MAP_LIMITS, shou
 }
 // Results by line and what they lead to, which the expected lists use.
 const outcomes = (result: FunctionCalls) => result.calls.map(call => [call.startLine,
-  call.status === 'linked' ? `→ ${pathOf(call.target.fileId)} ${call.target.name}`
+  call.status === 'typed' ? `타입 → ${pathOf(call.target.fileId)} ${call.target.name}`
+    : call.status === 'linked' ? `→ ${pathOf(call.target.fileId)} ${call.target.name}`
     : call.status === 'external' ? `외부 ${call.specifier}` : `확인 못 함 ${call.reason}${call.detail ? ` ${call.detail}` : ''}`]);
 const callers = (result: FunctionCalls) => result.callers?.map(item => [pathOf(item.fileId), item.startLine, item.inFunction?.name ?? null]) ?? null;
 const maybe = (result: FunctionCalls) => result.maybeCallers.map(item => [pathOf(item.fileId), item.startLine, item.reason]);
@@ -269,7 +270,7 @@ describe('what a function calls (plan v2.3 F)', () => {
     expect(await only('f')).toEqual([[15, '확인 못 함 not-function']]);
     expect(await only('self')).toEqual([[16, '→ src/scopes.ts self']]);
     expect(await only('inner2')).toEqual([[17, '→ src/scopes.ts inner2']]);
-    expect(await only('m')).toEqual([[19, '확인 못 함 not-function']]);
+    expect(await only('target.m')).toEqual([[19, '확인 못 함 not-function']]);
   });
 
   it('does not settle var, block functions, names declared twice, with or eval, namespaces, or files not seen to the end', async () => {
@@ -306,7 +307,7 @@ describe('eval in brackets and quoted property names', () => {
 
   it('matches a method named by a string with its member calls, written with a dot or brackets', async () => {
     expect(outcomes(await callsOf('src/quoted.ts', 'use'))).toEqual([[3, '확인 못 함 member'], [3, '확인 못 함 member']]);
-    for (const name of ['"stash"', "'stash'"]) {
+    for (const name of ['"stash"', "K.'stash'"]) {
       const method = await callsOf('src/quoted.ts', name);
       expect([method.names.property, maybe(method)]).toEqual([['stash'], [['src/quoted.ts', 3, 'member'], ['src/quoted.ts', 3, 'member']]]);
     }
@@ -358,13 +359,13 @@ describe('escaped names and enums', () => {
     // A key that cannot be read as it is written may be any name.
     expect(outcomes(await callsOf('src/global-escaped-key.js', 'run'))).toEqual([[3, '확인 못 함 unclear-file']]);
     expect(outcomes(await callsOf('src/global-variable-key.js', 'run'))).toEqual([[4, '확인 못 함 unclear-file']]);
-    expect(outcomes(await callsOf('src/member-eval.js', 'run'))).toEqual([[2, '확인 못 함 member'], [2, '확인 못 함 unclear-file']]);
+    expect(outcomes(await callsOf('src/member-eval.js', 'run'))).toEqual([[2, '확인 못 함 unclear-file'], [2, '확인 못 함 unclear-file']]);
   });
 
   it('does not settle a file with escaped names, nor a call inside an enum', async () => {
     expect(outcomes(await callsOf('src/escaped.ts', 'run'))).toEqual([[2, '확인 못 함 unclear-file']]);
     expect(outcomes(await callsOf('src/escaped-class.ts', 'run'))).toEqual([[2, '확인 못 함 unclear-file']]);
-    expect(outcomes(await callsOf('src/escaped-class.ts', 'm'))).toEqual([[3, '확인 못 함 unclear-file']]);
+    expect(outcomes(await callsOf('src/escaped-class.ts', '\\u0066.m'))).toEqual([[3, '확인 못 함 unclear-file']]);
     // Escaped names in destructuring: a parameter, a local and an assignment.
     for (const file of ['src/escaped-param.ts', 'src/escaped-local.ts']) expect(outcomes(await callsOf(file, 'run')), file).toEqual([[2, '확인 못 함 unclear-file']]);
     expect(outcomes(await callsOf('src/escaped-assign.ts', 'run'))).toEqual([[3, '확인 못 함 unclear-file']]);
@@ -385,7 +386,7 @@ describe('computed method names and static blocks', () => {
     // the field value and the static block do not run as part of build.
     expect(outcomes(await callsOf('src/decorated.ts', 'build'))).toEqual([
       [4, '→ src/decorated.ts dec'], [4, '→ src/decorated.ts dec'], [4, '→ src/decorated.ts dec'], [4, '→ src/decorated.ts make']]);
-    expect(outcomes(await callsOf('src/decorated.ts', 'method'))).toEqual([]);
+    expect(outcomes(await callsOf('src/decorated.ts', 'dec2.method'))).toEqual([]);
     expect(callers(await callsOf('src/decorated.ts', 'dec'))).toEqual([1, 2, 3].map(() => ['src/decorated.ts', 4, 'build']));
     expect(callers(await callsOf('src/decorated.ts', 'make'))).toEqual([['src/decorated.ts', 4, null], ['src/decorated.ts', 4, 'build'], ['src/decorated.ts', 4, null]]);
   });
@@ -471,5 +472,124 @@ describe('limits and safety of the call search', () => {
       .rejects.toMatchObject({ code: 'NOT_ALLOWED' });
     await callsOf('src/main.ts', 'run');
     expect(await Promise.all(Object.keys(files).map(name => readFile(path.join(root, name), 'utf8')))).toEqual(before);
+  });
+});
+
+describe('class calls found from written types', () => {
+  it.each(['@Inject(AuthService) private readonly', 'private', 'public', 'protected', 'readonly'])('follows %s constructor properties through .js imports without confirming incoming values', async modifier => {
+    await writeFile(path.join(root, 'service.ts'), 'export class AuthService { signup(input: string) { return this.issueTokens(); } issueTokens() { return 1; } }');
+    await writeFile(path.join(root, 'controller.ts'), `import { AuthService } from './service.js';
+export class AuthController { constructor(${modifier} auth: AuthService) {} login(input: string) { return this.auth.signup(input); } }`);
+    project = await scanProject(root, project.id);
+    const outgoing = await callsOf('controller.ts', 'AuthController.login');
+    expect(outgoing.calls).toHaveLength(1);
+    expect(outgoing.calls[0]).toMatchObject({ status: 'typed', target: { name: 'AuthService.signup', fileId: idOf('service.ts') }, basis: 'this.auth에 적힌 타입 AuthService로 찾았어요' });
+    const incoming = await callsOf('service.ts', 'AuthService.signup');
+    expect(incoming.typedCallers).toHaveLength(1);
+    expect(incoming.typedCallers[0]).toMatchObject({ fileId: idOf('controller.ts'), text: 'this.auth.signup(input)', args: [{ text: 'input', spread: false }] });
+    expect(incoming.callers).toEqual([]);
+    expect(incoming.calls[0]).toMatchObject({ status: 'typed', target: { name: 'AuthService.issueTokens' }, basis: '같은 클래스 AuthService의 메서드로 찾았어요' });
+    expect(incoming.values.find(value => value.name === 'input')).toMatchObject({ role: 'parameter' });
+  });
+
+  it('also follows an ordinary function imported with a JS extension', async () => {
+    await writeFile(path.join(root, 'extension.ts'), "import { save } from './src/store.js'; export function run() { save('x'); }");
+    project = await scanProject(root, project.id);
+    expect((await callsOf('extension.ts', 'run')).calls[0]).toMatchObject({ status: 'linked', target: { name: 'save' } });
+  });
+
+  it.each([
+    ['same method', 'class C { m() {} run() { this.m(); } }', 'C.run', 'C.m'],
+    ['arrow keeps this', 'class C { m() {} run() { const arrow = () => this.m(); } }', 'arrow', 'C.m'],
+    ['field type', 'class A { m() {} } class C { private f: A; run() { this.f.m(); } }', 'C.run', 'A.m'],
+    ['initialized field', 'class A { m() {} } class C { f: A = new A(); run() { this.f.m(); } }', 'C.run', 'A.m'],
+    ['type looked up at field', 'class A { m() {} } class C { f: A; run(A: unknown) { this.f.m(); } }', 'C.run', 'A.m'],
+    ['overload body', 'class C { m(x: string): void; m(x: number): void; m(x: any) {} run() { this.m(1); } }', 'C.run', 'C.m'],
+    ['nested class write excluded', 'class C { m() {} run() { class Inner { run() { this.m = other; } } this.m(); } }', 'C.run', 'C.m'],
+    ['property read in deeper write', 'class C { f: A; run() { this.f.value = 1; this.f.m(); } } class A { m() {} }', 'C.run', 'A.m'],
+    ['method read', 'class C { m() {} run() { const a = this.m; this.m(); } }', 'C.run', 'C.m'],
+  ])('resolves %s', async (_label, text, chosen, targetName) => {
+    await writeFile(path.join(root, 'typed.ts'), text);
+    project = await scanProject(root, project.id);
+    expect((await callsOf('typed.ts', chosen)).calls.at(-1)).toMatchObject({ status: 'typed', target: { name: targetName } });
+    const target = await callsOf('typed.ts', targetName);
+    expect(target.typedCallers).toHaveLength(1);
+    expect(target.callers).toEqual([]);
+  });
+
+  it.each([
+    ['plain function', 'class C { m() {} run() { function inner() { this.m(); } } }', 'inner', 'C.m'],
+    ['static method', 'class C { m() {} static run() { this.m(); } }', 'C.run', 'C.m'],
+    ['inner field arrow', 'class Outer { m() {} make() { class Inner { m() {} f = () => this.m(); } } }', 'Inner.f', 'Outer.m'],
+    ['computed key context', 'class Outer { m() {} make() { class Inner { m() {} [this.m()]() {} } } }', 'Outer.make', 'Outer.m'],
+    ['decorator context', 'class Outer { m() {} make() { class Inner { m() {} @dec(this.m()) run() {} } } }', 'Outer.make', 'Outer.m'],
+    ['dynamic write', 'class C { m() {} run() { this[key] = other; this.m(); } }', 'C.run', 'C.m'],
+    ['computed member', 'class C { m() {} [key]() {} run() { this.m(); } }', 'C.run', 'C.m'],
+    ['computed field', 'class C { m() {} [key] = 1; run() { this.m(); } }', 'C.run', 'C.m'],
+    ['method assignment', 'class C { m() {} run() { this.m = () => 1; this.m(); } }', 'C.run', 'C.m'],
+    ['field assignment', 'class A { m() {} } class C { constructor(private f: A) {} run() { this.f = other; this.f.m(); } }', 'C.run', 'A.m'],
+    ['split namespace', 'class A { m() {} } namespace N {} namespace N { class C { constructor(private f: A) {} run() { this.f.m(); } } }', 'C.run', 'A.m'],
+    ['target namespace', 'namespace N { class A { m() {} } class C { f: A; run() { this.f.m(); } } }', 'C.run', 'A.m'],
+    ['type parameter shadow', 'class A { m() {} } class B {} class C<A extends B> { constructor(private f: A) {} run() { this.f.m(); } }', 'C.run', 'A.m'],
+    ['type alias shadow', 'class A { m() {} } type A = Other; class C { f: A; run() { this.f.m(); } }', 'C.run', 'A.m'],
+    ['interface shadow', 'class A { m() {} } interface A {} class C { f: A; run() { this.f.m(); } }', 'C.run', 'A.m'],
+    ['static field', 'class A { m() {} } class B { m() {} } class Base { f: B; } class C extends Base { static f: A; run() { this.f.m(); } }', 'C.run', 'A.m'],
+    ['missing type', 'class A { m() {} } class C { f; run() { this.f.m(); } }', 'C.run', 'A.m'],
+    ['generic type', 'class A<T> { m() {} } class C { f: A<string>; run() { this.f.m(); } }', 'C.run', 'A.m'],
+    ['union type', 'class A { m() {} } class C { f: A | null; run() { this.f.m(); } }', 'C.run', 'A.m'],
+    ['qualified type', 'class A { m() {} } class C { f: ns.A; run() { this.f.m(); } }', 'C.run', 'A.m'],
+    ['interface only', 'interface A { m(): void; } class C { f: A; run() { this.f.m(); } m() {} }', 'C.run', 'C.m'],
+    ['inject token', "class A { m() {} } class C { constructor(@Inject('TOKEN') private f: A) {} run() { this.f.m(); } }", 'C.run', 'A.m'],
+    ['inject factory', 'class A { m() {} } class C { constructor(@Inject(forwardRef(() => A)) private f: A) {} run() { this.f.m(); } }', 'C.run', 'A.m'],
+    ['other decorator', 'class A { m() {} } class C { constructor(@Other(A) private f: A) {} run() { this.f.m(); } }', 'C.run', 'A.m'],
+    ['duplicate method', 'class C { m() {} m() {} run() { this.m(); } }', 'C.run', 'C.m'],
+    ['field and method', 'class C { m = other; m() {} run() { this.m(); } }', 'C.run', 'C.m'],
+    ['duplicate field', 'class A { m() {} } class C { f: A; constructor(private f: A) {} run() { this.f.m(); } }', 'C.run', 'A.m'],
+    ['inherited method', 'class A { m() {} } class C extends A { run() { this.m(); } }', 'C.run', 'A.m'],
+    ['deep member', 'class A { m() {} } class C { f: A; run() { this.f.a.m(); } }', 'C.run', 'A.m'],
+    ['getter target', 'class C { get m() { return other; } run() { this.m(); } }', 'C.run', 'C.m'],
+    ['static target', 'class C { static m() {} run() { this.m(); } }', 'C.run', 'C.m'],
+    ['target write', 'class A { m() {} change() { this.m = other; } } class C { f: A; run() { this.f.m(); } }', 'C.run', 'A.m'],
+    ['target computed name', 'class A { m() {} [key]() {} } class C { f: A; run() { this.f.m(); } }', 'C.run', 'A.m'],
+    ['computed call', "class C { m() {} run() { this['m'](); } }", 'C.run', 'C.m'],
+    ['super call', 'class A { m() {} } class C extends A { run() { super.m(); } }', 'C.run', 'A.m'],
+  ])('blocks %s in outgoing and typed incoming calls', async (_label, text, chosen, targetName) => {
+    await writeFile(path.join(root, 'blocked.ts'), text);
+    project = await scanProject(root, project.id);
+    const outgoing = await callsOf('blocked.ts', chosen);
+    const memberCalls = outgoing.calls.filter(call => call.text.includes('this.') || call.text.includes('this[') || call.text.includes('super.'));
+    expect(memberCalls.length).toBeGreaterThan(0);
+    expect(memberCalls.every(call => call.status === 'unknown')).toBe(true);
+    const target = await callsOf('blocked.ts', targetName);
+    expect(target.typedCallers).toEqual([]);
+    expect(target.callers).toEqual([]);
+    expect(target.maybeCallers.length).toBeGreaterThan(0);
+  });
+
+  it.each(['this.m = other', 'this.m ??= other', 'for (this.m of xs) {}', 'for (this.m in xs) {}',
+    '[this.m] = xs', '({ a: this.m } = x)', '++this.m', 'this.m--', 'delete this.m',
+    'this[key] = other', "delete this['m']", 'function inner() { this.m = other; }'])('blocks writes: %s', async write => {
+    await writeFile(path.join(root, 'writes.ts'), `class C { m() {} run() { ${write}; this.m(); } }`);
+    project = await scanProject(root, project.id);
+    expect((await callsOf('writes.ts', 'C.run')).calls.at(-1)).toMatchObject({ status: 'unknown', reason: 'member' });
+    expect((await callsOf('writes.ts', 'C.m')).typedCallers).toEqual([]);
+  });
+
+  it.each([
+    ['reexport', "export { A } from './actual';", "import { A } from './target';", 'member'],
+    ['import type', 'export class A { m() {} }', "import type { A } from './target';", 'member'],
+    ['inline import type', 'export class A { m() {} }', "import { type A } from './target';", 'member'],
+    ['target type shadow', 'export class A { m() {} } interface A {}', "import { A } from './target';", 'member'],
+    ['target unclear', 'export class A { m() {} } eval(code);', "import { A } from './target';", 'unclear-file'],
+    ['target incomplete', 'export class A { m() {} } const broken = ;', "import { A } from './target';", 'incomplete'],
+    ['source unclear', 'export class A { m() {} }', "import { A } from './target'; eval(code);", 'unclear-file'],
+    ['source incomplete', 'export class A { m() {} }', "import { A } from './target'; const broken = ;", 'incomplete'],
+  ])('blocks %s across files', async (_label, target, imported, reason) => {
+    await writeFile(path.join(root, 'target.ts'), target);
+    await writeFile(path.join(root, 'actual.ts'), 'export class A { m() {} }');
+    await writeFile(path.join(root, 'caller.ts'), `${imported} class C { f: A; run() { this.f.m(); } }`);
+    project = await scanProject(root, project.id);
+    expect((await callsOf('caller.ts', 'C.run')).calls[0]).toMatchObject({ status: 'unknown', reason });
+    expect((await callsOf(_label === 'reexport' ? 'actual.ts' : 'target.ts', 'A.m')).typedCallers).toEqual([]);
   });
 });
