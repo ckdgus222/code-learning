@@ -3,7 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { mkdir, realpath } from 'node:fs/promises';
 import { z } from 'zod';
-import { channels, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, shapesRequestSchema, changesRequestSchema, diffRequestSchema, type Result, type Evidence } from '../shared/contracts';
+import { channels, featureFlowRequestSchema, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, shapesRequestSchema, changesRequestSchema, diffRequestSchema, type Result, type Evidence } from '../shared/contracts';
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { ProjectSession, workersStopped } from './project-session';
@@ -190,6 +190,35 @@ app.whenReady().then(async () => {
         throw error;
       }
     } finally { opening = false; }
+  });
+  handle(channels.routes, async argument => {
+    const input = projectRequestSchema.parse(argument);
+    if (quitting) throw new AppError('CANCELLED', '앱을 끝내는 중이에요.');
+    const active = current(input.projectId);
+    const revision = projectRevision;
+    const result = await active.routes(revision);
+    if (session !== active || projectRevision !== revision) {
+      active.cancelRoutes();
+      throw new AppError('CHANGED', '프로젝트가 바뀌었어요. 주소를 다시 찾아 주세요.');
+    }
+    return result;
+  });
+  handle(channels.cancelRoutes, async argument => {
+    current(projectRequestSchema.parse(argument).projectId).cancelRoutes();
+    return null;
+  });
+  handle(channels.featureFlow, async argument => {
+    const input = featureFlowRequestSchema.parse(argument);
+    if (quitting) throw new AppError('CANCELLED', '앱을 끝내는 중이에요.');
+    const active = current(input.projectId);
+    const revision = projectRevision;
+    const result = await active.featureFlow(input.routesId, input.routeIndex, revision);
+    if (session !== active || projectRevision !== revision) throw new AppError('CHANGED', '프로젝트가 바뀌었어요. 주소를 다시 찾아 주세요.');
+    return result;
+  });
+  handle(channels.cancelFeatureFlow, async argument => {
+    current(projectRequestSchema.parse(argument).projectId).cancelFeatureFlow();
+    return null;
   });
   handle(channels.map, async argument => {
     const input = projectRequestSchema.parse(argument);

@@ -2,7 +2,7 @@ import { Worker } from 'node:worker_threads';
 import { lstat, readlink } from 'node:fs/promises';
 import path from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
-import type { Evidence, FileDiff, FunctionCalls, GitHistory, ProjectChanges, ProjectEvent, ProjectMap, ProjectView, Result, ShapeQuery, SourceView,
+import type { ProjectRoutes, FeatureFlow, Evidence, FileDiff, FunctionCalls, GitHistory, ProjectChanges, ProjectEvent, ProjectMap, ProjectView, Result, ShapeQuery, SourceView,
   ValueShapes } from '../shared/contracts';
 import { AppError } from '../shared/errors';
 import type { WorkerRequest, WorkerResponse } from '../workers/analysis';
@@ -24,8 +24,10 @@ export async function workersStopped(): Promise<void> {
 }
 
 // Jobs that read the whole project in a worker of their own, so the session's worker keeps answering reads.
-type SideJob = 'map' | 'calls' | 'shapes' | 'history' | 'changes' | 'diff';
+type SideJob = 'routes' | 'flow' | 'map' | 'calls' | 'shapes' | 'history' | 'changes' | 'diff';
 const sideWords: Record<SideJob, { failed: string; ended: string; slow: string; changed: string }> = {
+  routes: { failed: '주소를 찾지 못했어요.', ended: '주소 찾기가 끝났어요.', slow: '주소 찾기 시간이 초과됐어요.', changed: '주소를 찾는 동안 파일이 바뀌었어요.' },
+  flow: { failed: '기능 흐름을 찾지 못했어요.', ended: '기능 흐름 찾기가 끝났어요.', slow: '기능 흐름 찾기 시간이 초과됐어요.', changed: '기능 흐름을 찾는 동안 파일이 바뀌었어요.' },
   map: { failed: '지도를 만들지 못했어요.', ended: '지도 작업이 끝나 버렸어요.', slow: '지도를 만드는 데 너무 오래 걸려 멈췄어요.',
     changed: '지도를 만드는 동안 파일이 바뀌었어요. 다시 만들어 주세요.' },
   calls: { failed: '호출을 찾지 못했어요.', ended: '호출 찾기 작업이 끝나 버렸어요.', slow: '호출을 찾는 데 너무 오래 걸려 멈췄어요.',
@@ -60,6 +62,10 @@ export class ProjectSession {
   private abortTypeWatch?: () => void;
   /** Counts shape searches and their cancels: a search adopts its watch only while it is still the latest. */
   private shapesRun = 0;
+  private routesRun = 0;
+  private flowRun = 0;
+  private lastRoutes?: { result: ProjectRoutes; observed: number; revision: number };
+
   /** Tests only: holds a new type watch back after it is ready and checked, just before it would be adopted. */
   holdTypeWatch?: (watcher: FSWatcher) => Promise<void>;
 
@@ -129,6 +135,38 @@ export class ProjectSession {
     if (revision !== this.observedChanges) throw new AppError('CHANGED', '근거 확인 중 코드가 바뀌었습니다. 다시 읽어 주세요.');
     return result;
   }
+
+  async routes(revision = 0, timeoutMs = 30_000): Promise<ProjectRoutes> {
+    if (this.closed || !this.project) throw new AppError('PROJECT_CLOSED', '프로젝트를 다시 열어 주세요.');
+    this.cancelRoutes();
+    const run = this.routesRun;
+    const observed = this.observedChanges;
+    const files = this.project.files;
+    const result = await this.runSide('routes', stop => ({ routes: { files, stop } }), timeoutMs) as ProjectRoutes;
+    if (run !== this.routesRun || this.closed) throw new AppError('CANCELLED', '취소한 주소 결과는 버렸어요.');
+    if (observed !== this.observedChanges) throw new AppError('CHANGED', '파일이 바뀌었어요. 주소를 다시 찾아 주세요.');
+    this.lastRoutes = { result, observed, revision };
+    return result;
+  }
+
+  async featureFlow(routesId: string, routeIndex: number, revision = 0, timeoutMs = 30_000): Promise<FeatureFlow> {
+    if (this.closed || !this.project) throw new AppError('PROJECT_CLOSED', '프로젝트를 다시 열어 주세요.');
+    const saved = this.lastRoutes;
+    if (!saved || saved.result.routesId !== routesId || saved.revision !== revision || saved.observed !== this.observedChanges
+      || !Number.isInteger(routeIndex) || routeIndex < 0 || routeIndex >= saved.result.routes.length) {
+      throw new AppError('CHANGED', '기능 목록이 바뀌었어요. 주소를 다시 찾아 주세요.');
+    }
+    this.cancelFeatureFlow();
+    const run = this.flowRun;
+    const files = this.project.files;
+    const result = await this.runSide('flow', stop => ({ flow: { files, routes: saved.result, routeIndex, stop } }), timeoutMs) as FeatureFlow;
+    if (run !== this.flowRun || this.closed) throw new AppError('CANCELLED', '취소한 기능 흐름은 버렸어요.');
+    if (saved !== this.lastRoutes || saved.observed !== this.observedChanges) throw new AppError('CHANGED', '기능 목록을 다시 찾아 주세요.');
+    return result;
+  }
+
+  cancelRoutes(): void { this.routesRun++; this.lastRoutes = undefined; this.cancelSide('routes'); this.cancelFeatureFlow(); }
+  cancelFeatureFlow(): void { this.flowRun++; this.cancelSide('flow'); }
 
   /** Draws the project map from the files listed when the folder was opened. */
   async map(timeoutMs = 30_000): Promise<ProjectMap> {
@@ -331,6 +369,7 @@ export class ProjectSession {
     this.closed = true;
     Atomics.store(this.stop, 0, 1);
     this.cancelMap();
+    this.cancelRoutes();
     this.cancelCalls();
     this.cancelShapes();
     this.cancelSide('history');

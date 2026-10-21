@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { sourceRequestSchema, evidenceRequestSchema } from '../src/shared/contracts';
+import { sourceRequestSchema, evidenceRequestSchema, featureFlowRequestSchema, projectRequestSchema } from '../src/shared/contracts';
 describe.each([
   ['source', sourceRequestSchema, 'fileId'],
   ['evidence', evidenceRequestSchema, 'evidenceId'],
@@ -18,5 +18,18 @@ describe.each([
       expect(schema.safeParse({ projectId: invalid, [target]: randomUUID() }).success).toBe(false);
     }
     for (const request of [null, [], {}, { projectId: randomUUID() }]) expect(schema.safeParse(request).success).toBe(false);
+  });
+});
+
+describe('feature flow request boundary', () => {
+  it('accepts only the project, saved routes ID and nonnegative integer index', () => {
+    const input = { projectId: randomUUID(), routesId: randomUUID(), routeIndex: 0 };
+    expect(featureFlowRequestSchema.parse(input)).toEqual(input);
+    for (const routeIndex of [-1, .5, Infinity, NaN, '0', null]) expect(featureFlowRequestSchema.safeParse({ ...input, routeIndex }).success).toBe(false);
+    for (const routesId of ['', 'wrong', '../file', null]) expect(featureFlowRequestSchema.safeParse({ ...input, routesId }).success).toBe(false);
+    for (const extra of [{ path: '/etc/passwd' }, { startUtf16: 0 }, { handler: {} }]) {
+      expect(featureFlowRequestSchema.safeParse({ ...input, ...extra }).success).toBe(false);
+      expect(projectRequestSchema.safeParse({ projectId: input.projectId, ...extra }).success).toBe(false);
+    }
   });
 });

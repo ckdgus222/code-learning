@@ -5,6 +5,7 @@ export const idSchema = z.string().uuid();
 export const sourceRequestSchema = z.object({ projectId: idSchema, fileId: idSchema }).strict();
 export const evidenceRequestSchema = z.object({ projectId: idSchema, evidenceId: idSchema }).strict();
 export const projectRequestSchema = z.object({ projectId: idSchema }).strict();
+export const featureFlowRequestSchema = projectRequestSchema.extend({ routesId: idSchema, routeIndex: z.number().int().min(0) }).strict();
 /** A function as the analyzer listed it: its file, the hash the file had and the function's range. */
 export const callsRequestSchema = z.object({ projectId: idSchema, fileId: idSchema, fileHash: z.string().regex(/^[a-f0-9]{64}$/),
   startUtf16: z.number().int().min(0), endUtf16: z.number().int().min(0) }).strict();
@@ -216,6 +217,63 @@ export type CallLink = CallSite & (
   | { status: 'typed'; target: CallTarget; basis: string }
   | { status: 'unknown'; reason: CallUnknownReason; detail: string | null }
   | { status: 'external'; specifier: string });
+export interface Route {
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'ALL';
+  path: string | null;
+  prefix: 'known' | 'unknown';
+  framework: 'nest' | 'next' | 'express';
+  handler: CallTarget;
+  basis: { text: string; range: ValueSite };
+  /** Next catch-all parameters retain their optional/required distinction. */
+  segments?: import('../core/analysis/next-routes').NextSegment[];
+}
+export interface Request extends CallSite {
+  path: string;
+  host: string | null;
+  prefix: 'known' | 'unknown';
+  methods: string[] | null;
+}
+export interface ProjectRoutes {
+  projectId: string;
+  routesId: string;
+  routes: Route[];
+  requests: Request[];
+  links: { requestIndex: number; routeIndex: number; sure: boolean; reasons: string[] }[];
+  prefix: { text: string; site: ValueSite } | null;
+  limited: boolean;
+  notes: string[];
+}
+export interface FlowNode {
+  id: string;
+  side: 'front' | 'request' | 'back';
+  depth: number;
+  fileId: string;
+  fileHash: string;
+  relativePath: string;
+  name: string;
+  range: { startUtf16: number; endUtf16: number; startLine: number; endLine: number };
+  event: string | null;
+  screen: string | null;
+  outside: string[];
+  outsideOmitted: number;
+}
+export interface FlowEdge {
+  from: string;
+  to: string;
+  kind: 'calls' | 'typed' | 'inside' | 'event' | 'placed' | 'hook' | 'route';
+  sure: boolean;
+  reasons: string[];
+  site: ValueSite | null;
+}
+export interface FeatureFlow {
+  projectId: string;
+  routesId: string;
+  routeIndex: number;
+  nodes: FlowNode[];
+  edges: FlowEdge[];
+  limited: boolean;
+  notes: string[];
+}
 /** A place in a file shown by V-1; like CallSite it is re-read before use. */
 export interface ValueSite { fileId: string; fileHash: string; startUtf16: number; endUtf16: number; startLine: number; endLine: number; text: string }
 /**
@@ -320,6 +378,10 @@ export interface LearningApi {
   readSource(input: z.infer<typeof sourceRequestSchema>): Promise<Result<SourceView>>;
   readEvidence(input: z.infer<typeof evidenceRequestSchema>): Promise<Result<{ source: SourceView; evidence: Evidence }>>;
   cancel(): Promise<Result<null>>;
+  routes(input: z.infer<typeof projectRequestSchema>): Promise<Result<ProjectRoutes>>;
+  cancelRoutes(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
+  featureFlow(input: z.infer<typeof featureFlowRequestSchema>): Promise<Result<FeatureFlow>>;
+  cancelFeatureFlow(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
   projectMap(input: z.infer<typeof projectRequestSchema>): Promise<Result<ProjectMap>>;
   cancelProjectMap(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
   functionCalls(input: z.infer<typeof callsRequestSchema>): Promise<Result<FunctionCalls>>;
@@ -341,7 +403,7 @@ export interface LearningApi {
 
 export const channels = {
   open: 'learning:open', read: 'learning:read', evidence: 'learning:evidence',
-  cancel: 'learning:cancel', event: 'learning:project-event', map: 'learning:map', cancelMap: 'learning:cancel-map',
+  cancel: 'learning:cancel', event: 'learning:project-event', routes: 'learning:routes', cancelRoutes: 'learning:cancel-routes', featureFlow: 'learning:feature-flow', cancelFeatureFlow: 'learning:cancel-feature-flow', map: 'learning:map', cancelMap: 'learning:cancel-map',
   calls: 'learning:calls', cancelCalls: 'learning:cancel-calls', shapes: 'learning:shapes', cancelShapes: 'learning:cancel-shapes',
   history: 'learning:history', changes: 'learning:changes', diff: 'learning:diff', cancelChanges: 'learning:cancel-changes',
   connections: 'learning:connections', explain: 'learning:explain', overview: 'learning:overview',

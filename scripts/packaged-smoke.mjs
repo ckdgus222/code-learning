@@ -101,6 +101,7 @@ try {
   await page.screenshot({ path: path.join(root, 'test-results/packaged-value-shapes.png') });
   // The project map's library and its stylesheet are in the bundle and work under the packaged CSP.
   await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByRole('tab', { name: '전체 지도', exact: true }).click();
   // The one arrow runs straight down inside one folder, a box of zero width that Playwright calls hidden,
   // so the drawn path itself is checked.
   const arrow = page.locator('.react-flow__edge-path');

@@ -113,6 +113,12 @@ function namesOf(fn: Parser.SyntaxNode, facts: FileFacts): FunctionCalls['names'
   return { local: [...new Set(local)], exported, property: [...new Set(property)] };
 }
 
+/** Kept only for one feature-flow job; successful reads and parsed trees can be reused. */
+export interface CallsCache {
+  texts: Map<string, { text: string; hash: string }>;
+  parsed: Map<string, FileFacts>;
+}
+
 /**
  * What the chosen function calls, and the calls in the project that lead to it, from the files listed when
  * the folder was opened. Files are only read. Reads stay within the map's limits; a stop request is
@@ -120,7 +126,7 @@ function namesOf(fn: Parser.SyntaxNode, facts: FileFacts): FunctionCalls['names'
  */
 export async function findFunctionCalls(root: string, projectId: string, files: ProjectFile[],
   target: { fileId: string; fileHash: string; startUtf16: number; endUtf16: number },
-  limits: MapLimits, shouldStop: () => boolean = () => false): Promise<FunctionCalls> {
+  limits: MapLimits, shouldStop: () => boolean = () => false, cache?: CallsCache): Promise<FunctionCalls> {
   const chosenFile = files.find(file => file.id === target.fileId);
   if (!chosenFile) throw new AppError('NOT_ALLOWED', '현재 프로젝트의 파일이 아닙니다.');
   const known = new Map(files.map(file => [file.relativePath, file]));
@@ -137,7 +143,9 @@ export async function findFunctionCalls(root: string, projectId: string, files: 
       if (filesRead >= limits.files || left <= 0) { result.limited = true; skip(file, '찾기 한도에 닿아 이 파일은 읽지 않았어요.'); return null; }
       filesRead++;
       try {
-        const source = await readAllowed(root, file.relativePath, Math.min(MAX_FILE_BYTES, left));
+        const source = cache?.texts.get(file.id) ?? await readAllowed(root, file.relativePath, Math.min(MAX_FILE_BYTES, left));
+        if (Buffer.byteLength(source.text) > Math.min(MAX_FILE_BYTES, left)) throw new AppError('LIMIT', '읽기 한도에 닿았어요.');
+        cache?.texts.set(file.id, source);
         bytesRead += Buffer.byteLength(source.text);
         return source;
       } catch (error) {
@@ -153,8 +161,9 @@ export async function findFunctionCalls(root: string, projectId: string, files: 
   const parsed = new Map<string, FileFacts>();
   const factsOf = (file: ProjectFile, source: { text: string; hash: string }) => {
     if (!parsed.has(file.id)) {
-      // Only the chosen file's name references are kept (plan V-1); every file's would take much memory.
-      const facts = readFacts(file, source.text, source.hash, limits.nodesPerFile, file.id === target.fileId);
+      // Ordinary calls keep only the chosen file's references. A flow reuses each file as a later target.
+      const facts = cache?.parsed.get(file.id) ?? readFacts(file, source.text, source.hash, limits.nodesPerFile, !!cache || file.id === target.fileId);
+      cache?.parsed.set(file.id, facts);
       if (facts.incompleteReason) skip(file, facts.incompleteReason);
       else if (facts.unclear) skip(file, '파일에 with·eval·이스케이프로 쓴 이름·전역 객체의 동적 키·using 선언이 있어 이 파일의 이름은 확정하지 않았어요.');
       parsed.set(file.id, facts);

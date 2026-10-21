@@ -11,6 +11,7 @@ import { FileGuideCard } from './file-guide';
 import { FileExplanationCard, rememberFileExplanation, type FileExplanationEntry, type FileExplanationState } from './file-explanation';
 import { Flow } from './flow';
 import { ProjectMapView, type MapEntry } from './project-map';
+import { FeatureFlowView } from './feature-flow';
 import { matchCallStep, matchFunction, matchImport } from './map-layout';
 import { CallsFacts, type CallFunction, type CallsState } from './calls';
 import { shapeQueries, ValuesFacts, type ShapeSlot, type ShapesState } from './values';
@@ -109,6 +110,7 @@ function App() {
   // A second notice changes no other state (stale is already set), so this redraws the screen for the map.
   const [, setRevisionShown] = useState(0);
   // The map is drawn by its own worker, so it has its own request counter: reads may go on meanwhile.
+  const [mapTab, setMapTab] = useState<'features' | 'all'>('features');
   const [projectMap, setProjectMap] = useState<MapEntry | null>(null);
   const [mapping, setMapping] = useState(false);
   const mapRequest = useRef(0);
@@ -227,8 +229,8 @@ function App() {
   }, [view, project]);
   // The map is drawn the first time it is looked at after a folder opens.
   useEffect(() => {
-    if (view === 'map' && project && !projectMap && !mapping) void buildMap();
-  }, [view, project]);
+    if (view === 'map' && mapTab === 'all' && project && !projectMap && !mapping) void buildMap();
+  }, [view, project, mapTab]);
 
   async function openProject() {
     const current = ++request.current;
@@ -503,7 +505,7 @@ function App() {
       : `‘${name}’은 이 파일의 함수 목록에 없어요(이름 없는 함수나 다른 종류일 수 있어요). 왼쪽에서 직접 골라 주세요.`);
   }
 
-  function forgetMap() { mapRequest.current++; setProjectMap(null); setMapping(false); }
+  function forgetMap() { setMapTab('features'); mapRequest.current++; setProjectMap(null); setMapping(false); }
   async function buildMap() {
     if (!project) return;
     const current = ++mapRequest.current;
@@ -828,7 +830,15 @@ function App() {
           </div>
         </div>}
 
-        {view === 'map' && <ProjectMapView project={project} entry={projectMap}
+        {view === 'map' && <div className="map-actions" role="tablist" aria-label="프로젝트 지도 보기">
+          <button className="btn" role="tab" aria-selected={mapTab === 'features'} onClick={() => setMapTab('features')}>기능 흐름</button>
+          <button className="btn" role="tab" aria-selected={mapTab === 'all'} onClick={() => setMapTab('all')}>전체 지도</button>
+        </div>}
+        <div hidden={view !== 'map' || mapTab !== 'features'}>
+          <FeatureFlowView key={project.files[0]?.id ?? project.id} project={project} active={view === 'map' && mapTab === 'features'}
+            revision={revision.current} locked={busy} onCode={site => void showValueSite(site)} onFunction={target => void showCallFunction(target)} />
+        </div>
+        {view === 'map' && mapTab === 'all' && <ProjectMapView project={project} entry={projectMap}
           stale={projectMap !== null && projectMap.revision !== revision.current} mapping={mapping}
           changes={changes?.state.status === 'done' ? { result: changes.state.value, stale: changes.revision !== revision.current } : null}
           onShowChange={change => void openChange(change)}

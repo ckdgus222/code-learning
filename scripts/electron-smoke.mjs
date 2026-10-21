@@ -32,6 +32,22 @@ await mkdir(path.join(treeFixture, 'api/test'), { recursive: true });
 await writeFile(path.join(treeFixture, 'api/src/main.ts'), 'export function nested(value: number) { if (value < 0) return 0; return value; }\n');
 await writeFile(path.join(treeFixture, 'api/test/helper.ts'), 'export const helper = 1;\n');
 await writeFile(path.join(treeFixture, 'root.ts'), 'export const root = 1;\n');
+// One feature, with a nested event and a hook result, exercises the text flow independently of the full map.
+const featureFlowFixture = path.join(temporary, '기능 흐름 프로젝트');
+const featureFlowFiles = {
+  'web/next.config.ts': 'export default {};',
+  'web/app/dogs/page.tsx': "import {DogList} from '../../components/DogList'; export default function DogsPage() { return <DogList />; }",
+  'web/components/DogList.tsx': "import {useDeleteDog} from '../lib/dogs'; export function DogList() { const remove = useDeleteDog(); const removeDog = dog => remove.mutate(dog.id); return dogs.map(dog => <button onClick={() => removeDog(dog)}>삭제</button>); }",
+  'web/lib/dogs.ts': "import {useMutation} from 'query'; import {request} from './request'; export function useDeleteDog() { return useMutation({mutationFn: id => request(`/api/dogs/${id}`, {method:'DELETE'})}); }",
+  'web/lib/request.ts': 'export function request(path, init) { return fetch(path, init); }',
+  'api/setup.ts': "app.setGlobalPrefix('api');",
+  'api/controller.ts': "import {DogsService} from './service'; @Controller('dogs') export class DogsController { constructor(private dogs: DogsService) {} @Delete(':id') remove(id) { return this.dogs.remove(id); } }",
+  'api/service.ts': 'export class DogsService { remove(id) { return this.db.$transaction(async tx => tx.dog.delete(id)); } }',
+};
+for (const [name, text] of Object.entries(featureFlowFiles)) {
+  await mkdir(path.dirname(path.join(featureFlowFixture, name)), { recursive: true });
+  await writeFile(path.join(featureFlowFixture, name), text);
+}
 // The project map: ui uses store twice and shared once, store uses ui once and shared once, and ui uses itself.
 // A folder 21 levels deep stops the folder scan at its depth limit without reaching the map's own limits.
 const mapFixture = path.join(temporary, '지도 프로젝트');
@@ -847,11 +863,69 @@ try {
     await page.waitForFunction(() => document.querySelector('.files button[aria-label="폴더 api"]')?.getAttribute('aria-expanded') === 'false');
     assert.equal(await main.isVisible(), false);
   });
+  await check('Feature flow: default tab, route search, nested event, inferred hook, code and question preservation', async () => {
+    await dialogTo(featureFlowFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '기능 흐름 프로젝트', exact: true }).waitFor();
+    await openTreeFile('api/controller.ts');
+    await page.getByRole('button', { name: 'DogsController.remove', exact: true }).click();
+    // The scope line is shown on the question tab; an earlier check may have left the explanation tab open.
+    await page.getByRole('tab', { name: '질문', exact: true }).click();
+    await page.getByTestId('question-scope').waitFor();
+    const scope = await page.getByTestId('question-scope').innerText();
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    assert.equal(await page.getByRole('tab', { name: '기능 흐름', exact: true }).getAttribute('aria-selected'), 'true');
+    const route = page.getByRole('button', { name: 'DELETE /api/dogs/:id', exact: true });
+    await route.waitFor();
+    await page.getByText('프론트 요청 확실 1곳 · 추정 0곳', { exact: true }).waitFor();
+    await page.getByRole('textbox', { name: '기능 검색' }).fill('missing');
+    assert.equal(await route.count(), 0);
+    await page.getByRole('textbox', { name: '기능 검색' }).fill('dogs');
+    await route.click();
+    const steps = page.getByRole('region', { name: '기능 흐름 단계' });
+    await steps.getByText('화면 주소 /dogs', { exact: true }).waitFor();
+    await steps.getByText('화면 이벤트 onClick', { exact: true }).waitFor();
+    await steps.getByText('추정', { exact: true }).waitFor();
+    assert.match(await steps.innerText(), /타입으로 찾음/);
+    assert.match(await steps.innerText(), /안쪽 함수에서 tx.dog.delete/);
+    await page.screenshot({ path: path.join(artifacts, 'feature-flow-text.png') });
+    await steps.getByTestId('feature-step').filter({ has: page.locator('b', { hasText: /^DogsService.remove$/ }) })
+      .getByRole('button', { name: '코드 보기', exact: true }).click();
+    await page.getByRole('heading', { name: 'api/service.ts', exact: true }).waitFor();
+    await page.getByTestId('evidence-range').waitFor();
+    assert.match(await page.getByTestId('evidence-range').innerText(), /api\/service.ts/);
+    assert.equal(await page.getByTestId('question-scope').innerText(), scope);
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await steps.getByTestId('feature-step').filter({ has: page.locator('b', { hasText: /^DogsService.remove$/ }) })
+      .getByRole('button', { name: '이 함수 흐름', exact: true }).click();
+    await page.getByRole('article', { name: '함수 요약', exact: true }).waitFor();
+    assert.equal(await page.getByTestId('question-scope').innerText(), scope);
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await app.evaluate(({ powerMonitor }) => powerMonitor.emit('resume'));
+    await page.getByText('다시 확인 필요: 파일이 바뀌었거나 잠자기에서 돌아왔어요.', { exact: false }).waitFor();
+    assert.equal(await route.isDisabled(), true);
+    await page.getByRole('button', { name: '다시 찾기', exact: true }).click();
+    await until(async () => await route.isEnabled());
+    // Invalid renderer input cannot supply a path, range or a stale saved result.
+    const invalid = await page.evaluate(async () => {
+      const project = await window.learning.openProject();
+      const projectId = project.value.id;
+      const routes = await window.learning.routes({ projectId });
+      return await Promise.all([
+        window.learning.featureFlow({ projectId, routesId: 'not-a-uuid', routeIndex: 0 }),
+        window.learning.featureFlow({ projectId, routesId: routes.value.routesId, routeIndex: -1 }),
+        window.learning.featureFlow({ projectId, routesId: routes.value.routesId, routeIndex: 999 }),
+        window.learning.featureFlow({ projectId, routesId: routes.value.routesId, routeIndex: 0, path: '/etc/passwd' }),
+      ]);
+    });
+    assert.deepEqual(invalid.map(result => result.code), ['INVALID_REQUEST', 'INVALID_REQUEST', 'CHANGED', 'INVALID_REQUEST']);
+  });
   await check('Project map: file and design views, evidence, freshness, reopening and cancelled or stale maps', async () => {
     await dialogTo(mapFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '지도 프로젝트', exact: true }).waitFor();
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByRole('tab', { name: '전체 지도', exact: true }).click();
     const boxes = page.locator('.react-flow__node');
     // Five code files are fewer than 60, so the map starts in the file view; the deep file was never listed.
     await until(async () => await boxes.count() === 5);
@@ -876,6 +950,7 @@ try {
     await page.getByRole('heading', { name: 'store/save.ts', exact: true }).waitFor();
     // An import's evidence opens the importing file with that import highlighted.
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByRole('tab', { name: '전체 지도', exact: true }).click();
     await page.getByText('연결 목록 · 6개', { exact: true }).click();
     const loadLine = page.locator('.map-list li').filter({ hasText: 'store/load.ts 1행 → ui/view.ts' });
     await loadLine.getByRole('button', { name: '코드 보기', exact: true }).click();
@@ -883,6 +958,7 @@ try {
     assert.match(await page.getByTestId('evidence-range').innerText(), /store\/load\.ts · 1–1줄/);
     // A wake from sleep while that file is read (sent as the read request leaves for the worker): no highlight.
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByRole('tab', { name: '전체 지도', exact: true }).click();
     await app.evaluate(({ powerMonitor }) => {
       const { Worker } = process.getBuiltinModule('node:worker_threads');
       const original = Worker.prototype.postMessage;
@@ -899,9 +975,11 @@ try {
     assert.equal(await page.getByTestId('evidence-range').count(), 0);
     // A fresh map, so the next change is the only thing marking it.
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByRole('tab', { name: '전체 지도', exact: true }).click();
     await rebuildFreshMap();
     // A change after the map was drawn: the map asks for a re-check and the old position is not highlighted.
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByRole('tab', { name: '전체 지도', exact: true }).click();
     await writeFile(path.join(mapFixture, 'store/load.ts'), "\n" + mapFiles['store/load.ts']);
     await page.getByText('지도를 만든 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요.', { exact: false }).waitFor();
     await page.getByText('연결 목록 · 6개', { exact: true }).click();
@@ -909,6 +987,7 @@ try {
     await page.getByText('지도를 만든 뒤 이 파일이 바뀌어 import 위치를 강조하지 않았어요.', { exact: false }).waitFor();
     assert.equal(await page.getByTestId('evidence-range').count(), 0);
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByRole('tab', { name: '전체 지도', exact: true }).click();
     await rebuildFreshMap();
     // Two more changes with a fresh map between them and no file read: the screen's other change states are
     // already set by then, and the map must still be marked each time.
@@ -949,6 +1028,7 @@ try {
     await page.getByRole('button', { name: 'shared/format.ts', exact: true }).click();
     await page.getByRole('heading', { name: 'shared/format.ts', exact: true }).waitFor();
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByRole('tab', { name: '전체 지도', exact: true }).click();
     await page.getByRole('button', { name: '지도 만들기 취소', exact: true }).click();
     await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).waitFor();
     // A map still being drawn when the folder is opened again is dropped; reopening shows new files.
@@ -958,13 +1038,19 @@ try {
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await app.evaluate(() => { process.getBuiltinModule('node:worker_threads').Worker.prototype.once = globalThis.testOriginalOnce; });
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
-    await until(async () => await boxes.count() === 6);
+    // Reopening the same folder resets the tab when its scan ends, which may come after this click.
+    const allTab = page.getByRole('tab', { name: '전체 지도', exact: true });
+    await until(async () => {
+      if (await allTab.getAttribute('aria-selected') !== 'true') await allTab.click();
+      return await boxes.count() === 6;
+    });
     assert.equal(await page.getByText('지도를 만드는 동안', { exact: false }).count(), 0);
     // A larger project: cancelling while its files are parsed stops the map, not the app.
     await dialogTo(bigMapFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '큰 지도 프로젝트', exact: true }).waitFor();
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByRole('tab', { name: '전체 지도', exact: true }).click();
     await page.getByText('지도를 만드는 중…', { exact: true }).waitFor();
     await page.getByRole('button', { name: '지도 만들기 취소', exact: true }).click();
     await page.getByRole('button', { name: '지도 만들기', exact: true }).waitFor();
@@ -1535,6 +1621,7 @@ try {
     assert.equal(await page.getByTestId('question-scope').innerText(), scope);
     // So is opening a file from the map.
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByRole('tab', { name: '전체 지도', exact: true }).click();
     await page.getByRole('button', { name: '파일 보기', exact: true }).click();
     await page.locator('.react-flow__node').filter({ hasText: 'dup.ts' }).click();
     await page.getByRole('heading', { name: 'dup.ts', exact: true }).waitFor();
@@ -1803,6 +1890,7 @@ try {
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '어려운 코드 프로젝트', exact: true }).waitFor();
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByRole('tab', { name: '전체 지도', exact: true }).click();
     const list = page.getByRole('region', { name: '어려운 코드 살펴볼 곳' });
     await list.getByText('어려운 코드 살펴볼 곳 · 1개', { exact: true }).waitFor();
     assert.deepEqual(await list.locator('li').allInnerTexts(), ['src/work.ts 3행 long 긴 함수 · 61줄코드 보기']);
@@ -1836,6 +1924,7 @@ try {
     // After a change the map's entry no longer fits the file, so nothing is chosen.
     await writeFile(path.join(hardFixture, 'src/work.ts'), `// changed\n${hardSource}`);
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByRole('tab', { name: '전체 지도', exact: true }).click();
     await page.getByText('지도를 만든 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요.', { exact: false }).waitFor();
     await list.getByRole('button', { name: '코드 보기', exact: true }).click();
     await page.getByText('지도를 만든 뒤 이 파일이 바뀌어 함수를 고르지 않았어요. 지도를 다시 만들어 주세요.', { exact: true }).waitFor();
@@ -2007,6 +2096,7 @@ try {
     assert.equal(await page.getByRole('alert').count(), 0);
     // The map marks the boxes of files now and lists every change, the deleted one too.
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await page.getByRole('tab', { name: '전체 지도', exact: true }).click();
     const box = name => page.locator('.react-flow__node').filter({ hasText: name });
     await box('edit.ts').getByText('수정', { exact: true }).waitFor({ timeout: 30_000 });
     for (const [name, kind] of [['added.ts', '추가'], ['new-name.ts', '이름 변경'], ['untracked.ts', '미추적']]) await box(name).getByText(kind, { exact: true }).waitFor();
