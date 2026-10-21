@@ -26,6 +26,13 @@ gitHere('init', '-q');
 gitHere('add', 'sample.ts', 'helper.ts', 'price.ts');
 gitHere('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'packaged');
 await writeFile(path.join(project, 'price.ts'), "import { format } from 'money';\nexport function label(amount: number) { return format(amount); }\n// changed\n");
+// A separate project keeps the existing screen checks and their file counts unchanged.
+const treeFixture = path.join(temp, '폴더 트리 프로젝트');
+await mkdir(path.join(treeFixture, 'api/src'), { recursive: true });
+await mkdir(path.join(treeFixture, 'api/test'), { recursive: true });
+await writeFile(path.join(treeFixture, 'api/src/main.ts'), 'export function nested(value: number) { if (value < 0) return 0; return value; }\n');
+await writeFile(path.join(treeFixture, 'api/test/helper.ts'), 'export const helper = 1;\n');
+await writeFile(path.join(treeFixture, 'root.ts'), 'export const root = 1;\n');
 let app;
 try {
   app = await electron.launch({
@@ -146,8 +153,71 @@ try {
   assert.match(await cancellation.getAttribute('class'), /(?:^|\s)notice--info(?:\s|$)/);
   assert.equal(await page.getByRole('alert').count(), 0);
   assert.doesNotMatch(await page.locator('.statusbar').innerText(), /파일 \d+개/);
+  await app.evaluate(({ dialog }, folder) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] }); }, treeFixture);
+  await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+  await page.getByRole('heading', { name: '폴더 트리 프로젝트', exact: true }).waitFor();
+  const files = page.getByRole('region', { name: '파일 목록', exact: true });
+  const api = files.getByRole('button', { name: '폴더 api', exact: true });
+  const src = files.getByRole('button', { name: '폴더 api/src', exact: true });
+  const main = files.getByRole('button', { name: 'api/src/main.ts', exact: true });
+  const helper = files.getByRole('button', { name: 'api/test/helper.ts', exact: true });
+  const search = page.getByRole('searchbox', { name: '파일명 검색', exact: true });
+  assert.equal(await files.getByRole('button', { name: 'root.ts', exact: true }).isVisible(), true);
+  assert.equal(await api.getAttribute('aria-expanded'), 'false');
+  assert.equal(await main.isVisible(), false);
+  await api.focus();
+  await api.press('Enter');
+  assert.equal(await api.getAttribute('aria-expanded'), 'true');
+  const controlled = await api.getAttribute('aria-controls');
+  assert.equal(await page.locator(`[id="${controlled}"]`).isVisible(), true);
+  assert.equal(await src.getAttribute('aria-expanded'), 'false');
+  await src.click();
+  assert.equal(await main.isVisible(), true);
+  assert.equal(await main.innerText(), 'main.ts');
+  assert.equal(await main.getAttribute('title'), 'api/src/main.ts');
+  await api.click();
+  // Searching opens only matching ancestors and does not change the saved disclosure state.
+  await search.fill('HELPER');
+  assert.equal(await helper.isVisible(), true);
+  assert.equal(await main.isVisible(), false);
+  assert.equal(await files.getByRole('button', { name: /^폴더 / }).count(), 0);
+  assert.deepEqual(await files.locator('.files__folder').allTextContents(), ['▾ api', '▾ test']);
+  await search.fill('');
+  assert.equal(await api.getAttribute('aria-expanded'), 'false');
+  assert.equal(await helper.isVisible(), false);
+  await search.fill('no-such-file');
+  await files.getByText('검색과 일치하는 파일이 없어요.', { exact: true }).waitFor();
+  // Opening from search, including reading the same file again, expands its ancestors permanently.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await search.fill('MAIN.TS');
+    await main.click();
+    await page.getByRole('heading', { name: 'api/src/main.ts', exact: true }).waitFor();
+    await page.waitForFunction(() => {
+      const button = document.querySelector('.files button[aria-label="api/src/main.ts"]');
+      return button?.getAttribute('aria-current') === 'true' && !button.disabled;
+    });
+    await search.fill('');
+    await main.waitFor({ state: 'visible' });
+    assert.equal(await api.getAttribute('aria-expanded'), 'true');
+    assert.equal(await src.getAttribute('aria-expanded'), 'true');
+    assert.equal(await main.getAttribute('aria-current'), 'true');
+    await api.click();
+    assert.equal(await main.isVisible(), false);
+  }
+  // The flow symbol opens evidence through showEvidence, without going through readFile.
+  await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+  await page.getByRole('button', { name: 'nested', exact: true }).click();
+  await page.getByRole('article', { name: '함수 요약', exact: true }).waitFor();
+  await main.waitFor({ state: 'visible' });
+  assert.equal(await main.getAttribute('aria-current'), 'true');
+  assert.equal(await api.getAttribute('aria-expanded'), 'true');
+  assert.equal(await src.getAttribute('aria-expanded'), 'true');
+  // Reopening even the same project clears the disclosure state.
+  await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('.files button[aria-label="폴더 api"]')?.getAttribute('aria-expanded') === 'false');
+  assert.equal(await main.isVisible(), false);
   await app.close(); app = undefined;
-  const report = { passed: true, checks: ['dark theme, navigation rail and factual project status', 'packaged app startup', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', 'changes from git inside its sandbox', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel'], state };
+  const report = { passed: true, checks: ['dark theme, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', 'changes from git inside its sandbox', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel'], state };
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {
