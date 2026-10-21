@@ -59,7 +59,7 @@ export function CallsFacts({ state, stale, locked, pathOf, onRetry, onCancel, on
     </dd></>}
     <dt>부르는 것 · {result.calls.length}개</dt>
     <dd>
-      {result.calls.length ? <ul className="map-list" aria-label="이 함수가 부르는 것">{firstRows(result.calls).map(call => <li key={call.startUtf16}>
+      {result.calls.length ? <ul className="map-list" aria-label="이 함수가 부르는 것">{firstRows(result.calls).map(call => <li key={`${call.startUtf16}:${call.endUtf16}`}>
         {at(call, false)}
         {call.status === 'linked' ? <> → <b>{call.target.name}</b> <span className="path">{pathOf(call.target.fileId)}</span> {functionButton(call.target)}</>
           : call.status === 'external' ? <> · <span className="tag tag--doc">외부 패키지 또는 경로 별칭</span><code>{call.specifier}</code></>
