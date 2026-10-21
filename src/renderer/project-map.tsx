@@ -87,7 +87,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
   };
   const edges: Edge[] = graph.arrows.map(arrow => ({ id: arrow.id, source: arrow.source, target: arrow.target, ...handlesFor(arrow),
     label: arrow.items.length > 1 ? `import ${arrow.items.length}개` : undefined, className: arrow.back ? 'map-arrow map-arrow--back' : 'map-arrow',
-    markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: '#2a55c9' }, selected: selected?.id === arrow.id }));
+    markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: 'var(--accent)' }, selected: selected?.id === arrow.id }));
   const toggle = (folder: string) => setExpanded(current => {
     const next = new Set(current);
     if (next.has(folder)) next.delete(folder); else next.add(folder);
@@ -106,7 +106,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
     </div>
     {/* Remounting on every fold refits the view to the boxes now shown. */}
     <div className="map-canvas" data-testid="map-canvas">
-      <ReactFlow key={[...expanded].sort().join('|')} nodes={nodes} edges={edges} nodeTypes={nodeTypes}
+      <ReactFlow colorMode="dark" key={[...expanded].sort().join('|')} nodes={nodes} edges={edges} nodeTypes={nodeTypes}
         // Only boxes in view are drawn, so the fit may zoom out far enough to show a whole expanded folder.
         fitView fitViewOptions={{ maxZoom: 1, minZoom: 0.1 }} minZoom={0.1} onlyRenderVisibleElements
         nodesDraggable={false} nodesConnectable={false}

@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { Evidence } from '../shared/contracts';
 import { GEMINI_MODEL, type ConnectionReport, type LearningEvent, type LearningMode, type LearningPhase, type LearningResult } from '../shared/ai';
 
-const modes: { id: LearningMode; label: string }[] = [
+export const modes: { id: LearningMode; label: string }[] = [
   { id: 'local-worker', label: '로컬 워커 · Codex → Gemini → Codex' },
   { id: 'codex', label: 'Codex 단독 · 대조 없음' },
   { id: 'claude-code', label: 'Claude Code 단독 · 준비 중' },
@@ -37,7 +37,7 @@ export function SourceButtons({ ids, sources, selectionId, stale, label, onEvide
   // main accepts only IDs it gave for this answer, so every one is among the sources; a repeated one is shown once.
   const named = [...new Set(ids)].flatMap(id => sources.filter(item => item.evidence.id === id).slice(0, 1));
   return <ul className="sources" aria-label={label}>{named.map(source => <li key={source.evidence.id}>
-    <button className="btn btn--small" disabled={stale} onClick={() => onEvidence(source.evidence)}>{sourceLabel(source, selectionId)}</button>
+    <button className="btn btn--chip" disabled={stale} onClick={() => onEvidence(source.evidence)}>{sourceLabel(source, selectionId)}</button>
   </li>)}</ul>;
 }
 
@@ -242,9 +242,9 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
       <dl>{answer.explanation.terms.map((term, index) => <React.Fragment key={index}><dt>{term.term}</dt><dd>{term.meaning}</dd></React.Fragment>)}</dl>
       {answer.explanation.unknowns.map((unknown, index) => <p key={index}>확인하지 못함: {unknown}</p>)}
       {answer.limitations.map((limitation, index) => <p className="hint" key={index}>읽기 범위: {limitation}</p>)}
-      <button className="btn btn--small" disabled={stale} onClick={() => onEvidence(answer.evidence)}>답변 근거 코드 보기</button>
+      <button className="btn btn--chip" disabled={stale} onClick={() => onEvidence(answer.evidence)}>답변 근거 코드 보기</button>
       <ul aria-label="답변에 제공한 파일">{answer.sources.filter(item => item.evidence.id !== answer.evidence.id).map(item => <li key={item.evidence.id}>
-        <button className="btn btn--small" disabled={stale} onClick={() => onEvidence(item.evidence)}>
+        <button className="btn btn--chip" disabled={stale} onClick={() => onEvidence(item.evidence)}>
           {item.relativePath} · {item.evidence.startLine}–{item.evidence.endLine}행
         </button>
       </li>)}</ul>

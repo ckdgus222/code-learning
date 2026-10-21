@@ -4,7 +4,8 @@ import type { CallSite, ValueSite, CodeSide, CodeSymbol, Evidence, FileChange, F
   StartCandidate } from '../shared/contracts';
 import { useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
-import { AiPanel } from './ai-panel';
+import { Icon } from './icons';
+import { AiPanel, modes } from './ai-panel';
 import { FileExplanationCard, rememberFileExplanation, type FileExplanationEntry, type FileExplanationState } from './file-explanation';
 import { Flow } from './flow';
 import { ProjectMapView, type MapEntry } from './project-map';
@@ -675,9 +676,8 @@ function App() {
         {busy && <span role="status" className="busy"><span className="spinner" aria-hidden="true" />처리 중…</span>}
         {fileExplanationState?.status === 'running' && (view !== 'code' || source?.fileId !== fileExplanationState.fileId) &&
           <span role="status">파일 설명 진행 중 <button className="btn btn--small" onClick={() => void cancelFileExplanation()}>파일 설명 작업 취소</button></span>}
-        <span className="badge badge--muted" title="질문 탭에서 동의하고 보낸 질문만 Codex·Gemini에 보냅니다. 알려진 한계는 README에 있습니다.">AI는 동의한 질문만</span>
-        <button className="btn btn--primary" onClick={openProject} disabled={busy}>프로젝트 폴더 열기</button>
-        <button className="btn" onClick={cancel} disabled={!project && !busy}>작업 취소·프로젝트 닫기</button>
+        <button className="btn" onClick={openProject} disabled={busy}>프로젝트 폴더 열기</button>
+        <button className="btn btn--ghost" onClick={cancel} disabled={!project && !busy}>작업 취소·프로젝트 닫기</button>
       </div>
     </header>
 
@@ -701,15 +701,15 @@ function App() {
         <li>AI에는 질문 탭에서 동의한 질문만 보내요. 알려진 한계는 README에 있어요.</li>
       </ul>
     </main> : <>
+      <nav aria-label="보기" className="views">
+        {views.map(item => <button key={item.id} className="views__item" aria-current={view === item.id ? 'page' : undefined}
+          onClick={() => setView(item.id)}><Icon name={item.id} /><span>{item.label}</span></button>)}
+      </nav>
       <aside className="sidebar" aria-label="보기와 파일">
         <div className="sidebar__project">
           <span className="eyebrow">프로젝트</span>
           <h2>{project.name}</h2>
         </div>
-        <nav aria-label="보기" className="views">
-          {views.map(item => <button key={item.id} className="views__item" aria-current={view === item.id ? 'page' : undefined}
-            onClick={() => setView(item.id)}>{item.label}</button>)}
-        </nav>
         <section aria-label="파일 목록" className="files">
           <h3 className="eyebrow">파일 {project.files.length}개</h3>
           <input className="search" type="search" aria-label="파일명 검색" placeholder="파일명 검색"
@@ -739,7 +739,7 @@ function App() {
                 {intro.title && <p className="intro__title">{intro.title}</p>}
                 {intro.text && <p className="intro__text">{intro.text}</p>}
                 <p className="hint">{intro.relativePath}{intro.startLine !== null && ` · ${intro.startLine}–${intro.endLine}줄`} · 문서 내용이 실제 코드와 맞는지는 확인하지 않았어요.</p>
-                <button className="btn btn--small" disabled={busy} onClick={() => { setView('code'); void readFile(intro.fileId); }}>{intro.relativePath} 열기</button>
+                <button className="btn btn--chip" disabled={busy} onClick={() => { setView('code'); void readFile(intro.fileId); }}>{intro.relativePath} 열기</button>
               </> : <p className="unknown"><span className="tag tag--unknown">확인하지 못함</span>프로젝트 목적: 아직 확인하지 못했습니다.</p>}
             </section>
             <section className="card">
@@ -817,18 +817,18 @@ function App() {
           <p>파일을 선택하면 원문과 확인한 함수 구조를 읽을 수 있습니다.</p>
         </div> : <div className="reader">
           <div className="reader__head">
-            <h3 className="path">{source.relativePath}</h3>
+            <h3 className="path reader__file">{source.relativePath}</h3>
             <span className="badge">읽기 전용</span>
             {symbol && <button className="btn btn--small" onClick={() => setView('flow')}>이 함수 흐름으로 보기</button>}
             <button className="btn btn--small" disabled={busy} onClick={() => readFile(source.fileId)}>파일 다시 읽기</button>
             <div className="reader__tools" role="group" aria-label="읽기 설정">
-              <button className="btn btn--small" aria-keyshortcuts="Meta+F" onClick={() => reader.current?.openSearch()}>찾기 ⌘F</button>
-              <button className="btn btn--small" aria-label="코드 글자 작게" disabled={codeSize <= CODE_SIZE.min}
-                onClick={() => setCodeSize(size => size - 1)}>가−</button>
+              <button className="btn btn--icon" aria-label="찾기 ⌘F" title="찾기 ⌘F" aria-keyshortcuts="Meta+F" onClick={() => reader.current?.openSearch()}><Icon name="search" /></button>
+              <button className="btn btn--icon" aria-label="코드 글자 작게" title="코드 글자 작게" disabled={codeSize <= CODE_SIZE.min}
+                onClick={() => setCodeSize(size => size - 1)}><Icon name="smaller" /></button>
               <span className="reader__size" aria-live="polite">코드 {codeSize}px</span>
-              <button className="btn btn--small" aria-label="코드 글자 크게" disabled={codeSize >= CODE_SIZE.max}
-                onClick={() => setCodeSize(size => size + 1)}>가+</button>
-              <button className="btn btn--small" aria-pressed={wrap} onClick={() => setWrap(on => !on)}>줄바꿈</button>
+              <button className="btn btn--icon" aria-label="코드 글자 크게" title="코드 글자 크게" disabled={codeSize >= CODE_SIZE.max}
+                onClick={() => setCodeSize(size => size + 1)}><Icon name="larger" /></button>
+              <button className="btn btn--icon" aria-label="줄바꿈" title="줄바꿈" aria-pressed={wrap} onClick={() => setWrap(on => !on)}><Icon name="wrap" /></button>
             </div>
           </div>
           {source.analysis.language !== 'text' && <FileExplanationCard source={source} entry={fileExplanation}
@@ -876,7 +876,7 @@ function App() {
             <button role="tab" aria-selected={panel === 'explain'} onClick={() => setPanel('explain')}>쉬운 설명</button>
             <button role="tab" aria-selected={panel === 'ask'} onClick={() => setPanel('ask')}>질문</button>
           </div>
-          <button className="btn btn--ghost btn--small" onClick={() => setPanelOpen(false)}>패널 접기</button>
+          <button className="btn btn--ghost btn--icon" aria-label="패널 접기" title="패널 접기" onClick={() => setPanelOpen(false)}><Icon name="collapse" /></button>
         </div>
         <p className="scope"><span className="eyebrow">현재 범위</span>{scope.join(' › ')}</p>
         {panel === 'explain' && <div className="panel__body">
@@ -902,6 +902,10 @@ function App() {
       </aside>
       {!panelOpen && <button className="panel-reopen btn btn--small" onClick={() => setPanelOpen(true)}>설명 패널 펼치기</button>}
     </>}
+    <footer className="statusbar" aria-label="작업 상태">
+      <div className="statusbar__group"><span><Icon name="lock" />읽기 전용</span>{project && <span>파일 {project.files.length}개</span>}</div>
+      <div className="statusbar__group"><span className="badge badge--muted" title="질문 탭에서 동의하고 보낸 질문만 Codex·Gemini에 보냅니다. 알려진 한계는 README에 있습니다.">AI는 동의한 질문만</span><span>{mode === 'local-worker' ? 'Codex → Gemini → Codex' : modes.find(item => item.id === mode)?.label}</span></div>
+    </footer>
   </div>;
 }
 
