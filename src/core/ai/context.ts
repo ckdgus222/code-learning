@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { Evidence, ProjectFiles, SourceView } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 import { readAllowed } from '../project/files';
+import type { FileChunk, FileExplanationRequest } from '../../shared/ai';
+import { splitFileChunks } from '../analysis/file-chunks';
 
 export const MAX_CONTEXT_FILE_BYTES = 32 * 1024;
 export const MAX_CONTEXT_BYTES = 128 * 1024;
@@ -17,6 +19,7 @@ export interface ContextSnapshot {
 }
 /** A question about selected code: the selection, then the files read for it. An overview has no selection. */
 export interface EvidenceSnapshot extends ContextSnapshot, ContextFile {}
+export interface FileExplanationSnapshot extends ContextSnapshot { chunks: FileChunk[] }
 const hasSelection = (snapshot: ContextSnapshot): snapshot is EvidenceSnapshot => 'evidence' in snapshot;
 
 function checkCancelled(signal: AbortSignal) {
@@ -71,6 +74,23 @@ export class ProjectAiContext {
     this.listFiles(snapshot);
     if (startFileId !== null) await this.addFile(snapshot, startFileId, signal);
     return snapshot;
+  }
+
+  async captureFile(request: FileExplanationRequest, revision: number, signal: AbortSignal): Promise<FileExplanationSnapshot> {
+    checkCancelled(signal);
+    const file = this.project.files.find(item => item.id === request.fileId);
+    if (request.projectId !== this.project.id || !file) throw new AppError('NOT_ALLOWED', '등록된 프로젝트 파일이 아닙니다.');
+    const { text, hash } = await readAllowed(this.root, file.relativePath);
+    checkCancelled(signal);
+    if (hash !== request.expectedFileHash) throw new AppError('CHANGED', '파일이 바뀌어 다시 만들어 주세요');
+    if (Buffer.byteLength(text) > MAX_CONTEXT_FILE_BYTES) throw new AppError('LIMIT', '파일이 32 KiB를 넘어 설명을 만들지 않았어요.');
+    const { chunks, limitations } = splitFileChunks(text, file.relativePath, file.id, hash);
+    // This range is returned with the result. It is never registered in the bounded evidence cache.
+    const evidence: Evidence = { id: randomUUID(), projectId: this.project.id, fileId: file.id, fileHash: hash,
+      startUtf16: 0, endUtf16: text.length, startLine: 1,
+      endLine: Math.max(1, text.split('\n').length - (text.endsWith('\n') ? 1 : 0)) };
+    return { projectId: this.project.id, revision, files: [{ evidence, relativePath: file.relativePath, code: text }],
+      availableFiles: [], chunks, limitations };
   }
 
   private listFiles(snapshot: ContextSnapshot): void {

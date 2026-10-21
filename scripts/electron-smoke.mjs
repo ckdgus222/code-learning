@@ -59,6 +59,14 @@ const featureFiles = {
 };
 await mkdir(featureFixture);
 for (const [name, text] of Object.entries(featureFiles)) await writeFile(path.join(featureFixture, name), text);
+// File explanation: 80 top-level chunks, with a nested callback that has no direct chunk of its own.
+const fileExplanationFixture = path.join(temporary, '파일 설명 프로젝트');
+await mkdir(fileExplanationFixture);
+const fileExplanationSource = 'export function run() { [1].map(value => value + 1); return 1; }\n'
+  + Array.from({ length: 79 }, (_, index) => `const value${index + 1} = ${index + 1};`).join('\n') + '\n';
+await writeFile(path.join(fileExplanationFixture, 'chunks.ts'), fileExplanationSource);
+for (let index = 0; index < 6; index++) await writeFile(path.join(fileExplanationFixture, `other${index}.ts`), `export const other${index} = ${index};\n`);
+await writeFile(path.join(fileExplanationFixture, 'README.md'), '# 파일 설명 시험\n');
 // Plan v2.3 C-1: one function of 61 code lines (over the limit of 60) next to a short one.
 const hardFixture = path.join(temporary, '어려운 코드 프로젝트');
 const hardSource = `export function short() { return 1; }\n\nexport function long() {\n  if (ready()) {\n    step(0);\n  }\n${
@@ -1826,6 +1834,143 @@ try {
     await diff.getByText('이전 코드를 열 수 없어요: 이전 코드가 256 KiB를 넘어 열지 않아요.', { exact: true }).waitFor();
     await diff.getByText('지금 코드만 열 수 있어 그것만 보여요.', { exact: true }).waitFor();
     assert.equal(await diff.getByText('고른 커밋에는 없던 파일이에요. 지금 코드예요.', { exact: true }).count(), 0);
+  });
+  await check('File explanation (fake AI): consent, selected mode, early result, independent code ranges and direct function summaries', async () => {
+    await app.evaluate(({ ipcMain }) => {
+      ipcMain.removeHandler('learning:connections');
+      ipcMain.handle('learning:connections', () => ({ ok: true, value: { checkedAt: new Date().toISOString(), providers: [],
+        modes: ['codex', 'antigravity', 'local-worker'].map(mode => ({ mode, ready: true, reason: '테스트 전용 가짜 실행기' })) } }));
+      ipcMain.removeHandler('learning:file-explanation');
+      globalThis.testFileExplanationCalls = [];
+      ipcMain.handle('learning:file-explanation', async (event, request) => {
+        const { randomUUID } = process.getBuiltinModule('node:crypto');
+        const read = ipcMain._invokeHandlers.get('learning:read');
+        const opened = await read(event, { projectId: request.projectId, fileId: request.fileId });
+        if (!opened.ok) return opened;
+        const source = opened.value;
+        const jobId = randomUUID();
+        let startUtf16 = 0;
+        const chunks = source.text.trimEnd().split('\n').map((line, index) => {
+          const range = { fileId: source.fileId, fileHash: source.hash, startUtf16, endUtf16: startUtf16 + line.length, startLine: index + 1, endLine: index + 1 };
+          startUtf16 += line.length + 1;
+          const fn = source.analysis.symbols.find(symbol => symbol.name === 'run' && symbol.evidence.startLine === index + 1);
+          return { id: randomUUID(), kind: fn ? 'function' : 'variable', name: fn ? 'run' : line.match(/const (\w+)/)[1], range,
+            functionRange: fn ? { startUtf16: fn.evidence.startUtf16, endUtf16: fn.evidence.endUtf16 } : null };
+        });
+        const result = { jobId, projectId: request.projectId, relativePath: source.relativePath, mode: request.mode,
+          range: { fileId: source.fileId, fileHash: source.hash, startUtf16: 0, endUtf16: source.text.length, startLine: 1, endLine: chunks.length }, chunks,
+          explanation: { summary: `${source.relativePath} 파일 설명`, chunks: chunks.filter((_, index) => index !== 2).map(chunk => ({ chunkId: chunk.id, summary: `${chunk.name} 덩어리 설명` })), unknowns: ['실행 결과는 확인하지 않았어요.'] },
+          limitations: [], review: request.mode === 'local-worker' ? 'AI 검토됨' : 'AI 대조 없음',
+          models: [{ stage: 'explaining', provider: request.mode === 'codex' ? 'codex' : 'antigravity', requestedModel: null, reportedModel: 'test-model' }] };
+        globalThis.testFileExplanationCalls.push(request);
+        const send = () => event.sender.send('learning:ai-event', { kind: 'file-explanation-completed', jobId, projectId: request.projectId, result });
+        if (globalThis.testFileExplanationHold) globalThis.testFileExplanationLate = send;
+        else { send(); await new Promise(resolve => setTimeout(resolve, 100)); }
+        return { ok: true, value: { jobId } };
+      });
+      globalThis.testFakeAiBehavior = 'early';
+    });
+    await dialogTo(fileExplanationFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '파일 설명 프로젝트', exact: true }).waitFor();
+    await page.getByRole('button', { name: 'README.md', exact: true }).click();
+    assert.equal(await page.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).count(), 0);
+    await page.getByRole('button', { name: 'chunks.ts', exact: true }).click();
+    const card = page.getByRole('region', { name: '이 파일 설명', exact: true });
+    assert.equal(await card.getByRole('checkbox').count(), 0);
+    assert.equal(await app.evaluate(() => globalThis.testFileExplanationCalls.length), 0);
+    await page.getByRole('button', { name: 'run', exact: true }).click();
+    await page.getByRole('tab', { name: '질문', exact: true }).click();
+    const panel = page.locator('.ai-panel');
+    await panel.getByRole('combobox', { name: 'AI 사용 방식' }).selectOption('codex');
+    await panel.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
+    await until(async () => (await page.getByTestId('ai-readiness').innerText()).includes('테스트 전용'));
+    await panel.getByRole('textbox').fill('파일 설명을 열어도 남을 질문');
+    await panel.getByRole('checkbox').check();
+    await panel.getByRole('button', { name: '질문 보내기', exact: true }).click();
+    await page.getByText('가짜 설명: 파일 설명을 열어도 남을 질문', { exact: true }).waitFor();
+    const scope = await page.getByTestId('question-scope').innerText();
+    await card.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
+    const create = card.getByRole('button', { name: '동의하고 파일 설명 만들기', exact: true });
+    assert.equal(await create.isDisabled(), true);
+    assert.match(await card.innerText(), /Codex 단독/);
+    assert.match(await card.innerText(), /다른 파일은 보내지 않습니다/);
+    await card.getByRole('checkbox').check();
+    await create.click();
+    await card.getByTestId('file-summary').waitFor();
+    assert.equal(await card.getByRole('button', { name: '코드 보기', exact: true }).count(), 6);
+    await card.getByText('설명 없음', { exact: true }).waitFor();
+    assert.equal(await app.evaluate(() => globalThis.testFileExplanationCalls.at(-1).mode), 'codex');
+    await card.getByRole('button', { name: '코드 보기', exact: true }).first().click();
+    await until(async () => /chunks.ts · 1–1줄/.test(await page.getByTestId('evidence-range').innerText()));
+    assert.equal(await page.getByTestId('question-scope').innerText(), scope);
+    assert.equal(await page.getByText('가짜 설명: 파일 설명을 열어도 남을 질문', { exact: true }).count(), 1);
+    await card.getByRole('button', { name: '파일 전체 근거', exact: true }).click();
+    await until(async () => /chunks.ts · 1–80줄/.test(await page.getByTestId('evidence-range').innerText()));
+    assert.equal(await page.getByTestId('question-scope').innerText(), scope);
+    await page.getByRole('button', { name: 'run', exact: true }).click();
+    await page.getByTestId('function-chunk-summary').getByText('run 덩어리 설명', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+    await page.getByTestId('function-chunk-summary').getByText('run 덩어리 설명', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+    await page.getByRole('button', { name: 'map에 넘긴 함수 (1행)', exact: true }).click();
+    await page.getByTestId('function-chunk-summary').getByText('이 함수는 따로 설명한 덩어리가 없어요', { exact: true }).waitFor();
+  });
+  await check('File explanation (fake AI): 80 ranges survive other reads, cancellation, stale files and project reopening', async () => {
+    const card = page.getByRole('region', { name: '이 파일 설명', exact: true });
+    for (let index = 0; index < 6; index++) {
+      await page.getByRole('button', { name: `other${index}.ts`, exact: true }).click();
+      await page.getByRole('heading', { name: `other${index}.ts`, exact: true }).waitFor();
+    }
+    await card.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
+    await card.getByRole('checkbox').check();
+    await card.getByRole('button', { name: '동의하고 파일 설명 만들기', exact: true }).click();
+    await card.getByTestId('file-summary').getByText('other5.ts 파일 설명', { exact: true }).waitFor();
+    await page.getByRole('button', { name: 'chunks.ts', exact: true }).click();
+    await card.getByTestId('file-summary').getByText('chunks.ts 파일 설명', { exact: true }).waitFor();
+    await card.getByRole('button', { name: '코드 보기', exact: true }).first().click();
+    await until(async () => /chunks.ts · 1–1줄/.test(await page.getByTestId('evidence-range').innerText()));
+    await card.getByRole('button', { name: '더 보기', exact: true }).click();
+    assert.equal(await card.getByRole('button', { name: '코드 보기', exact: true }).count(), 80);
+    await card.getByRole('button', { name: '코드 보기', exact: true }).last().click();
+    await until(async () => /chunks.ts · 80–80줄/.test(await page.getByTestId('evidence-range').innerText()));
+    // A held result cannot overwrite the card after cancellation.
+    await app.evaluate(() => { globalThis.testFileExplanationHold = true; });
+    await card.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
+    await card.getByRole('checkbox').check();
+    await card.getByRole('button', { name: '동의하고 파일 설명 만들기', exact: true }).click();
+    await card.getByRole('button', { name: 'AI 작업 취소', exact: true }).waitFor();
+    assert.equal(await page.locator('.ai-panel').getByRole('combobox', { name: 'AI 사용 방식' }).isDisabled(), true);
+    await until(() => app.evaluate(() => typeof globalThis.testFileExplanationLate === 'function'));
+    await card.getByRole('button', { name: 'AI 작업 취소', exact: true }).click();
+    await card.getByText('AI 작업을 취소했습니다.', { exact: true }).waitFor();
+    await app.evaluate(() => { globalThis.testFileExplanationLate(); globalThis.testFileExplanationHold = false; });
+    await card.getByText('AI 작업을 취소했습니다.', { exact: true }).waitFor();
+    // A range must check the hash even before a watch notice arrives.
+    await app.evaluate(({ ipcMain }) => {
+      const read = ipcMain._invokeHandlers.get('learning:read');
+      ipcMain.removeHandler('learning:read');
+      ipcMain.handle('learning:read', async (event, request) => {
+        const result = await read(event, request);
+        ipcMain.removeHandler('learning:read'); ipcMain.handle('learning:read', read);
+        return result.ok ? { ...result, value: { ...result.value, hash: 'f'.repeat(64) } } : result;
+      });
+    });
+    await card.getByRole('button', { name: '코드 보기', exact: true }).first().click();
+    await page.getByText('설명을 만든 뒤 이 파일이 바뀌어 강조하지 않았어요', { exact: true }).waitFor();
+    assert.equal(await page.getByTestId('evidence-range').count(), 0);
+    await page.getByRole('button', { name: '파일 다시 읽기', exact: true }).click();
+    await until(async () => await card.getByRole('button', { name: '파일 전체 근거', exact: true }).isEnabled());
+    await writeFile(path.join(fileExplanationFixture, 'chunks.ts'), fileExplanationSource + '// changed\n');
+    await card.getByText('다시 확인 필요:', { exact: false }).waitFor();
+    assert.equal(await card.getByRole('button', { name: '파일 전체 근거', exact: true }).isDisabled(), true);
+    assert.equal(await card.getByRole('button', { name: '코드 보기', exact: true }).first().isDisabled(), true);
+    assert.equal(await page.getByTestId('evidence-range').count(), 0);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('button', { name: 'chunks.ts', exact: true }).click();
+    assert.equal(await card.getByTestId('file-summary').count(), 0);
+    await page.getByRole('button', { name: '작업 취소·프로젝트 닫기', exact: true }).click();
+    await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
   });
   await check('Quitting while files are parsed waits for the workers and ends cleanly', async () => {
     // (a) Closing the window while a large folder opens.

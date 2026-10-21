@@ -7,7 +7,7 @@ import { channels, sourceRequestSchema, evidenceRequestSchema, projectRequestSch
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { ProjectSession, workersStopped } from './project-session';
-import { explainRequestSchema, cancelExplanationSchema, overviewRequestSchema } from '../shared/ai';
+import { explainRequestSchema, cancelExplanationSchema, overviewRequestSchema, fileExplanationRequestSchema } from '../shared/ai';
 import { LocalAiRuntime } from '../core/ai/runtime';
 import { LocalWorkerWorkflow } from '../core/ai/workflow';
 import { ProjectAiContext } from '../core/ai/context';
@@ -43,6 +43,15 @@ const learning = new LocalWorkerWorkflow({
     if (!context) throw new AppError('PROJECT_CLOSED', '프로젝트를 먼저 열어 주세요.');
     const snapshot = await context.captureOverview(request.startFileId, revision, signal);
     if (session !== active || aiContext !== context || projectRevision !== revision) throw new AppError('CHANGED', '자료를 모으는 동안 프로젝트가 바뀌었습니다.');
+    return snapshot;
+  },
+  captureFile: async (request, signal) => {
+    const revision = projectRevision;
+    const active = current(request.projectId);
+    const context = aiContext;
+    if (!context) throw new AppError('PROJECT_CLOSED', '프로젝트를 먼저 열어 주세요.');
+    const snapshot = await context.captureFile(request, revision, signal);
+    if (session !== active || aiContext !== context || projectRevision !== revision) throw new AppError('CHANGED', '파일이 바뀌어 다시 만들어 주세요');
     return snapshot;
   },
   expand: async (snapshot, ids, signal) => {
@@ -288,6 +297,12 @@ app.whenReady().then(async () => {
     if (opening) throw new AppError('INVALID_REQUEST', '프로젝트를 연 뒤 개요를 만들어 주세요.');
     current(input.projectId);
     return learning.startOverview(input);
+  });
+  handle(channels.fileExplanation, async argument => {
+    const input = fileExplanationRequestSchema.parse(argument);
+    if (opening) throw new AppError('INVALID_REQUEST', '프로젝트를 연 뒤 설명을 만들어 주세요.');
+    current(input.projectId);
+    return learning.startFileExplanation(input);
   });
   handle(channels.cancelExplanation, async argument => {
     const input = cancelExplanationSchema.parse(argument);

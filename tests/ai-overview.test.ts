@@ -90,7 +90,7 @@ function fake(snapshot: ContextSnapshot, answer: (snapshot: ContextSnapshot) => 
   const assertReady = vi.fn();
   const capture = vi.fn(async () => { throw new Error('not a question test'); });
   const captureOverview = vi.fn(async () => snapshot);
-  const workflow = new LocalWorkerWorkflow({ assertReady, capture, captureOverview, expand, revalidate, run, emit: event => events.push(event) });
+  const workflow = new LocalWorkerWorkflow({ assertReady, capture, captureOverview, captureFile: async () => { throw new Error('not a file explanation test'); }, expand, revalidate, run, emit: event => events.push(event) });
   const request: OverviewRequest = { projectId: snapshot.projectId, startFileId: null, mode: 'local-worker', consent: true };
   const finish = async (input = request) => {
     const { jobId } = workflow.startOverview(input);
@@ -247,6 +247,7 @@ describe('overview with the real app reads and fake stages', () => {
     const workflow = new LocalWorkerWorkflow({ assertReady: () => {}, run, emit: event => events.push(event),
       capture: async () => { throw new Error('not a question test'); },
       captureOverview: (request, signal) => f.context.captureOverview(request.startFileId, 1, signal),
+      captureFile: (request, signal) => f.context.captureFile(request, 1, signal),
       expand: (snapshot, ids, signal) => f.context.expand(snapshot, ids, signal),
       revalidate: (snapshot, signal) => f.context.revalidate(snapshot, signal) });
     const { jobId } = workflow.startOverview({ projectId: f.project.id, startFileId: f.id('README.md'), mode: 'local-worker', consent: true });
