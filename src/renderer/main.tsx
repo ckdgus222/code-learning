@@ -256,7 +256,7 @@ function App() {
         : '출발점을 정한 뒤 이 파일이 바뀌어 함수를 고르지 않았어요. 왼쪽에서 함수를 직접 골라 주세요.');
       return;
     }
-    const found = opened.analysis.symbols.filter(item => item.name === functionName && (startUtf16 === null || item.evidence.startUtf16 === startUtf16));
+    const found = opened.analysis.symbols.filter(item => (item.name === functionName || (!functionName.includes('.') && item.name.endsWith(`.${functionName}`))) && (startUtf16 === null || item.evidence.startUtf16 === startUtf16));
     if (found.length !== 1) {
       setNotice(found.length > 1 ? `이 파일에 ‘${functionName}’ 함수가 ${found.length}개라 하나로 정하지 못했어요. 왼쪽에서 직접 골라 주세요.`
         : `‘${functionName}’ 함수를 이 파일에서 찾지 못했어요. 왼쪽에서 직접 골라 주세요.`);
@@ -374,7 +374,7 @@ function App() {
     const opened = await readFile(at.fileId);
     if (!opened || revision.current !== atRevision) return;
     if (opened.hash !== at.fileHash) { setNotice('개요를 만든 뒤 이 파일이 바뀌어 함수를 고르지 않았어요. 개요를 다시 만들어 주세요.'); return; }
-    const found = opened.analysis.symbols.filter(item => item.name === name);
+    const found = opened.analysis.symbols.filter(item => item.name === name || (!name.includes('.') && item.name.endsWith(`.${name}`)));
     if (found.length === 1) { selectSymbol(found[0].id); setReaderEvidence(found[0].evidence); return; }
     setNotice(found.length > 1 ? `이 파일에 ‘${name}’ 함수가 ${found.length}개라 하나로 정하지 못했어요. 왼쪽에서 직접 골라 주세요.`
       : `‘${name}’은 이 파일의 함수 목록에 없어요(이름 없는 함수나 다른 종류일 수 있어요). 왼쪽에서 직접 골라 주세요.`);

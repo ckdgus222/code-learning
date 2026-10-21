@@ -42,7 +42,7 @@ describe('static source analysis', () => {
     ['useEffect(function named() {});', 'named'],
     ['export default function named() {}', 'named'],
     ['const variable = () => {};', 'variable'],
-    ['class Model { field = () => {}; }', 'field'],
+    ['class Model { field = () => {}; }', 'Model.field'],
     ['const object = { key: () => {} };', 'key'],
     ['const variable = function own() {};', 'own'],
   ])('keeps the existing own and assigned names in %s', (source, name) => {
@@ -305,7 +305,7 @@ describe('static source analysis', () => {
       'const e = () => { const inner = () => 1; };',
     ].join('\n');
     const exported = Object.fromEntries(analyze(source).symbols.map(symbol => [symbol.name, symbol.exported]));
-    expect(exported).toEqual({ a: true, b: true, c: true, m: false, d: false, e: false, inner: false });
+    expect(exported).toEqual({ a: true, b: true, c: true, 'K.m': true, d: false, e: false, inner: false });
     expect(analyze('export default function () {}').symbols[0].exported).toBe(true);
     expect(analyze('export default () => 2;').symbols[0].exported).toBe(true);
     expect(analyze('module.exports.f = function () {};', 'cjs.js').symbols[0].exported).toBe(false);
@@ -363,5 +363,19 @@ describe('complexity signals (plan v2.3 C-1)', () => {
   it('counts a code line once, whatever else is on it', () => {
     expect(measured('function f() { if (a) { b(); } /* note */ c(); }', 'f.ts')).toEqual([['f', 1, 1]]);
     expect(measured('function f() {\r\n  a();\r\n\r\n  b();\r\n}', 'f.ts')).toEqual([['f', 2, 0]]);
+  });
+});
+
+describe('class-qualified display names', () => {
+  it.each([
+    ['class C { constructor() {} run() {} handle = () => {}; }', ['C.constructor', 'C.run', 'C.handle']],
+    ['export abstract class C { run() {} }', ['C.run']],
+    ['const X = class Named { run() {} };', ['Named.run']],
+    ['export default class { run() {} handle = () => {}; }', ['run', 'handle']],
+    ['const X = class { run() {} };', ['run']],
+    ['class C { [key]() {} [other] = () => {}; }', ['[key]', '[other]']],
+    ['class C { handle = function named() {}; }', ['C.handle']],
+  ])('names methods and fields in %s', (source, names) => {
+    expect(analyze(source).symbols.map(symbol => symbol.name)).toEqual(names);
   });
 });

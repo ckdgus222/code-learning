@@ -9,7 +9,7 @@ import { functionName, functionTypes, importOf, measureFunction } from './syntax
 
 export const codeFile = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
 // Plan v2.3 A: a relative path without an extension may name one of these files or its folder's index file.
-// TypeScript's `.js` → `.ts` substitution is deliberately not applied (not in the approved plan).
+// TS importers also consider the TS counterpart of an explicit JS extension; multiple files stay ambiguous.
 const EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
 const MAX_TEXT = 300;
 
@@ -72,7 +72,12 @@ export function candidatesFor(fromPath: string, specifier: string, known: Map<st
   const indexes = EXTENSIONS.map(extension => `${base ? `${base}/` : ''}index${extension}`);
   const names = folderOnly ? indexes : textExtensions.has(path.posix.extname(base).toLowerCase()) ? [base]
     : [base, ...EXTENSIONS.map(extension => base + extension), ...indexes];
-  return [...new Set(names)].filter(name => known.has(name));
+  if (!folderOnly && /\.(?:ts|tsx|mts|cts)$/i.test(fromPath)) {
+    const extension = path.posix.extname(base).toLowerCase();
+    const counterparts: Record<string, string[]> = { '.js': ['.ts', '.tsx'], '.jsx': ['.tsx'], '.mjs': ['.mts'], '.cjs': ['.cts'] };
+    for (const replacement of counterparts[extension] ?? []) names.push(base.slice(0, -extension.length) + replacement);
+  }
+  return [...new Set(names)].filter(name => !/\.d\.(?:ts|mts|cts)$/i.test(name) && known.has(name));
 }
 
 /**

@@ -70,6 +70,8 @@ const callsFixture = path.join(temporary, '호출 프로젝트');
 await mkdir(path.join(callsFixture, 'src'), { recursive: true });
 await writeFile(path.join(callsFixture, 'src/app.ts'), "import { save } from './store';\nexport function placeOrder(order: string) {\n  check(order);\n  save(order);\n  log.info(order);\n}\nfunction check(order: string) { return order.length > 0; }\nexport const quick = () => save('q');\nexport function withDefault(x = check('d')) { return x; }\n");
 await writeFile(path.join(callsFixture, 'src/store.ts'), 'export function save(order: string) {\n  return order;\n}\n');
+await writeFile(path.join(callsFixture, 'src/auth.service.ts'), 'export class AuthService { signup(input: string) { return input; } }');
+await writeFile(path.join(callsFixture, 'src/auth.controller.ts'), "import { AuthService } from './auth.service.js';\nexport class AuthController { constructor(@Inject(AuthService) private readonly auth: AuthService) {} login(input: string) { return this.auth.signup(input); } }");
 // Plan v2.3 V-1: price takes two values, keeps one name inside and uses two from outside; shop and a test call it.
 const valuesFixture = path.join(temporary, '값 프로젝트');
 await mkdir(path.join(valuesFixture, 'src'), { recursive: true });
@@ -1412,12 +1414,12 @@ try {
     await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
     await topicBar.getByRole('button', { name: '주제 닫기', exact: true }).click();
     await page.getByRole('button', { name: 'dup.ts', exact: true }).click();
-    const runs = page.getByRole('button', { name: 'run', exact: true });
+    const runs = page.getByRole('button', { name: /^(First|Second)\.run$/ });
     await runs.nth(1).click();
     await topicBar.getByRole('button', { name: '이 함수에서 학습 시작', exact: true }).click();
     await topicBar.getByText('학습 주제 · 지금 고른 함수', { exact: true }).waitFor();
     await topicBar.getByRole('textbox', { name: '학습 이름' }).fill('두 번째 실행');
-    await topicBar.getByText('원래 이름: run', { exact: true }).waitFor();
+    await topicBar.getByText('원래 이름: Second.run', { exact: true }).waitFor();
     await runs.nth(0).click();
     await topicBar.getByRole('button', { name: '출발점으로', exact: true }).click();
     await until(async () => await runs.nth(1).getAttribute('aria-pressed') === 'true');
@@ -1638,7 +1640,7 @@ try {
     assert.deepEqual(await calledList.locator('li').allInnerTexts(), [
       '3행 check(order) → check src/app.ts 그 함수로 호출 위치',
       '4행 save(order) → save src/store.ts 그 함수로 호출 위치',
-      '5행 log.info(order) · 확인 못 함멤버 호출(obj.f())이라 대상을 정할 수 없어요 호출 위치',
+      '5행 log.info(order) · 확인 못 함멤버 호출이라 대상을 정하지 못했어요 호출 위치',
     ]);
     await summary.getByText('이 함수로 이어진 호출을 찾지 못했어요.', { exact: true }).waitFor();
     await summary.getByText('찾은 이름: placeOrder', { exact: true }).waitFor();
@@ -1682,6 +1684,27 @@ try {
     await calledList.getByRole('button', { name: '그 함수로', exact: true }).click();
     await page.getByText('호출을 찾은 뒤 이 파일이 바뀌어 그 함수를 고르지 않았어요. 다시 찾아 주세요.', { exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: 'save', exact: true }).getAttribute('aria-pressed'), 'false');
+  });
+  await check('Typed calls: navigate from controller to service, keeping incoming values unconfirmed', async () => {
+    await dialogTo(callsFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '호출 프로젝트', exact: true }).waitFor();
+    await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    await page.getByRole('button', { name: 'src/auth.controller.ts', exact: true }).click();
+    await page.getByRole('button', { name: 'AuthController.login', exact: true }).click();
+    const summary = page.getByRole('article', { name: '함수 요약' });
+    const outgoing = summary.getByRole('list', { name: '이 함수가 부르는 것' });
+    await outgoing.getByText('· 타입으로 찾음', { exact: true }).waitFor();
+    assert.match(await outgoing.innerText(), /AuthService.signup/);
+    await outgoing.getByRole('button', { name: '그 함수로', exact: true }).click();
+    await until(async () => await page.getByRole('button', { name: 'AuthService.signup', exact: true }).getAttribute('aria-pressed') === 'true');
+    await summary.getByText('타입으로 찾은 부르는 곳 · 1개', { exact: true }).waitFor();
+    await summary.getByText('부르는 곳 · 0개', { exact: true }).waitFor();
+    await summary.getByRole('group', { name: '받는 값' }).getByRole('button', { name: 'input', exact: true }).click();
+    await summary.getByText('이 함수로 이어진 부르는 곳이 없어 들어오는 값을 찾지 못했어요.', { exact: true }).waitFor();
+    assert.equal(await summary.getByRole('list', { name: 'input에 넘기는 값', exact: true }).count(), 0);
+    await summary.getByRole('list', { name: '타입으로 찾은 부르는 곳' }).getByRole('button', { name: '호출 위치', exact: true }).click();
+    await until(async () => await page.getByRole('button', { name: 'AuthController.login', exact: true }).getAttribute('aria-pressed') === 'true');
   });
   await check('Values: names a function uses, arguments from calls and tests, fixed values and writes, never run values', async () => {
     await dialogTo(valuesFixture);
