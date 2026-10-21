@@ -864,7 +864,9 @@ function App() {
             </section>
             <div className="code">
               {evidence && <p data-testid="evidence-range" className="evidence">근거: {source.relativePath} · {evidence.startLine}–{evidence.endLine}줄 · UTF-16 [{evidence.startUtf16}, {evidence.endUtf16})</p>}
-              <Reader ref={reader} source={source} evidence={evidence} codeSize={codeSize} wrap={wrap} />
+              <Reader ref={reader} source={source} evidence={evidence} codeSize={codeSize} wrap={wrap}
+                symbolId={symbolId} stepId={stepId} locked={busy || stale}
+                onStep={next => { if (!busy && !stale) void showEvidence(next.evidence, next.id); }} />
             </div>
           </div>
         </div>)}

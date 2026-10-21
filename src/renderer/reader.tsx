@@ -1,6 +1,6 @@
 import React, { useEffect, useImperativeHandle, useRef, type Ref } from 'react';
-import { Compartment, EditorState } from '@codemirror/state';
-import { EditorView, lineNumbers, drawSelection, keymap, type KeyBinding } from '@codemirror/view';
+import { Compartment, EditorState, RangeSet } from '@codemirror/state';
+import { EditorView, GutterMarker, gutter, lineNumbers, drawSelection, keymap, type KeyBinding } from '@codemirror/view';
 import { syntaxHighlighting } from '@codemirror/language';
 import {
   cursorCharLeft, cursorCharRight, cursorDocEnd, cursorDocStart, cursorLineBoundaryBackward, cursorLineBoundaryForward, cursorLineDown,
@@ -10,7 +10,8 @@ import {
 import { codeTheme, codeHighlightStyle } from './code-theme';
 import { javascript } from '@codemirror/lang-javascript';
 import { openSearchPanel, search, searchKeymap } from '@codemirror/search';
-import type { Evidence, SourceView } from '../shared/contracts';
+import type { CodeStep, Evidence, SourceView } from '../shared/contracts';
+import { groupStepMarkers, type StepMarkerGroup } from './step-markers';
 
 // Reading only: move, select and select all. Copying is the browser's own, and Tab is left unbound so
 // it moves focus out of the code as anywhere else.
@@ -40,11 +41,32 @@ const wrapping = new Compartment();
 // changes, but not when outside CSS does, which would leave the line numbers at the old height.
 const sizing = new Compartment();
 const sizeTheme = (px: number) => EditorView.theme({ '.cm-scroller': { fontSize: `${px}px` } });
+const stepGutter = new Compartment();
+
+class StepMarker extends GutterMarker {
+  constructor(readonly group: StepMarkerGroup, readonly selected: boolean, readonly locked: boolean,
+    readonly onStep: (step: CodeStep) => void) { super(); }
+
+  toDOM() {
+    const button = document.createElement('button');
+    const first = this.group.steps[0];
+    button.type = 'button';
+    button.className = 'code-step-marker';
+    button.textContent = `${this.group.number}${this.group.steps.length > 1 ? '+' : ''}`;
+    button.title = `${this.group.number}단계 · ${first.title}`;
+    button.tabIndex = -1;
+    button.disabled = this.locked;
+    button.setAttribute('aria-pressed', String(this.selected));
+    button.onclick = () => { if (!this.locked) this.onStep(first); };
+    return button;
+  }
+}
 
 export interface ReaderHandle { openSearch(): void }
 
-export function Reader({ source, evidence, codeSize, wrap, ref }: {
+export function Reader({ source, evidence, codeSize, wrap, symbolId, stepId, locked, onStep, ref }: {
   source: SourceView; evidence: Evidence | null; codeSize: number; wrap: boolean; ref?: Ref<ReaderHandle>;
+  symbolId: string | null; stepId: string | null; locked: boolean; onStep: (step: CodeStep) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
@@ -55,7 +77,7 @@ export function Reader({ source, evidence, codeSize, wrap, ref }: {
       extensions: [
         // Keep CR and BOM characters rather than silently changing raw-source offsets.
         EditorState.lineSeparator.of('\n'), EditorState.readOnly.of(true), EditorView.editable.of(false),
-        codeTheme, lineNumbers(), drawSelection(), keymap.of([...readingKeys, ...searchKeymap]), search({ top: true }), searchPhrases,
+        codeTheme, stepGutter.of([]), lineNumbers(), drawSelection(), keymap.of([...readingKeys, ...searchKeymap]), search({ top: true }), searchPhrases,
         // A new editor is made for each file and starts with the current choices; later changes reconfigure it.
         wrapping.of(wrap ? EditorView.lineWrapping : []), sizing.of(sizeTheme(codeSize)),
         // A non-editable element takes keyboard focus only with a tabindex (CodeMirror read-only example).
@@ -68,6 +90,20 @@ export function Reader({ source, evidence, codeSize, wrap, ref }: {
     view.current = editor;
     return () => { editor.destroy(); view.current = null; };
   }, [source]);
+  // The parent passes a new handler on every render; reading the latest one here keeps the gutter from being rebuilt each time.
+  const latestOnStep = useRef(onStep);
+  useEffect(() => { latestOnStep.current = onStep; });
+  useEffect(() => {
+    const editor = view.current;
+    if (!editor) return;
+    const symbol = source.analysis.symbols.find(item => item.id === symbolId);
+    const groups = groupStepMarkers(symbol);
+    const markers = RangeSet.of(groups.map(group => new StepMarker(group, group.steps.some(step => step.id === stepId), locked,
+      step => latestOnStep.current(step)).range(editor.state.doc.line(group.line).from)));
+    editor.dispatch({ effects: stepGutter.reconfigure(groups.length ? gutter({
+      class: 'cm-step-gutter', markers: () => markers,
+    }) : []) });
+  }, [source, symbolId, stepId, locked]);
   useEffect(() => {
     view.current?.dispatch({ effects: wrapping.reconfigure(wrap ? EditorView.lineWrapping : []) });
   }, [wrap]);
