@@ -19,7 +19,7 @@ async function fixture(extra: Record<string, string> = {}) {
   const file = project.files.find(file => file.relativePath === 'main.ts')!;
   const { text, hash } = await readAllowed(root, file.relativePath);
   const source: SourceView = { projectId: project.id, fileId: file.id, relativePath: file.relativePath, text, hash,
-    analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] } };
+    guide: null, analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] } };
   const evidence: Evidence = { id: randomUUID(), projectId: project.id, fileId: file.id, fileHash: hash,
     startUtf16: 0, endUtf16: Math.min(12, text.length), startLine: 1, endLine: 1 };
   const context = new ProjectAiContext(root, project);

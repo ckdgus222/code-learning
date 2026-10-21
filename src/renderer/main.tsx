@@ -7,6 +7,7 @@ import { Reader, type ReaderHandle } from './reader';
 import { Icon } from './icons';
 import { ancestorFolderPaths, buildFileTree, filterFileTree, type TreeFolder } from './file-tree';
 import { AiPanel, modes } from './ai-panel';
+import { FileGuideCard } from './file-guide';
 import { FileExplanationCard, rememberFileExplanation, type FileExplanationEntry, type FileExplanationState } from './file-explanation';
 import { Flow } from './flow';
 import { ProjectMapView, type MapEntry } from './project-map';
@@ -446,6 +447,14 @@ function App() {
       if (!result.ok) setError(result.message);
     }
   }
+  function showFileGuideRange(range: FileExplanationRange) {
+    if (busy || stale || !source) return;
+    if (source.fileId !== range.fileId || source.hash !== range.fileHash) {
+      setNotice('안내를 만든 뒤 이 파일이 바뀌어 강조하지 않았어요. 파일을 다시 읽고 확인해 주세요.');
+      return;
+    }
+    setReaderEvidence({ id: crypto.randomUUID(), projectId: source.projectId, ...range });
+  }
   async function showFileExplanationRange(range: FileExplanationRange) {
     if (busy || fileExplanationStale) return;
     setView('code');
@@ -869,13 +878,22 @@ function App() {
               <button className="btn btn--icon" aria-label="줄바꿈" title="줄바꿈" aria-pressed={wrap} onClick={() => setWrap(on => !on)}><Icon name="wrap" /></button>
             </div>
           </div>
-          {source.analysis.language !== 'text' && <FileExplanationCard source={source} entry={fileExplanation}
-            state={fileExplanationState?.fileId === source.fileId ? fileExplanationState : null} stale={fileExplanationStale}
-            mode={mode} locked={busy} running={questionRunning || fileExplanationRunning || overviewAi?.status === 'running'}
-            checking={checking} connections={connections}
-            onInspect={() => { void inspectConnections().then(message => { if (message) setError(message); }); }}
-            onStart={() => void startFileExplanation()} onCancel={() => void cancelFileExplanation()}
-            onShow={range => void showFileExplanationRange(range)} />}
+          {/* Both cards share one scroll area so together they never take more of the window than one did. */}
+          <div className="reader__cards">
+            {source.guide && <FileGuideCard key={`${source.fileId}:${source.hash}`} guide={source.guide} busy={busy} stale={stale}
+              onShow={showFileGuideRange} onSelect={id => {
+                if (busy || stale) return;
+                const item = source.analysis.symbols.find(item => item.id === id);
+                if (item) { selectSymbol(item.id); void showEvidence(item.evidence, null); }
+              }} />}
+            {source.analysis.language !== 'text' && <FileExplanationCard source={source} entry={fileExplanation}
+              state={fileExplanationState?.fileId === source.fileId ? fileExplanationState : null} stale={fileExplanationStale}
+              mode={mode} locked={busy} running={questionRunning || fileExplanationRunning || overviewAi?.status === 'running'}
+              checking={checking} connections={connections}
+              onInspect={() => { void inspectConnections().then(message => { if (message) setError(message); }); }}
+              onStart={() => void startFileExplanation()} onCancel={() => void cancelFileExplanation()}
+              onShow={range => void showFileExplanationRange(range)} />}
+          </div>
           {functionExplanation && <p className="function-explanation" data-testid="function-chunk-summary">{functionExplanation}</p>}
           <div className="reader__body">
             <section aria-label="구문과 코드" className="outline">

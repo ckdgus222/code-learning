@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest } from './ai';
+import type { ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest, FileChunk, FileExplanationRange } from './ai';
 
 export const idSchema = z.string().uuid();
 export const sourceRequestSchema = z.object({ projectId: idSchema, fileId: idSchema }).strict();
@@ -116,6 +116,16 @@ export interface ProjectOverview {
 export interface ProjectView extends ProjectFiles {
   overview: ProjectOverview;
 }
+export type GuideRange = FileExplanationRange;
+export interface FileGuide {
+  role: { label: string; about: string; basis: { text: string; range: GuideRange | null } };
+  notes: string[];
+  exports: string[];
+  exportsOmitted: number;
+  chunks: { chunk: FileChunk; about: string; symbolId: string | null }[];
+  limitations: string[];
+}
+
 export interface SourceView {
   projectId: string;
   fileId: string;
@@ -123,6 +133,7 @@ export interface SourceView {
   hash: string;
   text: string;
   analysis: Analysis;
+  guide: FileGuide | null;
 }
 
 /**

@@ -4,6 +4,7 @@ import type { Evidence, FileDiff, FunctionCalls, GitHistory, ProjectChanges, Pro
 import { AppError, failure } from '../shared/errors';
 import { readAllowed, scanProject } from '../core/project/files';
 import { analyzeSource } from '../core/analysis/syntax';
+import { describeFile } from '../core/analysis/file-guide';
 import { buildOverview } from '../core/analysis/overview';
 import { buildProjectMap, MAP_LIMITS } from '../core/analysis/project-map';
 import { findFunctionCalls } from '../core/analysis/calls';
@@ -40,7 +41,12 @@ async function readSource(fileId: string): Promise<SourceView> {
   if (previous?.hash === hash) { sources.set(fileId, previous); return previous; }
   if (stopped()) throw new AppError('CANCELLED', '작업을 취소했습니다.');
   const analysis = analyzeSource(text, file.relativePath, { projectId, fileId, fileHash: hash });
-  const result: SourceView = { projectId, fileId, relativePath: file.relativePath, text, hash, analysis };
+  let guide: SourceView['guide'] = null;
+  if (analysis.language !== 'text') {
+    try { guide = describeFile(text, file.relativePath, fileId, hash, analysis, project!.files.map(file => file.relativePath)); }
+    catch { /* A guide is optional: a failed description must not prevent reading the source. */ }
+  }
+  const result: SourceView = { projectId, fileId, relativePath: file.relativePath, text, hash, analysis, guide };
   sources.set(fileId, result);
   while (sources.size > KEPT_SOURCES) sources.delete(sources.keys().next().value!);
   return result;

@@ -45,7 +45,7 @@ describe('file explanation result retention and display', () => {
   it('shows six chunks, missing summaries, unknowns, mode/model and a stale disabled range', () => {
     const saved = entry();
     const source: SourceView = { projectId: saved.result.projectId, fileId: saved.result.range.fileId, hash: saved.result.range.fileHash,
-      relativePath: 'file.ts', text: 'const value = 1;', analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] } };
+      relativePath: 'file.ts', text: 'const value = 1;', guide: null, analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] } };
     const html = renderToStaticMarkup(React.createElement(FileExplanationCard, { source, entry: saved, state: null,
       stale: true, mode: 'codex', locked: false, running: false, checking: false, connections: null,
       onInspect() {}, onStart() {}, onCancel() {}, onShow() {} }));

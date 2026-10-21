@@ -74,6 +74,12 @@ const fileExplanationSource = 'export function run() { [1].map(value => value + 
 await writeFile(path.join(fileExplanationFixture, 'chunks.ts'), fileExplanationSource);
 for (let index = 0; index < 6; index++) await writeFile(path.join(fileExplanationFixture, `other${index}.ts`), `export const other${index} = ${index};\n`);
 await writeFile(path.join(fileExplanationFixture, 'README.md'), '# 파일 설명 시험\n');
+const guideFixture = path.join(temporary, '파일 안내 프로젝트');
+await mkdir(path.join(guideFixture, 'src'), { recursive: true });
+await writeFile(path.join(guideFixture, 'src/auth.controller.ts'), "@Controller('auth')\nexport class Auth {\n@Post('login') login(input: string) { return this.service.login(input); }\n}\n");
+await writeFile(path.join(guideFixture, 'src/broken.ts'), 'const before = 1;\nconst broken = ;\nconst after = 2;');
+await writeFile(path.join(guideFixture, 'src/many.ts'), Array.from({ length: 83 }, (_, i) => `const value${i} = ${i};`).join('\n'));
+await writeFile(path.join(guideFixture, 'README.md'), '# 파일 안내 시험\n');
 // Plan v2.3 C-1: one function of 61 code lines (over the limit of 60) next to a short one.
 const hardFixture = path.join(temporary, '어려운 코드 프로젝트');
 const hardSource = `export function short() { return 1; }\n\nexport function long() {\n  if (ready()) {\n    step(0);\n  }\n${
@@ -1405,6 +1411,8 @@ try {
     await create.click();
     await card.getByText('개요 작업 시작 중', { exact: true }).waitFor();
     assert.equal(await page.locator('.ai-panel').getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).isDisabled(), true);
+    // The fake handler reads three files before it keeps the reply, so wait for it rather than racing those reads.
+    await until(() => app.evaluate(() => typeof globalThis.testOverviewLate === 'function'));
     await app.evaluate(() => { globalThis.testOverviewHold = false; globalThis.testOverviewLate(); });
     await card.getByText('배너를 등록하고 보여 주는 앱이에요.', { exact: true }).waitFor();
     assert.equal(await page.locator('.ai-panel').getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).isDisabled(), false);
@@ -2033,6 +2041,59 @@ try {
     await diff.getByText('지금 코드만 열 수 있어 그것만 보여요.', { exact: true }).waitFor();
     assert.equal(await diff.getByText('고른 커밋에는 없던 파일이에요. 지금 코드예요.', { exact: true }).count(), 0);
   });
+  await check('File guide: immediate roles, ranges, function selection, collapsed limitations and stale hash rejection', async () => {
+    await dialogTo(guideFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await openTreeFile('src/auth.controller.ts');
+    const guide = page.locator('.file-guide');
+    await guide.getByText('NestJS 컨트롤러', { exact: true }).waitFor();
+    assert.match(await guide.innerText(), /POST \/auth\/login.*앱 공통 앞 경로는 빼고 봤어요/);
+    await guide.getByRole('button', { name: '이 함수 고르기', exact: true }).click();
+    await page.getByRole('tab', { name: '질문', exact: true }).click();
+    await until(async () => await page.locator('.symbols__item[aria-pressed="true"]').innerText() === 'Auth.login');
+    await until(async () => /auth.controller.ts · 3–3행/.test(await page.getByTestId('question-scope').innerText()));
+    const scope = await page.getByTestId('question-scope').innerText();
+    await guide.getByRole('button', { name: '코드 보기', exact: true }).first().click();
+    await until(async () => /auth.controller.ts · 1–2줄/.test(await page.getByTestId('evidence-range').innerText()));
+    assert.equal(await page.locator('.symbols__item[aria-pressed="true"]').innerText(), 'Auth.login');
+    assert.equal(await page.getByTestId('question-scope').innerText(), scope);
+    await guide.getByRole('button', { name: /^근거:/ }).click();
+    await until(async () => /auth.controller.ts · 1–1줄/.test(await page.getByTestId('evidence-range').innerText()));
+    // The source can disagree with an old guide before a filesystem watch event arrives.
+    await app.evaluate(({ ipcMain }) => {
+      const read = ipcMain._invokeHandlers.get('learning:read');
+      ipcMain.removeHandler('learning:read');
+      ipcMain.handle('learning:read', async (event, request) => {
+        const result = await read(event, request);
+        ipcMain.removeHandler('learning:read'); ipcMain.handle('learning:read', read);
+        return result.ok ? { ...result, value: { ...result.value, hash: 'f'.repeat(64) } } : result;
+      });
+    });
+    await page.getByRole('button', { name: '파일 다시 읽기', exact: true }).click();
+    await guide.getByRole('button', { name: '코드 보기', exact: true }).first().click();
+    await page.getByText('안내를 만든 뒤 이 파일이 바뀌어 강조하지 않았어요. 파일을 다시 읽고 확인해 주세요.', { exact: true }).waitFor();
+    assert.equal(await page.getByTestId('evidence-range').count(), 0);
+    await guide.getByRole('button', { name: /^근거:/ }).click();
+    assert.equal(await page.getByTestId('evidence-range').count(), 0);
+    await openTreeFile('src/broken.ts');
+    await guide.getByText('구문 오류가 있어 일부 코드는 나누지 않았어요', { exact: true }).waitFor();
+    await openTreeFile('src/many.ts');
+    await guide.getByText('덩어리 3개는 설명하지 않았어요', { exact: true }).waitFor();
+    assert.equal(await guide.getByRole('button', { name: '코드 보기', exact: true }).count(), 8);
+    await guide.getByRole('button', { name: '더 보기', exact: true }).click();
+    assert.equal(await guide.getByRole('button', { name: '코드 보기', exact: true }).count(), 80);
+    await guide.getByRole('button', { name: '접기', exact: true }).click();
+    assert.equal(await guide.getByText('덩어리 3개는 설명하지 않았어요', { exact: true }).isVisible(), true);
+    await guide.locator('summary').click();
+    assert.equal(await guide.getByRole('button', { name: '코드 보기', exact: true }).first().isVisible(), false);
+    await openTreeFile('README.md');
+    await page.getByRole('heading', { name: 'README.md', exact: true }).waitFor();
+    assert.equal(await guide.count(), 0);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await openTreeFile('src/auth.controller.ts');
+    await guide.getByText('NestJS 컨트롤러', { exact: true }).waitFor();
+    assert.equal(await guide.evaluate(element => element.open), true);
+  });
   await check('File explanation (fake AI): consent, selected mode, early result, independent code ranges and direct function summaries', async () => {
     await app.evaluate(({ ipcMain }) => {
       ipcMain.removeHandler('learning:connections');
@@ -2095,6 +2156,44 @@ try {
     await panel.getByRole('button', { name: '질문 보내기', exact: true }).click();
     await page.getByText('가짜 설명: 파일 설명을 열어도 남을 질문', { exact: true }).waitFor();
     const scope = await page.getByTestId('question-scope').innerText();
+    const guide = page.locator('.file-guide');
+    const selected = await page.locator('.symbols__item[aria-pressed="true"]').innerText();
+    await app.evaluate(({ ipcMain }) => {
+      const read = ipcMain._invokeHandlers.get('learning:read');
+      globalThis.testGuideReadCount = 0;
+      globalThis.testGuideRestoreRead = () => { ipcMain.removeHandler('learning:read'); ipcMain.handle('learning:read', read); };
+      ipcMain.removeHandler('learning:read');
+      ipcMain.handle('learning:read', (event, request) => { globalThis.testGuideReadCount++; return read(event, request); });
+    });
+    for (const running of [false, true]) {
+      if (running) {
+        await app.evaluate(() => { globalThis.testFakeAiBehavior = 'hold'; globalThis.testFakeAiLate = null; });
+        await panel.getByRole('textbox').fill('안내를 보는 동안 진행 중인 질문');
+        await panel.getByRole('button', { name: '질문 보내기', exact: true }).click();
+        await until(() => app.evaluate(() => typeof globalThis.testFakeAiLate === 'function'));
+      }
+      const draft = await panel.getByRole('textbox').inputValue();
+      const reads = await app.evaluate(() => globalThis.testGuideReadCount);
+      const answers = await page.getByRole('region', { name: 'AI 설명' }).allInnerTexts();
+      const cancelled = await app.evaluate(() => globalThis.testFakeAiCancelled.length);
+      await guide.getByRole('button', { name: '코드 보기', exact: true }).nth(1).click();
+      await until(async () => /chunks.ts · 2–2줄/.test(await page.getByTestId('evidence-range').innerText()));
+      for (const basis of [false, true]) {
+        if (basis) await guide.getByRole('button', { name: /^근거:/ }).click();
+        assert.equal(await page.locator('.symbols__item[aria-pressed="true"]').innerText(), selected);
+        assert.equal(await page.getByTestId('question-scope').innerText(), scope);
+        assert.equal(await panel.getByRole('textbox').inputValue(), draft);
+        assert.deepEqual(await page.getByRole('region', { name: 'AI 설명' }).allInnerTexts(), answers);
+        assert.equal(await app.evaluate(() => globalThis.testGuideReadCount), reads);
+        assert.equal(await app.evaluate(() => globalThis.testFakeAiCancelled.length), cancelled);
+        if (running) assert.equal(await panel.getByRole('button', { name: 'AI 작업 취소', exact: true }).isVisible(), true);
+      }
+      if (running) {
+        await app.evaluate(() => { globalThis.testFakeAiLate(); globalThis.testFakeAiBehavior = 'early'; });
+        await page.getByText('가짜 설명: 안내를 보는 동안 진행 중인 질문', { exact: true }).waitFor();
+      }
+    }
+    await app.evaluate(() => globalThis.testGuideRestoreRead());
     await card.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
     const create = card.getByRole('button', { name: '동의하고 파일 설명 만들기', exact: true });
     assert.equal(await create.isDisabled(), true);
@@ -2176,6 +2275,9 @@ try {
     await until(async () => await card.getByRole('button', { name: '파일 전체 근거', exact: true }).isEnabled());
     await writeFile(path.join(fileExplanationFixture, 'chunks.ts'), fileExplanationSource + '// changed\n');
     await card.getByText('다시 확인 필요:', { exact: false }).waitFor();
+    const guideButtons = page.locator('.file-guide').getByRole('button');
+    assert.ok(await guideButtons.count() > 0);
+    for (const button of await guideButtons.all()) assert.equal(await button.isDisabled(), true);
     assert.equal(await card.getByRole('button', { name: '파일 전체 근거', exact: true }).isDisabled(), true);
     assert.equal(await card.getByRole('button', { name: '코드 보기', exact: true }).first().isDisabled(), true);
     assert.equal(await page.getByTestId('evidence-range').count(), 0);

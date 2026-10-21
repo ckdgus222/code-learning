@@ -242,7 +242,7 @@ describe('Codex connection through the app runtime (real account, non-secret fix
       const file = project.files.find(item => item.relativePath === 'order.ts')!;
       const { text, hash } = await readAllowed(root, file.relativePath);
       const source: SourceView = { projectId: project.id, fileId: file.id, relativePath: file.relativePath, text, hash,
-        analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] } };
+        guide: null, analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] } };
       const start = text.indexOf('export function');
       const evidence: Evidence = { id: randomUUID(), projectId: project.id, fileId: file.id, fileHash: hash,
         startUtf16: start, endUtf16: text.length - 1, startLine: 3, endLine: 6 };

@@ -68,7 +68,7 @@ describe('finding the code evidence of a map entry', () => {
     const projectMap = await buildProjectMap(sandbox, project.id, project.files, []);
     const { text: read, hash } = await readAllowed(sandbox, relativePath);
     const source: SourceView = { projectId: project.id, fileId: target.id, relativePath, text: read, hash,
-      analysis: analyzeSource(read, relativePath, { projectId: project.id, fileId: target.id, fileHash: hash }) };
+      guide: null, analysis: analyzeSource(read, relativePath, { projectId: project.id, fileId: target.id, fileHash: hash }) };
     return { source, items: [...projectMap.edges, ...projectMap.unresolved, ...projectMap.external].filter(item => item.fromFileId === target.id),
       functions: projectMap.complexFunctions.filter(item => item.fileId === target.id) };
   }
