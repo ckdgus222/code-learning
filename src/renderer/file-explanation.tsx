@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import type { SourceView } from '../shared/contracts';
 import { GEMINI_MODEL, type ConnectionReport, type FileExplanationRange, type FileExplanationResult,
   type LearningMode, type LearningPhase } from '../shared/ai';
@@ -29,6 +29,7 @@ export function FileExplanationCard({ source, entry, state, stale, mode, locked,
 }) {
   const [preparing, setPreparing] = useState(false);
   const [consent, setConsent] = useState(false);
+  const consentDescriptionId = useId();
   const [expanded, setExpanded] = useState(false);
   useEffect(() => { setPreparing(false); setConsent(false); setExpanded(false); }, [source.fileId, source.hash, mode, entry?.result.jobId]);
   const ready = connections?.modes.find(item => item.mode === mode);
@@ -50,9 +51,13 @@ export function FileExplanationCard({ source, entry, state, stale, mode, locked,
       <button className="btn" disabled={checking || running} onClick={onInspect}>{checking ? '설치 확인 중…' : '로컬 AI 설치 확인'}</button>
       <p className="hint">{ready?.reason ?? '먼저 설치 상태를 확인해 주세요. 설치 확인만으로 로그인이나 실제 AI 연결이 검증되는 것은 아닙니다.'}</p>
       <label className="ai-consent"><input type="checkbox" checked={consent} disabled={running || !ready?.ready}
-        onChange={event => setConsent(event.target.checked)} />이 파일의 경로와 원문(비밀값처럼 보이는 형태는 가림)·덩어리 목록(ID·종류·이름·행 범위)을
-        {mode === 'local-worker' ? ' Gemini와 Codex' : mode === 'codex' ? ' Codex' : mode === 'antigravity' ? ' Gemini(Antigravity)' : ' Claude Code'}에 보내는 데 동의합니다.
-        다른 파일은 보내지 않습니다. 모든 비밀값을 찾는다고 보장하지는 않습니다.</label>
+        aria-describedby={consentDescriptionId} onChange={event => setConsent(event.target.checked)} />보낼 자료에 동의</label>
+      <details className="consent-details">
+        <summary>무엇을 보내나요?</summary>
+        <p id={consentDescriptionId}>이 파일의 경로와 원문(비밀값처럼 보이는 형태는 가림)·덩어리 목록(ID·종류·이름·행 범위)을
+          {mode === 'local-worker' ? ' Gemini와 Codex' : mode === 'codex' ? ' Codex' : mode === 'antigravity' ? ' Gemini(Antigravity)' : ' Claude Code'}에 보내는 데 동의합니다.
+          다른 파일은 보내지 않습니다. 모든 비밀값을 찾는다고 보장하지는 않습니다.</p>
+      </details>
       <button className="btn btn--primary" disabled={!consent || !ready?.ready || locked || running || checking || tooLarge}
         onClick={() => { setConsent(false); onStart(); }}>동의하고 파일 설명 만들기</button>
     </div>}
