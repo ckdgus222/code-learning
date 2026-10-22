@@ -364,7 +364,16 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .center > .reader, .center > .flow { flex: 1 1 0; height: auto; min-height: 0; }
 .center > .topic { position: sticky; top: 0; z-index: 3; flex: none; }
 
-.feature-steps { padding-left: 1.8rem; }
-.feature-steps > li { margin-bottom: 1.2rem; padding: .6rem; border-bottom: 1px solid var(--border); }
+/* Numbered like the plan's steps; the global reset removes list markers. */
+.feature-steps { list-style: decimal; padding-left: 28px; }
+.feature-steps > li { margin-bottom: 1.2rem; padding: .6rem; border-bottom: 1px solid var(--line); }
 .feature-steps p { margin: .4rem 0; overflow-wrap: anywhere; }
 .feature-page input { margin: .5rem; }
+.map-canvas .react-flow__node.feature-box--front { background: var(--accent-soft); border-color: var(--accent); }
+.map-canvas .react-flow__node.feature-box--back { background: var(--ok-soft); border-color: var(--ok); }
+.map-canvas .react-flow__node.feature-box--request { background: var(--surface); border-color: var(--accent); }
+.feature-box__file, .feature-box__name, .feature-box .tag { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.feature-box__file { color: var(--muted); font-size: 11px; }
+.map-canvas .feature-arrow--typed .react-flow__edge-path { stroke-dasharray: 3 4; }
+.map-canvas .feature-arrow--inferred .react-flow__edge-path { stroke-dasharray: 9 5; }
+.feature-steps > [aria-current="step"] { background: var(--accent-soft); outline: 2px solid var(--accent); border-radius: var(--radius); }

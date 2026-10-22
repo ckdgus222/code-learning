@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
+import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps, type NodeTypes } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { ChangeKind, FileChange, MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectChanges, ProjectMap, ProjectView } from '../shared/contracts';
 import { folderName, visibleGraph, type MapArrow, type MapBox } from './map-layout';
@@ -58,6 +58,27 @@ function MapNode({ data }: NodeProps<Node<BoxData & Record<string, unknown>>>) {
 // Defined once, outside rendering, as React Flow expects.
 const nodeTypes = { box: MapNode };
 
+export const ARROW_MARKER = { type: MarkerType.ArrowClosed, width: 18, height: 18, color: 'var(--accent)' };
+const FIT = { maxZoom: 1, minZoom: 0.1 };
+
+/** The read-only dark canvas both maps draw on: boxes cannot be dragged or connected. */
+export function MapCanvas({ testId, canvasKey, nodes, edges, nodeTypes, onNodeClick, onEdgeClick }: {
+  testId: string; canvasKey?: string; nodes: Node[]; edges: Edge[]; nodeTypes?: NodeTypes;
+  onNodeClick(id: string): void; onEdgeClick?(id: string): void;
+}) {
+  return <div className="map-canvas" data-testid={testId}>
+    <ReactFlow colorMode="dark" key={canvasKey} nodes={nodes} edges={edges} nodeTypes={nodeTypes}
+      // Only boxes in view are drawn, so the fit may zoom out far enough to show a whole expanded folder.
+      fitView fitViewOptions={FIT} minZoom={0.1} onlyRenderVisibleElements
+      nodesDraggable={false} nodesConnectable={false}
+      onNodeClick={(_event, node) => onNodeClick(node.id)}
+      onEdgeClick={onEdgeClick && ((_event, edge) => onEdgeClick(edge.id))}>
+      <Background />
+      <Controls showInteractive={false} />
+    </ReactFlow>
+  </div>;
+}
+
 function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunction, onShowChange }: {
   map: ProjectMap; changes: MapChanges | null; locked: boolean; onOpenFile(fileId: string): void; onShowImport(item: MapImport): void;
   onShowFunction(item: MapFunction): void; onShowChange(change: FileChange): void;
@@ -87,7 +108,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
   };
   const edges: Edge[] = graph.arrows.map(arrow => ({ id: arrow.id, source: arrow.source, target: arrow.target, ...handlesFor(arrow),
     label: arrow.items.length > 1 ? `import ${arrow.items.length}개` : undefined, className: arrow.back ? 'map-arrow map-arrow--back' : 'map-arrow',
-    markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: 'var(--accent)' }, selected: selected?.id === arrow.id }));
+    markerEnd: ARROW_MARKER, selected: selected?.id === arrow.id }));
   const toggle = (folder: string) => setExpanded(current => {
     const next = new Set(current);
     if (next.has(folder)) next.delete(folder); else next.add(folder);
@@ -105,21 +126,13 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
       <span className="hint">폴더 상자를 누르면 펼치거나 접어요. 파일 상자를 누르면 코드를 열어요. 점선은 오른쪽에서 왼쪽으로 거꾸로 가는 연결이라, 서로 가져다 쓰는 곳일 수 있어요.</span>
     </div>
     {/* Remounting on every fold refits the view to the boxes now shown. */}
-    <div className="map-canvas" data-testid="map-canvas">
-      <ReactFlow colorMode="dark" key={[...expanded].sort().join('|')} nodes={nodes} edges={edges} nodeTypes={nodeTypes}
-        // Only boxes in view are drawn, so the fit may zoom out far enough to show a whole expanded folder.
-        fitView fitViewOptions={{ maxZoom: 1, minZoom: 0.1 }} minZoom={0.1} onlyRenderVisibleElements
-        nodesDraggable={false} nodesConnectable={false}
-        onNodeClick={(_event, node) => {
-          const box = graph.boxes.find(item => item.id === node.id);
-          if (box?.kind === 'folder') toggle(box.folder);
-          else if (box?.file) onOpenFile(box.file.id);
-        }}
-        onEdgeClick={(_event, edge) => setSelected(graph.arrows.find(item => item.id === edge.id) ?? null)}>
-        <Background />
-        <Controls showInteractive={false} />
-      </ReactFlow>
-    </div>
+    <MapCanvas testId="map-canvas" canvasKey={[...expanded].sort().join('|')} nodes={nodes} edges={edges} nodeTypes={nodeTypes}
+      onNodeClick={id => {
+        const box = graph.boxes.find(item => item.id === id);
+        if (box?.kind === 'folder') toggle(box.folder);
+        else if (box?.file) onOpenFile(box.file.id);
+      }}
+      onEdgeClick={id => setSelected(graph.arrows.find(item => item.id === id) ?? null)} />
     <section className="card" aria-label="변경 목록">
       <h3>변경 목록{changes && ` · ${changes.result.changes.length}개`}</h3>
       {changes ? <>

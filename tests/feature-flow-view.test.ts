@@ -43,3 +43,12 @@ it('shows backend-only flows even when no frontend request was found', () => {
   expect(html).toContain('Controller.remove');
   expect(html.match(/data-testid="feature-step"/g)).toHaveLength(1);
 });
+it('highlights the selected node in each request group without marking other steps', () => {
+  const shared = { ...flow, nodes: [...nodes, { ...nodes[1], id: 'request-2' }], edges: [...flow.edges,
+    { ...flow.edges[1], to: 'request-2' }, { ...flow.edges[2], from: 'request-2' }] };
+  const html = renderToStaticMarkup(React.createElement(FlowSteps, {
+    flow: shared, locked: false, selectedNodeId: 'back', onCode() {}, onFunction() {},
+  }));
+  expect(html.match(/aria-current="step"/g)).toHaveLength(2);
+  expect(html.match(/data-node-id="back" aria-current="step"/g)).toHaveLength(2);
+});
