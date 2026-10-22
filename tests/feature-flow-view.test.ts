@@ -1,8 +1,9 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it } from 'vitest';
-import { FeatureList, FeatureOverview, FlowSteps, FlowWalk, hasFlowCode, RoutesStatus, walkSelection } from '../src/renderer/feature-flow';
+import { FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowSteps, FlowWalk, hasFlowCode, RoutesStatus, walkSelection } from '../src/renderer/feature-flow';
 import type { Evidence, FeatureFlow, FlowNode, ProjectRoutes, ProjectView } from '../src/shared/contracts';
+import type { FeatureGuide } from '../src/shared/ai';
 
 const nodes: FlowNode[] = [
   { id: 'back', side: 'back', depth: 0, name: 'Controller.remove' },
@@ -150,31 +151,96 @@ const routes = {
     { requestIndex: 1, routeIndex: 1, sure: false },
   ],
 } as ProjectRoutes;
-it('summarizes Next pages, routes, unique request counts and folders, leaving the README introduction to its own card', () => {
-  const html = renderToStaticMarkup(React.createElement(FeatureOverview, { project, routes }));
-  expect(html).toContain('화면 1개');
-  expect(html).toContain('서버 기능 2개');
-  expect(html).toContain('프론트 요청 4개 · 서버와 이어짐 확실 1 · 추정 1 · 못 이음 2');
-  expect(html).toContain('폴더 구성: api는 서버 · web는 화면·프론트');
+const overviewOf = (r: ProjectRoutes, p: ProjectView = project, guide?: FeatureGuide) =>
+  renderToStaticMarkup(React.createElement(FeatureOverview, { project: p, routes: r, guide }));
+it('draws found screens, local requests, servers and unique links, leaving the README to its own card', () => {
+  const html = overviewOf(routes);
+  expect(html).toContain('aria-label="큰 그림"');
+  expect(html).toContain('이 프로젝트는 이렇게 나뉘어요');
+  for (const text of ['화면 1개', '요청 4개', '기능 2개', 'web 폴더', 'api 폴더',
+    '확실히 이어짐 1개 · 추정 1개', '서버 주소를 찾지 못한 요청 2개', '사람이 보고 누르는 곳',
+    '서버에 부탁(요청)을 보내는 코드', '부탁을 받아 일을 하는 곳']) expect(html).toContain(text);
+  expect(html.match(/class="picture__box"/g)).toHaveLength(3);
+  expect(html.match(/class="picture__arrow"/g)).toHaveLength(1);
+  expect(html.indexOf('<b>요청을 보내는 코드</b>')).toBeLessThan(html.indexOf('class="picture__arrow"'));
+  expect(html.indexOf('class="picture__arrow"')).toBeLessThan(html.indexOf('<b>서버</b>'));
+  expect(html).not.toContain('aria-hidden');
+  expect(html).toContain('<span class="tag">일반 설명</span>');
+  expect(html).toContain('웹 프로그램은 보통 이렇게 움직여요. 사람이 화면에서 버튼을 누르면, 화면 쪽 코드가 서버에 요청(부탁)을 보내고, 서버가 일을 한 뒤 결과를 돌려줘요. 이 프로젝트에서 실제로 어떻게 이어지는지는 기능을 하나 골라 따라가 보면 확인할 수 있어요.');
   expect(html).not.toContain('첫 문단 그대로.');
 });
-it('omits screen counts for non-Next projects and folder roles when shared or unknown', () => {
+it('draws request code without claiming a screen for non-Next projects', () => {
   const nonNext = { ...project, files: project.files.filter(file => file.id !== 'config') };
-  const shared = { ...routes, requests: [{ ...routes.requests[0], fileId: 'server' }], links: [] };
-  const html = renderToStaticMarkup(React.createElement(FeatureOverview, { project: nonNext, routes: shared }));
-  expect(html).not.toContain('화면 0개');
-  expect(html).not.toContain('폴더 구성:');
-  const noRoutes = renderToStaticMarkup(React.createElement(FeatureOverview, { project, routes: { ...routes, routes: [], links: [] } }));
-  expect(noRoutes).not.toContain('폴더 구성:');
-  expect(noRoutes).toContain('못 이음 4');
+  const html = overviewOf(routes, nonNext);
+  expect(html).not.toContain('<b>화면</b>');
+  expect(html).toContain('<b>요청을 보내는 코드</b>');
+  expect(html).toContain('화면은 찾지 못했어요. 지금은 Next.js 화면만 알아봐요.');
 });
-
-it('places the AI summary above the factual overview, with the AI card inside it', () => {
+it('omits the server, arrow, general explanation and the repeated no-server sentence when no routes were found', () => {
+  const html = overviewOf({ ...routes, routes: [], links: [] });
+  expect(html).not.toContain('<b>서버</b>');
+  expect(html).not.toContain('picture__arrow');
+  expect(html).not.toContain('일반 설명');
+  expect(html).not.toContain('서버 주소를 찾지 못한 요청');
+  // The chooser's notice right below says this; the picture does not repeat it.
+  expect(html).not.toContain('서버 코드(요청을 받는 곳)');
+});
+it('does not connect screens to servers when no requests were found', () => {
+  const html = overviewOf({ ...routes, requests: [], links: [] });
+  expect(html).toContain('<b>화면</b>');
+  expect(html).toContain('<b>서버</b>');
+  expect(html).not.toContain('<b>요청을 보내는 코드</b>');
+  expect(html).not.toContain('picture__arrow');
+  expect(html).not.toContain('일반 설명');
+});
+it('counts external requests separately without drawing a local request box or arrow', () => {
+  const external = { ...routes, requests: routes.requests.map(request => ({ ...request, host: 'example.com' })), links: [] };
+  const html = overviewOf(external);
+  expect(html).toContain('다른 서버로 보내는 요청 4개');
+  expect(html).not.toContain('<b>요청을 보내는 코드</b>');
+  expect(html).not.toContain('picture__arrow');
+  expect(html).not.toContain('일반 설명');
+  expect(html).not.toContain('서버 주소를 찾지 못한 요청');
+});
+it('uses only local request folders and excludes external requests from unlinked counts', () => {
+  const mixed = { ...routes, requests: [...routes.requests, { ...routes.requests[0], fileId: 'server', host: 'example.com' }] };
+  const html = overviewOf(mixed);
+  expect(html).toContain('web 폴더');
+  expect(html).toContain('요청 4개');
+  expect(html).toContain('다른 서버로 보내는 요청 1개');
+  expect(html).toContain('서버 주소를 찾지 못한 요청 2개');
+});
+it('does not assign a single folder when local requests span folders or the folder is unknown', () => {
+  for (const fileId of ['server', 'missing']) {
+    const mixed = { ...routes, requests: [...routes.requests, { ...routes.requests[0], fileId }] };
+    const html = overviewOf(mixed);
+    expect(html).not.toContain('web 폴더');
+    expect(html).toContain('api 폴더');
+  }
+});
+it('reports missing links without drawing an arrow or general explanation', () => {
+  const html = overviewOf({ ...routes, links: [] });
+  expect(html).toContain('<b>요청을 보내는 코드</b>');
+  expect(html).toContain('<b>서버</b>');
+  expect(html).toContain('요청을 보내는 코드와 서버 사이의 연결은 확인하지 못했어요.');
+  expect(html).toContain('서버 주소를 찾지 못한 요청 4개');
+  expect(html).not.toContain('picture__arrow');
+  expect(html).not.toContain('일반 설명');
+});
+it('draws inferred links without a general explanation when there are no sure links', () => {
+  const inferred = { ...routes, links: routes.links.map(link => ({ ...link, sure: false })) };
+  const html = overviewOf(inferred);
+  expect(html).toContain('picture__arrow');
+  expect(html).toContain('확실히 이어짐 0개 · 추정 2개');
+  expect(html).not.toContain('일반 설명');
+});
+it('places the escaped AI summary above the picture', () => {
   const guide = { summary: '<script>요약</script>', groups: [], unknowns: [] };
-  const html = renderToStaticMarkup(React.createElement(FeatureOverview, { project, routes, guide }, React.createElement('button', null, 'AI 카드')));
-  expect(html).toContain('AI 정리'); expect(html).toContain('&lt;script&gt;요약&lt;/script&gt;');
-  expect(html.indexOf('요약')).toBeLessThan(html.indexOf('서버 기능'));
-  expect(html).toContain('AI 카드');
+  const html = overviewOf(routes, project, guide);
+  expect(html).toContain('AI 정리');
+  expect(html).toContain('&lt;script&gt;요약&lt;/script&gt;');
+  expect(html).not.toContain('<script>');
+  expect(html.indexOf('요약')).toBeLessThan(html.indexOf('class="picture"'));
 });
 
 it('provides a follow button per feature and disables every route action when locked', () => {
@@ -185,4 +251,92 @@ it('provides a follow button per feature and disables every route action when lo
   const html = renderToStaticMarkup(React.createElement(FeatureList, { groups, routes, selected: 0, disabled: true, search: '', setSearch() {}, onFollow() {} }));
   expect(html.match(/>이 기능 따라가기<\/button>/g)).toHaveLength(2);
   expect(html.match(/<button[^>]*>/g)!.every(button => button.includes('disabled=""'))).toBe(true);
+});
+
+const groups: ReturnType<typeof featureGroups> = [
+  { name: 'dogs', about: '', features: [
+    { name: '조회', about: '', routes: [1], ai: false, sure: 0, inferred: 5, haystack: '조회' },
+    { name: '삭제', about: '삭제 요청', routes: [0], ai: false, sure: 2, inferred: 0, haystack: '삭제' },
+  ] },
+  { name: 'other', about: '', features: [
+    { name: '추가', about: '', routes: [1], ai: false, sure: 3, inferred: 0, haystack: '추가' },
+    { name: '수정', about: '', routes: [0], ai: false, sure: 1, inferred: 0, haystack: '수정' },
+  ] },
+];
+const withFeatures = (patch: (feature: ReturnType<typeof featureGroups>[number]['features'][number]) => object) =>
+  groups.map(group => ({ ...group, features: group.features.map(feature => ({ ...feature, ...patch(feature) })) }));
+it('recommends the feature with the most sure links across all groups', () => {
+  expect(recommendedFeature(groups)).toBe(groups[1].features[0]);
+});
+it('keeps the first feature in display order when sure counts tie', () => {
+  const tied = withFeatures(() => ({ sure: 2 }));
+  expect(recommendedFeature(tied)).toBe(tied[0].features[0]);
+});
+it('does not recommend an empty list or features without sure links', () => {
+  expect(recommendedFeature([])).toBeNull();
+  expect(recommendedFeature(withFeatures(() => ({ sure: 0 })))).toBeNull();
+});
+
+const chooserProps: Parameters<typeof FeatureChooser>[0] = {
+  project: { ...project, warnings: ['파일별 최대 256 KiB까지만 읽어요.'] },
+  state: { routes, groups, stale: false, finding: false, error: '', guide: null, search: '', selected: null,
+    setSearch() {}, setGuideResult() {}, find() {}, cancelFind() {},
+  } as unknown as Parameters<typeof FeatureChooser>[0]['state'],
+  revision: 0, locked: false, mode: 'local-worker', running: false, checking: false, connections: null,
+  onFollow() {}, async onInspect() { return null; }, onRunning() {},
+};
+it('offers start files instead of recommendation, feature list and AI controls when there are no routes', () => {
+  const state = { ...chooserProps.state, routes: { ...routes, routes: [], links: [] }, groups: [] };
+  const html = renderToStaticMarkup(React.createElement(FeatureChooser, { ...chooserProps, state }));
+  expect(html).toContain('서버 코드(요청을 받는 곳)를 찾지 못해서 기능별로 따라갈 수 없어요. 아래 ‘어디부터 읽을까요?’에서 시작 파일을 골라 읽어 보세요.');
+  expect(html).not.toContain('기능 고르기');
+  expect(html).not.toContain('처음 따라갈 기능');
+  expect(html).not.toContain('AI로 기능 정리하기');
+});
+it('places the recommendation before the list, moves AI controls inside the list and omits duplicate warnings', () => {
+  const html = renderToStaticMarkup(React.createElement(FeatureChooser, chooserProps));
+  expect(html.indexOf('aria-label="큰 그림"')).toBeLessThan(html.indexOf('aria-label="처음 따라갈 기능"'));
+  expect(html.indexOf('aria-label="처음 따라갈 기능"')).toBeLessThan(html.indexOf('<h3>기능 고르기</h3>'));
+  expect(html).toMatch(/<section aria-label="기능 목록"><h3>기능 고르기<\/h3><div class="feature-guide-ai"[^>]*>.*?AI로 기능 정리하기<\/button><\/div><label>/);
+  expect(html).toContain('이 기능에 요청을 보내는 코드 3곳을 확실히 찾았어요. 요청을 보내는 쪽부터 서버까지 따라가 볼 수 있어요.');
+  expect(html).toContain('고른 기준: 요청을 보내는 코드와 확실히 이어진 곳이 가장 많은 기능');
+  expect(html).toMatch(/<button class="btn">이 기능부터 따라가기<\/button>/);
+  expect(html).not.toContain(chooserProps.project.warnings[0]);
+});
+it.each([{ locked: true, stale: false }, { locked: false, stale: true }])('disables the recommendation for %o', ({ locked, stale }) => {
+  const html = renderToStaticMarkup(React.createElement(FeatureChooser, { ...chooserProps, locked, state: { ...chooserProps.state, stale } }));
+  expect(html).toMatch(/<button[^>]*disabled=""[^>]*>이 기능부터 따라가기<\/button>/);
+});
+it.each([{ finding: true, error: '' }, { finding: false, error: '주소 찾기 실패' }])('does not mistake unavailable routes for an empty result: %o', status => {
+  const html = renderToStaticMarkup(React.createElement(FeatureChooser, { ...chooserProps,
+    state: { ...chooserProps.state, ...status, routes: undefined },
+  }));
+  expect(html).not.toContain('서버 코드(요청을 받는 곳)를 찾지 못해서');
+  expect(html).not.toContain('처음 따라갈 기능');
+  expect(html).toContain(status.finding ? '주소를 찾는 중' : '주소 찾기 실패');
+});
+it('keeps the same recommendation while searching and renders current AI names from groups', () => {
+  const named = withFeatures(feature => ({ name: `AI ${feature.name}`, about: 'AI 설명', ai: true }));
+  const state = { ...chooserProps.state, groups: named, search: 'missing' };
+  const html = renderToStaticMarkup(React.createElement(FeatureChooser, { ...chooserProps, state }));
+  expect(html).toContain('<b>AI 추가</b>');
+  expect(html).toContain('<p class="hint">AI 설명</p>');
+  expect(html).toContain('검색어와 맞는 기능이 없어요.');
+  expect(html).toContain('이 기능부터 따라가기');
+});
+it('omits the recommendation when routes exist but no feature has sure links', () => {
+  const state = { ...chooserProps.state, groups: withFeatures(() => ({ sure: 0 })) };
+  const html = renderToStaticMarkup(React.createElement(FeatureChooser, { ...chooserProps, state }));
+  expect(html).not.toContain('처음 따라갈 기능');
+  expect(html).toContain('기능 고르기');
+  expect(html).toContain('AI로 기능 정리하기');
+});
+it('distinguishes missing server code from a search with no matching features', () => {
+  const props = { routes, selected: null, disabled: false, search: '', setSearch() {}, onFollow() {} };
+  const empty = renderToStaticMarkup(React.createElement(FeatureList, { ...props, routes: { ...routes, routes: [], links: [] }, groups: [] }));
+  expect(empty).toContain('서버 코드(요청을 받는 곳)를 찾지 못했어요.');
+  expect(empty).not.toContain('검색어와 맞는 기능이 없어요.');
+  const filtered = renderToStaticMarkup(React.createElement(FeatureList, { ...props, groups, search: 'missing' }));
+  expect(filtered).toContain('검색어와 맞는 기능이 없어요.');
+  expect(filtered).not.toContain('서버 코드(요청을 받는 곳)를 찾지 못했어요.');
 });

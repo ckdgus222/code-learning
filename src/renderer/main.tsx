@@ -804,7 +804,7 @@ function App() {
           <h2 className="page__title" tabIndex={-1} data-anchor="overview">한눈에 보기</h2>
           {overviewStale && <p className="notice notice--warn overview-stale"><b>다시 확인 필요:</b> 프로젝트를 연 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 아래 소개와 후보는 폴더를 열 때 읽은 내용이에요. 폴더를 다시 열면 새로 계산해요.</p>}
           <div className="cards">
-            {view === 'overview' && <section className="card" aria-labelledby="overview-intro">
+            {view === 'overview' && <section className="card card--wide" aria-labelledby="overview-intro">
               <h3 id="overview-intro">이 프로젝트는 무엇을 하나요?</h3>
               {intro ? <>
                 <span className="tag tag--doc">문서에 적힌 소개</span>
@@ -818,20 +818,7 @@ function App() {
               mode={mode} running={questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running'}
               checking={checking} connections={connections} onInspect={inspectConnections} onRunning={setFeatureGuideRunning}
               revision={revision.current} locked={busy} onFollow={index => void followFeatureRoute(index)} />
-            {view === 'overview' && <><section className="card">
-              <h3>읽을 수 있는 파일</h3>
-              <p className="stat"><b>{project.files.length}</b>개</p>
-              <details><summary>제외 항목</summary>
-                <ul>{Object.entries(project.excluded).map(([reason, count]) => <li key={reason}>{reason}: {count}</li>)}</ul>
-              </details>
-            </section>
-            <OverviewAi key={overviewCard} project={project} state={overviewAi} locked={busy || questionRunning || fileExplanationRunning || featureGuideRunning}
-              stale={overviewAi?.status === 'done' && overviewAi.revision !== revision.current}
-              readiness={connections?.modes.find(item => item.mode === 'local-worker') ?? null} checking={checking}
-              revealAnchor={topic?.anchor ?? null} topicName={topic ? topic.name.trim() || topic.original : null} onInspect={() => { void inspectConnections().then(message => { if (message) setError(message); }); }}
-              onStart={startFileId => void startOverview(startFileId)} onCancel={() => void cancelOverview()}
-              onEvidence={next => { setView('code'); void showEvidence(next, null, 'overview'); }}
-              onFollow={followFeature} onFunction={(name, at) => void showNamedFunction(name, at)} />
+            {view === 'overview' && <>
             <section className="card card--wide card--accent" aria-labelledby="overview-start">
               <h3 id="overview-start">어디부터 읽을까요?</h3>
               {project.overview.candidates.length > 0 ? <ul className="starts">{project.overview.candidates.map(item =>
@@ -845,8 +832,19 @@ function App() {
               <p className="hint"><span className="tag tag--unknown">학습 시작점 후보</span>TS/JS 파일 {project.overview.checkedFiles}개를 살펴봤어요{project.overview.limited && '(전체 중 일부)'}. 코드 구조로 고른 후보이고, 실제 실행 시작점인지는 확인하지 않았어요.</p>
               {project.overview.notes.map(note => <p key={note} className="hint">{note}</p>)}
             </section>
+            <OverviewAi key={overviewCard} project={project} state={overviewAi} locked={busy || questionRunning || fileExplanationRunning || featureGuideRunning}
+              stale={overviewAi?.status === 'done' && overviewAi.revision !== revision.current}
+              readiness={connections?.modes.find(item => item.mode === 'local-worker') ?? null} checking={checking}
+              revealAnchor={topic?.anchor ?? null} topicName={topic ? topic.name.trim() || topic.original : null} onInspect={() => { void inspectConnections().then(message => { if (message) setError(message); }); }}
+              onStart={startFileId => void startOverview(startFileId)} onCancel={() => void cancelOverview()}
+              onEvidence={next => { setView('code'); void showEvidence(next, null, 'overview'); }}
+              onFollow={followFeature} onFunction={(name, at) => void showNamedFunction(name, at)} />
             <section className="card card--wide">
               <h3>확인한 범위와 모르는 부분</h3>
+              <p className="stat">읽을 수 있는 파일 <b>{project.files.length}</b>개</p>
+              <details><summary>제외 항목</summary>
+                <ul>{Object.entries(project.excluded).map(([reason, count]) => <li key={reason}>{reason}: {count}</li>)}</ul>
+              </details>
               <ul className="checklist">
                 <li><span className="tag tag--ok">확인됨</span>파일 목록과 TS/JS 함수 안의 구문 위치{intro && ', README에 적힌 소개 문구'}</li>
                 <li><span className="tag tag--unknown">확인하지 못함</span>프로젝트 목적(문서 내용이 코드와 맞는지 포함), 기능의 실제 실행 순서. 파일끼리 가져다 쓰는 관계는 ‘프로젝트 지도’에서 볼 수 있어요.</li>
