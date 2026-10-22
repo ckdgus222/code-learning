@@ -1,7 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { lstat, mkdir, mkdtemp, readdir, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { LocalWorkerWorkflow } from '../src/core/ai/workflow';
+import type { LearningEvent } from '../src/shared/ai';
 import { ProjectSession, workersStopped } from '../src/main/project-session';
 
 // A stand-in for the analysis worker. The session worker answers scan and read; a map or calls worker
@@ -74,7 +76,7 @@ if (workerData.shapes) {
       }, 150);
     } else if (delay >= 0 && Date.now() - started >= delay) {
       clearInterval(poll);
-      parentPort.postMessage({ id: 0, result: { ok: true, value: job === 'routes' ? { projectId: workerData.projectId, routesId: require('node:crypto').randomUUID(), routes: [{ handler: { fileId: 'f1' } }], requests: [], links: [], prefix: null, limited: false, notes: [] }
+      parentPort.postMessage({ id: 0, result: { ok: true, value: job === 'routes' ? { projectId: workerData.projectId, routesId: require('node:crypto').randomUUID(), routes: [{ method: 'GET', path: '/a', handler: { fileId: 'f1', name: 'read' } }], requests: [], links: [], prefix: null, limited: false, notes: [] }
         : job === 'flow' ? { projectId: workerData.projectId, routesId: side.routes.routesId, routeIndex: side.routeIndex, nodes: [], edges: [], limited: false, notes: [] }
         : job === 'map'
         ? { projectId: workerData.projectId, files: [], edges: [], unresolved: [], external: [], limited: false, notes: [] }
@@ -542,4 +544,51 @@ it.each(['routes', 'flow'] as const)('drops a late successful %s result after ca
   const rejected = expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
   if (job === 'routes') session.cancelRoutes(); else session.cancelFeatureFlow();
   await rejected;
+});
+
+
+describe('feature guide session freshness', () => {
+  it.each(['different-id', 'changed-file', 'wake', 'cancelled-routes'] as const)('rejects %s before any AI call even with a saved routes result', async reason => {
+    process.env.MAP_DELAY = '0';
+    const routes = await session.routes(3);
+    expect(session.captureFeatureGuide(routes.routesId, 3).material.routes[0]).toMatchObject({ index: 0, path: '/a', file: 'a.ts' });
+    if (reason === 'cancelled-routes') session.cancelRoutes();
+    if (reason === 'changed-file') {
+      await writeFile(path.join(root, 'a.ts'), 'export const changed = 99;');
+      await expect.poll(() => { try { session.validateFeatureGuide(routes.routesId, 3); return false; } catch { return true; } }).toBe(true);
+    }
+    const events: LearningEvent[] = [];
+    const run = vi.fn();
+    const workflow = new LocalWorkerWorkflow({ assertReady() {}, run, emit: event => events.push(event),
+      captureFeatureGuide: async request => session.captureFeatureGuide(request.routesId, reason === 'wake' ? 4 : 3),
+      capture: vi.fn(), captureOverview: vi.fn(), captureFile: vi.fn(), expand: vi.fn(), revalidate: vi.fn(), revalidateFeatureGuide: vi.fn() });
+    workflow.startFeatureGuide({ projectId: session.id, routesId: reason === 'different-id' ? randomUUID() : routes.routesId, mode: 'codex', consent: true });
+    await vi.waitFor(() => expect(events.at(-1)).toMatchObject({ kind: 'failed', error: { code: 'CHANGED' } }));
+    expect(run).not.toHaveBeenCalled();
+    await workflow.close();
+  });
+  it('cancels a running guide when the session searches again and discards a late success', async () => {
+    process.env.MAP_DELAY = '0';
+    const routes = await session.routes(3);
+    const events: LearningEvent[] = [];
+    let release!: () => void;
+    const run = vi.fn(async () => {
+      await new Promise<void>(resolve => { release = resolve; });
+      return { reportedModel: null, value: { summary: '요약', groups: [], unknowns: [] } };
+    });
+    const workflow = new LocalWorkerWorkflow({ assertReady() {}, run, emit: event => events.push(event),
+      captureFeatureGuide: async request => session.captureFeatureGuide(request.routesId, 3),
+      capture: vi.fn(), captureOverview: vi.fn(), captureFile: vi.fn(), expand: vi.fn(),
+      revalidate: vi.fn(), revalidateFeatureGuide: async snapshot => session.validateFeatureGuide(snapshot.routesId, 3) });
+    session.onRoutesInvalidated = () => workflow.cancelFeatureGuide(session.id);
+    workflow.startFeatureGuide({ projectId: session.id, routesId: routes.routesId, mode: 'codex', consent: true });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    const newer = await session.routes(3);
+    expect(newer.routesId).not.toBe(routes.routesId);
+    release();
+    await vi.waitFor(() => expect(events.at(-1)).toMatchObject({ kind: 'failed', error: { code: 'CANCELLED' } }));
+    expect(events.some(event => event.kind === 'feature-guide-completed')).toBe(false);
+    expect(() => session.captureFeatureGuide(routes.routesId, 3)).toThrow('기능 목록이 바뀌었어요');
+    await workflow.close();
+  });
 });

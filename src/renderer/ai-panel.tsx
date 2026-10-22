@@ -107,7 +107,7 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
       return;
     }
     // The overview's events belong to its own card (the panel never starts one), so its job ID never matches here.
-    if (event.kind === 'overview-completed' || event.kind === 'file-explanation-completed') return;
+    if (event.kind === 'overview-completed' || event.kind === 'file-explanation-completed' || event.kind === 'feature-guide-completed') return;
     active.current = null;
     setRunning(false);
     if (event.kind === 'failed') {

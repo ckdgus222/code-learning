@@ -250,7 +250,7 @@ describe('Codex connection through the app runtime (real account, non-secret fix
       const citedIds = (explanation: Explanation) => [...explanation.steps.flatMap(step => step.evidenceIds),
         ...explanation.claims.flatMap(claim => claim.kind === 'code' ? claim.evidenceIds : [])];
       const events: LearningEvent[] = [];
-      workflow = new LocalWorkerWorkflow({
+      workflow = new LocalWorkerWorkflow({ captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); },
         assertReady: mode => runtime.assertReady(mode), run: request => runtime.run(request), emit: event => events.push(event),
         capture: (_request, signal) => context.capture(source, evidence, 1, signal),
         captureOverview: (request, signal) => context.captureOverview(request.startFileId, 1, signal),

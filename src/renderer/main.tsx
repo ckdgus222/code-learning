@@ -86,6 +86,7 @@ function App() {
   const [connections, setConnections] = useState<ConnectionReport | null>(null);
   const [checking, setChecking] = useState(false);
   const [mode, setMode] = useState<LearningMode>('local-worker');
+  const [featureGuideRunning, setFeatureGuideRunning] = useState(false);
   const [questionRunning, setQuestionRunning] = useState(false);
   const [fileExplanations, setFileExplanations] = useState<FileExplanationEntry[]>([]);
   const [fileExplanationState, setFileExplanationState] = useState<FileExplanationState | null>(null);
@@ -381,7 +382,7 @@ function App() {
   async function inspectConnections(): Promise<string | null> {
     // A check starts main's list of AI programs over: the overview's next stage would find none.
     if (overviewAi?.status === 'running') return '개요를 만드는 동안에는 설치를 다시 확인할 수 없어요.';
-    if (fileExplanationRunning || questionRunning) return 'AI 작업이 진행 중인 동안에는 설치를 다시 확인할 수 없어요.';
+    if (fileExplanationRunning || questionRunning || featureGuideRunning) return 'AI 작업이 진행 중인 동안에는 설치를 다시 확인할 수 없어요.';
     setChecking(true);
     const result = await window.learning.checkConnections();
     setChecking(false);
@@ -398,7 +399,7 @@ function App() {
     setOverviewAi(null); beginTopic(null); setFocusAnchor(null); setOverviewCard(count => count + 1);
   }
   async function startOverview(startFileId: string | null) {
-    if (!project || questionRunning || fileExplanationRunning || checking) return;
+    if (!project || questionRunning || fileExplanationRunning || featureGuideRunning || checking) return;
     const token = ++overviewRequest.current;
     overviewJob.current = { id: null, starting: true, queued: [] };
     setOverviewAi({ status: 'running', phase: null, revision: revision.current });
@@ -424,7 +425,7 @@ function App() {
   }
 
   async function startFileExplanation() {
-    if (!project || !source || questionRunning || fileExplanationRunning || overviewAi?.status === 'running' || checking) return;
+    if (!project || !source || questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running' || checking) return;
     const token = ++fileExplanationRequest.current;
     fileExplanationJob.current = { id: null, starting: true, queued: [], revision: revision.current };
     setFileExplanationState({ status: 'running', fileId: source.fileId, revision: revision.current, phase: null, mode });
@@ -803,7 +804,7 @@ function App() {
                 <ul>{Object.entries(project.excluded).map(([reason, count]) => <li key={reason}>{reason}: {count}</li>)}</ul>
               </details>
             </section>
-            <OverviewAi key={overviewCard} project={project} state={overviewAi} locked={busy || questionRunning || fileExplanationRunning}
+            <OverviewAi key={overviewCard} project={project} state={overviewAi} locked={busy || questionRunning || fileExplanationRunning || featureGuideRunning}
               stale={overviewAi?.status === 'done' && overviewAi.revision !== revision.current}
               readiness={connections?.modes.find(item => item.mode === 'local-worker') ?? null} checking={checking}
               revealAnchor={topic?.anchor ?? null} topicName={topic ? topic.name.trim() || topic.original : null} onInspect={() => { void inspectConnections().then(message => { if (message) setError(message); }); }}
@@ -841,6 +842,8 @@ function App() {
         </div>}
         <div hidden={view !== 'map' || mapTab !== 'features'}>
           <FeatureFlowView key={project.files[0]?.id ?? project.id} project={project} active={view === 'map' && mapTab === 'features'}
+            mode={mode} running={questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running'}
+            checking={checking} connections={connections} onInspect={inspectConnections} onRunning={setFeatureGuideRunning}
             revision={revision.current} locked={busy} onCode={site => void showValueSite(site)} onFunction={target => void showCallFunction(target)} />
         </div>
         {view === 'map' && mapTab === 'all' && <ProjectMapView project={project} entry={projectMap}
@@ -903,7 +906,7 @@ function App() {
               }} />}
             {source.analysis.language !== 'text' && <FileExplanationCard source={source} entry={fileExplanation}
               state={fileExplanationState?.fileId === source.fileId ? fileExplanationState : null} stale={fileExplanationStale}
-              mode={mode} locked={busy} running={questionRunning || fileExplanationRunning || overviewAi?.status === 'running'}
+              mode={mode} locked={busy} running={questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running'}
               checking={checking} connections={connections}
               onInspect={() => { void inspectConnections().then(message => { if (message) setError(message); }); }}
               onStart={() => void startFileExplanation()} onCancel={() => void cancelFileExplanation()}
@@ -967,7 +970,7 @@ function App() {
         </div>}
         <div hidden={panel !== 'ask'}>
           <AiPanel key={project.id} projectId={project.id} evidence={questionEvidence} stale={stale} draft={draft}
-            connections={connections} checking={checking} otherRunning={overviewAi?.status === 'running' || fileExplanationRunning} onInspect={inspectConnections}
+            connections={connections} checking={checking} otherRunning={overviewAi?.status === 'running' || fileExplanationRunning || featureGuideRunning} onInspect={inspectConnections}
             mode={mode} onMode={setMode} onRunning={setQuestionRunning}
             relativePath={project.files.find(file => file.id === questionEvidence?.fileId)?.relativePath ?? ''}
             onEvidence={next => { setView('code'); void showEvidence(next, null, 'answer'); }} />

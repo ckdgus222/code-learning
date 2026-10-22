@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest, FileChunk, FileExplanationRange } from './ai';
+import type { ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest, FeatureGuideRequest, FileChunk, FileExplanationRange } from './ai';
 
 export const idSchema = z.string().uuid();
 export const sourceRequestSchema = z.object({ projectId: idSchema, fileId: idSchema }).strict();
@@ -396,6 +396,7 @@ export interface LearningApi {
   startExplanation(input: ExplainRequest): Promise<Result<{ jobId: string }>>;
   startOverview(input: OverviewRequest): Promise<Result<{ jobId: string }>>;
   startFileExplanation(input: FileExplanationRequest): Promise<Result<{ jobId: string }>>;
+  startFeatureGuide(input: FeatureGuideRequest): Promise<Result<{ jobId: string }>>;
   cancelExplanation(input: { jobId: string }): Promise<Result<null>>;
   onLearningEvent(listener: (event: LearningEvent) => void): () => void;
   onProjectEvent(listener: (event: ProjectEvent) => void): () => void;
@@ -407,6 +408,6 @@ export const channels = {
   calls: 'learning:calls', cancelCalls: 'learning:cancel-calls', shapes: 'learning:shapes', cancelShapes: 'learning:cancel-shapes',
   history: 'learning:history', changes: 'learning:changes', diff: 'learning:diff', cancelChanges: 'learning:cancel-changes',
   connections: 'learning:connections', explain: 'learning:explain', overview: 'learning:overview',
-  fileExplanation: 'learning:file-explanation',
+  fileExplanation: 'learning:file-explanation', featureGuide: 'learning:feature-guide',
   cancelExplanation: 'learning:cancel-explanation', learningEvent: 'learning:ai-event',
 } as const;
