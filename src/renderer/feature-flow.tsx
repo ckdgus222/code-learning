@@ -1,6 +1,35 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Position, type Edge, type Node } from '@xyflow/react';
 import type { CallTarget, FeatureFlow, FlowEdge, FlowNode, ProjectRoutes, ProjectView, Request, ValueSite } from '../shared/contracts';
-import { firstRows, Omitted } from './project-map';
+import { ARROW_MARKER, firstRows, MapCanvas, Omitted } from './project-map';
+import { layoutFlow } from './flow-layout';
+
+function FlowDiagram({ flow, selectedNodeId, onSelect }: {
+  flow: FeatureFlow; selectedNodeId: string | null; onSelect(id: string): void;
+}) {
+  // The search box and step clicks re-render the page; the canvas only needs new boxes when these change.
+  const nodes = useMemo((): Node[] => layoutFlow(flow).map(({ node, x, y }) => ({
+    id: node.id, position: { x, y }, sourcePosition: Position.Right, targetPosition: Position.Left,
+    className: `map-box feature-box feature-box--${node.side}`, selected: selectedNodeId === node.id,
+    ariaLabel: `${node.relativePath} · ${node.name}`,
+    data: { label: <span className="map-box__label">
+      <small className="feature-box__file" title={node.relativePath}>{node.relativePath.split('/').at(-1)}</small>
+      <b className="feature-box__name" title={node.name}>{node.name}</b>
+      {node.event && <span className="tag tag--doc">화면 이벤트 {node.event}</span>}
+      {node.screen !== null && <span className="tag tag--doc" title={`화면 주소 ${node.screen}`}>화면 주소 {node.screen}</span>}
+    </span> },
+  })), [flow, selectedNodeId]);
+  const edges = useMemo((): Edge[] => flow.edges.map((edge, index) => ({
+    id: `flow-edge:${index}`, source: edge.from, target: edge.to,
+    label: edge.site ? `${edge.site.startLine}행` : undefined,
+    className: `map-arrow${!edge.sure ? ' feature-arrow--inferred' : edge.kind === 'typed' ? ' feature-arrow--typed' : ''}`,
+    markerEnd: ARROW_MARKER,
+  })), [flow]);
+  return <section aria-label="기능 흐름 지도">
+    <p className="hint">왼쪽 화면 → 오른쪽 서버 · 점선은 추정·타입으로 찾음</p>
+    <MapCanvas testId="feature-flow-canvas" nodes={nodes} edges={edges} onNodeClick={onSelect} />
+  </section>;
+}
 
 function edgeText(edge: FlowEdge): string {
   const line = edge.site ? ` (${edge.site.startLine}행)` : '';
@@ -15,12 +44,20 @@ function edgeText(edge: FlowEdge): string {
   }
 }
 
-export function FlowSteps({ flow, locked, onCode, onFunction }: {
+export function FlowSteps({ flow, locked, onCode, onFunction, selectedNodeId = null, picks = 0 }: {
   flow: FeatureFlow; locked: boolean; onCode(site: ValueSite): void; onFunction(target: CallTarget): void;
+  selectedNodeId?: string | null;
+  /** Counts picks on the diagram, so choosing the same box again scrolls back to its step. */
+  picks?: number;
 }) {
   const requests = flow.nodes.filter(node => node.side === 'request');
   const groups = requests.length ? requests : [null];
-  return <section className="card" aria-label="기능 흐름 단계">
+  const section = useRef<HTMLElement>(null);
+  // A box chosen on the diagram brings its step into view before the screen is drawn; the list knows where its steps are.
+  useLayoutEffect(() => {
+    if (selectedNodeId) section.current?.querySelector(`[data-node-id="${CSS.escape(selectedNodeId)}"]`)?.scrollIntoView({ block: 'center' });
+  }, [selectedNodeId, picks]);
+  return <section ref={section} className="card" aria-label="기능 흐름 단계">
     <h3>기능 흐름 단계</h3>
     {groups.map(request => {
       const upstream = new Set<string>();
@@ -34,7 +71,8 @@ export function FlowSteps({ flow, locked, onCode, onFunction }: {
       const nodes = flow.nodes.filter(node => node.side === 'back' || upstream.has(node.id)).sort((a, b) => rank(a) - rank(b));
       return <div key={request?.id ?? 'back'}>
         {request && <h4>{request.name} · {request.relativePath} {request.range.startLine}행</h4>}
-        <ol className="feature-steps">{nodes.map(node => <li key={node.id} data-testid="feature-step">
+        <ol className="feature-steps">{nodes.map(node => <li key={node.id} data-testid="feature-step" data-node-id={node.id}
+          aria-current={selectedNodeId === node.id ? 'step' : undefined}>
           <span className="path">{node.relativePath}</span> · <b>{node.name}</b>{' '}
           {node.screen !== null && <span className="tag tag--doc">화면 주소 {node.screen}</span>}{' '}
           {node.event && <span className="tag tag--doc">화면 이벤트 {node.event}</span>}
@@ -61,6 +99,8 @@ export function FeatureFlowView({ project, active, revision, locked, onCode, onF
 }) {
   const [entry, setEntry] = useState<{ result: ProjectRoutes; revision: number } | null>(null);
   const [flow, setFlow] = useState<FeatureFlow | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [picks, setPicks] = useState(0);
   const [selected, setSelected] = useState<number | null>(null);
   const [finding, setFinding] = useState(false);
   const [following, setFollowing] = useState(false);
@@ -83,7 +123,7 @@ export function FeatureFlowView({ project, active, revision, locked, onCode, onF
     const run = ++routesRun.current;
     flowRun.current++;
     const atRevision = revision;
-    setFinding(true); setFollowing(false); setError(''); setEntry(null); setFlow(null); setSelected(null);
+    setFinding(true); setFollowing(false); setError(''); setEntry(null); setFlow(null); setSelected(null); setSelectedNodeId(null);
     const result = await window.learning.routes({ projectId: project.id });
     if (run !== routesRun.current) return;
     setFinding(false);
@@ -95,7 +135,7 @@ export function FeatureFlowView({ project, active, revision, locked, onCode, onF
     if (!entry || stale) return;
     const run = ++flowRun.current;
     const atRevision = revision;
-    setSelected(routeIndex); setFollowing(true); setError(''); setFlow(null);
+    setSelected(routeIndex); setFollowing(true); setError(''); setFlow(null); setSelectedNodeId(null);
     const result = await window.learning.featureFlow({ projectId: project.id, routesId: entry.result.routesId, routeIndex });
     if (run !== flowRun.current) return;
     setFollowing(false);
@@ -154,7 +194,10 @@ export function FeatureFlowView({ project, active, revision, locked, onCode, onF
     {following && <div role="status">기능 흐름을 찾는 중… <button className="btn btn--small" onClick={() => {
       flowRun.current++; setFollowing(false); void window.learning.cancelFeatureFlow({ projectId: project.id });
     }}>기능 흐름 취소</button></div>}
-    {flow && <FlowSteps flow={flow} locked={locked} onCode={onCode} onFunction={onFunction} />}
+    {flow && <>
+      <FlowDiagram flow={flow} selectedNodeId={selectedNodeId} onSelect={id => { setSelectedNodeId(id); setPicks(count => count + 1); }} />
+      <FlowSteps flow={flow} locked={locked} onCode={onCode} onFunction={onFunction} selectedNodeId={selectedNodeId} picks={picks} />
+    </>}
     <p className="hint">다른 언어·서버 방식과 app.use의 주소 연결·경로 별칭은 따라가지 않아요. 추정은 확실한 연결 수에 넣지 않아요.</p>
   </div>;
 }

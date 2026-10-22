@@ -32,7 +32,7 @@ await mkdir(path.join(treeFixture, 'api/test'), { recursive: true });
 await writeFile(path.join(treeFixture, 'api/src/main.ts'), 'export function nested(value: number) { if (value < 0) return 0; return value; }\n');
 await writeFile(path.join(treeFixture, 'api/test/helper.ts'), 'export const helper = 1;\n');
 await writeFile(path.join(treeFixture, 'root.ts'), 'export const root = 1;\n');
-// One feature, with a nested event and a hook result, exercises the text flow independently of the full map.
+// One feature, with a nested event and a hook result, exercises the diagram and steps independently of the full map.
 const featureFlowFixture = path.join(temporary, '기능 흐름 프로젝트');
 const featureFlowFiles = {
   'web/next.config.ts': 'export default {};',
@@ -888,6 +888,36 @@ try {
     await steps.getByText('추정', { exact: true }).waitFor();
     assert.match(await steps.innerText(), /타입으로 찾음/);
     assert.match(await steps.innerText(), /안쪽 함수에서 tx.dog.delete/);
+    const diagram = page.getByTestId('feature-flow-canvas');
+    const screenNode = diagram.getByRole('group', { name: 'web/app/dogs/page.tsx · DogsPage', exact: true });
+    const serviceNode = diagram.getByRole('group', { name: 'api/service.ts · DogsService.remove', exact: true });
+    await screenNode.waitFor();
+    await serviceNode.waitFor();
+    // A straight arrow between boxes in one row has no height, which the visibility check counts as hidden.
+    await diagram.locator('.feature-arrow--typed .react-flow__edge-path').waitFor({ state: 'attached' });
+    await diagram.locator('.feature-arrow--inferred .react-flow__edge-path').waitFor({ state: 'attached' });
+    assert.equal(await diagram.locator('.react-flow.dark').count(), 1);
+    assert.equal(await diagram.locator('.react-flow__node.draggable').count(), 0);
+    assert.equal(await screenNode.locator('small').getAttribute('title'), 'web/app/dogs/page.tsx');
+    assert.equal(await screenNode.getByText('화면 주소 /dogs', { exact: true }).count(), 1);
+    assert.equal(await diagram.getByText('화면 이벤트 onClick', { exact: true }).count(), 1);
+    assert.equal(await diagram.locator('.feature-arrow--typed .react-flow__edge-path').evaluate(edge => getComputedStyle(edge).strokeDasharray), '3px, 4px');
+    assert.equal(await diagram.locator('.feature-arrow--inferred .react-flow__edge-path').evaluate(edge => getComputedStyle(edge).strokeDasharray), '9px, 5px');
+    assert.ok((await diagram.locator('.react-flow__edge-text').allTextContents()).every(label => /^\d+행$/.test(label)));
+    await diagram.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(artifacts, 'feature-flow-map.png') });
+    for (const [node, name] of [[serviceNode, 'DogsService.remove'], [serviceNode, 'DogsService.remove'], [screenNode, 'DogsPage']]) {
+      await node.click();
+      const selectedStep = steps.locator('[aria-current="step"]').filter({ has: page.locator('b', { hasText: name }) });
+      await selectedStep.waitFor();
+      assert.equal(await steps.locator('[aria-current="step"]').count(), 1);
+      assert.equal(await selectedStep.getAttribute('aria-current'), 'step');
+      assert.equal(await selectedStep.evaluate(step => {
+        const bounds = step.getBoundingClientRect();
+        const viewport = step.closest('.center').getBoundingClientRect();
+        return bounds.top >= viewport.top && bounds.bottom <= viewport.bottom;
+      }), true);
+    }
     await page.screenshot({ path: path.join(artifacts, 'feature-flow-text.png') });
     await steps.getByTestId('feature-step').filter({ has: page.locator('b', { hasText: /^DogsService.remove$/ }) })
       .getByRole('button', { name: '코드 보기', exact: true }).click();
