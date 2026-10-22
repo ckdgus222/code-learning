@@ -377,3 +377,12 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .map-canvas .feature-arrow--typed .react-flow__edge-path { stroke-dasharray: 3 4; }
 .map-canvas .feature-arrow--inferred .react-flow__edge-path { stroke-dasharray: 9 5; }
 .feature-steps > [aria-current="step"] { background: var(--accent-soft); outline: 2px solid var(--accent); border-radius: var(--radius); }
+
+/* Feature guide: list beside the chosen feature's story; stacked on narrow windows. */
+.feature-guide { display: grid; grid-template-columns: minmax(240px, 2fr) minmax(0, 3fr); gap: 16px; align-items: start; }
+.feature-guide__list { max-height: 70vh; overflow: auto; }
+.feature-guide__story { position: sticky; top: 0; max-height: calc(100vh - 160px); overflow: auto; }
+@media (max-width: 1100px) {
+  .feature-guide { grid-template-columns: 1fr; }
+  .feature-guide__list, .feature-guide__story { position: static; max-height: none; }
+}
