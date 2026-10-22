@@ -104,7 +104,7 @@ export function FlowWalk({ flow, title, about, codeName, walk, selection, setSto
   </section>;
 }
 
-export function FeatureOverview({ project, routes, guide, children }: { project: ProjectView; routes: ProjectRoutes; guide?: FeatureGuide; children?: React.ReactNode }) {
+export function FeatureOverview({ project, routes, guide }: { project: ProjectView; routes: ProjectRoutes; guide?: FeatureGuide }) {
   // The page re-renders on every search keystroke; these read every project file, so they are worked out once.
   const summary = useMemo(() => {
     const paths = project.files.map(file => file.relativePath);
@@ -113,6 +113,7 @@ export function FeatureOverview({ project, routes, guide, children }: { project:
     const screens = next ? paths.filter(path => /\/page\.(?:tsx|jsx|ts|js)$/.test(path) && nextRouteOf(path, paths)?.kind === 'page').length : 0;
     const sure = new Set(routes.links.filter(link => link.sure).map(link => link.requestIndex));
     const inferred = new Set(routes.links.filter(link => !link.sure && !sure.has(link.requestIndex)).map(link => link.requestIndex));
+    const local = routes.requests.filter(request => !request.host);
     const topFolder = (ids: string[]) => {
       const folders = new Set(ids.map(id => {
         const path = pathById.get(id);
@@ -120,18 +121,39 @@ export function FeatureOverview({ project, routes, guide, children }: { project:
       }));
       return folders.size === 1 ? [...folders][0] : null;
     };
-    return { next, screens, sure: sure.size, inferred: inferred.size,
-      server: topFolder(routes.routes.map(route => route.handler.fileId)), front: topFolder(routes.requests.map(request => request.fileId)) };
+    return { screens, local: local.length, external: routes.requests.length - local.length,
+      sure: sure.size, inferred: inferred.size,
+      // Counted like FlowLimits' '이을 주소를 못 찾은 요청' so both screens show the same number.
+      unlinked: routes.requests.filter((request, index) => !request.host && !sure.has(index) && !inferred.has(index)).length,
+      server: topFolder(routes.routes.map(route => route.handler.fileId)), front: topFolder(local.map(request => request.fileId)) };
   }, [project.files, routes]);
-  const { next, screens, sure, inferred, server, front } = summary;
-  return <section className="card" aria-label="프로젝트 파악">
-    <h3>프로젝트 파악</h3>
+  const { screens, local, external, sure, inferred, unlinked, server, front } = summary;
+  const routeCount = routes.routes.length;
+  // Links exist only between local requests and routes (routes.ts), so a link already means both boxes are drawn.
+  const linked = sure + inferred > 0;
+  // With no routes the chooser's notice says what is missing and where to go instead.
+  return <section className="card" aria-label="큰 그림">
+    <h3>이 프로젝트는 이렇게 나뉘어요</h3>
     {guide && <p><span className="tag tag--unknown">AI 정리</span> {guide.summary}</p>}
-    {next && <p>화면 {screens}개</p>}
-    <p>서버 기능 {routes.routes.length}개</p>
-    <p>프론트 요청 {routes.requests.length}개 · 서버와 이어짐 확실 {sure} · 추정 {inferred} · 못 이음 {routes.requests.length - sure - inferred}</p>
-    {server && front && server !== front && <p>폴더 구성: {server}는 서버 · {front}는 화면·프론트</p>}
-    {children}
+    <ol className="picture">
+      {screens > 0 && <li className="picture__box">
+        <b>화면</b><p>화면 {screens}개</p><p>사람이 보고 누르는 곳</p>
+      </li>}
+      {local > 0 && <li className="picture__box">
+        <b>요청을 보내는 코드</b><p>요청 {local}개</p>{front && <p>{front} 폴더</p>}<p>서버에 부탁(요청)을 보내는 코드</p>
+      </li>}
+      {linked && <li className="picture__arrow">
+        <span>→</span><p>확실히 이어짐 {sure}개 · 추정 {inferred}개</p>
+      </li>}
+      {routeCount > 0 && <li className="picture__box">
+        <b>서버</b><p>기능 {routeCount}개</p>{server && <p>{server} 폴더</p>}<p>부탁을 받아 일을 하는 곳</p>
+      </li>}
+    </ol>
+    {unlinked > 0 && routeCount > 0 && <p>서버 주소를 찾지 못한 요청 {unlinked}개</p>}
+    {local > 0 && routeCount > 0 && !linked && <p>요청을 보내는 코드와 서버 사이의 연결은 확인하지 못했어요.</p>}
+    {external > 0 && <p>다른 서버로 보내는 요청 {external}개</p>}
+    {screens === 0 && <p>화면은 찾지 못했어요. 지금은 Next.js 화면만 알아봐요.</p>}
+    {sure > 0 && <p><span className="tag">일반 설명</span> 웹 프로그램은 보통 이렇게 움직여요. 사람이 화면에서 버튼을 누르면, 화면 쪽 코드가 서버에 요청(부탁)을 보내고, 서버가 일을 한 뒤 결과를 돌려줘요. 이 프로젝트에서 실제로 어떻게 이어지는지는 기능을 하나 골라 따라가 보면 확인할 수 있어요.</p>}
   </section>;
 }
 
@@ -362,15 +384,25 @@ export function useFeatureFlows(project: ProjectView | null, revision: number) {
 
 type FeatureFlows = ReturnType<typeof useFeatureFlows>;
 
-export function FeatureList({ groups, routes, selected, disabled, onFollow, search, setSearch }: {
+export function recommendedFeature(groups: ReturnType<typeof featureGroups>): GuideFeature | null {
+  let recommended: GuideFeature | null = null;
+  for (const feature of groups.flatMap(group => group.features)) {
+    if (feature.sure > (recommended?.sure ?? 0)) recommended = feature;
+  }
+  return recommended;
+}
+
+export function FeatureList({ groups, routes, selected, disabled, onFollow, search, setSearch, children }: {
   groups: ReturnType<typeof featureGroups>; routes: ProjectRoutes; selected: number | null;
   disabled: boolean; onFollow(routeIndex: number): void; search: string; setSearch(value: string): void;
+  children?: React.ReactNode;
 }) {
   const query = search.toLowerCase();
   const visible = groups.map(group => ({ ...group, features: group.features.filter(feature => feature.haystack.includes(query)) }))
     .filter(group => group.features.length);
   return <section aria-label="기능 목록">
     <h3>기능 고르기</h3>
+    {children}
     <label>기능 검색 <input value={search} onChange={event => setSearch(event.target.value)} placeholder="기능 이름·주소·함수 이름" /></label>
     <p>기능 목록 · {groups.reduce((count, group) => count + group.features.length, 0)}개</p>
     {visible.map((group, groupIndex) => <section className="card" key={groupIndex}>
@@ -387,7 +419,7 @@ export function FeatureList({ groups, routes, selected, disabled, onFollow, sear
         <span className="hint">프론트 요청 확실 {feature.sure}곳 · 추정 {feature.inferred}곳</span>
       </li>)}</ul><Omitted count={group.features.length} />
     </section>)}
-    {!visible.length && <p className="hint">조건에 맞는 받는 곳을 찾지 못했어요.</p>}
+    {!visible.length && <p className="hint">{routes.routes.length ? '검색어와 맞는 기능이 없어요.' : '서버 코드(요청을 받는 곳)를 찾지 못했어요.'}</p>}
   </section>;
 }
 
@@ -397,16 +429,27 @@ export function FeatureChooser({ project, state, revision, locked, onFollow, mod
   onInspect(): Promise<string | null>; onRunning(value: boolean): void;
 }) {
   const { routes, stale, guide, setGuideResult } = state;
+  const feature = recommendedFeature(state.groups);
+  const disabled = locked || stale;
   return <div className="card--wide">
-    {project.warnings.length > 0 && <p className="notice">{project.warnings.join(' ')}</p>}
     <RoutesStatus state={state} />
     {routes && <>
-      <FeatureOverview project={project} routes={routes} guide={guide?.guide}>
-        <FeatureGuideCard key={`${routes.routesId}:${revision}`} projectId={project.id} routesId={routes.routesId}
-          result={guide} mode={mode} locked={locked || stale} running={running} checking={checking} connections={connections}
-          onInspect={onInspect} onResult={setGuideResult} onRunning={onRunning} />
-      </FeatureOverview>
-      <FeatureList search={state.search} setSearch={state.setSearch} groups={state.groups} routes={routes} selected={state.selected} disabled={locked || stale} onFollow={onFollow} />
+      <FeatureOverview project={project} routes={routes} guide={guide?.guide} />
+      {routes.routes.length === 0 ? <p className="notice">서버 코드(요청을 받는 곳)를 찾지 못해서 기능별로 따라갈 수 없어요. 아래 ‘어디부터 읽을까요?’에서 시작 파일을 골라 읽어 보세요.</p> : <>
+        {feature && <section className="card" aria-label="처음 따라갈 기능">
+          <h3>처음이라면 이 기능부터 따라가 보세요</h3>
+          <b>{feature.name}</b>
+          {feature.about && <p className="hint">{feature.about}</p>}
+          <p>이 기능에 요청을 보내는 코드 {feature.sure}곳을 확실히 찾았어요. 요청을 보내는 쪽부터 서버까지 따라가 볼 수 있어요.</p>
+          <p className="hint">고른 기준: 요청을 보내는 코드와 확실히 이어진 곳이 가장 많은 기능</p>
+          <button className="btn" disabled={disabled} onClick={() => onFollow(feature.routes[0])}>이 기능부터 따라가기</button>
+        </section>}
+        <FeatureList search={state.search} setSearch={state.setSearch} groups={state.groups} routes={routes} selected={state.selected} disabled={disabled} onFollow={onFollow}>
+          <FeatureGuideCard key={`${routes.routesId}:${revision}`} projectId={project.id} routesId={routes.routesId}
+            result={guide} mode={mode} locked={disabled} running={running} checking={checking} connections={connections}
+            onInspect={onInspect} onResult={setGuideResult} onRunning={onRunning} />
+        </FeatureList>
+      </>}
     </>}
   </div>;
 }
