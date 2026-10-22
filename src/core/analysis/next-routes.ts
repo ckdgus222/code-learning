@@ -5,9 +5,11 @@ export interface NextRoute {
   segments: NextSegment[];
 }
 
+export const isNextConfig = (path: string) => /(?:^|\/)next\.config\.(?:js|mjs|cjs|ts|mts)$/.test(path);
+
 export function nextRouteOf(relativePath: string, projectPaths: string[]): NextRoute | null {
   const parts = relativePath.split('/');
-  const configs = new Set(projectPaths.filter(path => /(?:^|\/)next\.config\.(?:js|mjs|cjs|ts|mts)$/.test(path))
+  const configs = new Set(projectPaths.filter(isNextConfig)
     .map(path => path.split('/').slice(0, -1).join('/')));
   const roots = parts.slice(0, -1).flatMap((part, index) => {
     if (part !== 'app' && !(part === 'pages' && parts[index + 1] === 'api')) return [];

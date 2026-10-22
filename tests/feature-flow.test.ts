@@ -6,6 +6,7 @@ import { scanProject } from '../src/core/project/files';
 import { findProjectRoutes } from '../src/core/analysis/routes';
 import { buildFeatureFlow } from '../src/core/analysis/feature-flow';
 import { findFunctionCalls, type CallsCache } from '../src/core/analysis/calls';
+import { storyOf } from '../src/core/analysis/flow-story';
 import { MAP_LIMITS } from '../src/core/analysis/project-map';
 
 let root: string;
@@ -63,6 +64,13 @@ it('connects a Next screen, nested event, hook result, request, controller and s
   for (let i = 0; i < flow.nodes.length; i++) for (const edge of flow.edges) if (reachable.has(edge.from)) reachable.add(edge.to);
   expect(reachable.has(node('DogsService.remove').id)).toBe(true);
   expect(flow.limited).toBe(false);
+  const story = storyOf(flow);
+  expect(story.map(step => step.kind)).toEqual(['screen', 'front', 'request', 'handler', 'back']);
+  // The click path, not DogList's direct hook call, even though DogList is deeper.
+  expect(story[0].text).toBe('화면 /dogs · onClick(버튼 등)을 눌러요');
+  expect(story[0].nodes.map(node => node.name)).toEqual(expect.arrayContaining(['DogsPage', 'DogList']));
+  expect(story[1].text).toBe('removeDog → useDeleteDog → mutationFn');
+  expect(story[4].representative.name).toBe('DogsService.remove');
 });
 it('uses the same calls result with and without a per-job cache', async () => {
   await fixture();

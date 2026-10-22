@@ -791,6 +791,11 @@ function App() {
                 <button className="btn btn--chip" disabled={busy} onClick={() => { setView('code'); void readFile(intro.fileId); }}>{intro.relativePath} 열기</button>
               </> : <p className="unknown"><span className="tag tag--unknown">확인하지 못함</span>프로젝트 목적: 아직 확인하지 못했습니다.</p>}
             </section>
+            <section className="card" aria-label="기능별로 따라가기">
+              <h3>기능별로 따라가기</h3>
+              <p>프로젝트 구성을 살펴보고, 기능 하나를 골라 화면부터 서버까지 따라가요.</p>
+              <button className="btn" onClick={() => { setMapTab('features'); setView('map'); }}>기능별 안내 열기</button>
+            </section>
             <section className="card">
               <h3>읽을 수 있는 파일</h3>
               <p className="stat"><b>{project.files.length}</b>개</p>
@@ -831,7 +836,7 @@ function App() {
         </div>}
 
         {view === 'map' && <div className="map-actions" role="tablist" aria-label="프로젝트 지도 보기">
-          <button className="btn" role="tab" aria-selected={mapTab === 'features'} onClick={() => setMapTab('features')}>기능 흐름</button>
+          <button className="btn" role="tab" aria-selected={mapTab === 'features'} onClick={() => setMapTab('features')}>기능별 안내</button>
           <button className="btn" role="tab" aria-selected={mapTab === 'all'} onClick={() => setMapTab('all')}>전체 지도</button>
         </div>}
         <div hidden={view !== 'map' || mapTab !== 'features'}>

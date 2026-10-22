@@ -863,7 +863,7 @@ try {
     await page.waitForFunction(() => document.querySelector('.files button[aria-label="폴더 api"]')?.getAttribute('aria-expanded') === 'false');
     assert.equal(await main.isVisible(), false);
   });
-  await check('Feature flow: default tab, route search, nested event, inferred hook, code and question preservation', async () => {
+  await check('Feature guide: overview, five story steps, route search, diagram, code and question preservation', async () => {
     await dialogTo(featureFlowFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '기능 흐름 프로젝트', exact: true }).waitFor();
@@ -873,15 +873,49 @@ try {
     await page.getByRole('tab', { name: '질문', exact: true }).click();
     await page.getByTestId('question-scope').waitFor();
     const scope = await page.getByTestId('question-scope').innerText();
-    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
-    assert.equal(await page.getByRole('tab', { name: '기능 흐름', exact: true }).getAttribute('aria-selected'), 'true');
-    const route = page.getByRole('button', { name: 'DELETE /api/dogs/:id', exact: true });
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await page.getByRole('button', { name: '기능별 안내 열기', exact: true }).click();
+    const guideTab = page.getByRole('tab', { name: '기능별 안내', exact: true });
+    await guideTab.waitFor();
+    assert.equal(await guideTab.getAttribute('aria-selected'), 'true');
+    const overview = page.getByRole('region', { name: '프로젝트 파악', exact: true });
+    await overview.getByText('서버 기능 1개', { exact: true }).waitFor();
+    assert.match(await overview.innerText(), /화면 1개/);
+    assert.match(await overview.innerText(), /프론트 요청 1개 · 서버와 이어짐 확실 1 · 추정 0 · 못 이음 0/);
+    assert.match(await overview.innerText(), /폴더 구성: api는 서버 · web는 화면·프론트/);
+    const route = page.getByRole('button', { name: '지우기 · /api/dogs/:id', exact: true });
     await route.waitFor();
     await page.getByText('프론트 요청 확실 1곳 · 추정 0곳', { exact: true }).waitFor();
     await page.getByRole('textbox', { name: '기능 검색' }).fill('missing');
     assert.equal(await route.count(), 0);
     await page.getByRole('textbox', { name: '기능 검색' }).fill('dogs');
+    await route.waitFor();
+    await page.getByRole('textbox', { name: '기능 검색' }).fill('지우기');
     await route.click();
+    const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
+    await story.getByText('화면 /dogs · onClick(버튼 등)을 눌러요', { exact: true }).waitFor();
+    await story.locator('[data-kind="back"]').waitFor();
+    assert.equal(await story.getByTestId('story-step').count(), 5);
+    assert.match(await story.locator('[data-kind="front"]').innerText(), /removeDog → useDeleteDog → mutationFn/);
+    assert.match(await story.innerText(), /서버에 DELETE \/api\/dogs\/\$\{id\} 요청을 보내요/);
+    assert.match(await story.innerText(), /DogsController.remove가 요청을 받아요 → DogsService.remove에 넘겨요/);
+    // The click path is the main line now, so its functions sit in the steps' own details.
+    await story.locator('[data-kind="front"] summary').click();
+    await story.locator('[data-kind="front"]').getByText('removeDog', { exact: true }).waitFor();
+    await story.locator('[data-kind="screen"] summary').click();
+    await story.locator('[data-kind="screen"]').getByText('onClick 함수 (1행)', { exact: true }).waitFor();
+    assert.match(await story.innerText(), /타입으로 찾음/);
+    assert.match(await story.innerText(), /안쪽 함수에서 tx.dog.delete/);
+    const disclosure = page.locator('details').filter({ has: page.locator('summary', { hasText: /^그림과 전체 단계 보기$/ }) });
+    assert.equal(await disclosure.getAttribute('open'), null);
+    await story.locator('[data-kind="back"]').getByRole('button', { name: '코드 보기', exact: true }).first().click();
+    await page.getByRole('heading', { name: 'api/service.ts', exact: true }).waitFor();
+    await page.getByTestId('evidence-range').waitFor();
+    assert.match(await page.getByTestId('evidence-range').innerText(), /api\/service.ts/);
+    await page.locator('.cm-selectionBackground').first().waitFor();
+    assert.equal(await page.getByTestId('question-scope').innerText(), scope);
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await disclosure.locator('summary').first().click();
     const steps = page.getByRole('region', { name: '기능 흐름 단계' });
     await steps.getByText('화면 주소 /dogs', { exact: true }).waitFor();
     await steps.getByText('화면 이벤트 onClick', { exact: true }).waitFor();
@@ -926,6 +960,7 @@ try {
     assert.match(await page.getByTestId('evidence-range').innerText(), /api\/service.ts/);
     assert.equal(await page.getByTestId('question-scope').innerText(), scope);
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await disclosure.locator('summary').first().click();
     await steps.getByTestId('feature-step').filter({ has: page.locator('b', { hasText: /^DogsService.remove$/ }) })
       .getByRole('button', { name: '이 함수 흐름', exact: true }).click();
     await page.getByRole('article', { name: '함수 요약', exact: true }).waitFor();
