@@ -35,7 +35,7 @@ async function fixture(text = 'export function run() { return 1; }\n', relativeP
     return { reportedModel: input.provider === 'antigravity' ? GEMINI_MODEL : 'test-codex',
       value: input.stage === 'explaining' ? explanation : { accepted: true, issues: [], explanation } };
   });
-  const workflow = new LocalWorkerWorkflow({ assertReady, captureFile, revalidate, expand, run, emit: event => events.push(event),
+  const workflow = new LocalWorkerWorkflow({ captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); }, assertReady, captureFile, revalidate, expand, run, emit: event => events.push(event),
     capture: async () => { throw new Error('not a question'); },
     captureOverview: async () => { throw new Error('not an overview'); } });
   const finish = async (input = request) => {

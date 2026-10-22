@@ -4,6 +4,7 @@ import path from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
 import type { ProjectRoutes, FeatureFlow, Evidence, FileDiff, FunctionCalls, GitHistory, ProjectChanges, ProjectEvent, ProjectMap, ProjectView, Result, ShapeQuery, SourceView,
   ValueShapes } from '../shared/contracts';
+import { featureGuideMaterial, type FeatureGuideSnapshot } from '../core/ai/feature-guide';
 import { AppError } from '../shared/errors';
 import type { WorkerRequest, WorkerResponse } from '../workers/analysis';
 import type { TypeWatch } from '../core/analysis/shapes';
@@ -65,6 +66,8 @@ export class ProjectSession {
   private routesRun = 0;
   private flowRun = 0;
   private lastRoutes?: { result: ProjectRoutes; observed: number; revision: number };
+
+  onRoutesInvalidated?: () => void;
 
   /** Tests only: holds a new type watch back after it is ready and checked, just before it would be adopted. */
   holdTypeWatch?: (watcher: FSWatcher) => Promise<void>;
@@ -151,9 +154,8 @@ export class ProjectSession {
 
   async featureFlow(routesId: string, routeIndex: number, revision = 0, timeoutMs = 30_000): Promise<FeatureFlow> {
     if (this.closed || !this.project) throw new AppError('PROJECT_CLOSED', '프로젝트를 다시 열어 주세요.');
-    const saved = this.lastRoutes;
-    if (!saved || saved.result.routesId !== routesId || saved.revision !== revision || saved.observed !== this.observedChanges
-      || !Number.isInteger(routeIndex) || routeIndex < 0 || routeIndex >= saved.result.routes.length) {
+    const saved = this.currentRoutes(routesId, revision);
+    if (!Number.isInteger(routeIndex) || routeIndex < 0 || routeIndex >= saved.result.routes.length) {
       throw new AppError('CHANGED', '기능 목록이 바뀌었어요. 주소를 다시 찾아 주세요.');
     }
     this.cancelFeatureFlow();
@@ -165,7 +167,23 @@ export class ProjectSession {
     return result;
   }
 
-  cancelRoutes(): void { this.routesRun++; this.lastRoutes = undefined; this.cancelSide('routes'); this.cancelFeatureFlow(); }
+  private currentRoutes(routesId: string, revision: number) {
+    const saved = this.lastRoutes;
+    if (this.closed || !this.project || !saved || saved.result.routesId !== routesId || saved.revision !== revision || saved.observed !== this.observedChanges) {
+      throw new AppError('CHANGED', '기능 목록이 바뀌었어요. 주소를 다시 찾아 주세요.');
+    }
+    return saved;
+  }
+
+  captureFeatureGuide(routesId: string, revision: number): FeatureGuideSnapshot {
+    const saved = this.currentRoutes(routesId, revision);
+    const { material, limitations } = featureGuideMaterial(this.project!, saved.result);
+    return { projectId: this.id, routesId, revision, material, limitations };
+  }
+
+  validateFeatureGuide(routesId: string, revision: number): void { this.currentRoutes(routesId, revision); }
+
+  cancelRoutes(): void { this.onRoutesInvalidated?.(); this.routesRun++; this.lastRoutes = undefined; this.cancelSide('routes'); this.cancelFeatureFlow(); }
   cancelFeatureFlow(): void { this.flowRun++; this.cancelSide('flow'); }
 
   /** Draws the project map from the files listed when the folder was opened. */

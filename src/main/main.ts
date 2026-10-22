@@ -7,7 +7,7 @@ import { channels, featureFlowRequestSchema, sourceRequestSchema, evidenceReques
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { ProjectSession, workersStopped } from './project-session';
-import { explainRequestSchema, cancelExplanationSchema, overviewRequestSchema, fileExplanationRequestSchema } from '../shared/ai';
+import { explainRequestSchema, cancelExplanationSchema, overviewRequestSchema, fileExplanationRequestSchema, featureGuideRequestSchema } from '../shared/ai';
 import { LocalAiRuntime } from '../core/ai/runtime';
 import { LocalWorkerWorkflow } from '../core/ai/workflow';
 import { ProjectAiContext } from '../core/ai/context';
@@ -45,6 +45,10 @@ const learning = new LocalWorkerWorkflow({
     if (session !== active || aiContext !== context || projectRevision !== revision) throw new AppError('CHANGED', '자료를 모으는 동안 프로젝트가 바뀌었습니다.');
     return snapshot;
   },
+  captureFeatureGuide: async (request, signal) => {
+    if (signal.aborted) throw new AppError('CANCELLED', 'AI 작업을 취소했습니다.');
+    return current(request.projectId).captureFeatureGuide(request.routesId, projectRevision);
+  },
   captureFile: async (request, signal) => {
     const revision = projectRevision;
     const active = current(request.projectId);
@@ -60,6 +64,11 @@ const learning = new LocalWorkerWorkflow({
     if (!context) throw new AppError('PROJECT_CLOSED', '프로젝트가 닫혔습니다.');
     await context.expand(snapshot, ids, signal);
     if (session !== active || aiContext !== context || projectRevision !== snapshot.revision) throw new AppError('CHANGED', '관련 파일을 읽는 동안 프로젝트가 바뀌었습니다.');
+  },
+  revalidateFeatureGuide: async (snapshot, signal) => {
+    if (signal.aborted) throw new AppError('CANCELLED', 'AI 작업을 취소했습니다.');
+    if (snapshot.revision !== projectRevision) throw new AppError('CHANGED', '기능 목록이 바뀌었어요. 주소를 다시 찾아 주세요.');
+    current(snapshot.projectId).validateFeatureGuide(snapshot.routesId, projectRevision);
   },
   revalidate: async (snapshot, signal) => {
     const active = current(snapshot.projectId);
@@ -174,6 +183,7 @@ app.whenReady().then(async () => {
           if (window) window.webContents.send(channels.event, event);
         }
       });
+      next.onRoutesInvalidated = () => learning.cancelFeatureGuide(next.id);
       session = next;
       try {
         // The screen does not know this project yet, so it ignores a change or wake-up notice sent during
@@ -326,6 +336,12 @@ app.whenReady().then(async () => {
     if (opening) throw new AppError('INVALID_REQUEST', '프로젝트를 연 뒤 개요를 만들어 주세요.');
     current(input.projectId);
     return learning.startOverview(input);
+  });
+  handle(channels.featureGuide, async argument => {
+    const input = featureGuideRequestSchema.parse(argument);
+    if (opening) throw new AppError('INVALID_REQUEST', '프로젝트를 연 뒤 정리해 주세요.');
+    current(input.projectId).validateFeatureGuide(input.routesId, projectRevision);
+    return learning.startFeatureGuide(input);
   });
   handle(channels.fileExplanation, async argument => {
     const input = fileExplanationRequestSchema.parse(argument);

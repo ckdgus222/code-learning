@@ -960,7 +960,8 @@ try {
     assert.match(await page.getByTestId('evidence-range').innerText(), /api\/service.ts/);
     assert.equal(await page.getByTestId('question-scope').innerText(), scope);
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
-    await disclosure.locator('summary').first().click();
+    // The guide stays mounted while another view is shown, so an opened disclosure is still open on return.
+    if (await disclosure.getAttribute('open') === null) await disclosure.locator('summary').first().click();
     await steps.getByTestId('feature-step').filter({ has: page.locator('b', { hasText: /^DogsService.remove$/ }) })
       .getByRole('button', { name: '이 함수 흐름', exact: true }).click();
     await page.getByRole('article', { name: '함수 요약', exact: true }).waitFor();
@@ -981,9 +982,14 @@ try {
         window.learning.featureFlow({ projectId, routesId: routes.value.routesId, routeIndex: -1 }),
         window.learning.featureFlow({ projectId, routesId: routes.value.routesId, routeIndex: 999 }),
         window.learning.featureFlow({ projectId, routesId: routes.value.routesId, routeIndex: 0, path: '/etc/passwd' }),
+        window.learning.startFeatureGuide({ projectId, routesId: routes.value.routesId, mode: 'local-worker', consent: false }),
+        window.learning.startFeatureGuide({ projectId, routesId: routes.value.routesId, mode: 'local-worker' }),
+        window.learning.startFeatureGuide({ projectId, routesId: routes.value.routesId, mode: 'local-worker', consent: true, routes: [] }),
+        window.learning.startFeatureGuide({ projectId, routesId: '00000000-0000-4000-8000-000000000000', mode: 'local-worker', consent: true }),
       ]);
     });
-    assert.deepEqual(invalid.map(result => result.code), ['INVALID_REQUEST', 'INVALID_REQUEST', 'CHANGED', 'INVALID_REQUEST']);
+    assert.deepEqual(invalid.map(result => result.code), ['INVALID_REQUEST', 'INVALID_REQUEST', 'CHANGED', 'INVALID_REQUEST',
+      'INVALID_REQUEST', 'INVALID_REQUEST', 'INVALID_REQUEST', 'CHANGED']);
   });
   await check('Project map: file and design views, evidence, freshness, reopening and cancelled or stale maps', async () => {
     await dialogTo(mapFixture);
@@ -994,7 +1000,8 @@ try {
     const boxes = page.locator('.react-flow__node');
     // Five code files are fewer than 60, so the map starts in the file view; the deep file was never listed.
     await until(async () => await boxes.count() === 5);
-    await page.getByText('초기 탐색 제한(파일 1,000개·항목 5,000개·깊이 20)에 도달했습니다.', { exact: false }).waitFor();
+    // The feature guide keeps its own (hidden) copy of the folder warnings while the full map is shown.
+    await page.getByText('초기 탐색 제한(파일 1,000개·항목 5,000개·깊이 20)에 도달했습니다.', { exact: false }).filter({ visible: true }).waitFor();
     await page.getByText('확인 못 함 · 1개', { exact: true }).waitFor();
     await page.getByText('외부 패키지 또는 경로 별칭 · 1개', { exact: true }).waitFor();
     const design = page.getByRole('region', { name: '폴더 사이 연결' });
@@ -2439,6 +2446,92 @@ try {
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('button', { name: 'chunks.ts', exact: true }).click();
     assert.equal(await card.getByTestId('file-summary').count(), 0);
+    await page.getByRole('button', { name: '작업 취소·프로젝트 닫기', exact: true }).click();
+    await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+  });
+  await check('Feature guide (fake AI): consent, grouped routes, route-specific stories, refresh and late result rejection', async () => {
+    // Real route and story analysis, with only the AI result replaced. No AI CLI is started.
+    await writeFile(path.join(featureFlowFixture, 'api/controller.ts'), featureFlowFiles['api/controller.ts'].replace(
+      "@Delete(':id')", "@Get(':id') get(id) { return id; } @Delete(':id')"));
+    await app.evaluate(({ ipcMain }) => {
+      const routes = ipcMain._invokeHandlers.get('learning:routes');
+      ipcMain.removeHandler('learning:routes');
+      ipcMain.handle('learning:routes', async (event, request) => {
+        const result = await routes(event, request);
+        if (result.ok) globalThis.testGuideRoutes = result.value;
+        return result;
+      });
+      ipcMain.removeHandler('learning:feature-guide');
+      globalThis.testGuideCalls = [];
+      ipcMain.handle('learning:feature-guide', async (event, request) => {
+        const { randomUUID } = process.getBuiltinModule('node:crypto');
+        const jobId = randomUUID();
+        const routes = globalThis.testGuideRoutes;
+        const indices = routes.routes.map((_, index) => index);
+        const result = { jobId, projectId: request.projectId, routesId: request.routesId, mode: request.mode,
+          guide: { summary: '반려견의 정보를 관리하는 프로젝트예요.', groups: [{ name: '반려견 관리', about: '반려견을 살펴보고 지워요.',
+            features: [{ name: '반려견 살펴보기와 삭제', about: '반려견 정보를 조회하거나 삭제해요.', routes: indices }] }], unknowns: ['실제 실행은 확인하지 않았어요.'] },
+          limitations: [], review: 'AI 검토됨', models: [{ stage: 'explaining', provider: 'antigravity', requestedModel: 'gemini-3.8-flash-high', reportedModel: 'test-model' }] };
+        globalThis.testGuideCalls.push(request);
+        const send = () => event.sender.send('learning:ai-event', { kind: 'feature-guide-completed', jobId, projectId: request.projectId, result });
+        if (globalThis.testGuideHold) globalThis.testGuideLate = send;
+        else { send(); await new Promise(resolve => setTimeout(resolve, 100)); }
+        return { ok: true, value: { jobId } };
+      });
+    });
+    await dialogTo(featureFlowFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '기능 흐름 프로젝트', exact: true }).waitFor();
+    await page.getByRole('button', { name: '기능별 안내 열기', exact: true }).click();
+    const overview = page.getByRole('region', { name: '프로젝트 파악', exact: true });
+    await overview.getByText('서버 기능 2개', { exact: true }).waitFor();
+    await overview.getByRole('button', { name: 'AI로 기능 정리하기', exact: true }).click();
+    await overview.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
+    await until(async () => await overview.getByRole('checkbox').isEnabled());
+    await checkConsentDisclosure(overview, '프로젝트 이름, 앱이 찾은 서버 주소·요청·화면 목록(파일 경로와 함수 이름 포함)을 Gemini와 Codex에 보내는 데 동의합니다. 코드 원문은 보내지 않습니다. 비밀값처럼 보이는 부분은 가리지만 모두 찾는다고 보장하지 않습니다.');
+    const send = overview.getByRole('button', { name: '동의하고 정리하기', exact: true });
+    assert.equal(await send.isDisabled(), true);
+    assert.equal(await app.evaluate(() => globalThis.testGuideCalls.length), 0);
+    await overview.getByRole('checkbox').check(); await send.click();
+    await overview.getByText('반려견의 정보를 관리하는 프로젝트예요.', { exact: false }).waitFor();
+    const list = page.getByRole('region', { name: '기능 목록', exact: true });
+    await list.getByRole('heading', { name: '반려견 관리', exact: true }).waitFor();
+    await list.getByText('반려견 정보를 조회하거나 삭제해요.', { exact: true }).waitFor();
+    const calls = await app.evaluate(() => globalThis.testGuideCalls);
+    assert.deepEqual(Object.keys(calls[0]).sort(), ['consent', 'mode', 'projectId', 'routesId']);
+    assert.equal(calls[0].consent, true);
+    await list.getByRole('button', { name: '반려견 살펴보기와 삭제', exact: true }).click();
+    const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
+    // DELETE has a sure frontend link, so it is preferred over GET regardless of the AI's order.
+    await story.getByText('DogsController.remove가 요청을 받아요 → DogsService.remove에 넘겨요', { exact: true }).waitFor();
+    await list.getByRole('button', { name: 'GET /api/dogs/:id', exact: true }).click();
+    await story.getByText('DogsController.get가 요청을 받아요', { exact: true }).waitFor();
+    await list.getByRole('button', { name: 'DELETE /api/dogs/:id', exact: true }).click();
+    await story.getByText('DogsController.remove가 요청을 받아요 → DogsService.remove에 넘겨요', { exact: true }).waitFor();
+    await page.getByRole('textbox', { name: '기능 검색' }).fill('DogsController.get');
+    await list.getByRole('button', { name: '반려견 살펴보기와 삭제', exact: true }).waitFor();
+    await page.getByRole('textbox', { name: '기능 검색' }).fill('');
+    await page.locator('.feature-page').getByRole('button', { name: '다시 찾기', exact: true }).click();
+    await list.getByRole('button', { name: '지우기 · /api/dogs/:id', exact: true }).waitFor();
+    assert.equal(await list.getByRole('heading', { name: '반려견 관리', exact: true }).count(), 0);
+    await app.evaluate(() => { globalThis.testGuideHold = true; });
+    await overview.getByRole('button', { name: 'AI로 기능 정리하기', exact: true }).click();
+    await overview.getByRole('checkbox').check(); await send.click();
+    await overview.getByRole('button', { name: 'AI 작업 취소', exact: true }).waitFor();
+    await until(async () => await app.evaluate(() => typeof globalThis.testGuideLate === 'function'));
+    await page.locator('.feature-page').getByRole('button', { name: '다시 찾기', exact: true }).click();
+    await list.getByRole('button', { name: '지우기 · /api/dogs/:id', exact: true }).waitFor();
+    await app.evaluate(() => { globalThis.testGuideLate(); globalThis.testGuideHold = false; });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await list.getByRole('heading', { name: '반려견 관리', exact: true }).count(), 0);
+    assert.equal(await overview.getByText('반려견의 정보를 관리하는 프로젝트예요.', { exact: false }).count(), 0);
+    await overview.getByRole('button', { name: 'AI로 기능 정리하기', exact: true }).click();
+    await overview.getByRole('checkbox').check(); await send.click();
+    await list.getByRole('heading', { name: '반려견 관리', exact: true }).waitFor();
+    await writeFile(path.join(featureFlowFixture, 'api/controller.ts'), featureFlowFiles['api/controller.ts'] + '\n// changed\n');
+    await list.getByRole('button', { name: '지우기 · /api/dogs/:id', exact: true }).waitFor();
+    assert.equal(await list.getByRole('heading', { name: '반려견 관리', exact: true }).count(), 0);
+    assert.equal(await overview.getByRole('button', { name: 'AI로 기능 정리하기', exact: true }).isDisabled(), true);
     await page.getByRole('button', { name: '작업 취소·프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
   });

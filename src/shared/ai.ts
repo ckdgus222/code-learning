@@ -23,6 +23,30 @@ export const fileExplanationRequestSchema = z.object({
 }).strict();
 export type FileExplanationRequest = z.infer<typeof fileExplanationRequestSchema>;
 
+export const featureGuideRequestSchema = z.object({
+  projectId: idSchema, routesId: idSchema, mode: learningModeSchema, consent: z.literal(true),
+}).strict();
+export type FeatureGuideRequest = z.infer<typeof featureGuideRequestSchema>;
+export const featureGuideSchema = z.object({
+  summary: z.string().trim().min(1).max(600),
+  groups: z.array(z.object({
+    name: z.string().trim().min(1).max(40), about: z.string().trim().min(1).max(200),
+    features: z.array(z.object({
+      name: z.string().trim().min(1).max(60), about: z.string().trim().min(1).max(200),
+      routes: z.array(z.number().int().min(0)).min(1).max(20),
+    }).strict()).max(40),
+  }).strict()).max(20),
+  unknowns: z.array(z.string().trim().min(1).max(2000)).max(10),
+}).strict();
+export type FeatureGuide = z.infer<typeof featureGuideSchema>;
+export const featureGuideReviewSchema = z.object({
+  accepted: z.boolean(), issues: z.array(z.string().trim().min(1).max(2000)).max(16), guide: featureGuideSchema,
+}).strict();
+export interface FeatureGuideResult {
+  jobId: string; projectId: string; routesId: string; guide: FeatureGuide; limitations: string[];
+  mode: LearningMode; review: 'AI 검토됨' | 'AI 대조 없음'; models: ModelRun[];
+}
+
 const description = z.string().trim().min(1).max(2000);
 export const fileExplanationSchema = z.object({
   summary: description,
@@ -160,4 +184,5 @@ export type LearningEvent =
   | { kind: 'completed'; jobId: string; projectId: string; result: LearningResult }
   | { kind: 'overview-completed'; jobId: string; projectId: string; result: OverviewResult }
   | { kind: 'file-explanation-completed'; jobId: string; projectId: string; result: FileExplanationResult }
+  | { kind: 'feature-guide-completed'; jobId: string; projectId: string; result: FeatureGuideResult }
   | { kind: 'failed'; jobId: string; projectId: string; error: { code: import('./contracts').AppErrorCode; message: string } };

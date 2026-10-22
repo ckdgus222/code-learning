@@ -116,3 +116,11 @@ it('omits screen counts for non-Next projects and folder roles when shared or un
   expect(noRoutes).not.toContain('폴더 구성:');
   expect(noRoutes).toContain('못 이음 4');
 });
+
+it('places the AI summary above the factual overview, with the AI card inside it', () => {
+  const guide = { summary: '<script>요약</script>', groups: [], unknowns: [] };
+  const html = renderToStaticMarkup(React.createElement(FeatureOverview, { project, routes, guide }, React.createElement('button', null, 'AI 카드')));
+  expect(html).toContain('AI 정리'); expect(html).toContain('&lt;script&gt;요약&lt;/script&gt;');
+  expect(html.indexOf('요약')).toBeLessThan(html.indexOf('첫 문단 그대로.'));
+  expect(html).toContain('AI 카드');
+});
