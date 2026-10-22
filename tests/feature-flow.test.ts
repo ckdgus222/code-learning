@@ -67,9 +67,9 @@ it('connects a Next screen, nested event, hook result, request, controller and s
   const story = storyOf(flow);
   expect(story.map(step => step.kind)).toEqual(['screen', 'front', 'request', 'handler', 'back']);
   // The click path, not DogList's direct hook call, even though DogList is deeper.
-  expect(story[0].text).toBe('화면 /dogs · onClick(버튼 등)을 눌러요');
+  expect(story[0].text).toBe('화면 /dogs에서 onClick 동작이 일어나요');
   expect(story[0].nodes.map(node => node.name)).toEqual(expect.arrayContaining(['DogsPage', 'DogList']));
-  expect(story[1].text).toBe('removeDog → useDeleteDog → mutationFn');
+  expect(story[1].text).toBe('removeDog → useDeleteDog → mutationFn 순서로 이어져요');
   expect(story[4].representative.name).toBe('DogsService.remove');
 });
 it('uses the same calls result with and without a per-job cache', async () => {

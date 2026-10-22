@@ -30,9 +30,9 @@ const example = flow([handler, service, request, mutation, hook, remove, event, 
 it('turns a dog-walk shaped graph into five readable steps and exact code targets', () => {
   const steps = storyOf(example);
   expect(steps.map(step => step.text)).toEqual([
-    '화면 /dogs · onClick(버튼 등)을 눌러요',
-    'removeDog → useDeleteDog → mutationFn',
-    '서버에 DELETE /api/dogs/${id} 요청을 보내요',
+    '화면 /dogs에서 onClick 동작이 일어나요',
+    'removeDog → useDeleteDog → mutationFn 순서로 이어져요',
+    'DELETE /api/dogs/${id} 요청을 보내요',
     'DogsController.remove가 요청을 받아요 → DogsService.remove에 넘겨요',
     'DogsService.remove · 바깥 호출: tx.dog.delete',
   ]);
@@ -48,11 +48,11 @@ it('omits front processing when the screen sends a request directly', () => {
   const steps = storyOf(flow([screen, request, handler], [edge(screen.id, request.id), edge(request.id, handler.id)]));
   expect(steps.map(step => step.kind)).toEqual(['screen', 'request', 'handler']);
   expect(steps[0].representative).toEqual(screen);
-  expect(steps[0].text).toBe('화면 /dogs');
+  expect(steps[0].text).toBe('화면 /dogs에서 시작해요');
 });
 it('uses the file and function when there is no screen, without inventing an event', () => {
   const steps = storyOf(flow([mutation, request, handler], [edge(mutation.id, request.id)]));
-  expect(steps[0].text).toBe('시작: mutationFn.ts · mutationFn');
+  expect(steps[0].text).toBe('mutationFn.ts · mutationFn에서 시작해요');
   expect(steps[0].text).not.toContain('눌러요');
 });
 it('starts at the handler without any requests and includes a service without outside calls', () => {
@@ -149,6 +149,28 @@ it('follows the click path even when a deeper component only sets the hook up', 
     edge(hook.id, mutation.id), edge(mutation.id, request.id), edge(request.id, handler.id, { kind: 'route' }),
   ]);
   const steps = storyOf(real);
-  expect(steps[0].text).toBe('화면 /dogs · onClick(버튼 등)을 눌러요');
-  expect(steps[1].text).toBe('removeDog → useDeleteDog → mutationFn');
+  expect(steps[0].text).toBe('화면 /dogs에서 onClick 동작이 일어나요');
+  expect(steps[1].text).toBe('removeDog → useDeleteDog → mutationFn 순서로 이어져요');
+});
+
+it.each(['onClick', 'onMouseEnter'])('uses the actual %s event without claiming a button press', eventName => {
+  const changed = { ...example, nodes: example.nodes.map(item => item.id === event.id ? { ...item, event: eventName } : item) };
+  const first = storyOf(changed)[0];
+  expect(first.title).toBe('화면 동작에서 시작해요');
+  expect(first.title).not.toMatch(/누르|버튼/);
+  expect(first.text).toBe(`화면 /dogs에서 ${eventName} 동작이 일어나요`);
+  const withoutScreen = storyOf({ ...changed, nodes: changed.nodes.map(item => ({ ...item, screen: null })) })[0];
+  expect(withoutScreen.text).toBe(`DogsPage.ts · DogsPage에서 ${eventName} 동작이 일어나요`);
+});
+it('uses factual titles and preserves category labels for each kind', () => {
+  const steps = storyOf(example);
+  expect(steps.map(step => step.title)).toEqual(['화면 동작에서 시작해요', '화면 쪽 코드가 요청을 준비해요', '서버에 요청을 보내요', '서버가 요청을 받아요', '서버가 일을 처리해요']);
+  expect(steps.map(step => step.label)).toEqual(['화면', '프론트 처리', '요청', '서버 받는 곳', '서버 처리']);
+  const noEvent = storyOf(flow([screen, request], [edge(screen.id, request.id)]))[0];
+  expect(noEvent.title).toBe('화면에서 시작해요');
+  const noScreen = storyOf(flow([mutation, request], [edge(mutation.id, request.id)]))[0];
+  expect(noScreen.title).toBe('이 함수에서 시작해요');
+  expect(noScreen.text).not.toContain('화면');
+  const singleFront = storyOf(flow([event, mutation, request], [edge(event.id, mutation.id), edge(mutation.id, request.id)]))[1];
+  expect(singleFront.text).toBe('mutationFn가 요청을 준비해요');
 });

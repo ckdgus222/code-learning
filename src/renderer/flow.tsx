@@ -57,7 +57,8 @@ interface FlowProps {
 export function Flow({ source, symbol, step, evidence, locked, onSymbol, onStep, onOpenCode, calls }: FlowProps) {
   if (!source) {
     return <div className="page page--empty">
-      <h2 className="page__title">흐름 따라가기</h2>
+      <h2 className="page__title">함수 안 순서</h2>
+      <button className="btn" onClick={onOpenCode}>코드 읽기로 돌아가기</button>
       <p>왼쪽 목록에서 파일을 고르면, 그 파일의 함수를 한 단계씩 따라갈 수 있어요.</p>
     </div>;
   }
@@ -66,8 +67,9 @@ export function Flow({ source, symbol, step, evidence, locked, onSymbol, onStep,
 
   return <div className="flow">
     <div className="flow__head">
-      <h2 className="page__title">흐름 따라가기</h2>
+      <h2 className="page__title">함수 안 순서</h2>
       <span className="path">{source.relativePath}</span>
+      <button className="btn" onClick={onOpenCode}>코드 읽기로 돌아가기</button>
     </div>
     {source.analysis.warnings.map(message => <p key={message} className="hint flow__note">{message}</p>)}
     <div className="flow__body">

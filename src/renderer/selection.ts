@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export type View = 'overview' | 'map' | 'flow' | 'code' | 'changes';
+export type View = 'overview' | 'map' | 'flow' | 'code' | 'changes' | 'function';
 
 interface Selection {
   view: View;

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { CallSite, ValueSite, CodeSide, CodeSymbol, Evidence, FileChange, FunctionCalls, GitHistory, MapFunction, MapImport, ProjectView, SourceView,
+import type { FlowNode, CallSite, ValueSite, CodeSide, CodeSymbol, Evidence, FileChange, FunctionCalls, GitHistory, MapFunction, MapImport, ProjectView, SourceView,
   StartCandidate } from '../shared/contracts';
 import { useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
@@ -11,7 +11,8 @@ import { FileGuideCard } from './file-guide';
 import { FileExplanationCard, rememberFileExplanation, type FileExplanationEntry, type FileExplanationState } from './file-explanation';
 import { Flow } from './flow';
 import { ProjectMapView, type MapEntry } from './project-map';
-import { FeatureFlowView } from './feature-flow';
+import { FeatureChooser, FeatureList, FlowLimits, FlowWalk, hasFlowCode, RoutesStatus, siteOf, useFeatureFlows } from './feature-flow';
+import { codeNameOf } from '../core/analysis/flow-story';
 import { matchCallStep, matchFunction, matchImport } from './map-layout';
 import { CallsFacts, type CallFunction, type CallsState } from './calls';
 import { shapeQueries, ValuesFacts, type ShapeSlot, type ShapesState } from './values';
@@ -21,9 +22,9 @@ import { OverviewAi, TopicBar, recordPlace, type OverviewState, type Place, type
 import type { ConnectionReport, LearningEvent, OverviewFeature, LearningMode, FileExplanationRange } from '../shared/ai';
 import './styles.css';
 
-const views: { id: View; label: string }[] = [
-  { id: 'overview', label: '한눈에 보기' }, { id: 'map', label: '프로젝트 지도' }, { id: 'flow', label: '흐름 따라가기' },
-  { id: 'code', label: '코드 읽기' }, { id: 'changes', label: '달라진 내용' },
+const views: { id: Exclude<View, 'function'>; label: string }[] = [
+  { id: 'overview', label: '한눈에 보기' }, { id: 'flow', label: '흐름 따라가기' },
+  { id: 'code', label: '코드 읽기' }, { id: 'map', label: '프로젝트 지도' }, { id: 'changes', label: '달라진 내용' },
 ];
 const candidateReasons: Record<StartCandidate['reason'], string> = {
   'package-main': 'package.json의 main이 가리키는 파일',
@@ -111,7 +112,6 @@ function App() {
   // A second notice changes no other state (stale is already set), so this redraws the screen for the map.
   const [, setRevisionShown] = useState(0);
   // The map is drawn by its own worker, so it has its own request counter: reads may go on meanwhile.
-  const [mapTab, setMapTab] = useState<'features' | 'all'>('features');
   const [projectMap, setProjectMap] = useState<MapEntry | null>(null);
   const [mapping, setMapping] = useState(false);
   const mapRequest = useRef(0);
@@ -129,6 +129,14 @@ function App() {
   const changesRequest = useRef(0);
   const diffRequest = useRef(0);
   const { view, setView, symbolId, stepId, selectSymbol, selectStep } = useSelection();
+  const features = useFeatureFlows(project, revision.current);
+  const currentView = useRef(view);
+  const currentBusy = useRef(busy);
+  currentView.current = view;
+  currentBusy.current = busy;
+  useEffect(() => {
+    if (view === 'overview') features.start();
+  }, [project, view]);
   const symbol = source?.analysis.symbols.find(item => item.id === symbolId);
   const step = symbol?.steps.find(item => item.id === stepId);
   const fileExplanation = fileExplanations.find(entry => entry.result.range.fileId === source?.fileId) ?? null;
@@ -206,7 +214,7 @@ function App() {
   // Plan F1: while a topic is open, each settled place in the code views is recorded.
   // A change notice clears the marks, which is no move: nothing is recorded while the code waits for a re-read.
   useEffect(() => {
-    if (!topic || busy || stale || !source || (view !== 'flow' && view !== 'code')) return;
+    if (!topic || busy || stale || !source || (view !== 'function' && view !== 'code')) return;
     const range = evidence && evidence.fileId === source.fileId
       ? { startUtf16: evidence.startUtf16, endUtf16: evidence.endUtf16, startLine: evidence.startLine, endLine: evidence.endLine } : null;
     const place: Place = { view, fileId: source.fileId, fileHash: source.hash, range,
@@ -215,10 +223,10 @@ function App() {
   }, [topic === null, busy, stale, view, source?.fileId, source?.hash, symbol?.id, stepId, evidence?.id]);
 
   // A newly opened project starts from its overview, not the previous project's view.
-  useEffect(() => setView('overview'), [project?.id, setView]);
+  useEffect(() => setView('overview'), [project, setView]);
   // Choosing a function in the flow view searches its calls; coming back to it reuses what was found.
   useEffect(() => {
-    if (view === 'flow' && source && symbol && calls?.key !== callsKey(source, symbol)) void findCalls(source, symbol);
+    if (view === 'function' && source && symbol && calls?.key !== callsKey(source, symbol)) void findCalls(source, symbol);
   }, [view, source, symbol]);
   // The calls found lead to their value shapes; coming back to a function reuses both.
   useEffect(() => {
@@ -230,8 +238,8 @@ function App() {
   }, [view, project]);
   // The map is drawn the first time it is looked at after a folder opens.
   useEffect(() => {
-    if (view === 'map' && mapTab === 'all' && project && !projectMap && !mapping) void buildMap();
-  }, [view, project, mapTab]);
+    if (view === 'map' && project && !projectMap && !mapping) void buildMap();
+  }, [view, project]);
 
   async function openProject() {
     const current = ++request.current;
@@ -319,7 +327,7 @@ function App() {
    * it had: by name and place when the place is known, by name when that name is the file's only function by it.
    */
   async function openStart(target: Topic) {
-    setView('flow');
+    setView('function');
     const atRevision = revision.current;
     const opened = await readFile(target.start.fileId);
     // A change notice during the read (a wake from sleep included) leaves the code to be checked again.
@@ -506,7 +514,7 @@ function App() {
       : `‘${name}’은 이 파일의 함수 목록에 없어요(이름 없는 함수나 다른 종류일 수 있어요). 왼쪽에서 직접 골라 주세요.`);
   }
 
-  function forgetMap() { setMapTab('features'); mapRequest.current++; setProjectMap(null); setMapping(false); }
+  function forgetMap() { mapRequest.current++; setProjectMap(null); setMapping(false); }
   async function buildMap() {
     if (!project) return;
     const current = ++mapRequest.current;
@@ -673,19 +681,33 @@ function App() {
   }
   // A place from the value search (plan V-1): re-read, and marked in the reader while the file is unchanged.
   async function showValueSite(site: ValueSite | CallSite) {
-    if (busy) return;
+    if (currentBusy.current) return;
     setView('code');
+    await readSiteRange(site, '값을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 다시 찾아 주세요.');
+  }
+  async function readSiteRange(site: ValueSite | CallSite, changedMessage: string) {
+    if (currentBusy.current) return;
     const atRevision = revision.current;
     const opened = await readFile(site.fileId);
     if (!opened || revision.current !== atRevision) return;
-    if (opened.hash !== site.fileHash) { setNotice('값을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 다시 찾아 주세요.'); return; }
+    if (opened.hash !== site.fileHash) { setNotice(changedMessage); return; }
     setReaderEvidence({ id: crypto.randomUUID(), projectId: opened.projectId, fileId: opened.fileId, fileHash: opened.hash,
       startUtf16: site.startUtf16, endUtf16: site.endUtf16, startLine: site.startLine, endLine: site.endLine });
+  }
+  async function showFlowNode(node: FlowNode | null) {
+    if (!node) return;
+    await readSiteRange(siteOf(node), '흐름을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 주소를 다시 찾아 주세요.');
+  }
+  async function followFeatureRoute(routeIndex: number) {
+    if (currentBusy.current) return;
+    setView('flow');
+    const node = await features.follow(routeIndex);
+    if (currentView.current === 'flow' && !currentBusy.current) await showFlowNode(node);
   }
   // The same for a function to follow: it is chosen in the flow view, which then searches its own calls.
   async function showCallFunction(target: CallFunction) {
     if (busy) return;
-    setView('flow');
+    setView('function');
     const atRevision = revision.current;
     const opened = await readFile(target.fileId);
     if (!opened || revision.current !== atRevision) return;
@@ -748,7 +770,7 @@ function App() {
       </ul>
     </main> : <>
       <nav aria-label="보기" className="views">
-        {views.map(item => <button key={item.id} className="views__item" aria-current={view === item.id ? 'page' : undefined}
+        {views.map(item => <button key={item.id} className="views__item" aria-current={(view === 'function' ? 'code' : view) === item.id ? 'page' : undefined}
           onClick={() => setView(item.id)}><Icon name={item.id} /><span>{item.label}</span></button>)}
       </nav>
       <aside className="sidebar" aria-label="보기와 파일">
@@ -767,22 +789,22 @@ function App() {
               return next;
             })}
             // The flow view picks its function from the chosen file, so it stays where it is.
-            onFile={fileId => { if (view !== 'flow') setView('code'); void readFile(fileId, true); }} />
+            onFile={fileId => { if (view !== 'function') setView('code'); void readFile(fileId, true); }} />
           {visibleFileTree.children.length === 0 && <p className="hint">검색과 일치하는 파일이 없어요.</p>}
         </section>
       </aside>
 
       <main className="center">
-        <TopicBar topic={topic} places={places.length} canStartHere={(view === 'flow' || view === 'code') && !!source && !!symbol}
+        <TopicBar topic={topic} places={places.length} canStartHere={(view === 'function' || view === 'code') && !!source && !!symbol}
           canAsk={!!symbol && !stale} locked={busy || stale} onRename={name => setTopic(current => current && { ...current, name })}
           onStartHere={startTopicHere} onStart={() => { if (topic) void openStart(topic); }} onBack={() => void goBack()}
           onAsk={() => void prepareTopicQuestion()}
           onOverview={() => { setView('overview'); setFocusAnchor(topic?.anchor ?? 'overview'); }} onClose={() => beginTopic(null)} />
-        {view === 'overview' && <div className="page">
+        <div className="page" hidden={view !== 'overview'}>
           <h2 className="page__title" tabIndex={-1} data-anchor="overview">한눈에 보기</h2>
           {overviewStale && <p className="notice notice--warn overview-stale"><b>다시 확인 필요:</b> 프로젝트를 연 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 아래 소개와 후보는 폴더를 열 때 읽은 내용이에요. 폴더를 다시 열면 새로 계산해요.</p>}
           <div className="cards">
-            <section className="card" aria-labelledby="overview-intro">
+            {view === 'overview' && <section className="card" aria-labelledby="overview-intro">
               <h3 id="overview-intro">이 프로젝트는 무엇을 하나요?</h3>
               {intro ? <>
                 <span className="tag tag--doc">문서에 적힌 소개</span>
@@ -791,13 +813,12 @@ function App() {
                 <p className="hint">{intro.relativePath}{intro.startLine !== null && ` · ${intro.startLine}–${intro.endLine}줄`} · 문서 내용이 실제 코드와 맞는지는 확인하지 않았어요.</p>
                 <button className="btn btn--chip" disabled={busy} onClick={() => { setView('code'); void readFile(intro.fileId); }}>{intro.relativePath} 열기</button>
               </> : <p className="unknown"><span className="tag tag--unknown">확인하지 못함</span>프로젝트 목적: 아직 확인하지 못했습니다.</p>}
-            </section>
-            <section className="card" aria-label="기능별로 따라가기">
-              <h3>기능별로 따라가기</h3>
-              <p>프로젝트 구성을 살펴보고, 기능 하나를 골라 화면부터 서버까지 따라가요.</p>
-              <button className="btn" onClick={() => { setMapTab('features'); setView('map'); }}>기능별 안내 열기</button>
-            </section>
-            <section className="card">
+            </section>}
+            <FeatureChooser key={project.files[0]?.id ?? project.id} project={project} state={features}
+              mode={mode} running={questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running'}
+              checking={checking} connections={connections} onInspect={inspectConnections} onRunning={setFeatureGuideRunning}
+              revision={revision.current} locked={busy} onFollow={index => void followFeatureRoute(index)} />
+            {view === 'overview' && <><section className="card">
               <h3>읽을 수 있는 파일</h3>
               <p className="stat"><b>{project.files.length}</b>개</p>
               <details><summary>제외 항목</summary>
@@ -833,20 +854,38 @@ function App() {
               {project.warnings.map(message => <p key={message} className="hint">{message}</p>)}
               <p className="hint">새 파일 목록은 폴더를 다시 열어 갱신합니다. 현재 파일·제외 규칙의 변경은 읽기 전에 다시 확인합니다.</p>
             </section>
+            </>}
           </div>
-        </div>}
-
-        {view === 'map' && <div className="map-actions" role="tablist" aria-label="프로젝트 지도 보기">
-          <button className="btn" role="tab" aria-selected={mapTab === 'features'} onClick={() => setMapTab('features')}>기능별 안내</button>
-          <button className="btn" role="tab" aria-selected={mapTab === 'all'} onClick={() => setMapTab('all')}>전체 지도</button>
-        </div>}
-        <div hidden={view !== 'map' || mapTab !== 'features'}>
-          <FeatureFlowView key={project.files[0]?.id ?? project.id} project={project} active={view === 'map' && mapTab === 'features'}
-            mode={mode} running={questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running'}
-            checking={checking} connections={connections} onInspect={inspectConnections} onRunning={setFeatureGuideRunning}
-            revision={revision.current} locked={busy} onCode={site => void showValueSite(site)} onFunction={target => void showCallFunction(target)} />
         </div>
-        {view === 'map' && mapTab === 'all' && <ProjectMapView project={project} entry={projectMap}
+
+        {view === 'flow' && <div className="page feature-page">
+          <h2 className="page__title">흐름 따라가기</h2>
+          <RoutesStatus state={features} retryDisabled={busy || features.stale}
+            retry={features.selected !== null ? () => void followFeatureRoute(features.selected!) : undefined} />
+          {features.following && <p role="status">기능 흐름을 찾는 중… <button className="btn" onClick={features.cancelFollow}>기능 흐름 취소</button></p>}
+          {!features.flow && !features.following && <>
+            <p>한눈에 보기에서 기능을 고르거나, 아래 목록에서 골라 주세요</p>
+            {features.routes && <FeatureList search={features.search} setSearch={features.setSearch} groups={features.groups} routes={features.routes} selected={features.selected}
+              disabled={busy || features.stale} onFollow={index => void followFeatureRoute(index)} />}
+          </>}
+          {features.flow && features.routes && <FlowWalk flow={features.flow}
+            title={features.selectedFeature?.name ?? codeNameOf(features.routes.routes[features.flow.routeIndex])}
+            about={features.selectedFeature?.about}
+            codeName={codeNameOf(features.routes.routes[features.flow.routeIndex])} walk={features.walk} selection={features.selection}
+            setStory={id => void showFlowNode(features.setStory(id))} setStep={index => void showFlowNode(features.setStep(index))}
+            setNode={id => void showFlowNode(features.setNode(id))} locked={busy} stale={features.stale}
+            onChoose={features.clearFlow} onCode={site => void showValueSite(site)} onFunction={target => void showCallFunction(target)}>
+            {features.currentNode && (source && evidence && hasFlowCode(source, evidence, features.currentNode)
+              ? <div className="code flow-walk-code" data-testid="flow-code">
+                <p className="evidence" data-testid="evidence-range">근거: {source.relativePath} · {evidence.startLine}–{evidence.endLine}줄 · UTF-16 [{evidence.startUtf16}, {evidence.endUtf16})</p>
+                <Reader source={source} evidence={evidence} codeSize={codeSize} wrap={wrap}
+                  symbolId={null} stepId={null} locked={busy || stale} />
+              </div>
+              : <button className="btn" disabled={busy} onClick={() => void showFlowNode(features.currentNode)}>이 단계 코드 보기</button>)}
+          </FlowWalk>}
+          <FlowLimits project={project} routes={features.routes} flow={features.flow} locked={busy} onCode={site => void showValueSite(site)} />
+        </div>}
+        {view === 'map' && <ProjectMapView project={project} entry={projectMap}
           stale={projectMap !== null && projectMap.revision !== revision.current} mapping={mapping}
           changes={changes?.state.status === 'done' ? { result: changes.state.value, stale: changes.revision !== revision.current } : null}
           onShowChange={change => void openChange(change)}
@@ -854,8 +893,8 @@ function App() {
           locked={busy} onOpenFile={fileId => { if (busy) return; setView('code'); void readFile(fileId); }}
           onShowImport={item => void showImport(item)} onShowFunction={item => void showFunction(item)} />}
 
-        {view === 'flow' && functionExplanation && <p className="function-explanation" data-testid="function-chunk-summary">{functionExplanation}</p>}
-        {view === 'flow' && <Flow source={source} symbol={symbol} step={step} evidence={evidence} locked={busy || stale}
+        {view === 'function' && functionExplanation && <p className="function-explanation" data-testid="function-chunk-summary">{functionExplanation}</p>}
+        {view === 'function' && <Flow source={source} symbol={symbol} step={step} evidence={evidence} locked={busy || stale}
           onSymbol={item => { selectSymbol(item.id); void showEvidence(item.evidence, null); }}
           onStep={next => {
             if (next) void showEvidence(next.evidence, next.id);
@@ -884,7 +923,7 @@ function App() {
           <div className="reader__head">
             <h3 className="path reader__file">{source.relativePath}</h3>
             <span className="badge">읽기 전용</span>
-            {symbol && <button className="btn btn--small" onClick={() => setView('flow')}>이 함수 흐름으로 보기</button>}
+            {symbol && <button className="btn btn--small" onClick={() => setView('function')}>이 함수 흐름으로 보기</button>}
             <button className="btn btn--small" disabled={busy} onClick={() => readFile(source.fileId)}>파일 다시 읽기</button>
             <div className="reader__tools" role="group" aria-label="읽기 설정">
               <button className="btn btn--icon" aria-label="찾기 ⌘F" title="찾기 ⌘F" aria-keyshortcuts="Meta+F" onClick={() => reader.current?.openSearch()}><Icon name="search" /></button>

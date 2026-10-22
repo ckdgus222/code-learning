@@ -13,9 +13,14 @@ export function groupNameOf(route: Route, relativePath: string): string {
   return relativePath.split('/').at(-1)?.replace(/\.[^.]+$/, '').replace(/\.(?:controller|routes?|router|handler)$/, '') || '이름 모름';
 }
 
+const kindLabels: Record<StoryStep['kind'], string> = {
+  screen: '화면', front: '프론트 처리', request: '요청', handler: '서버 받는 곳', back: '서버 처리',
+};
+
 export interface StoryStep {
   storyId: string;
   kind: 'screen' | 'front' | 'request' | 'handler' | 'back';
+  label: string;
   title: string;
   text: string;
   representative: FlowNode;
@@ -86,7 +91,7 @@ export function storyOf(flow: FeatureFlow): StoryStep[] {
     const others = flow.nodes.filter(node => upstream.has(node.id) && !seen.has(node.id));
     const add = (kind: StoryStep['kind'], title: string, text: string, representative: FlowNode,
       nodes: FlowNode[], edges: FlowEdge[], alternatives: FlowNode[] = []) => {
-      result.push({ storyId, kind, title, text, representative, nodes, others: alternatives,
+      result.push({ storyId, kind, label: kindLabels[kind], title, text, representative, nodes, others: alternatives,
         inferred: edges.some(edge => !edge.sure), reasons: [...new Set(edges.filter(edge => !edge.sure).flatMap(edge => edge.reasons))],
         typed: edges.some(edge => edge.kind === 'typed'), stopped: [...nodes, ...alternatives].some(node => cycles.has(node.id)) });
     };
@@ -96,23 +101,25 @@ export function storyOf(flow: FeatureFlow): StoryStep[] {
       const screenEnd = Math.max(0, eventIndex);
       const event = eventIndex >= 0 ? path[eventIndex] : null;
       const processing = path.slice(screenEnd + 1);
-      add('screen', '화면', (first.screen !== null ? `화면 ${first.screen}` : `시작: ${first.relativePath} · ${first.name}`)
-        + (event ? ` · ${event.event}(버튼 등)을 눌러요` : ''), event ?? first, path.slice(0, screenEnd + 1),
+      add('screen', event ? '화면 동작에서 시작해요' : first.screen !== null ? '화면에서 시작해요' : '이 함수에서 시작해요',
+        (first.screen !== null ? `화면 ${first.screen}` : `${first.relativePath} · ${first.name}`)
+        + (event ? `에서 ${event.event} 동작이 일어나요` : '에서 시작해요'), event ?? first, path.slice(0, screenEnd + 1),
         processing.length ? arrows.slice(0, screenEnd) : arrows, processing.length ? [] : others);
-      if (processing.length) add('front', '프론트 처리', processing.map(node => node.name).join(' → '), path.at(-1)!, processing,
+      if (processing.length) add('front', '화면 쪽 코드가 요청을 준비해요', processing.map(node => node.name).join(' → ')
+        + (processing.length === 1 ? '가 요청을 준비해요' : ' 순서로 이어져요'), path.at(-1)!, processing,
         arrows.slice(screenEnd), others);
     }
-    if (request) add('request', '요청', `서버에 ${request.name} 요청을 보내요`, request, [request],
+    if (request) add('request', '서버에 요청을 보내요', `${request.name} 요청을 보내요`, request, [request],
       flow.edges.filter(edge => edge.from === request.id && byId.get(edge.to)?.side === 'back'));
     if (handler) {
       const next = back.find(node => node.depth === 1);
-      add('handler', '서버 받는 곳', `${handler.name}가 요청을 받아요${next ? ` → ${next.name}에 넘겨요` : ''}`,
+      add('handler', '서버가 요청을 받아요', `${handler.name}가 요청을 받아요${next ? ` → ${next.name}에 넘겨요` : ''}`,
         handler, [handler], flow.edges.filter(edge => edge.from === handler.id && byId.get(edge.to)?.side === 'back'));
       const functions = back.filter(node => node.depth >= 1);
       // One line each: a call's first line can run long (a whole transaction opening).
       const outside = back.flatMap(node => node.outside).map(text => text.length > 48 ? `${text.slice(0, 48)}…` : text);
       const omitted = Math.max(0, outside.length - 4) + back.reduce((sum, node) => sum + node.outsideOmitted, 0);
-      if (functions.length || outside.length) add('back', '서버 처리', [functions.map(node => node.name).join(' → '),
+      if (functions.length || outside.length) add('back', '서버가 일을 처리해요', [functions.map(node => node.name).join(' → '),
         outside.length ? `바깥 호출: ${outside.slice(0, 4).join(' · ')}${omitted ? ' …' : ''}` : ''].filter(Boolean).join(' · '),
       next ?? handler, back, flow.edges.filter(edge => byId.get(edge.from)?.side === 'back' && byId.get(edge.to)?.side === 'back'));
     }

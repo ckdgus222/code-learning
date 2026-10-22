@@ -1,59 +1,106 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Position, type Edge, type Node } from '@xyflow/react';
-import type { CallTarget, FeatureFlow, FlowEdge, FlowNode, ProjectRoutes, ProjectView, Request, Route, ValueSite } from '../shared/contracts';
+import type { Evidence, SourceView, CallTarget, FeatureFlow, FlowEdge, FlowNode, ProjectRoutes, ProjectView, Request, Route, ValueSite } from '../shared/contracts';
 import { ARROW_MARKER, firstRows, MapCanvas, Omitted } from './project-map';
 import { layoutFlow } from './flow-layout';
 import { isNextConfig, nextRouteOf } from '../core/analysis/next-routes';
 import type { ConnectionReport, FeatureGuide, FeatureGuideResult, LearningMode } from '../shared/ai';
 import { FeatureGuideCard } from './feature-guide';
-import { codeNameOf, groupNameOf, storyOf, type StoryStep } from '../core/analysis/flow-story';
+import { codeNameOf, groupNameOf, storyOf } from '../core/analysis/flow-story';
+
+export const siteOf = (node: FlowNode): ValueSite => ({ fileId: node.fileId, fileHash: node.fileHash, ...node.range, text: node.name });
+const targetOf = (node: FlowNode): CallTarget => ({ fileId: node.fileId, fileHash: node.fileHash, ...node.range, name: node.name });
 
 /** The two ways out of a step: the code range itself, and that function's own flow (a request is not a function). */
 function NodeButtons({ node, locked, onCode, onFunction }: {
   node: FlowNode; locked: boolean; onCode(site: ValueSite): void; onFunction(target: CallTarget): void;
 }) {
   return <>
-    <button className="btn btn--small" disabled={locked}
-      onClick={() => onCode({ fileId: node.fileId, fileHash: node.fileHash, ...node.range, text: node.name })}>코드 보기</button>{' '}
+    <button className="btn btn--small" disabled={locked} onClick={() => onCode(siteOf(node))}>코드 보기</button>{' '}
     {node.side !== 'request' && <button className="btn btn--small" disabled={locked}
-      onClick={() => onFunction({ fileId: node.fileId, fileHash: node.fileHash, ...node.range, name: node.name })}>이 함수 흐름</button>}
+      onClick={() => onFunction(targetOf(node))}>이 함수 흐름</button>}
   </>;
 }
 
-export function FlowStory({ flow, locked, onCode, onFunction }: {
-  flow: FeatureFlow; locked: boolean; onCode(site: ValueSite): void; onFunction(target: CallTarget): void;
+export interface Walk {
+  storyId: string | null;
+  step: number;
+  nodeId: string | null;
+}
+const firstWalk: Walk = { storyId: null, step: 0, nodeId: null };
+
+export type WalkSelection = ReturnType<typeof walkSelection>;
+export function walkSelection(flow: FeatureFlow | null, walk: Walk) {
+  const all = flow ? storyOf(flow) : [];
+  const stories = [...new Set(all.map(step => step.storyId))];
+  const storyId = walk.storyId ?? stories[0];
+  const steps = all.filter(step => step.storyId === storyId);
+  const step = steps[walk.step];
+  const currentNode = step?.nodes.find(node => node.id === walk.nodeId) ?? step?.representative ?? null;
+  return { stories, storyId, steps, step, currentNode };
+}
+
+export function hasFlowCode(source: Pick<SourceView, 'fileId' | 'hash'> | null, evidence: Evidence | null, node: FlowNode): boolean {
+  return !!source && !!evidence && source.fileId === node.fileId && source.hash === node.fileHash
+    && evidence.fileId === node.fileId && evidence.fileHash === node.fileHash
+    && evidence.startUtf16 === node.range.startUtf16 && evidence.endUtf16 === node.range.endUtf16
+    && evidence.startLine === node.range.startLine && evidence.endLine === node.range.endLine;
+}
+
+export function FlowWalk({ flow, title, about, codeName, walk, selection, setStory, setStep, setNode, locked, stale,
+  onFunction, onCode, onChoose, children }: {
+  flow: FeatureFlow; title: string; about?: string; codeName: string; walk: Walk; selection: WalkSelection;
+  setStory(id: string): void; setStep(index: number): void; setNode(id: string): void;
+  locked: boolean; stale: boolean; onFunction(target: CallTarget): void; onCode(site: ValueSite): void;
+  onChoose(): void; children?: React.ReactNode;
 }) {
-  const stories = useMemo(() => {
-    const byStory = new Map<string, StoryStep[]>();
-    for (const step of storyOf(flow)) byStory.set(step.storyId, [...byStory.get(step.storyId) ?? [], step]);
-    return [...byStory];
-  }, [flow]);
-  const buttons = (node: FlowNode) => <NodeButtons node={node} locked={locked} onCode={onCode} onFunction={onFunction} />;
-  const detailsOf = (nodes: FlowNode[]) => <ul className="map-list">{nodes.map(node => <li key={node.id}>
-    <span className="path">{node.relativePath}</span> · <b>{node.name}</b>{' '}{buttons(node)}
-  </li>)}</ul>;
-  return <section className="card" aria-label="기능 따라가기">
-    <h3>기능 따라가기</h3>
+  const { stories, storyId, steps, step, currentNode } = selection;
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [picks, setPicks] = useState(0);
+  const disabled = locked || stale;
+  return <section aria-label="기능 따라가기">
+    <div className="map-actions"><h3>{title}</h3><button className="btn" disabled={locked} onClick={onChoose}>다른 기능 고르기</button></div>
+    {(about || codeName !== title) && <p>{about && `${about} · `}{codeName !== title && codeName}</p>}
     {!flow.nodes.some(node => node.side === 'request') && <p>프론트 시작점은 찾지 못했어요</p>}
-    {stories.map(([storyId, steps]) => {
-      const head = flow.nodes.find(node => node.id === storyId);
-      return <div key={storyId}>
-        {stories.length > 1 && head && <h4>{head.name} · {head.relativePath}</h4>}
-        <ol className="feature-steps story-steps">{steps.map(step => <li key={step.kind} data-testid="story-step" data-kind={step.kind}>
-          <b>{step.title}</b>
-          <p>{step.text}</p>
-          {step.inferred && <p><span className="tag tag--unknown">추정</span> {step.reasons.join(' · ')}</p>}
-          {step.typed && <p><span className="tag tag--doc">타입으로 찾음</span></p>}
-          <button className="btn btn--small" disabled={locked} onClick={() => onCode({ fileId: step.representative.fileId,
-            fileHash: step.representative.fileHash, ...step.representative.range, text: step.representative.name })}>코드 보기</button>
-          <details><summary>자세히</summary>
-            {step.stopped && <p>서로 부르는 함수가 있어 여기서 멈췄어요</p>}
-            {detailsOf(step.nodes)}
-            {step.others.length > 0 && <><p>다른 곳에서도 불러요</p>{detailsOf(step.others)}</>}
-          </details>
-        </li>)}</ol>
-      </div>;
-    })}
+    {stories.length > 1 && <div role="group" aria-label="요청 고르기">요청 고르기: {stories.map(id => {
+      const request = flow.nodes.find(node => node.id === id)!;
+      return <button key={id} className="btn btn--small" aria-pressed={storyId === id} disabled={disabled}
+        onClick={() => setStory(id)}>{request.relativePath} {request.range.startLine}행 · {request.name}</button>;
+    })}</div>}
+    {step && currentNode && <>
+      {/* Above the step: the code below it can be long, and the way on should stay in view. */}
+      <nav aria-label="이야기 단계" className="flow-nav">
+        <button className="btn" disabled={disabled || walk.step === 0} onClick={() => setStep(walk.step - 1)}>◀ 이전</button>
+        {steps.map((item, index) => <button key={item.kind} className="btn" disabled={disabled}
+          aria-current={index === walk.step ? 'step' : undefined} onClick={() => setStep(index)}>{['①', '②', '③', '④', '⑤'][index]}</button>)}
+        <button className="btn" disabled={disabled || walk.step === steps.length - 1} onClick={() => setStep(walk.step + 1)}>다음 ▶</button>
+      </nav>
+      <article className="card" data-testid="story-step" data-kind={step.kind}>
+        <p>{walk.step + 1} / {steps.length} · {step.label}</p>
+        <h3>{step.title}</h3><p>{step.text}</p>
+        {step.inferred && <p><span className="tag tag--unknown">추정</span> {step.reasons.join(' · ')}</p>}
+        {step.typed && <p><span className="tag tag--doc">타입으로 찾음</span></p>}
+        {step.stopped && <p>서로 부르는 함수가 있어 여기서 멈췄어요</p>}
+        {step.nodes.length > 1 && <div role="group" aria-label="이 단계의 함수">이 단계의 함수: {step.nodes.map(node =>
+          <button key={node.id} className="btn btn--small" aria-pressed={node.id === currentNode.id} disabled={disabled}
+            onClick={() => setNode(node.id)}>{node.name}</button>)}</div>}
+        <p>근거: {currentNode.relativePath} · {currentNode.name}{' '}
+          {currentNode.side !== 'request' && <button className="btn btn--small" disabled={disabled}
+            onClick={() => onFunction(targetOf(currentNode))}>이 함수 안 순서</button>}
+        </p>
+        {children}
+      </article>
+      {step.others.length > 0 && <details className="card"><summary>다른 곳에서도 불러요</summary>
+        <ul className="map-list">{step.others.map(node => <li key={node.id}>
+          <span className="path">{node.relativePath}</span> · <b>{node.name}</b>{' '}
+          <NodeButtons node={node} locked={disabled} onCode={onCode} onFunction={onFunction} />
+        </li>)}</ul>
+      </details>}
+    </>}
+    <FoldedDetails key={`${flow.routesId}:${flow.routeIndex}`} summary="전체 그림과 단계 보기">
+      <FlowDiagram flow={flow} selectedNodeId={selectedNodeId} onSelect={id => { setSelectedNodeId(id); setPicks(count => count + 1); }} />
+      <FlowSteps flow={flow} locked={disabled} onCode={onCode} onFunction={onFunction} selectedNodeId={selectedNodeId} picks={picks} />
+    </FoldedDetails>
   </section>;
 }
 
@@ -77,11 +124,9 @@ export function FeatureOverview({ project, routes, guide, children }: { project:
       server: topFolder(routes.routes.map(route => route.handler.fileId)), front: topFolder(routes.requests.map(request => request.fileId)) };
   }, [project.files, routes]);
   const { next, screens, sure, inferred, server, front } = summary;
-  const intro = project.overview.intro?.text;
   return <section className="card" aria-label="프로젝트 파악">
     <h3>프로젝트 파악</h3>
     {guide && <p><span className="tag tag--unknown">AI 정리</span> {guide.summary}</p>}
-    {intro && <p>{intro}</p>}
     {next && <p>화면 {screens}개</p>}
     <p>서버 기능 {routes.routes.length}개</p>
     <p>프론트 요청 {routes.requests.length}개 · 서버와 이어짐 확실 {sure} · 추정 {inferred} · 못 이음 {routes.requests.length - sure - inferred}</p>
@@ -228,17 +273,11 @@ export function featureGroups(project: ProjectView, routes: ProjectRoutes, guide
   return groups;
 }
 
-export function FeatureFlowView({ project, active, revision, locked, onCode, onFunction, mode, running, checking, connections, onInspect, onRunning }: {
-  project: ProjectView; active: boolean; revision: number; locked: boolean;
-  mode: LearningMode; running: boolean; checking: boolean; connections: ConnectionReport | null;
-  onInspect(): Promise<string | null>; onRunning(value: boolean): void;
-  onCode(site: ValueSite): void; onFunction(target: CallTarget): void;
-}) {
+export function useFeatureFlows(project: ProjectView | null, revision: number) {
   const [guideResult, setGuideResult] = useState<FeatureGuideResult | null>(null);
   const [entry, setEntry] = useState<{ result: ProjectRoutes; revision: number } | null>(null);
   const [flow, setFlow] = useState<FeatureFlow | null>(null);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [picks, setPicks] = useState(0);
+  const [walk, setWalk] = useState<Walk>(firstWalk);
   const [selected, setSelected] = useState<number | null>(null);
   const [finding, setFinding] = useState(false);
   const [following, setFollowing] = useState(false);
@@ -250,20 +289,22 @@ export function FeatureFlowView({ project, active, revision, locked, onCode, onF
   const currentRevision = useRef(revision);
   currentRevision.current = revision;
   const stale = !!entry && entry.revision !== revision;
-  // A result for another route list or an older folder state is simply not shown.
   const guide = !stale && guideResult?.routesId === entry?.result.routesId ? guideResult : null;
   useEffect(() => {
-    if (active && !started.current) { started.current = true; void find(); }
-  }, [active]);
-  useEffect(() => () => {
-    routesRun.current++; flowRun.current++;
-    void window.learning.cancelRoutes({ projectId: project.id });
+    started.current = false;
+    setEntry(null); setGuideResult(null); setFlow(null); setWalk(firstWalk); setSelected(null);
+    setFinding(false); setFollowing(false); setError(''); setSearch('');
+    return () => {
+      routesRun.current++; flowRun.current++;
+      if (project) void window.learning.cancelRoutes({ projectId: project.id });
+    };
   }, [project]);
   async function find() {
+    if (!project) return;
     const run = ++routesRun.current;
     flowRun.current++;
     const atRevision = revision;
-    setFinding(true); setFollowing(false); setError(''); setEntry(null); setFlow(null); setSelected(null); setSelectedNodeId(null);
+    setFinding(true); setFollowing(false); setError(''); setEntry(null); setFlow(null); setSelected(null); setWalk(firstWalk);
     const result = await window.learning.routes({ projectId: project.id });
     if (run !== routesRun.current) return;
     setFinding(false);
@@ -271,85 +312,131 @@ export function FeatureFlowView({ project, active, revision, locked, onCode, onF
     if (atRevision !== currentRevision.current) { setError('프로젝트가 바뀌었어요. 주소를 다시 찾아 주세요.'); return; }
     setEntry({ result: result.value, revision: atRevision });
   }
+  function start() {
+    if (!project || started.current) return;
+    started.current = true;
+    void find();
+  }
   async function follow(routeIndex: number) {
-    if (!entry || stale) return;
+    if (!project || !entry || stale) return null;
     const run = ++flowRun.current;
     const atRevision = revision;
-    setSelected(routeIndex); setFollowing(true); setError(''); setFlow(null); setSelectedNodeId(null);
+    setSelected(routeIndex); setFollowing(true); setError(''); setFlow(null); setWalk(firstWalk);
     const result = await window.learning.featureFlow({ projectId: project.id, routesId: entry.result.routesId, routeIndex });
-    if (run !== flowRun.current) return;
+    if (run !== flowRun.current) return null;
     setFollowing(false);
-    if (!result.ok) { setError(result.message); return; }
-    if (atRevision !== currentRevision.current) { setError('프로젝트가 바뀌었어요. 주소를 다시 찾아 주세요.'); return; }
+    if (!result.ok) { setError(result.message); return null; }
+    if (atRevision !== currentRevision.current) { setError('프로젝트가 바뀌었어요. 주소를 다시 찾아 주세요.'); return null; }
     setFlow(result.value);
+    return walkSelection(result.value, firstWalk).currentNode;
+  }
+  function cancelFind() {
+    routesRun.current++; setFinding(false);
+    if (project) void window.learning.cancelRoutes({ projectId: project.id });
+  }
+  function cancelFollow() {
+    flowRun.current++; setFollowing(false);
+    if (project) void window.learning.cancelFeatureFlow({ projectId: project.id });
+  }
+  function clearFlow() {
+    cancelFollow(); setFlow(null); setSelected(null); setError(''); setWalk(firstWalk);
+  }
+  function changeWalk(next: Walk) {
+    setWalk(next);
+    return walkSelection(flow, next).currentNode;
   }
   const routes = entry?.result;
+  const groups = useMemo(() => project && routes ? featureGroups(project, routes, guide?.guide) : [], [project, routes, guide]);
+  const selection = useMemo(() => walkSelection(flow, walk), [flow, walk]);
+  // Only an AI-named feature has a name and sentence of its own; a route alone is shown by its code name.
+  const selectedFeature = useMemo(() => flow ? groups.flatMap(group => group.features).find(feature => feature.ai && feature.routes.includes(flow.routeIndex)) : undefined,
+    [flow, groups]);
+  return { routes, finding, stale, error, search, setSearch, guide, setGuideResult, groups, flow, following, selected, walk,
+    selection, currentNode: selection.currentNode, selectedFeature,
+    start, find, cancelFind, follow, cancelFollow, clearFlow,
+    setStory: (storyId: string) => changeWalk({ storyId, step: 0, nodeId: null }),
+    setStep: (step: number) => changeWalk({ ...walk, step, nodeId: null }),
+    setNode: (nodeId: string) => changeWalk({ ...walk, nodeId }),
+  };
+}
+
+type FeatureFlows = ReturnType<typeof useFeatureFlows>;
+
+export function FeatureList({ groups, routes, selected, disabled, onFollow, search, setSearch }: {
+  groups: ReturnType<typeof featureGroups>; routes: ProjectRoutes; selected: number | null;
+  disabled: boolean; onFollow(routeIndex: number): void; search: string; setSearch(value: string): void;
+}) {
+  const query = search.toLowerCase();
+  const visible = groups.map(group => ({ ...group, features: group.features.filter(feature => feature.haystack.includes(query)) }))
+    .filter(group => group.features.length);
+  return <section aria-label="기능 목록">
+    <h3>기능 고르기</h3>
+    <label>기능 검색 <input value={search} onChange={event => setSearch(event.target.value)} placeholder="기능 이름·주소·함수 이름" /></label>
+    <p>기능 목록 · {groups.reduce((count, group) => count + group.features.length, 0)}개</p>
+    {visible.map((group, groupIndex) => <section className="card" key={groupIndex}>
+      <h4>{group.name}</h4>
+      {group.about && <p className="hint">{group.about}</p>}
+      <ul className="map-list">{firstRows(group.features).map((feature, featureIndex) => <li key={featureIndex}>
+        <b>{feature.name}</b>{' '}
+        <button className="btn btn--small" aria-pressed={selected !== null && feature.routes.includes(selected)} disabled={disabled}
+          onClick={() => onFollow(feature.routes[0])}>이 기능 따라가기</button>
+        <p className="hint">{feature.about}</p>
+        {feature.ai && <p className="hint">{feature.routes.map(index => routeLabel(routes.routes[index])).join(' · ')}</p>}
+        {feature.routes.length > 1 && <div className="map-actions">{feature.routes.map(index => <button key={index} className="btn btn--small"
+          aria-pressed={selected === index} disabled={disabled} onClick={() => onFollow(index)}>{routeLabel(routes.routes[index])}</button>)}</div>}
+        <span className="hint">프론트 요청 확실 {feature.sure}곳 · 추정 {feature.inferred}곳</span>
+      </li>)}</ul><Omitted count={group.features.length} />
+    </section>)}
+    {!visible.length && <p className="hint">조건에 맞는 받는 곳을 찾지 못했어요.</p>}
+  </section>;
+}
+
+export function FeatureChooser({ project, state, revision, locked, onFollow, mode, running, checking, connections, onInspect, onRunning }: {
+  project: ProjectView; state: FeatureFlows; revision: number; locked: boolean; onFollow(routeIndex: number): void;
+  mode: LearningMode; running: boolean; checking: boolean; connections: ConnectionReport | null;
+  onInspect(): Promise<string | null>; onRunning(value: boolean): void;
+}) {
+  const { routes, stale, guide, setGuideResult } = state;
+  return <div className="card--wide">
+    {project.warnings.length > 0 && <p className="notice">{project.warnings.join(' ')}</p>}
+    <RoutesStatus state={state} />
+    {routes && <>
+      <FeatureOverview project={project} routes={routes} guide={guide?.guide}>
+        <FeatureGuideCard key={`${routes.routesId}:${revision}`} projectId={project.id} routesId={routes.routesId}
+          result={guide} mode={mode} locked={locked || stale} running={running} checking={checking} connections={connections}
+          onInspect={onInspect} onResult={setGuideResult} onRunning={onRunning} />
+      </FeatureOverview>
+      <FeatureList search={state.search} setSearch={state.setSearch} groups={state.groups} routes={routes} selected={state.selected} disabled={locked || stale} onFollow={onFollow} />
+    </>}
+  </div>;
+}
+
+/** Finding the routes, its error and whether it is out of date: the same on the overview and the flow page. */
+export function RoutesStatus({ state, retry, retryDisabled = false }: { state: FeatureFlows; retry?: () => void; retryDisabled?: boolean }) {
+  return <>
+    <div className="map-actions">{state.finding ? <>
+      <span role="status" className="busy"><span className="spinner" aria-hidden="true" />주소를 찾는 중…</span>
+      <button className="btn btn--small" onClick={state.cancelFind}>주소 찾기 취소</button>
+    </> : <button className="btn btn--small" onClick={() => void state.find()}>다시 찾기</button>}</div>
+    {state.error && <div><p role="alert" className="notice notice--warn">{state.error}</p>
+      {retry && <button className="btn" disabled={retryDisabled} onClick={retry}>다시 시도</button>}
+    </div>}
+    {state.stale && <p className="notice notice--warn">다시 확인 필요: 파일이 바뀌었거나 잠자기에서 돌아왔어요. 주소를 다시 찾아 주세요.</p>}
+  </>;
+}
+
+export function FlowLimits({ project, routes, flow, locked, onCode }: {
+  project: ProjectView; routes: ProjectRoutes | undefined; flow: FeatureFlow | null; locked: boolean; onCode(site: ValueSite): void;
+}) {
   const pathById = useMemo(() => new Map(project.files.map(file => [file.id, file.relativePath])), [project.files]);
   const pathOf = (fileId: string) => pathById.get(fileId) ?? '';
-  const allGroups = useMemo(() => routes ? featureGroups(project, routes, guide?.guide) : [], [project, routes, guide]);
-  const query = search.toLowerCase();
-  const groups = allGroups.map(group => ({ ...group, features: group.features.filter(feature => feature.haystack.includes(query)) }))
-    .filter(group => group.features.length);
-  const selectedFeature = flow ? allGroups.flatMap(group => group.features).find(feature => feature.ai && feature.routes.includes(flow.routeIndex)) : undefined;
   const requestList = (items: Request[], title: string) => <details className="card"><summary>{title} {items.length}개</summary>
     <ul className="map-list">{firstRows(items).map(request => <li key={`${request.fileId}:${request.startUtf16}`}>
       <code>{request.text}</code> · <span className="path">{pathOf(request.fileId)} {request.startLine}행</span>{' '}
       <button className="btn btn--small" disabled={locked} onClick={() => onCode(request)}>코드 보기</button>
     </li>)}</ul><Omitted count={items.length} />
   </details>;
-  return <div className="page feature-page">
-    <h2 className="page__title">기능별 안내</h2>
-    {project.warnings.length > 0 && <p className="notice">{project.warnings.join(' ')}</p>}
-    <div className="map-actions">{finding ? <>
-      <span role="status" className="busy"><span className="spinner" aria-hidden="true" />주소를 찾는 중…</span>
-      <button className="btn btn--small" onClick={() => { routesRun.current++; setFinding(false); void window.learning.cancelRoutes({ projectId: project.id }); }}>주소 찾기 취소</button>
-    </> : <button className="btn btn--small" onClick={() => void find()}>다시 찾기</button>}</div>
-    {error && <p role="alert" className="notice notice--warn">{error}</p>}
-    {stale && <p className="notice notice--warn">다시 확인 필요: 파일이 바뀌었거나 잠자기에서 돌아왔어요. 주소를 다시 찾아 주세요.</p>}
-    {routes && <FeatureOverview project={project} routes={routes} guide={guide?.guide}>
-      <FeatureGuideCard key={`${routes.routesId}:${revision}`} projectId={project.id} routesId={routes.routesId}
-        result={guide} mode={mode} locked={locked || stale} running={running} checking={checking} connections={connections}
-        onInspect={onInspect} onResult={setGuideResult} onRunning={onRunning} />
-    </FeatureOverview>}
-    {/* The list and the chosen feature side by side: below a long list, the story it opens was out of sight. */}
-    <div className="feature-guide">
-    {routes && <div className="feature-guide__list">
-      <label>기능 검색 <input value={search} onChange={event => setSearch(event.target.value)} placeholder="기능 이름·주소·함수 이름" /></label>
-      <section aria-label="기능 목록">
-        <h3>기능 목록 · {allGroups.reduce((count, group) => count + group.features.length, 0)}개</h3>
-        {groups.map((group, groupIndex) => <section className="card" key={groupIndex}>
-          <h4>{group.name}</h4>
-          {group.about && <p className="hint">{group.about}</p>}
-          <ul className="map-list">{firstRows(group.features).map((feature, featureIndex) => {
-            return <li key={featureIndex}><button className="btn btn--small" aria-pressed={selected !== null && feature.routes.includes(selected)} disabled={stale}
-              onClick={() => void follow(feature.routes[0])}>{feature.name}</button>
-              <p className="hint">{feature.about}</p>
-              {feature.ai && <p className="hint">{feature.routes.map(index => routeLabel(routes.routes[index])).join(' · ')}</p>}
-              {feature.routes.length > 1 && <div className="map-actions">{feature.routes.map(index => <button key={index} className="btn btn--small"
-                aria-pressed={selected === index} disabled={stale} onClick={() => void follow(index)}>{routeLabel(routes.routes[index])}</button>)}</div>}
-              <span className="hint">프론트 요청 확실 {feature.sure}곳 · 추정 {feature.inferred}곳</span>
-            </li>;
-          })}</ul><Omitted count={group.features.length} />
-        </section>)}
-        {!groups.length && <p className="hint">조건에 맞는 받는 곳을 찾지 못했어요.</p>}
-      </section>
-    </div>}
-    <div className="feature-guide__story">
-    {routes && !flow && !following && <p className="hint">왼쪽 목록에서 기능을 고르면 화면부터 서버까지 따라가요.</p>}
-    {following && <div role="status">기능 흐름을 찾는 중… <button className="btn btn--small" onClick={() => {
-      flowRun.current++; setFollowing(false); void window.learning.cancelFeatureFlow({ projectId: project.id });
-    }}>기능 흐름 취소</button></div>}
-    {flow && <>
-      <h3>{selectedFeature?.name ?? (routes && codeNameOf(routes.routes[flow.routeIndex]))}</h3>
-      {selectedFeature && <p>{selectedFeature.about}</p>}
-      <FlowStory flow={flow} locked={locked} onCode={onCode} onFunction={onFunction} />
-      <FoldedDetails key={`${flow.routesId}:${flow.routeIndex}`} summary="그림과 전체 단계 보기">
-        <FlowDiagram flow={flow} selectedNodeId={selectedNodeId} onSelect={id => { setSelectedNodeId(id); setPicks(count => count + 1); }} />
-        <FlowSteps flow={flow} locked={locked} onCode={onCode} onFunction={onFunction} selectedNodeId={selectedNodeId} picks={picks} />
-      </FoldedDetails>
-    </>}
-    </div>
-    </div>
+  return <>
     <p className="hint">코드 글자로 찾은 흐름이에요. 실행 순서나 실제 요청을 확인한 것은 아니에요. AI 정리는 동의한 목록만 보내요.</p>
     <details className="card"><summary>찾은 범위와 한계</summary>
       <p>TS/JS의 NestJS·Next API·Express 주소와 fetch·axios 요청을 찾아요. 다른 언어·서버 방식과 app.use의 주소 연결·경로 별칭은 따라가지 않아요. 추정은 확실한 연결 수에 넣지 않아요.</p>
@@ -360,5 +447,5 @@ export function FeatureFlowView({ project, active, revision, locked, onCode, onF
       {requestList(routes.requests.filter((request, index) => !request.host && !routes.links.some(link => link.requestIndex === index)), '이을 주소를 못 찾은 요청')}
       {requestList(routes.requests.filter(request => request.host !== null), '다른 서버 주소 요청')}
     </>}
-  </div>;
+  </>;
 }
