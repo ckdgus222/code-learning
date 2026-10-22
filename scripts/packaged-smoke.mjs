@@ -34,6 +34,11 @@ await writeFile(path.join(treeFixture, 'api/src/main.ts'), 'export function nest
 await writeFile(path.join(treeFixture, 'api/test/helper.ts'), 'export const helper = 1;\n');
 await writeFile(path.join(treeFixture, 'root.ts'), 'export const root = 1;\n');
 let app;
+async function openFunctionFlow(page) {
+  await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+  if (await page.locator('.symbols__item[aria-pressed="true"]').count() === 0) await page.locator('.symbols__item').first().click();
+  await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+}
 try {
   app = await electron.launch({
     executablePath: path.join(root, 'out/Code Learning-darwin-arm64/Code Learning.app/Contents/MacOS/Code Learning'),
@@ -90,7 +95,7 @@ try {
   db.close();
   await page.screenshot({ path: path.join(root, 'test-results/packaged-code-flow.png') });
   // The TypeScript checker runs from outside the archive and reads the package's type file.
-  await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+  await openFunctionFlow(page);
   assert.equal(await page.locator('.code-step-marker').count(), 0);
   await page.getByRole('button', { name: 'price.ts', exact: true }).click();
   await page.getByRole('button', { name: 'label', exact: true }).click();
@@ -101,7 +106,6 @@ try {
   await page.screenshot({ path: path.join(root, 'test-results/packaged-value-shapes.png') });
   // The project map's library and its stylesheet are in the bundle and work under the packaged CSP.
   await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
-    await page.getByRole('tab', { name: '전체 지도', exact: true }).click();
   // The one arrow runs straight down inside one folder, a box of zero width that Playwright calls hidden,
   // so the drawn path itself is checked.
   const arrow = page.locator('.react-flow__edge-path');
@@ -206,7 +210,7 @@ try {
     assert.equal(await main.isVisible(), false);
   }
   // The flow symbol opens evidence through showEvidence, without going through readFile.
-  await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+  await openFunctionFlow(page);
   await page.getByRole('button', { name: 'nested', exact: true }).click();
   await page.getByRole('article', { name: '함수 요약', exact: true }).waitFor();
   await main.waitFor({ state: 'visible' });

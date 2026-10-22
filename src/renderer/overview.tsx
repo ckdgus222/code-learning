@@ -24,7 +24,7 @@ export interface Topic {
 }
 /** One place looked at in the code views while a topic is open (plan F1): enough to find it again in the same file. */
 export interface Place {
-  view: 'flow' | 'code';
+  view: 'function' | 'code';
   fileId: string;
   fileHash: string;
   /** A step is kept by its order in the function: two steps can cover the same range (`first()` and its call). */

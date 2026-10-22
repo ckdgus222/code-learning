@@ -66,7 +66,7 @@ export interface ReaderHandle { openSearch(): void }
 
 export function Reader({ source, evidence, codeSize, wrap, symbolId, stepId, locked, onStep, ref }: {
   source: SourceView; evidence: Evidence | null; codeSize: number; wrap: boolean; ref?: Ref<ReaderHandle>;
-  symbolId: string | null; stepId: string | null; locked: boolean; onStep: (step: CodeStep) => void;
+  symbolId: string | null; stepId: string | null; locked: boolean; onStep?: (step: CodeStep) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
@@ -99,7 +99,7 @@ export function Reader({ source, evidence, codeSize, wrap, symbolId, stepId, loc
     const symbol = source.analysis.symbols.find(item => item.id === symbolId);
     const groups = groupStepMarkers(symbol);
     const markers = RangeSet.of(groups.map(group => new StepMarker(group, group.steps.some(step => step.id === stepId), locked,
-      step => latestOnStep.current(step)).range(editor.state.doc.line(group.line).from)));
+      step => latestOnStep.current?.(step)).range(editor.state.doc.line(group.line).from)));
     editor.dispatch({ effects: stepGutter.reconfigure(groups.length ? gutter({
       class: 'cm-step-gutter', markers: () => markers,
     }) : []) });
