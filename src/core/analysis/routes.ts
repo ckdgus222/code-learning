@@ -37,7 +37,7 @@ export const isTestFile = (name: string) => /(^|\/)__tests__\//.test(name) || /\
 const children = (node: Node | null | undefined) => node?.namedChildren.filter(child => child.type !== 'comment') ?? [];
 const argsOf = (node: Node) => children(node.childForFieldName('arguments'));
 const field = (node: Node | null | undefined, name: string) => node?.childForFieldName(name) ?? null;
-const literal = (node: Node | null | undefined): string | null => node && (node.type === 'string' || node.type === 'template_string')
+export const literal = (node: Node | null | undefined): string | null => node && (node.type === 'string' || node.type === 'template_string')
   && !node.text.includes('\\') && !node.namedChildren.some(child => child.type === 'template_substitution') ? node.text.slice(1, -1) : null;
 const keyOf = (node: Node): string | null => {
   if (node.type === 'shorthand_property_identifier') return node.text;

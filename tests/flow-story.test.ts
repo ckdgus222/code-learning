@@ -1,10 +1,10 @@
 import { expect, it } from 'vitest';
-import type { FeatureFlow, FlowEdge, FlowNode, Route } from '../src/shared/contracts';
+import type { FeatureFlow, FlowEdge, FlowNode, FlowStop, FlowStore, Route, ValueSite } from '../src/shared/contracts';
 import { codeNameOf, groupNameOf, storyOf } from '../src/core/analysis/flow-story';
 
 function node(id: string, side: FlowNode['side'], depth = 0, extra: Partial<FlowNode> = {}): FlowNode {
   return { id, side, depth, name: id, fileId: id, fileHash: 'hash', relativePath: `${id}.ts`,
-    range: { startUtf16: 0, endUtf16: 20, startLine: 1, endLine: 2 }, event: null, screen: null, outside: [], outsideOmitted: 0, ...extra };
+    range: { startUtf16: 0, endUtf16: 20, startLine: 1, endLine: 2 }, event: null, screen: null, outside: [], outsideOmitted: 0, stops: [], stopsOmitted: 0, stores: [], storesOmitted: 0, ...extra };
 }
 function edge(from: string, to: string, extra: Partial<FlowEdge> = {}): FlowEdge {
   return { from, to, kind: 'calls', sure: true, reasons: [], site: null, ...extra };
@@ -34,11 +34,12 @@ it('turns a dog-walk shaped graph into five readable steps and exact code target
     'removeDog → useDeleteDog → mutationFn 순서로 이어져요',
     'DELETE /api/dogs/${id} 요청을 보내요',
     'DogsController.remove가 요청을 받아요 → DogsService.remove에 넘겨요',
-    'DogsService.remove · 바깥 호출: tx.dog.delete',
+    'DogsService.remove',
   ]);
   expect(steps.map(step => step.representative)).toEqual([event, mutation, request, handler, service]);
   expect(steps[1]).toMatchObject({ inferred: true, reasons: ['훅 결과를 써요'] });
   expect(steps[3].typed).toBe(true);
+  expect(steps[4].outside.items).toEqual(['tx.dog.delete']);
   expect(storyOf(example)).toEqual(steps);
 });
 it('starts at the request when fetch has no enclosing function', () => {
@@ -65,7 +66,9 @@ it('starts at the handler without any requests and includes a service without ou
 it('shows up to four outside calls, including the handler, and uses the handler if there is no service', () => {
   const withCalls = { ...handler, outside: ['a', 'b', 'c', 'd', 'e'] };
   const steps = storyOf(flow([withCalls]));
-  expect(steps[1].text).toBe('바깥 호출: a · b · c · d …');
+  expect(steps[1].text).toBe('');
+  expect(steps[1].outside.items).toEqual(['a', 'b', 'c', 'd']);
+  expect(steps[1].outside.omitted).toBe(1);
   expect(steps[1].representative).toEqual(withCalls);
 });
 it('makes one independent story for every request', () => {
@@ -115,6 +118,70 @@ it('does not mistake shared callers for a cycle and keeps them out of unrelated 
 it('keeps route uncertainty on the request step', () => {
   expect(storyOf(flow([request, handler], [edge(request.id, handler.id, { sure: false, reasons: ['방식 모름'] })]))[0])
     .toMatchObject({ kind: 'request', inferred: true, reasons: ['방식 모름'] });
+});
+
+const site = (fileId: string, startUtf16: number): ValueSite => ({ fileId, fileHash: 'hash', startUtf16,
+  endUtf16: startUtf16 + 1, startLine: 1, endLine: 1, text: 'code' });
+const stop = (fileId: string, start: number): FlowStop => ({ kind: 'Error', message: null, condition: null, site: site(fileId, start) });
+const store = (fileId: string, start: number, action: FlowStore['action']): FlowStore => ({ model: action === 'raw' ? null : 'dog', action, site: site(fileId, start) });
+
+it('keeps handler and service errors and omitted counts on their own steps', () => {
+  const receiving = { ...handler, stops: Array.from({ length: 6 }, (_, i) => stop('handler', i)), stopsOmitted: 2 };
+  const processing = { ...service, stops: [stop('service', 0)] };
+  const steps = storyOf(flow([receiving, processing]));
+  expect(steps[0].stops.items).toHaveLength(6);
+  expect(steps[0].stops.omitted).toBe(2);
+  expect(steps[1].stops.items).toEqual([{ ...processing.stops[0], nodeId: service.id }]);
+  expect(steps[1].stops.omitted).toBe(0);
+  expect(steps[0].stops.items.every(stop => stop.nodeId === handler.id)).toBe(true);
+});
+
+it('adds storage after backend processing, sorts calls and merges only adjacent equal labels', () => {
+  const processing = { ...service, stores: [store('service', 4, 'delete'), store('service', 2, 'read'),
+    store('service', 1, 'read'), store('service', 5, 'read')], storesOmitted: 3 };
+  const steps = storyOf(flow([handler, processing]));
+  expect(steps.map(step => step.kind)).toEqual(['handler', 'back', 'store']);
+  expect(steps[2]).toMatchObject({ title: '저장소(DB)를 써요', label: '저장소',
+    text: 'DogsService.remove: dog 읽기 → dog 지우기 → dog 읽기', representative: processing, nodes: [processing],
+    storeGroups: { groups: [{ node: processing }], omitted: 3 }, stops: { items: [], omitted: 0 } });
+  expect(steps[2].storeGroups.groups[0].items.map(store => store.site.startUtf16)).toEqual([1, 2, 4, 5]);
+});
+
+it('keeps parent deletion and helper reading in separate groups ordered by depth then flow order', () => {
+  const parent = { ...service, stores: [store('parent', 1, 'delete')] };
+  const helper = node('helper', 'back', 2, { stores: [store('helper', 1, 'read')] });
+  const sibling = node('sibling', 'back', 2, { stores: [store('sibling', 1, 'upsert')] });
+  const step = storyOf(flow([handler, helper, sibling, parent], [edge(parent.id, helper.id, { kind: 'typed', sure: false, reasons: ['근거'] })])).at(-1)!;
+  expect(step.text).toBe('DogsService.remove: dog 지우기 · helper: dog 읽기 · sibling: dog 없으면 새로 저장하고 있으면 바꾸기');
+  expect(step.storeGroups.groups.map(group => group.node)).toEqual([parent, helper, sibling]);
+  expect(step.nodes).toEqual([parent, helper, sibling]);
+  expect(step).toMatchObject({ inferred: true, reasons: ['근거'], typed: true });
+});
+
+it('keeps same-named functions separate by node id and adds storage directly after a handler', () => {
+  const receiving = { ...handler, name: 'save', stores: [store('a', 2, 'raw')] };
+  const single = storyOf(flow([receiving]));
+  expect(single.map(step => step.kind)).toEqual(['handler', 'store']);
+  expect(single[1].text).toBe('save: SQL 직접 실행');
+  const processing = { ...service, name: 'save', stores: [store('b', 1, 'create')] };
+  const last = storyOf(flow([receiving, processing])).at(-1)!;
+  expect(last.text).toBe('save: SQL 직접 실행 · save: dog 새로 저장하기');
+  expect(last.storeGroups.groups.map(group => group.node.id)).toEqual([handler.id, service.id]);
+  expect(last.storeGroups.groups).toHaveLength(2);
+});
+
+it('keeps omitted counts with their lists and bounds outside text', () => {
+  const receiving = { ...handler, outside: ['x'.repeat(60)], outsideOmitted: 2,
+    stops: [stop('handler', 1)], stopsOmitted: 5, stores: [store('handler', 2, 'read')], storesOmitted: 2 };
+  const processing = { ...service, outside: ['a', 'b', 'c', 'd'], outsideOmitted: 3,
+    stops: [stop('service', 1)], stopsOmitted: 1, stores: [store('service', 2, 'delete')], storesOmitted: 4 };
+  const steps = storyOf(flow([receiving, processing]));
+  expect(steps[0].stops.omitted).toBe(5);
+  expect(steps[1].stops.omitted).toBe(1);
+  expect(steps[1].outside.items).toEqual([`${'x'.repeat(48)}…`, 'a', 'b', 'c']);
+  expect(steps[1].outside.omitted).toBe(6);
+  expect(steps[2].storeGroups.omitted).toBe(6);
+  expect(steps.filter(step => step.kind !== 'store').every(step => !step.storeGroups.groups.length && step.storeGroups.omitted === 0)).toBe(true);
 });
 
 const route: Route = { method: 'GET', path: '/api/dogs/:id', prefix: 'known', framework: 'nest',

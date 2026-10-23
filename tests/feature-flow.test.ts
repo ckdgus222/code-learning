@@ -65,7 +65,7 @@ it('connects a Next screen, nested event, hook result, request, controller and s
   expect(reachable.has(node('DogsService.remove').id)).toBe(true);
   expect(flow.limited).toBe(false);
   const story = storyOf(flow);
-  expect(story.map(step => step.kind)).toEqual(['screen', 'front', 'request', 'handler', 'back']);
+  expect(story.map(step => step.kind)).toEqual(['screen', 'front', 'request', 'handler', 'back', 'store']);
   // The click path, not DogList's direct hook call, even though DogList is deeper.
   expect(story[0].text).toBe('화면 /dogs에서 onClick 동작이 일어나요');
   expect(story[0].nodes.map(node => node.name)).toEqual(expect.arrayContaining(['DogsPage', 'DogList']));
@@ -167,3 +167,118 @@ it('reads only a few callbacks of a backend function and stops when asked', asyn
   let checks = 0;
   await expect(buildFeatureFlow(root, project.id, project.files, routes, 0, MAP_LIMITS, () => ++checks > 3)).rejects.toThrow('취소');
 }, 60000);
+
+it('finds written throws, nearest conditions and literal messages only in the body and direct callbacks', async () => {
+  await put('server.ts', `@Controller('dogs') class C { @Delete() remove() {
+    if (!dog) throw new NotFoundException('반려견을 찾을 수 없어요.');
+    if (count <= 1) { throw new errors.ConflictException('최소 한 마리'); }
+    else { throw new BadRequestException(\`bad \${count}\`); }
+    try { throw new Error('caught here'); } catch (error) { throw new ConflictException(); }
+    run(() => { throw new Error('callback'); });
+    function unused() { throw new Error('unused'); }
+    const unusedArrow = () => { throw new Error('unused arrow'); };
+    run(() => { run(() => { throw new Error('too deep'); }); });
+    throw error;
+  } }`);
+  const { flow } = await analyze();
+  const node = flow.nodes[0];
+  expect(node.stops.map(({ kind, message, condition }) => ({ kind, message, condition }))).toEqual([
+    { kind: 'NotFoundException', message: '반려견을 찾을 수 없어요.', condition: '!dog' },
+    { kind: 'ConflictException', message: '최소 한 마리', condition: 'count <= 1' },
+    { kind: 'BadRequestException', message: null, condition: '아니면: count <= 1' },
+    { kind: 'Error', message: 'caught here', condition: null },
+    { kind: 'ConflictException', message: null, condition: '오류가 나면' },
+    { kind: 'Error', message: 'callback', condition: null },
+  ]);
+  expect(node.stopsOmitted).toBe(0);
+  expect(node.stops.map(stop => stop.site.startLine)).toEqual([2, 3, 4, 5, 5, 6]);
+  expect(node.stops[0].site).toMatchObject({ fileId: node.fileId, fileHash: node.fileHash,
+    text: "throw new NotFoundException('반려견을 찾을 수 없어요.');" });
+});
+
+it('bounds messages, conditions and stops, but reads more than three direct callbacks', async () => {
+  const message = '가'.repeat(130);
+  const condition = `ready &&\n ${'condition'.repeat(12)}`;
+  await put('server.ts', `@Controller('x') class C { @Get() get() {
+    if (${condition}) throw new Error('${message}');
+    throw new Error('escaped\\nmessage');
+    ${Array.from({ length: 6 }, (_, i) => `run(() => { throw new Error('callback ${i}'); });`).join('\n')}
+  } }`);
+  const node = (await analyze()).flow.nodes[0];
+  expect(node.stops).toHaveLength(6);
+  expect(node.stopsOmitted).toBe(2);
+  expect(node.stops[0].message).toBe(`${message.slice(0, 120)}…`);
+  expect(node.stops[0].condition).toBe(`${condition.replace(/\s+/g, ' ').slice(0, 80)}…`);
+  expect(node.stops[1].message).toBeNull();
+  expect(node.stops[5].message).toBe('callback 3');
+});
+
+it('recognizes Prisma-shaped model and raw calls, including a transaction parameter', async () => {
+  await put('server.ts', `@Controller('x') class C { @Get() async get() {
+    await this.prisma.dog.findFirst();
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw\`SELECT id FROM dogs\`;
+      await tx.dog.count();
+      await tx.dog.delete();
+    });
+    prisma.user.create();
+    this.prisma.dog.upsert();
+    prisma.$executeRawUnsafe('SQL');
+    this.prisma.$queryRawUnsafe('SQL');
+    this.repo.dog.delete();
+    tx.dog.delete();
+    function unused() { prisma.dog.delete(); }
+    run(() => run(() => prisma.dog.delete()));
+  } }`);
+  const node = (await analyze()).flow.nodes[0];
+  expect(node.stores.map(({ model, action }) => [model, action])).toEqual([
+    ['dog', 'read'], [null, 'raw'], ['dog', 'count'], ['dog', 'delete'],
+    ['user', 'create'], ['dog', 'upsert'], [null, 'raw'], [null, 'raw'],
+  ]);
+  expect(node.storesOmitted).toBe(0);
+  expect(node.stores.map(store => store.site.startLine)).toEqual([2, 4, 5, 6, 8, 9, 10, 11]);
+});
+
+it.each([
+  'tx = other; tx.dog.delete();',
+  'tx.dog.delete(); tx = other;',
+  'var tx = other; tx.dog.delete();',
+  '{ const tx = other; tx.dog.delete(); }',
+  'function tx() {} tx.dog.delete();',
+])('does not treat a shadowed or reassigned transaction parameter as Prisma: %s', async body => {
+  await put('server.ts', `@Controller('x') class C { @Get() get() {
+    this.prisma.$transaction(async tx => { ${body} });
+  } }`);
+  expect((await analyze()).flow.nodes[0].stores).toEqual([]);
+});
+
+it('recognizes a renamed first transaction parameter but rejects other parameters and callback kinds', async () => {
+  await put('server.ts', `@Controller('x') class C { @Get() get() {
+    this.prisma.$transaction(async (database, tx) => { database.dog.delete(); tx.dog.delete(); });
+    run(tx => tx.dog.delete());
+    this.prisma.$transaction(({ tx }) => tx.dog.delete());
+  } }`);
+  expect((await analyze()).flow.nodes[0].stores.map(store => store.site.text)).toEqual(['database.dog.delete()']);
+});
+
+it.each([
+  ['findUnique', 'read'], ['findUniqueOrThrow', 'read'], ['findFirstOrThrow', 'read'], ['findMany', 'read'],
+  ['aggregate', 'read'], ['groupBy', 'read'], ['createMany', 'create'], ['createManyAndReturn', 'create'],
+  ['update', 'update'], ['updateMany', 'update'], ['deleteMany', 'delete'],
+])('maps Prisma %s to %s', async (op, action) => {
+  await put('server.ts', `@Controller('x') class C { @Get() get() { prisma.dog.${op}(); } }`);
+  expect((await analyze()).flow.nodes[0].stores).toEqual([expect.objectContaining({ model: 'dog', action })]);
+});
+
+it('caps storage calls and keeps front and request nodes empty', async () => {
+  await put('server.ts', `@Controller('x') class C { @Get() get() {
+    ${Array.from({ length: 10 }, () => 'run(() => prisma.dog.delete());').join('\n')}
+  } }`);
+  await put('client.ts', "function load() { prisma.user.create(); fetch('/x'); throw new Error('front'); }");
+  const { flow } = await analyze();
+  expect(flow.nodes[0].stores).toHaveLength(8);
+  expect(flow.nodes[0].storesOmitted).toBe(2);
+  for (const node of flow.nodes.filter(node => node.side !== 'back')) {
+    expect(node).toMatchObject({ stops: [], stopsOmitted: 0, stores: [], storesOmitted: 0 });
+  }
+});

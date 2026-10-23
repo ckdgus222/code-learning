@@ -1,12 +1,12 @@
 import type Parser from 'tree-sitter';
-import type { CallTarget, FeatureFlow, FlowEdge, FlowNode, FunctionCalls, ProjectFile, ProjectRoutes, ValueSite } from '../../shared/contracts';
+import type { CallTarget, FeatureFlow, FlowEdge, FlowNode, FlowStop, FlowStore, FunctionCalls, ProjectFile, ProjectRoutes, ValueSite } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 import { findFunctionCalls, type CallsCache } from './calls';
 import { candidatesFor, isRelative, MAP_LIMITS, type MapLimits } from './project-map';
 import { formatNextPath, nextRouteOf } from './next-routes';
-import { lineRange, nearest, reassigned, sameRange, type FileFacts } from './names';
+import { firstCode, lineRange, nearest, reassigned, sameRange, type CallFact, type FileFacts } from './names';
 import { functionName, functionTypes } from './syntax';
-import { assertResultSize, isTestFile, requestSite, routeSite, shortName } from './routes';
+import { assertResultSize, isTestFile, literal, requestSite, routeSite, shortName } from './routes';
 
 type Node = Parser.SyntaxNode;
 const field = (node: Node | null, name: string) => node?.childForFieldName(name) ?? null;
@@ -15,6 +15,113 @@ const enclosing = (node: Node): Node | null => {
   return null;
 };
 const targetOf = (node: FlowNode): CallTarget => ({ fileId: node.fileId, fileHash: node.fileHash, name: node.name, ...node.range });
+
+const storeActions = new Map<string, FlowStore['action']>([
+  ...['findUnique', 'findUniqueOrThrow', 'findFirst', 'findFirstOrThrow', 'findMany', 'aggregate', 'groupBy'].map(op => [op, 'read'] as const),
+  ['count', 'count'], ['create', 'create'], ['createMany', 'create'], ['createManyAndReturn', 'create'],
+  ['update', 'update'], ['updateMany', 'update'], ['upsert', 'upsert'], ['delete', 'delete'], ['deleteMany', 'delete'],
+]);
+
+const clip = (text: string, limit: number): string => text.length > limit ? `${text.slice(0, limit)}…` : text;
+
+function isDirectCallback(node: Node, fn: Node): boolean {
+  if (node.parent?.type !== 'arguments' || node.parent.parent?.type !== 'call_expression') return false;
+  const outer = enclosing(node);
+  return !!outer && sameRange(outer, fn);
+}
+
+function conditionOf(throwNode: Node): string | null {
+  for (let parent = throwNode.parent; parent && !functionTypes.has(parent.type); parent = parent.parent) {
+    if (parent.type === 'catch_clause') return '오류가 나면';
+    if (parent.type !== 'if_statement') continue;
+    const test = field(parent, 'condition');
+    const consequence = field(parent, 'consequence');
+    const alternative = field(parent, 'alternative');
+    const within = (branch: Node | null) => branch && throwNode.startIndex >= branch.startIndex && throwNode.endIndex <= branch.endIndex;
+    if (!test || !(within(consequence) || within(alternative))) continue;
+    const text = test.type === 'parenthesized_expression' ? test.text.slice(1, -1) : test.text;
+    return clip(`${within(alternative) ? '아니면: ' : ''}${text}`.replace(/\s+/g, ' ').trim(), 80);
+  }
+  return null;
+}
+
+function isTransactionParameter(receiver: Node, call: CallFact | undefined, facts: FileFacts): boolean {
+  if (!call) return false;
+  const declared = nearest(call.scope, receiver.text);
+  const declaration = declared?.declared.length === 1 ? declared.declared[0] : null;
+  const parameter = declaration && 'info' in declaration ? declaration.info : null;
+  if (parameter?.role !== 'parameter' || parameter.index !== 0 || parameter.shape !== 'plain' || parameter.clash) return false;
+  const owner = parameter.owner;
+  const transaction = owner?.parent?.type === 'arguments' && owner.parent.parent?.type === 'call_expression'
+    ? field(owner.parent.parent, 'function') : null;
+  if (transaction?.type !== 'member_expression' || field(transaction, 'property')?.text !== '$transaction') return false;
+  if (reassigned(facts, receiver.text, parameter.scope)) return false;
+  return !facts.variables.some(variable => variable !== parameter && variable.owner && owner && sameRange(variable.owner, owner)
+    && variable.node?.text === receiver.text);
+}
+
+/** Reads this body and directly passed callbacks, without resolving any more calls or files. */
+function serverFacts(fn: Node, facts: FileFacts): Pick<FlowNode, 'stops' | 'stopsOmitted' | 'stores' | 'storesOmitted'> {
+  const stops: FlowStop[] = [];
+  const stores: FlowStore[] = [];
+  let stopsOmitted = 0;
+  let storesOmitted = 0;
+  let calls: Map<number, CallFact> | undefined;
+  const body = field(fn, 'body');
+  const pending = body ? [body] : [];
+  while (pending.length) {
+    const node = pending.pop()!;
+    if (functionTypes.has(node.type)) {
+      const callbackBody = field(node, 'body');
+      if (callbackBody && isDirectCallback(node, fn)) pending.push(callbackBody);
+      continue;
+    }
+    pending.push(...node.namedChildren.toReversed());
+    if (node.type === 'throw_statement') {
+      const value = firstCode(node);
+      const constructor = value?.type === 'new_expression' ? field(value, 'constructor') : null;
+      const kind = constructor?.type === 'identifier' ? constructor.text
+        : constructor?.type === 'member_expression' ? field(constructor, 'property')?.text : null;
+      if (!kind) continue;
+      if (stops.length === 6) { stopsOmitted++; continue; }
+      const message = literal(firstCode(field(value!, 'arguments')));
+      stops.push({ kind, message: message !== null ? clip(message, 120) : null,
+        condition: conditionOf(node), site: routeSite(node, facts) });
+      continue;
+    }
+    if (node.type !== 'call_expression') continue;
+    const callee = field(node, 'function');
+    if (callee?.type !== 'member_expression') continue;
+    const op = field(callee, 'property')?.text ?? '';
+    let action: FlowStore['action'];
+    let model: string | null = null;
+    let receiver: Node | null;
+    if (/^\$(?:queryRaw|executeRaw)(?:Unsafe)?$/.test(op)) {
+      action = 'raw';
+      receiver = field(callee, 'object');
+    } else {
+      const modelAction = storeActions.get(op);
+      if (!modelAction) continue;
+      const modelAccess = field(callee, 'object');
+      if (modelAccess?.type !== 'member_expression') continue;
+      const property = field(modelAccess, 'property');
+      if (property?.type !== 'property_identifier') continue;
+      action = modelAction;
+      model = property.text;
+      receiver = field(modelAccess, 'object');
+    }
+    const prisma = receiver?.type === 'identifier' && receiver.text === 'prisma'
+      || receiver?.type === 'member_expression' && field(receiver, 'object')?.type === 'this' && field(receiver, 'property')?.text === 'prisma';
+    if (!prisma) {
+      if (receiver?.type !== 'identifier') continue;
+      calls ??= new Map(facts.calls.map(call => [call.node.startIndex, call]));
+      if (!isTransactionParameter(receiver, calls.get(node.startIndex), facts)) continue;
+    }
+    if (stores.length === 8) { storesOmitted++; continue; }
+    stores.push({ model, action, site: routeSite(node, facts) });
+  }
+  return { stops, stopsOmitted, stores, storesOmitted };
+}
 
 /** A bounded graph for one receiving route. All arrows describe code, not observed execution. */
 export async function buildFeatureFlow(root: string, projectId: string, files: ProjectFile[], routes: ProjectRoutes, routeIndex: number,
@@ -37,7 +144,7 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
     if (!file) throw new AppError('CHANGED', '기능의 파일을 지금 찾을 수 없어요.');
     const node: FlowNode = { id, side, depth, fileId: target.fileId, fileHash: target.fileHash, relativePath: file.relativePath, name: shortName(target.name),
       range: { startUtf16: target.startUtf16, endUtf16: target.endUtf16, startLine: target.startLine, endLine: target.startLine },
-      event: null, screen: null, outside: [], outsideOmitted: 0 };
+      event: null, screen: null, outside: [], outsideOmitted: 0, stops: [], stopsOmitted: 0, stores: [], storesOmitted: 0 };
     flow.nodes.push(node);
     return node;
   };
@@ -75,11 +182,11 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
     if (backSeen.has(node.id)) continue;
     backSeen.add(node.id);
     const { found, facts, fn } = await inspect(node);
+    Object.assign(node, serverFacts(fn, facts));
     const outside = found.calls.filter(call => call.status === 'external' || call.status === 'unknown').map(call => call.text);
     // Only callbacks passed directly as arguments to a call in this body, one nested level.
     // Each callback is a whole call search, and only a few lines of it are shown: the first three are read.
-    const callbacks = facts.functions.filter(child => child.parent?.type === 'arguments' && child.parent.parent?.type === 'call_expression'
-      && enclosing(child) && sameRange(enclosing(child)!, fn));
+    const callbacks = facts.functions.filter(child => isDirectCallback(child, fn));
     if (callbacks.length > 3) limit('안쪽 함수는 함수마다 3개까지만 봐요.');
     for (const callback of callbacks.slice(0, 3)) {
       if (shouldStop()) throw new AppError('CANCELLED', '기능 흐름 찾기를 취소했어요.');

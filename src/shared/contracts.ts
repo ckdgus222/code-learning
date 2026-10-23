@@ -243,6 +243,21 @@ export interface ProjectRoutes {
   limited: boolean;
   notes: string[];
 }
+export interface FlowStop {
+  /** The thrown class, e.g. NotFoundException. */
+  kind: string;
+  /** The first argument when it is a plain string literal, else null. */
+  message: string | null;
+  /** The nearest condition leading to the throw, as code text. */
+  condition: string | null;
+  site: ValueSite;
+}
+export interface FlowStore {
+  /** The Prisma model property; null for raw SQL. */
+  model: string | null;
+  action: 'read' | 'count' | 'create' | 'update' | 'upsert' | 'delete' | 'raw';
+  site: ValueSite;
+}
 export interface FlowNode {
   id: string;
   side: 'front' | 'request' | 'back';
@@ -256,6 +271,10 @@ export interface FlowNode {
   screen: string | null;
   outside: string[];
   outsideOmitted: number;
+  stops: FlowStop[];
+  stopsOmitted: number;
+  stores: FlowStore[];
+  storesOmitted: number;
 }
 export interface FlowEdge {
   from: string;

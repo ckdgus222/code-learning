@@ -1,4 +1,4 @@
-import type { FeatureFlow, FlowEdge, FlowNode, Route } from '../../shared/contracts';
+import type { FeatureFlow, FlowEdge, FlowNode, FlowStop, FlowStore, Route } from '../../shared/contracts';
 
 const methodNames: Record<Route['method'], string> = {
   GET: '보기', POST: '만들기·보내기', PUT: '바꾸기', PATCH: '고치기', DELETE: '지우기', ALL: '받기',
@@ -14,12 +14,30 @@ export function groupNameOf(route: Route, relativePath: string): string {
 }
 
 const kindLabels: Record<StoryStep['kind'], string> = {
-  screen: '화면', front: '프론트 처리', request: '요청', handler: '서버 받는 곳', back: '서버 처리',
+  screen: '화면', front: '프론트 처리', request: '요청', handler: '서버 받는 곳', back: '서버 처리', store: '저장소',
 };
+
+const storeVerbs: Record<FlowStore['action'], string> = {
+  read: '읽기', count: '세기', create: '새로 저장하기', update: '바꾸기',
+  upsert: '없으면 새로 저장하고 있으면 바꾸기', delete: '지우기', raw: 'SQL 직접 실행',
+};
+export const storeText = (store: FlowStore): string => store.action === 'raw' ? storeVerbs.raw : `${store.model} ${storeVerbs[store.action]}`;
+
+const stopNames: Record<string, string> = {
+  NotFoundException: '찾을 수 없음', BadRequestException: '잘못된 요청', UnauthorizedException: '로그인 필요',
+  ForbiddenException: '권한 없음', ConflictException: '충돌', UnprocessableEntityException: '처리할 수 없는 내용',
+  InternalServerErrorException: '서버 오류',
+};
+export function stopText(stop: FlowStop): string {
+  const text = stop.message !== null ? `“${stop.message}” 오류를 내요` : `${stop.kind} 오류를 내요`;
+  return text + (Object.hasOwn(stopNames, stop.kind) ? ` (${stopNames[stop.kind]})` : '');
+}
+
+interface Listed<T> { items: T[]; omitted: number }
 
 export interface StoryStep {
   storyId: string;
-  kind: 'screen' | 'front' | 'request' | 'handler' | 'back';
+  kind: 'screen' | 'front' | 'request' | 'handler' | 'back' | 'store';
   label: string;
   title: string;
   text: string;
@@ -30,6 +48,9 @@ export interface StoryStep {
   reasons: string[];
   typed: boolean;
   stopped: boolean;
+  stops: Listed<FlowStop & { nodeId: string }>;
+  storeGroups: { groups: { node: FlowNode; items: FlowStore[] }[]; omitted: number };
+  outside: Listed<string>;
 }
 
 /** Reorders the existing graph without adding claims about execution or changing its analysis. */
@@ -90,10 +111,13 @@ export function storyOf(flow: FeatureFlow): StoryStep[] {
     }
     const others = flow.nodes.filter(node => upstream.has(node.id) && !seen.has(node.id));
     const add = (kind: StoryStep['kind'], title: string, text: string, representative: FlowNode,
-      nodes: FlowNode[], edges: FlowEdge[], alternatives: FlowNode[] = []) => {
-      result.push({ storyId, kind, label: kindLabels[kind], title, text, representative, nodes, others: alternatives,
+      nodes: FlowNode[], edges: FlowEdge[], alternatives: FlowNode[] = [],
+      details: Partial<Pick<StoryStep, 'stops' | 'storeGroups' | 'outside'>> = {}) => {
+      const step: StoryStep = { storyId, kind, label: kindLabels[kind], title, text, representative, nodes, others: alternatives,
         inferred: edges.some(edge => !edge.sure), reasons: [...new Set(edges.filter(edge => !edge.sure).flatMap(edge => edge.reasons))],
-        typed: edges.some(edge => edge.kind === 'typed'), stopped: [...nodes, ...alternatives].some(node => cycles.has(node.id)) });
+        typed: edges.some(edge => edge.kind === 'typed'), stopped: [...nodes, ...alternatives].some(node => cycles.has(node.id)),
+        stops: { items: [], omitted: 0 }, storeGroups: { groups: [], omitted: 0 }, outside: { items: [], omitted: 0 }, ...details };
+      result.push(step);
     };
     if (path.length) {
       const first = path[0];
@@ -113,15 +137,33 @@ export function storyOf(flow: FeatureFlow): StoryStep[] {
       flow.edges.filter(edge => edge.from === request.id && byId.get(edge.to)?.side === 'back'));
     if (handler) {
       const next = back.find(node => node.depth === 1);
+      // serverFacts skips other nested functions; direct callbacks are not flow nodes, so sites cannot overlap.
       add('handler', '서버가 요청을 받아요', `${handler.name}가 요청을 받아요${next ? ` → ${next.name}에 넘겨요` : ''}`,
-        handler, [handler], flow.edges.filter(edge => edge.from === handler.id && byId.get(edge.to)?.side === 'back'));
+        handler, [handler], flow.edges.filter(edge => edge.from === handler.id && byId.get(edge.to)?.side === 'back'), [],
+        { stops: { items: handler.stops.map(stop => ({ ...stop, nodeId: handler.id })), omitted: handler.stopsOmitted } });
       const functions = back.filter(node => node.depth >= 1);
       // One line each: a call's first line can run long (a whole transaction opening).
       const outside = back.flatMap(node => node.outside).map(text => text.length > 48 ? `${text.slice(0, 48)}…` : text);
       const omitted = Math.max(0, outside.length - 4) + back.reduce((sum, node) => sum + node.outsideOmitted, 0);
-      if (functions.length || outside.length) add('back', '서버가 일을 처리해요', [functions.map(node => node.name).join(' → '),
-        outside.length ? `바깥 호출: ${outside.slice(0, 4).join(' · ')}${omitted ? ' …' : ''}` : ''].filter(Boolean).join(' · '),
-      next ?? handler, back, flow.edges.filter(edge => byId.get(edge.from)?.side === 'back' && byId.get(edge.to)?.side === 'back'));
+      if (functions.length || outside.length) {
+        add('back', '서버가 일을 처리해요', functions.map(node => node.name).join(' → '),
+          next ?? handler, back, flow.edges.filter(edge => byId.get(edge.from)?.side === 'back' && byId.get(edge.to)?.side === 'back'), [],
+          { stops: { items: functions.flatMap(node => node.stops.map(stop => ({ ...stop, nodeId: node.id }))),
+            omitted: functions.reduce((sum, node) => sum + node.stopsOmitted, 0) }, outside: { items: outside.slice(0, 4), omitted } });
+      }
+      const groups = back.filter(node => node.stores.length > 0)
+        .map(node => ({ node, items: node.stores.toSorted((a, b) => a.site.startUtf16 - b.site.startUtf16) }));
+      if (groups.length) {
+        const storeNodes = groups.map(group => group.node);
+        const text = groups.map(({ node, items }) => {
+          const labels = items.map(storeText);
+          return `${node.name}: ${labels.filter((label, index) => label !== labels[index - 1]).join(' → ')}`;
+        }).join(' · ');
+        const ids = new Set(storeNodes.map(node => node.id));
+        add('store', '저장소(DB)를 써요', text, storeNodes[0], storeNodes,
+          flow.edges.filter(edge => ids.has(edge.from) && ids.has(edge.to)), [],
+          { storeGroups: { groups, omitted: back.reduce((sum, node) => sum + node.storesOmitted, 0) } });
+      }
     }
   }
   return result;

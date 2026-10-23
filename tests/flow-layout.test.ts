@@ -5,7 +5,7 @@ import { layoutFlow } from '../src/renderer/flow-layout';
 const node = (id: string, side: FlowNode['side'], depth: number): FlowNode => ({
   id, side, depth, fileId: id, fileHash: 'h', relativePath: `${id}.ts`, name: id,
   range: { startUtf16: 0, endUtf16: 10, startLine: 1, endLine: 1 },
-  event: null, screen: null, outside: [], outsideOmitted: 0,
+  event: null, screen: null, outside: [], outsideOmitted: 0, stops: [], stopsOmitted: 0, stores: [], storesOmitted: 0,
 });
 const flow = (nodes: FlowNode[], edges: FeatureFlow['edges'] = []): FeatureFlow => ({
   projectId: 'p', routesId: 'r', routeIndex: 0, nodes, edges, limited: false, notes: [],
