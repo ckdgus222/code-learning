@@ -1,4 +1,4 @@
-import type { FeatureFlow, FlowEdge, FlowNode, FlowStop, FlowStore, Route } from '../../shared/contracts';
+import type { FeatureFlow, FlowEdge, FlowAfter, FlowAsk, FlowNode, FlowStop, FlowStore, Route } from '../../shared/contracts';
 
 const methodNames: Record<Route['method'], string> = {
   GET: '보기', POST: '만들기·보내기', PUT: '바꾸기', PATCH: '고치기', DELETE: '지우기', ALL: '받기',
@@ -14,8 +14,12 @@ export function groupNameOf(route: Route, relativePath: string): string {
 }
 
 const kindLabels: Record<StoryStep['kind'], string> = {
-  screen: '화면', front: '프론트 처리', request: '요청', handler: '서버 받는 곳', back: '서버 처리', store: '저장소',
+  screen: '화면', front: '프론트 처리', request: '요청', handler: '서버 받는 곳', back: '서버 처리', store: '저장소', result: '화면 결과',
 };
+
+const tags: Record<string, string> = { button: '버튼을', a: '링크를', Link: '링크를', form: '입력 양식을', input: '입력 칸을', select: '고르기 칸을', textarea: '글 칸을' };
+
+const verbs: Record<string, string> = { onClick: '누르면', onSubmit: '보내면', onChange: '바꾸면', onInput: '입력하면' };
 
 const storeVerbs: Record<FlowStore['action'], string> = {
   read: '읽기', count: '세기', create: '새로 저장하기', update: '바꾸기',
@@ -33,11 +37,28 @@ export function stopText(stop: FlowStop): string {
   return text + (Object.hasOwn(stopNames, stop.kind) ? ` (${stopNames[stop.kind]})` : '');
 }
 
+export function afterText(after: FlowAfter): string {
+  switch (after.action) {
+    case 'refresh': return '목록을 새로 불러오게 하기';
+    case 'cache': return '저장해 둔 데이터 바로 바꾸기';
+    case 'cancel': return '하던 불러오기 멈추기';
+    case 'navigate': return after.target === null ? '다른 화면으로 이동하기' : `화면 ${after.target}로 이동하기`;
+    case 'state': return `화면 값 ${after.target} 바꾸기`;
+    case 'notify': return '알림 보여 주기';
+    case 'call': return `\`${after.target}\` 부르기`;
+  }
+}
+
+export const afterOrder = ['success', 'error', 'settled'] as const;
+export const byWhen = (items: FlowAfter[]) => afterOrder.map(when => ({ when, items: items.filter(item => item.when === when) }))
+  .filter(group => group.items.length > 0);
+export const afterWhen: Record<FlowAfter['when'], string> = { success: '성공하면', error: '실패하면', settled: '끝나면' };
+
 interface Listed<T> { items: T[]; omitted: number }
 
 export interface StoryStep {
   storyId: string;
-  kind: 'screen' | 'front' | 'request' | 'handler' | 'back' | 'store';
+  kind: 'screen' | 'front' | 'request' | 'handler' | 'back' | 'store' | 'result';
   label: string;
   title: string;
   text: string;
@@ -48,6 +69,8 @@ export interface StoryStep {
   reasons: string[];
   typed: boolean;
   stopped: boolean;
+  asks: Listed<FlowAsk & { nodeId: string }>;
+  afterGroups: { groups: { node: FlowNode; items: FlowAfter[] }[]; omitted: number };
   stops: Listed<FlowStop & { nodeId: string }>;
   storeGroups: { groups: { node: FlowNode; items: FlowStore[] }[]; omitted: number };
   outside: Listed<string>;
@@ -112,11 +135,11 @@ export function storyOf(flow: FeatureFlow): StoryStep[] {
     const others = flow.nodes.filter(node => upstream.has(node.id) && !seen.has(node.id));
     const add = (kind: StoryStep['kind'], title: string, text: string, representative: FlowNode,
       nodes: FlowNode[], edges: FlowEdge[], alternatives: FlowNode[] = [],
-      details: Partial<Pick<StoryStep, 'stops' | 'storeGroups' | 'outside'>> = {}) => {
+      details: Partial<Pick<StoryStep, 'stops' | 'storeGroups' | 'outside' | 'asks' | 'afterGroups'>> = {}) => {
       const step: StoryStep = { storyId, kind, label: kindLabels[kind], title, text, representative, nodes, others: alternatives,
         inferred: edges.some(edge => !edge.sure), reasons: [...new Set(edges.filter(edge => !edge.sure).flatMap(edge => edge.reasons))],
         typed: edges.some(edge => edge.kind === 'typed'), stopped: [...nodes, ...alternatives].some(node => cycles.has(node.id)),
-        stops: { items: [], omitted: 0 }, storeGroups: { groups: [], omitted: 0 }, outside: { items: [], omitted: 0 }, ...details };
+        asks: { items: [], omitted: 0 }, afterGroups: { groups: [], omitted: 0 }, stops: { items: [], omitted: 0 }, storeGroups: { groups: [], omitted: 0 }, outside: { items: [], omitted: 0 }, ...details };
       result.push(step);
     };
     if (path.length) {
@@ -125,13 +148,19 @@ export function storyOf(flow: FeatureFlow): StoryStep[] {
       const screenEnd = Math.max(0, eventIndex);
       const event = eventIndex >= 0 ? path[eventIndex] : null;
       const processing = path.slice(screenEnd + 1);
+      const screenNodes = path.slice(0, screenEnd + 1);
+      const asksOf = (nodes: FlowNode[]) => ({ items: nodes.flatMap(node => node.asks.map(ask => ({ ...ask, nodeId: node.id }))), omitted: 0 });
+      const control = event?.control;
+      const action = control && event?.event && verbs[event.event]
+        ? `에서 ${control.texts.length ? control.texts.map(text => `‘${text}’`).join(' 또는 ') + ' ' : ''}${tags[control.tag] ?? `<${control.tag}>를`} ${verbs[event.event]} 시작해요`
+        : event ? `에서 ${event.event} 동작이 일어나요` : '에서 시작해요';
       add('screen', event ? '화면 동작에서 시작해요' : first.screen !== null ? '화면에서 시작해요' : '이 함수에서 시작해요',
         (first.screen !== null ? `화면 ${first.screen}` : `${first.relativePath} · ${first.name}`)
-        + (event ? `에서 ${event.event} 동작이 일어나요` : '에서 시작해요'), event ?? first, path.slice(0, screenEnd + 1),
-        processing.length ? arrows.slice(0, screenEnd) : arrows, processing.length ? [] : others);
+        + action, event ?? first, screenNodes,
+        processing.length ? arrows.slice(0, screenEnd) : arrows, processing.length ? [] : others, { asks: asksOf(screenNodes) });
       if (processing.length) add('front', '화면 쪽 코드가 요청을 준비해요', processing.map(node => node.name).join(' → ')
         + (processing.length === 1 ? '가 요청을 준비해요' : ' 순서로 이어져요'), path.at(-1)!, processing,
-        arrows.slice(screenEnd), others);
+        arrows.slice(screenEnd), others, { asks: asksOf(processing) });
     }
     if (request) add('request', '서버에 요청을 보내요', `${request.name} 요청을 보내요`, request, [request],
       flow.edges.filter(edge => edge.from === request.id && byId.get(edge.to)?.side === 'back'));
@@ -164,6 +193,17 @@ export function storyOf(flow: FeatureFlow): StoryStep[] {
           flow.edges.filter(edge => ids.has(edge.from) && ids.has(edge.to)), [],
           { storeGroups: { groups, omitted: back.reduce((sum, node) => sum + node.storesOmitted, 0) } });
       }
+    }
+    const groups = path.filter(node => node.after.length > 0)
+      .map(node => ({ node, items: node.after.toSorted((a, b) => a.site.startUtf16 - b.site.startUtf16) }));
+    if (groups.length) {
+      const nodes = groups.map(group => group.node);
+      const ids = new Set(nodes.map(node => node.id));
+      const text = groups.map(({ node, items }) => `${node.name} · ${byWhen(items)
+        .map(({ when, items }) => `${afterWhen[when]}: ${items.map(afterText).join(' → ')}`).join(' · ')}`).join(' · ');
+      add('result', '응답이 온 뒤 화면이 바뀌어요', text, nodes[0], nodes,
+        flow.edges.filter(edge => ids.has(edge.from) && ids.has(edge.to)), [],
+        { afterGroups: { groups, omitted: nodes.reduce((sum, node) => sum + node.afterOmitted, 0) } });
     }
   }
   return result;

@@ -6,7 +6,7 @@ import { layoutFlow } from './flow-layout';
 import { isNextConfig, nextRouteOf } from '../core/analysis/next-routes';
 import type { ConnectionReport, FeatureGuide, FeatureGuideResult, LearningMode } from '../shared/ai';
 import { FeatureGuideCard } from './feature-guide';
-import { codeNameOf, groupNameOf, stopText, storeText, storyOf } from '../core/analysis/flow-story';
+import { afterText, afterWhen, byWhen, codeNameOf, groupNameOf, stopText, storeText, storyOf } from '../core/analysis/flow-story';
 
 export const siteOf = (node: FlowNode): ValueSite => ({ fileId: node.fileId, fileHash: node.fileHash, ...node.range, text: node.name });
 const targetOf = (node: FlowNode): CallTarget => ({ fileId: node.fileId, fileHash: node.fileHash, ...node.range, name: node.name });
@@ -50,6 +50,8 @@ export function hasFlowCode(source: Pick<SourceView, 'fileId' | 'hash'> | null, 
     && evidence.startLine === target.startLine && evidence.endLine === target.endLine;
 }
 
+const codeHint = (site: ValueSite) => <code>{site.text.replace(/\s+/g, ' ')}</code>;
+
 function SiteList({ items, omitted, disabled, onSite }: {
   items: { nodeId: string; site: ValueSite; text: string; hint: React.ReactNode }[];
   omitted: number; disabled: boolean; onSite(nodeId: string, site: ValueSite): void;
@@ -76,6 +78,7 @@ export function FlowWalk({ flow, title, about, codeName, walk, selection, setSto
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [picks, setPicks] = useState(0);
   const disabled = locked || stale;
+  const otherCount = step ? step.stops.items.length + step.stops.omitted + step.asks.items.length + step.asks.omitted : 0;
   return <section aria-label="기능 따라가기">
     <div className="map-actions"><h3>{title}</h3><button className="btn" disabled={locked} onClick={onChoose}>다른 기능 고르기</button></div>
     {(about || codeName !== title) && <p>{about && `${about} · `}{codeName !== title && codeName}</p>}
@@ -97,18 +100,35 @@ export function FlowWalk({ flow, title, about, codeName, walk, selection, setSto
       <article className="card" data-testid="story-step" data-kind={step.kind}>
         <p>{walk.step + 1} / {steps.length} · {step.label}</p>
         <h3>{step.title}</h3><p>{step.text}</p>
-        {(step.stops.items.length > 0 || step.stops.omitted > 0) && <section aria-label="다른 경우">
-          <h4>다른 경우 {step.stops.items.length + step.stops.omitted}개</h4>
-          <SiteList items={step.stops.items.map(stop => ({ nodeId: stop.nodeId, site: stop.site, text: stopText(stop),
-            hint: stop.condition !== null ? <>조건(코드): <code>{stop.condition}</code></> : null }))}
-            omitted={step.stops.omitted} disabled={disabled} onSite={onSite} />
-          <p className="hint">코드에 적힌 오류예요. 다른 곳에서 이 오류를 잡아 계속 진행하는지는 확인하지 않았어요.</p>
+        {otherCount > 0 && <section aria-label="다른 경우">
+          <h4>다른 경우 {otherCount}개</h4>
+          <SiteList items={[...step.stops.items.map(stop => ({ nodeId: stop.nodeId, site: stop.site, text: stopText(stop),
+            hint: stop.condition !== null ? <>조건(코드): <code>{stop.condition}</code></> : null })),
+            ...step.asks.items.map(ask => ({ nodeId: ask.nodeId, site: ask.site,
+              text: `${ask.message === null ? '' : `‘${ask.message}’ `}확인 창에서 취소하면 여기서 멈춰요`,
+              hint: codeHint(ask.site) }))]}
+            omitted={step.stops.omitted + step.asks.omitted} disabled={disabled} onSite={onSite} />
+          {step.stops.items.length + step.stops.omitted > 0 && <p className="hint">코드에 적힌 오류예요. 다른 곳에서 이 오류를 잡아 계속 진행하는지는 확인하지 않았어요.</p>}
+        </section>}
+        {step.afterGroups.groups.length > 0 && <section aria-label="응답 뒤 화면">
+          {step.afterGroups.groups.map(group => <section key={group.node.id}>
+            <h4>{group.node.name}</h4>
+            {byWhen(group.items).map(({ when, items }) => <section key={when}>
+              <h5>{afterWhen[when]}</h5>
+              <SiteList items={items.map(item => ({ nodeId: group.node.id,
+                site: item.site, text: afterText(item), hint: codeHint(item.site) }))}
+                omitted={0} disabled={disabled} onSite={onSite} />
+            </section>)}
+          </section>)}
+          {step.afterGroups.omitted > 0 && <p className="hint">외 {step.afterGroups.omitted}개 더</p>}
+          <p className="hint">코드 모양(onSuccess, await 다음 줄, catch)으로 찾았어요. 실제로 실행되는 순서와 여부는 확인하지 않았어요.</p>
+          {step.afterGroups.groups.length > 1 && <p className="hint">함수끼리 어떤 순서로 실행되는지는 확인하지 않았어요.</p>}
         </section>}
         {step.storeGroups.groups.length > 0 && <section aria-label="저장소 호출">
           {step.storeGroups.groups.map((group, index) => <section key={group.node.id}>
             <h4>{group.node.name}</h4>
             <SiteList items={group.items.map(store => ({ nodeId: group.node.id, site: store.site, text: storeText(store),
-              hint: <code>{store.site.text.replace(/\s+/g, ' ')}</code> }))}
+              hint: codeHint(store.site) }))}
               omitted={index === step.storeGroups.groups.length - 1 ? step.storeGroups.omitted : 0} disabled={disabled} onSite={onSite} />
           </section>)}
           <p className="hint">Prisma 호출 모양으로 찾았어요. 함수 안에서는 코드에 적힌 순서이고, 조건에 따라 일부만 실행될 수 있어요.</p>

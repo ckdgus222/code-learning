@@ -1,10 +1,10 @@
 import { expect, it } from 'vitest';
 import type { FeatureFlow, FlowEdge, FlowNode, FlowStop, FlowStore, Route, ValueSite } from '../src/shared/contracts';
-import { codeNameOf, groupNameOf, storyOf } from '../src/core/analysis/flow-story';
+import { afterText, codeNameOf, groupNameOf, storyOf } from '../src/core/analysis/flow-story';
 
 function node(id: string, side: FlowNode['side'], depth = 0, extra: Partial<FlowNode> = {}): FlowNode {
   return { id, side, depth, name: id, fileId: id, fileHash: 'hash', relativePath: `${id}.ts`,
-    range: { startUtf16: 0, endUtf16: 20, startLine: 1, endLine: 2 }, event: null, screen: null, outside: [], outsideOmitted: 0, stops: [], stopsOmitted: 0, stores: [], storesOmitted: 0, ...extra };
+    range: { startUtf16: 0, endUtf16: 20, startLine: 1, endLine: 2 }, event: null, control: null, asks: [], after: [], afterOmitted: 0, screen: null, outside: [], outsideOmitted: 0, stops: [], stopsOmitted: 0, stores: [], storesOmitted: 0, ...extra };
 }
 function edge(from: string, to: string, extra: Partial<FlowEdge> = {}): FlowEdge {
   return { from, to, kind: 'calls', sure: true, reasons: [], site: null, ...extra };
@@ -240,4 +240,78 @@ it('uses factual titles and preserves category labels for each kind', () => {
   expect(noScreen.text).not.toContain('화면');
   const singleFront = storyOf(flow([event, mutation, request], [edge(event.id, mutation.id), edge(mutation.id, request.id)]))[1];
   expect(singleFront.text).toBe('mutationFn가 요청을 준비해요');
+});
+
+it.each([
+  ['button', 'onClick', [], '버튼을 누르면'], ['button', 'onClick', ['삭제'], '‘삭제’ 버튼을 누르면'],
+  ['button', 'onClick', ['삭제 중…', '삭제'], '‘삭제 중…’ 또는 ‘삭제’ 버튼을 누르면'],
+  ['a', 'onClick', ['이동'], '‘이동’ 링크를 누르면'], ['Link', 'onClick', [], '링크를 누르면'],
+  ['form', 'onSubmit', [], '입력 양식을 보내면'], ['input', 'onChange', [], '입력 칸을 바꾸면'],
+  ['select', 'onChange', [], '고르기 칸을 바꾸면'], ['textarea', 'onInput', [], '글 칸을 입력하면'],
+  ['x', 'onClick', [], '<x>를 누르면'],
+])('describes a %s control for %s', (tag, eventName, texts, description) => {
+  const changed = { ...example, nodes: example.nodes.map(item => item.id === event.id ? { ...item, event: eventName, control: { tag, texts } } : item) };
+  expect(storyOf(changed)[0].text).toBe(`화면 /dogs에서 ${description} 시작해요`);
+  expect(storyOf({ ...changed, nodes: changed.nodes.map(item => ({ ...item, screen: null })) })[0].text)
+    .toBe(`DogsPage.ts · DogsPage에서 ${description} 시작해요`);
+});
+
+it('keeps unsupported control events on the existing description', () => {
+  const changed = { ...example, nodes: example.nodes.map(item => item.id === event.id
+    ? { ...item, event: 'onFocus', control: { tag: 'input', texts: ['이름'] } } : item) };
+  expect(storyOf(changed)[0].text).toBe('화면 /dogs에서 onFocus 동작이 일어나요');
+});
+
+it('keeps confirmations on their own screen or front step', () => {
+  const ask = { message: '삭제?', site: site('front', 1) };
+  const changed = { ...example, nodes: example.nodes.map(item => [event.id, remove.id].includes(item.id) ? { ...item, asks: [ask] } : item) };
+  const steps = storyOf(changed);
+  expect(steps[0].asks).toEqual({ items: [{ ...ask, nodeId: event.id }], omitted: 0 });
+  expect(steps[1].asks).toEqual({ items: [{ ...ask, nodeId: remove.id }], omitted: 0 });
+  expect(steps.slice(2).every(step => !step.asks.items.length && !step.asks.omitted)).toBe(true);
+});
+
+it('appends grouped results after storage, with source order and summed omissions', () => {
+  const changed = { ...example, nodes: example.nodes.map(item => {
+    if (item.id === service.id) return { ...item, stores: [store(item.id, 1, 'delete')] };
+    if (item.id === hook.id) return { ...item, after: [{ when: 'success' as const, action: 'cache' as const, target: null, site: site(item.id, 4) }], afterOmitted: 2 };
+    if (item.id !== remove.id) return item;
+    return { ...item, after: [
+      { when: 'error' as const, action: 'state' as const, target: 'error', site: site(item.id, 3) },
+      { when: 'success' as const, action: 'navigate' as const, target: '/', site: site(item.id, 1) },
+      { when: 'settled' as const, action: 'notify' as const, target: null, site: site(item.id, 5) },
+    ], afterOmitted: 1 };
+  }) };
+  const steps = storyOf(changed);
+  expect(steps.slice(-2).map(step => step.kind)).toEqual(['store', 'result']);
+  const result = steps.at(-1)!;
+  expect(result.label).toBe('화면 결과');
+  expect(result.title).toBe('응답이 온 뒤 화면이 바뀌어요');
+  expect(result.representative.id).toBe(remove.id);
+  expect(result.nodes.map(node => node.id)).toEqual([remove.id, hook.id]);
+  expect(result.inferred).toBe(true);
+  expect(result.text).toBe('removeDog · 성공하면: 화면 /로 이동하기 · 실패하면: 화면 값 error 바꾸기 · 끝나면: 알림 보여 주기 · useDeleteDog · 성공하면: 저장해 둔 데이터 바로 바꾸기');
+  expect(result.afterGroups.omitted).toBe(3);
+  expect(result.afterGroups.groups[0].items.map(item => item.site.startUtf16)).toEqual([1, 3, 5]);
+  expect(steps.slice(0, -1).every(step => !step.afterGroups.groups.length && !step.afterGroups.omitted)).toBe(true);
+});
+
+it('shows only each request path results and omits an empty result step', () => {
+  const second = { ...request, id: 'second' };
+  const a = node('a', 'front', 1, { after: [{ when: 'success', action: 'navigate', target: '/a', site: site('a', 1) }] });
+  const b = node('b', 'front', 1, { after: [{ when: 'error', action: 'notify', target: null, site: site('b', 1) }] });
+  const steps = storyOf(flow([a, b, request, second, handler], [edge(a.id, request.id), edge(b.id, second.id)]));
+  expect(steps.filter(step => step.kind === 'result').map(step => [step.storyId, step.nodes.map(node => node.id)]))
+    .toEqual([[request.id, ['a']], [second.id, ['b']]]);
+  expect(storyOf(example).some(step => step.kind === 'result')).toBe(false);
+});
+
+
+it.each([
+  ['refresh', null, '목록을 새로 불러오게 하기'], ['cache', null, '저장해 둔 데이터 바로 바꾸기'],
+  ['cancel', null, '하던 불러오기 멈추기'], ['navigate', null, '다른 화면으로 이동하기'],
+  ['navigate', '/dogs/…', '화면 /dogs/…로 이동하기'], ['state', 'pending', '화면 값 pending 바꾸기'],
+  ['notify', null, '알림 보여 주기'], ['call', 'handleSuccess', '`handleSuccess` 부르기'],
+] as const)('describes the response action %s', (action, target, text) => {
+  expect(afterText({ action, target, when: 'success', site: site('front', 1) })).toBe(text);
 });
