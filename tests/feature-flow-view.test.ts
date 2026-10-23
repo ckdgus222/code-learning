@@ -1,8 +1,9 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it } from 'vitest';
-import { FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowSteps, FlowWalk, hasFlowCode, RoutesStatus, useFeatureFlows, walkSelection } from '../src/renderer/feature-flow';
+import { FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowSteps, FlowWalk, hasFlowCode, hintSteps, summaryKey, RoutesStatus, useFeatureFlows, walkSelection } from '../src/renderer/feature-flow';
 import type { Evidence, FeatureFlow, FlowNode, ProjectRoutes, ProjectView } from '../src/shared/contracts';
+import { storyOf } from '../src/core/analysis/flow-story';
 import type { FeatureGuide } from '../src/shared/ai';
 
 const nodes: FlowNode[] = [
@@ -56,11 +57,127 @@ it('highlights the selected node in each request group without marking other ste
 
 const walkProps = {
   title: '삭제', codeName: '지우기 · /dogs', walk: { storyId: null, step: 0, nodeId: null, site: null },
+  summary: ['', '', ''] as [string, string, string], setSummary() {},
   locked: false, stale: false, setStory() {}, setStep() {}, setNode() {}, onSite() {}, onCode() {}, onFunction() {}, onChoose() {},
 };
 // In the app the hook works the selection out; here it is worked out the same way from the props.
 const walkOf = (props: Omit<Parameters<typeof FlowWalk>[0], 'selection'>) =>
   React.createElement(FlowWalk, { ...props, selection: walkSelection(props.flow, props.walk) });
+
+const fullStoryFlow: FeatureFlow = { ...flow, nodes: [
+  ...nodes,
+  { ...nodes[2], id: 'prepare', name: 'prepare', event: null, after: [{ when: 'success', action: 'call', target: 'done',
+    site: { fileId: 'f', fileHash: 'h', ...nodes[2].range, text: 'done()' } }] },
+  { ...nodes[0], id: 'service', depth: 1, stores: [{ model: 'dog', action: 'delete',
+    site: { fileId: 'f', fileHash: 'h', ...nodes[0].range, text: 'db.dog.delete()' } }] },
+], edges: [flow.edges[0], { ...flow.edges[1], to: 'prepare' }, { ...flow.edges[1], from: 'prepare' }, flow.edges[2],
+  { ...flow.edges[0], from: 'back', to: 'service', kind: 'calls' }] };
+
+it.each([
+  [0, '화면', '화면 쪽'], [1, '프론트 처리', '화면 쪽'], [2, '요청', '부탁(요청)이 가는 중'],
+  [3, '서버 받는 곳', '서버 쪽'], [4, '서버 처리', '서버 쪽'], [5, '저장소', '저장소(DB)'], [6, '화면 결과', '화면 쪽'],
+])('marks the current location and names step %s', (index, label, location) => {
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: fullStoryFlow, walk: { ...walkProps.walk, step: index as number } }));
+  const picture = html.match(/<ol[^>]*aria-label="지금 여기">(.*?)<\/ol>/)![1];
+  const current = picture.match(/<li[^>]*aria-current="location"[^>]*>(.*?)<\/li>/g)!;
+  expect(current).toHaveLength(1);
+  expect(current[0]).toContain(location);
+  expect(current[0]).toContain(index === 2 ? 'class="picture__arrow"' : 'class="picture__box"');
+  expect(html).toContain(`aria-label="${Number(index) + 1}단계 ${label}"`);
+  expect(html).toContain(`지금 여기: 삭제 기능의 ${Number(index) + 1}번째 단계 · ${label}`);
+  expect(picture).toContain('<span class="tag tag--unknown">추정 연결</span> 방식 모름');
+  expect(picture.match(/<[^>]+aria-hidden="true"[^>]*>.*?<\/[^>]+>/g)).toEqual([
+    '<span aria-hidden="true">→</span>', '<span aria-hidden="true">→</span>',
+  ]);
+  if (index === 6) expect(html).toContain('응답이 돌아와 화면 쪽으로 다시 왔어요');
+});
+
+it('draws only the locations found in the story', () => {
+  const server = renderToStaticMarkup(walkOf({ ...walkProps, flow: { ...flow, nodes: [nodes[0]], edges: [] } }));
+  const picture = server.match(/<ol[^>]*aria-label="지금 여기">(.*?)<\/ol>/)![1];
+  expect(picture.match(/<li /g)).toHaveLength(1);
+  expect(picture).toContain('서버 쪽');
+  expect(picture).not.toMatch(/화면 쪽|요청을 보내는 코드|picture__arrow|저장소/);
+  const requestOnly = renderToStaticMarkup(walkOf({ ...walkProps, flow: { ...flow, nodes: [nodes[1]], edges: [] } }));
+  const requestPicture = requestOnly.match(/<ol[^>]*aria-label="지금 여기">(.*?)<\/ol>/)![1];
+  expect(requestPicture).toContain('요청을 보내는 코드');
+  expect(requestPicture).not.toMatch(/<b>서버 쪽|저장소/);
+});
+
+it('uses code wording throughout the navigation and location without screen or event evidence', () => {
+  const changed = { ...fullStoryFlow, nodes: fullStoryFlow.nodes.map(node => ({ ...node, screen: null, event: null })) };
+  const steps = storyOf(changed);
+  for (const index of [0, 1, steps.length - 1]) {
+    const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: changed, walk: { ...walkProps.walk, step: index } }));
+    expect(html.match(/<nav.*?<\/nav>/)![0]).not.toContain('화면');
+    expect(html.match(/<ol[^>]*aria-label="지금 여기">.*?<\/ol>/)![0]).not.toContain('화면');
+    expect(html.match(/<p>지금 여기:.*?<\/p>/)![0]).not.toContain('화면');
+    expect(html).toContain('요청을 보내는 코드');
+    if (index === steps.length - 1) expect(html).toContain('요청 뒤 처리 코드를 보고 있어요');
+  }
+});
+
+it('shows the summary only at the end, with bounded named inputs and a completed sentence', () => {
+  const first = renderToStaticMarkup(walkOf({ ...walkProps, flow }));
+  expect(first).not.toContain('aria-label="한 문장으로 정리"');
+  const last = renderToStaticMarkup(walkOf({ ...walkProps, flow, walk: { ...walkProps.walk, step: 2 }, summary: ['요청', '조건', '결과'] }));
+  expect(last.indexOf('aria-label="한 문장으로 정리"')).toBeGreaterThan(last.indexOf('</article>'));
+  expect(last).toContain('내 말로 적어 보는 칸이에요. 맞는지 채점하지 않아요. 이 프로젝트를 닫으면 사라져요.');
+  for (const [label, value] of [['받는 것', '요청'], ['확인하는 것', '조건'], ['돌려주는 것', '결과']]) {
+    expect(last).toContain(`<input aria-label="${label}" maxLength="120" value="${value}"/>`);
+  }
+  expect(last).not.toContain('placeholder=');
+  expect(last).toContain('<p data-testid="summary-sentence">이 기능은 요청을(를) 받아서, 조건을(를) 확인하고, 결과을(를) 돌려줘요.</p>');
+  expect(last).toContain('<h3 tabindex="-1">서버가 요청을 받아요</h3>');
+});
+
+it.each([['', '', ''], ['요청', '조건', ''], ['요청', ' ', '결과']])('omits the completed sentence for incomplete values %j', (takes, checks, returns) => {
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow, walk: { ...walkProps.walk, step: 2 }, summary: [takes, checks, returns] }));
+  expect(html).not.toContain('data-testid="summary-sentence"');
+});
+
+it.each([{ locked: true }, { stale: true }])('disables summary hints but keeps notes editable for %o', status => {
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, ...status, flow, walk: { ...walkProps.walk, step: 2 } }));
+  const hints = html.match(/<button[^>]*>힌트 단계 보기<\/button>/g)!;
+  expect(hints).toHaveLength(3);
+  expect(hints.every(button => button.includes('disabled=""'))).toBe(true);
+  expect(html.match(/<input[^>]*>/g)!.every(input => !/disabled|readonly/.test(input))).toBe(true);
+});
+
+it('omits hint buttons when the story has no check or return step', () => {
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: { ...flow, nodes: [nodes[1]], edges: [] } }));
+  expect(html.match(/>힌트 단계 보기<\/button>/g)).toHaveLength(1);
+});
+
+it('chooses hints in priority order and counts omitted alternatives', () => {
+  const steps = storyOf(fullStoryFlow);
+  expect(hintSteps(steps)).toEqual({ takes: 2, checks: 4, returns: 6 });
+  const alternatives = steps.map((step, index) => index === 0 ? { ...step, asks: { items: [], omitted: 1 } } : step);
+  expect(hintSteps(alternatives).checks).toBe(0);
+  expect(hintSteps(steps.map((step, index) => index === 1 ? { ...step, stops: { items: [], omitted: 1 } } : step)).checks).toBe(1);
+  expect(hintSteps(steps.filter(step => step.kind !== 'result')).returns).toBe(5);
+  expect(hintSteps(steps.filter(step => !['store', 'result'].includes(step.kind))).returns).toBe(4);
+  expect(hintSteps([steps[3]])).toEqual({ takes: 0, checks: 0, returns: 0 });
+  expect(hintSteps([steps[0]])).toEqual({ takes: 0, checks: null, returns: null });
+  expect(hintSteps([])).toEqual({ takes: null, checks: null, returns: null });
+  const confirmation = { message: null, nodeId: 'event', site: { fileId: 'f', fileHash: 'h', ...nodes[2].range, text: 'confirm()' } };
+  expect(hintSteps(steps.map((step, index) => index === 0 ? { ...step, asks: { items: [confirmation], omitted: 0 } } : step)).checks).toBe(0);
+});
+
+it('keys summaries by code name and source locations, independent of discovery identifiers', () => {
+  const key = summaryKey(walkProps.codeName, nodes[0], nodes[1]);
+  expect(key).toBe('지우기 · /dogs|src/example.ts:0|src/example.ts:0');
+  const foundAgain = { ...flow, routesId: 'new-routes', routeIndex: 20,
+    nodes: nodes.map(node => ({ ...node, id: `new-${node.id}`, fileId: 'new-file' })) };
+  expect(summaryKey(walkProps.codeName, foundAgain.nodes[0], foundAgain.nodes[1])).toBe(key);
+  expect(summaryKey(walkProps.codeName, nodes[0], { ...nodes[1], range: { ...nodes[1].range, startUtf16: 20 } })).not.toBe(key);
+  const serverKey = summaryKey(walkProps.codeName, nodes[0], null);
+  expect(serverKey).toBe('지우기 · /dogs|src/example.ts:0|server');
+  expect(serverKey).not.toBe(key);
+  expect(summaryKey(walkProps.codeName, { ...nodes[0], relativePath: 'other.ts' }, null)).not.toBe(serverKey);
+  expect(summaryKey(walkProps.codeName, { ...nodes[0], range: { ...nodes[0].range, startUtf16: 20 } }, null)).not.toBe(serverKey);
+  expect(summaryKey('지우기 · /pets', nodes[0], null)).not.toBe(serverKey);
+});
 it('shows one of three steps, disables previous at the start, and marks the current numbered step', () => {
   const html = renderToStaticMarkup(walkOf({ ...walkProps, flow }));
   expect(html).toContain('화면 /dogs에서 onClick 동작이 일어나요');
@@ -69,7 +186,7 @@ it('shows one of three steps, disables previous at the start, and marks the curr
   expect(html).toContain('1 / 3');
   expect(html).toMatch(/disabled="">◀ 이전/);
   expect(html).toMatch(/<button class="btn">다음 ▶/);
-  expect(html.match(/>[①②③]<\/button>/g)).toHaveLength(3);
+  expect(html.match(/>[①②③] [^<]+<\/button>/g)).toHaveLength(3);
   expect(html).toContain('aria-current="step">①');
   expect(html).not.toContain('<details open');
   const requestStep = renderToStaticMarkup(walkOf({ ...walkProps, flow, walk: { ...walkProps.walk, step: 1 } }));
@@ -244,13 +361,13 @@ it('renders the sixth step button and folded outside calls with their total coun
     { ...flow.edges[0], from: 'back', to: 'service' }] };
   const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: changed, walk: { ...walkProps.walk, step: 4 } }));
   expect(html).toContain('5 / 6 · 서버 처리');
-  expect(html).toContain('aria-label="6단계">⑥</button>');
+  expect(html).toContain('aria-label="6단계 저장소">⑥ 저장소</button>');
   expect(html).toContain('<details><summary>코드에서 부르는 다른 것 5개</summary>');
   expect(html).toContain('외 4개 더');
   expect(html).not.toContain('<details open');
   const last = renderToStaticMarkup(walkOf({ ...walkProps, flow: changed, walk: { ...walkProps.walk, step: 5 } }));
   expect(last).toContain('6 / 6 · 저장소');
-  expect(last).toContain('aria-label="6단계" aria-current="step">⑥</button>');
+  expect(last).toContain('aria-label="6단계 저장소" aria-current="step">⑥ 저장소</button>');
   expect(last).not.toContain('함수끼리 어떤 순서로 실행되는지는 확인하지 않았어요.');
 });
 const project = {

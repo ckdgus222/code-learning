@@ -56,9 +56,18 @@ export const afterWhen: Record<FlowAfter['when'], string> = { success: '성공�
 
 interface Listed<T> { items: T[]; omitted: number }
 
+// Without a found screen or event, these steps are named for code rather than claiming a screen.
+const codeLabels: Record<StoryStep['kind'], string> = { ...kindLabels, screen: '시작', front: '코드 처리', result: '요청 뒤 처리' };
+/** Which part of the 'where you are' picture each step lights; a new kind must be placed here. */
+export const zoneOf: Record<StoryStep['kind'], 'front' | 'arrow' | 'server' | 'store'> = {
+  screen: 'front', front: 'front', result: 'front', request: 'arrow', handler: 'server', back: 'server', store: 'store',
+};
+
 export interface StoryStep {
   storyId: string;
   kind: 'screen' | 'front' | 'request' | 'handler' | 'back' | 'store' | 'result';
+  /** The story's path has a Next screen or a JSX event; the same for every step of one story. */
+  screenEvidence: boolean;
   label: string;
   title: string;
   text: string;
@@ -133,10 +142,12 @@ export function storyOf(flow: FeatureFlow): StoryStep[] {
       path.unshift(current);
     }
     const others = flow.nodes.filter(node => upstream.has(node.id) && !seen.has(node.id));
+    const screenEvidence = path.some(node => node.screen !== null || node.event !== null);
+    const labels = screenEvidence ? kindLabels : codeLabels;
     const add = (kind: StoryStep['kind'], title: string, text: string, representative: FlowNode,
       nodes: FlowNode[], edges: FlowEdge[], alternatives: FlowNode[] = [],
       details: Partial<Pick<StoryStep, 'stops' | 'storeGroups' | 'outside' | 'asks' | 'afterGroups'>> = {}) => {
-      const step: StoryStep = { storyId, kind, label: kindLabels[kind], title, text, representative, nodes, others: alternatives,
+      const step: StoryStep = { storyId, kind, screenEvidence, label: labels[kind], title, text, representative, nodes, others: alternatives,
         inferred: edges.some(edge => !edge.sure), reasons: [...new Set(edges.filter(edge => !edge.sure).flatMap(edge => edge.reasons))],
         typed: edges.some(edge => edge.kind === 'typed'), stopped: [...nodes, ...alternatives].some(node => cycles.has(node.id)),
         asks: { items: [], omitted: 0 }, afterGroups: { groups: [], omitted: 0 }, stops: { items: [], omitted: 0 }, storeGroups: { groups: [], omitted: 0 }, outside: { items: [], omitted: 0 }, ...details };
@@ -158,7 +169,7 @@ export function storyOf(flow: FeatureFlow): StoryStep[] {
         (first.screen !== null ? `화면 ${first.screen}` : `${first.relativePath} · ${first.name}`)
         + action, event ?? first, screenNodes,
         processing.length ? arrows.slice(0, screenEnd) : arrows, processing.length ? [] : others, { asks: asksOf(screenNodes) });
-      if (processing.length) add('front', '화면 쪽 코드가 요청을 준비해요', processing.map(node => node.name).join(' → ')
+      if (processing.length) add('front', screenEvidence ? '화면 쪽 코드가 요청을 준비해요' : '코드가 요청을 준비해요', processing.map(node => node.name).join(' → ')
         + (processing.length === 1 ? '가 요청을 준비해요' : ' 순서로 이어져요'), path.at(-1)!, processing,
         arrows.slice(screenEnd), others, { asks: asksOf(processing) });
     }
@@ -201,7 +212,7 @@ export function storyOf(flow: FeatureFlow): StoryStep[] {
       const ids = new Set(nodes.map(node => node.id));
       const text = groups.map(({ node, items }) => `${node.name} · ${byWhen(items)
         .map(({ when, items }) => `${afterWhen[when]}: ${items.map(afterText).join(' → ')}`).join(' · ')}`).join(' · ');
-      add('result', '응답이 온 뒤 화면이 바뀌어요', text, nodes[0], nodes,
+      add('result', screenEvidence ? '응답이 온 뒤 화면이 바뀌어요' : '응답이 온 뒤 코드가 이어서 일해요', text, nodes[0], nodes,
         flow.edges.filter(edge => ids.has(edge.from) && ids.has(edge.to)), [],
         { afterGroups: { groups, omitted: nodes.reduce((sum, node) => sum + node.afterOmitted, 0) } });
     }

@@ -6,7 +6,7 @@ import { layoutFlow } from './flow-layout';
 import { isNextConfig, nextRouteOf } from '../core/analysis/next-routes';
 import type { ConnectionReport, FeatureGuide, FeatureGuideResult, LearningMode } from '../shared/ai';
 import { FeatureGuideCard } from './feature-guide';
-import { afterText, afterWhen, byWhen, codeNameOf, groupNameOf, stopText, storeText, storyOf } from '../core/analysis/flow-story';
+import { afterText, afterWhen, byWhen, codeNameOf, groupNameOf, stopText, storeText, storyOf, zoneOf, type StoryStep } from '../core/analysis/flow-story';
 
 export const siteOf = (node: FlowNode): ValueSite => ({ fileId: node.fileId, fileHash: node.fileHash, ...node.range, text: node.name });
 const targetOf = (node: FlowNode): CallTarget => ({ fileId: node.fileId, fileHash: node.fileHash, ...node.range, name: node.name });
@@ -29,6 +29,27 @@ export interface Walk {
   site: ValueSite | null;
 }
 const firstWalk: Walk = { storyId: null, step: 0, nodeId: null, site: null };
+
+export function summaryKey(codeName: string, handler: FlowNode, request: FlowNode | null): string {
+  return `${codeName}|${handler.relativePath}:${handler.range.startUtf16}|${request ? `${request.relativePath}:${request.range.startUtf16}` : 'server'}`;
+}
+
+const otherCountOf = (step: StoryStep) => step.stops.items.length + step.stops.omitted + step.asks.items.length + step.asks.omitted;
+
+export function hintSteps(steps: StoryStep[]): { takes: number | null; checks: number | null; returns: number | null } {
+  const request = steps.findIndex(step => step.kind === 'request');
+  const other = steps.findIndex(step => otherCountOf(step) > 0);
+  const back = steps.findIndex(step => step.kind === 'back');
+  const handler = steps.findIndex(step => step.kind === 'handler');
+  const result = steps.findIndex(step => step.kind === 'result');
+  const store = steps.findIndex(step => step.kind === 'store');
+  const lastServer = steps.findLastIndex(step => step.kind === 'handler' || step.kind === 'back');
+  return {
+    takes: request >= 0 ? request : steps.length ? 0 : null,
+    checks: other >= 0 ? other : back >= 0 ? back : handler >= 0 ? handler : null,
+    returns: result >= 0 ? result : store >= 0 ? store : lastServer >= 0 ? lastServer : null,
+  };
+}
 
 export type WalkSelection = ReturnType<typeof walkSelection>;
 export function walkSelection(flow: FeatureFlow | null, walk: Walk) {
@@ -67,9 +88,10 @@ function SiteList({ items, omitted, disabled, onSite }: {
 }
 
 export function FlowWalk({ flow, title, about, codeName, walk, selection, setStory, setStep, setNode, locked, stale,
-  onFunction, onCode, onSite, onChoose, children }: {
+  summary, setSummary, onFunction, onCode, onSite, onChoose, children }: {
   flow: FeatureFlow; title: string; about?: string; codeName: string; walk: Walk; selection: WalkSelection;
   setStory(id: string): void; setStep(index: number): void; setNode(id: string): void;
+  summary: [string, string, string]; setSummary(index: 0 | 1 | 2, value: string): void;
   locked: boolean; stale: boolean; onFunction(target: CallTarget): void; onCode(site: ValueSite): void;
   onSite(nodeId: string, site: ValueSite): void;
   onChoose(): void; children?: React.ReactNode;
@@ -77,8 +99,35 @@ export function FlowWalk({ flow, title, about, codeName, walk, selection, setSto
   const { stories, storyId, steps, step, currentNode } = selection;
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [picks, setPicks] = useState(0);
+  const stepHeading = useRef<HTMLHeadingElement>(null);
+  const focusHint = useRef(false);
+  useLayoutEffect(() => {
+    if (!focusHint.current) return;
+    stepHeading.current?.focus();
+    focusHint.current = false;
+  }, [step]);
   const disabled = locked || stale;
-  const otherCount = step ? step.stops.items.length + step.stops.omitted + step.asks.items.length + step.asks.omitted : 0;
+  const otherCount = step ? otherCountOf(step) : 0;
+  const screenEvidence = steps[0]?.screenEvidence ?? false;
+  const zones = new Set(steps.map(item => zoneOf[item.kind]));
+  // A request alone still has code that sent it, so the front box shows with the arrow.
+  const front = zones.has('front') || zones.has('arrow');
+  const server = zones.has('server');
+  const store = zones.has('store');
+  const here = step && zoneOf[step.kind];
+  const request = steps.find(item => item.kind === 'request');
+  const hints = hintSteps(steps);
+  const fields = [
+    { label: '받는 것', hint: hints.takes, suffix: '을(를) 받아서, ' },
+    { label: '확인하는 것', hint: hints.checks, suffix: '을(를) 확인하고, ' },
+    { label: '돌려주는 것', hint: hints.returns, suffix: '을(를) 돌려줘요.' },
+  ];
+  function showHint(index: number) {
+    if (disabled) return;
+    if (index === walk.step) { stepHeading.current?.focus(); return; }
+    focusHint.current = true;
+    setStep(index);
+  }
   return <section aria-label="기능 따라가기">
     <div className="map-actions"><h3>{title}</h3><button className="btn" disabled={locked} onClick={onChoose}>다른 기능 고르기</button></div>
     {(about || codeName !== title) && <p>{about && `${about} · `}{codeName !== title && codeName}</p>}
@@ -93,13 +142,33 @@ export function FlowWalk({ flow, title, about, codeName, walk, selection, setSto
       <nav aria-label="이야기 단계" className="flow-nav">
         <button className="btn" disabled={disabled || walk.step === 0} onClick={() => setStep(walk.step - 1)}>◀ 이전</button>
         {steps.map((item, index) => <button key={item.kind} className="btn" disabled={disabled}
-          aria-label={`${index + 1}단계`} aria-current={index === walk.step ? 'step' : undefined}
-          onClick={() => setStep(index)}>{String.fromCodePoint(0x2460 + index)}</button>)}
+          aria-label={`${index + 1}단계 ${item.label}`} aria-current={index === walk.step ? 'step' : undefined}
+          onClick={() => setStep(index)}>{String.fromCodePoint(0x2460 + index)} {item.label}</button>)}
         <button className="btn" disabled={disabled || walk.step === steps.length - 1} onClick={() => setStep(walk.step + 1)}>다음 ▶</button>
       </nav>
+      <ol className="picture picture--mini" aria-label="지금 여기">
+        {front && <li className="picture__box" aria-current={here === 'front' ? 'location' : undefined}>
+          <b>{screenEvidence ? '화면 쪽' : '요청을 보내는 코드'}</b>
+          <p>{screenEvidence ? '사람이 보고 누르는 곳' : '서버에 부탁(요청)을 보내는 코드'}</p>
+        </li>}
+        {request && <li className="picture__arrow" aria-current={here === 'arrow' ? 'location' : undefined}>
+          <span aria-hidden="true">→</span>
+          {step.kind === 'request' && <p>부탁(요청)이 가는 중</p>}
+          {request.inferred && <p><span className="tag tag--unknown">추정 연결</span> {request.reasons.join(' · ')}</p>}
+        </li>}
+        {server && <li className="picture__box" aria-current={here === 'server' ? 'location' : undefined}>
+          <b>서버 쪽</b><p>부탁을 받아 일을 하는 곳</p>
+        </li>}
+        {server && store && <li className="picture__arrow"><span aria-hidden="true">→</span></li>}
+        {store && <li className="picture__box" aria-current={here === 'store' ? 'location' : undefined}>
+          <b>저장소(DB)</b><p>정보를 오래 보관하는 곳</p>
+        </li>}
+      </ol>
+      <p>지금 여기: {title} 기능의 {walk.step + 1}번째 단계 · {step.label}
+        {step.kind === 'result' && ` · ${screenEvidence ? '응답이 돌아와 화면 쪽으로 다시 왔어요' : '요청 뒤 처리 코드를 보고 있어요'}`}</p>
       <article className="card" data-testid="story-step" data-kind={step.kind}>
         <p>{walk.step + 1} / {steps.length} · {step.label}</p>
-        <h3>{step.title}</h3><p>{step.text}</p>
+        <h3 ref={stepHeading} tabIndex={-1}>{step.title}</h3><p>{step.text}</p>
         {otherCount > 0 && <section aria-label="다른 경우">
           <h4>다른 경우 {otherCount}개</h4>
           <SiteList items={[...step.stops.items.map(stop => ({ nodeId: stop.nodeId, site: stop.site, text: stopText(stop),
@@ -150,6 +219,21 @@ export function FlowWalk({ flow, title, about, codeName, walk, selection, setSto
         </p>
         {children}
       </article>
+      {walk.step === steps.length - 1 && <section className="card flow-summary" aria-label="한 문장으로 정리">
+        <h3>한 문장으로 정리해 보기</h3>
+        <p>내 말로 적어 보는 칸이에요. 맞는지 채점하지 않아요. 이 프로젝트를 닫으면 사라져요.</p>
+        <p>이 기능은 {fields.map((field, index) => <React.Fragment key={field.label}>
+          <span className="flow-summary__field">
+            <input aria-label={field.label} maxLength={120} value={summary[index]}
+              onChange={event => setSummary(index as 0 | 1 | 2, event.currentTarget.value)} />
+            {field.hint !== null && <button className="btn btn--small" disabled={disabled}
+              onClick={() => showHint(field.hint!)}>힌트 단계 보기</button>}
+          </span>{field.suffix}
+        </React.Fragment>)}</p>
+        {summary.every(value => value.trim().length > 0) && <p data-testid="summary-sentence">
+          이 기능은 {fields.map((field, index) => summary[index] + field.suffix).join('')}
+        </p>}
+      </section>}
       {step.others.length > 0 && <details className="card"><summary>다른 곳에서도 불러요</summary>
         <ul className="map-list">{step.others.map(node => <li key={node.id}>
           <span className="path">{node.relativePath}</span> · <b>{node.name}</b>{' '}
@@ -360,6 +444,7 @@ export function useFeatureFlows(project: ProjectView | null, revision: number) {
   const [entry, setEntry] = useState<{ result: ProjectRoutes; revision: number } | null>(null);
   const [flow, setFlow] = useState<FeatureFlow | null>(null);
   const [walk, setWalk] = useState<Walk>(firstWalk);
+  const [summaries, setSummaries] = useState<Map<string, [string, string, string]>>(() => new Map());
   const [selected, setSelected] = useState<number | null>(null);
   const [finding, setFinding] = useState(false);
   const [following, setFollowing] = useState(false);
@@ -375,6 +460,7 @@ export function useFeatureFlows(project: ProjectView | null, revision: number) {
   useEffect(() => {
     started.current = false;
     setEntry(null); setGuideResult(null); setFlow(null); setWalk(firstWalk); setSelected(null);
+    setSummaries(new Map());
     setFinding(false); setFollowing(false); setError(''); setSearch('');
     return () => {
       routesRun.current++; flowRun.current++;
@@ -430,11 +516,26 @@ export function useFeatureFlows(project: ProjectView | null, revision: number) {
   const routes = entry?.result;
   const groups = useMemo(() => project && routes ? featureGroups(project, routes, guide?.guide) : [], [project, routes, guide]);
   const selection = useMemo(() => walkSelection(flow, walk), [flow, walk]);
+  const handler = selection.steps.find(step => step.kind === 'handler')?.representative;
+  const request = selection.steps.find(step => step.kind === 'request')?.representative ?? null;
+  const route = flow && routes?.routes[flow.routeIndex];
+  const key = handler && route ? summaryKey(codeNameOf(route), handler, request) : null;
+  const summary: [string, string, string] = key === null ? ['', '', ''] : summaries.get(key) ?? ['', '', ''];
+  function setSummary(index: 0 | 1 | 2, value: string) {
+    if (key === null) return;
+    setSummaries(previous => {
+      const next = new Map(previous);
+      const values: [string, string, string] = [...(previous.get(key) ?? ['', '', ''])];
+      values[index] = value.slice(0, 120);
+      next.set(key, values);
+      return next;
+    });
+  }
   // Only an AI-named feature has a name and sentence of its own; a route alone is shown by its code name.
   const selectedFeature = useMemo(() => flow ? groups.flatMap(group => group.features).find(feature => feature.ai && feature.routes.includes(flow.routeIndex)) : undefined,
     [flow, groups]);
   return { routes, finding, stale, error, search, setSearch, guide, setGuideResult, groups, flow, following, selected, walk,
-    selection, currentNode: selection.currentNode, selectedFeature,
+    selection, currentNode: selection.currentNode, selectedFeature, summary, setSummary,
     start, find, cancelFind, follow, cancelFollow, clearFlow,
     setStory: (storyId: string) => changeWalk({ storyId, step: 0, nodeId: null, site: null }),
     setStep: (step: number) => changeWalk({ ...walk, step, nodeId: null, site: null }),
