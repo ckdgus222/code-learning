@@ -181,6 +181,31 @@ let app;
 let page;
 const checks = [];
 const failures = [];
+async function openAiSection(name) {
+  const button = page.getByRole('group', { name: 'AI 연결', exact: true }).getByRole('button', { name, exact: true });
+  if (await button.getAttribute('aria-expanded') === 'false') await button.click();
+}
+async function checkPanelLayout(width) {
+  const problems = await page.locator('.panel').evaluate(panel => {
+    const line = panel.querySelector('.ai-line');
+    const bounds = line.getBoundingClientRect();
+    const controls = [...line.children];
+    const problems = [];
+    for (const control of controls) {
+      const r = control.getBoundingClientRect();
+      if (!r.width || !r.height || r.left < bounds.left - 1 || r.right > bounds.right + 1
+        || r.top < bounds.top - 1 || r.bottom > bounds.bottom + 1 || control.scrollWidth > control.clientWidth + 1) problems.push(`AI clipped: ${control.textContent}`);
+    }
+    for (let i = 0; i < controls.length; i++) for (let j = i + 1; j < controls.length; j++) {
+      const a = controls[i].getBoundingClientRect(), b = controls[j].getBoundingClientRect();
+      if (a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1) problems.push('AI controls overlap');
+    }
+    if (line.scrollWidth > line.clientWidth + 1 || panel.scrollWidth > panel.clientWidth + 1) problems.push('panel overflows horizontally');
+    if (panel.scrollHeight > panel.clientHeight && getComputedStyle(panel).overflowY !== 'auto') problems.push('panel cannot scroll');
+    return problems;
+  });
+  assert.deepEqual(problems, [], `AI panel ${width}px`);
+}
 async function openFunctionFlow() {
   await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
   if (await page.locator('.symbols__item[aria-pressed="true"]').count() === 0) await page.locator('.symbols__item').first().click();
@@ -193,7 +218,7 @@ async function openLoginFlowQuestion() {
   await page.getByRole('heading', { name: '로그인 흐름 프로젝트', exact: true }).waitFor();
   await openTreeFile('web/lib/auth.ts');
   await page.getByRole('button', { name: 'login', exact: true }).click();
-  await page.getByRole('tab', { name: '질문', exact: true }).click();
+  await openAiSection('질문하기');
   await page.getByTestId('question-scope').waitFor();
   const question = page.getByRole('textbox', { name: '선택한 코드에 질문' });
   await question.fill('기존 질문 유지');
@@ -561,6 +586,7 @@ try {
         return problems;
       });
       assert.deepEqual(workspaceProblems, [], `workspace ${width}x${height}`);
+      await checkPanelLayout(width);
       await page.screenshot({ path: path.join(artifacts, `reader-tools-${width}.png`) });
       // Escape closes the panel from its field; focus is put back there first in case it moved away meanwhile.
       await field.focus();
@@ -932,8 +958,8 @@ try {
     await page.getByRole('heading', { name: '기능 흐름 프로젝트', exact: true }).waitFor();
     await openTreeFile('api/controller.ts');
     await page.getByRole('button', { name: 'DogsController.remove', exact: true }).click();
-    // The scope line is shown on the question tab; an earlier check may have left the explanation tab open.
-    await page.getByRole('tab', { name: '질문', exact: true }).click();
+    // The question scope is visible once its input area is open.
+    await openAiSection('질문하기');
     await page.getByTestId('question-scope').waitFor();
     const scope = await page.getByTestId('question-scope').innerText();
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
@@ -984,6 +1010,9 @@ try {
     await story.getByText('화면 /dogs에서 ‘삭제’ 버튼을 누르면 시작해요', { exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: '흐름 따라가기', exact: true }).getAttribute('aria-current'), 'page');
     await story.getByText('1 / 7 · 화면', { exact: true }).waitFor();
+    await page.getByTestId('flow-step-explanation').getByRole('heading', { name: '화면 동작에서 시작해요', exact: true }).waitFor();
+    assert.match(await page.getByTestId('flow-step-explanation').innerText(), /1단계 화면/);
+    assert.match(await page.getByTestId('flow-step-explanation').innerText(), / · web\/components\/DogList.tsx \d+–\d+행/);
     await story.getByRole('heading', { name: '화면 동작에서 시작해요', exact: true }).waitFor();
     const location = story.getByRole('list', { name: '지금 여기', exact: true });
     assert.match(await location.locator('[aria-current="location"]').innerText(), /화면 쪽/);
@@ -1012,6 +1041,7 @@ try {
         }
       }
       assert.equal(await nav.evaluate(element => element.scrollWidth <= element.clientWidth), true);
+      await checkPanelLayout(width);
     }
     await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), windowSize);
     await story.getByRole('button', { name: '다음 ▶', exact: true }).click();
@@ -1030,6 +1060,10 @@ try {
     const functions = story.getByRole('group', { name: '이 단계의 함수' }).getByRole('button');
     await functions.nth(1).click();
     const selectedName = await functions.nth(1).innerText();
+    const explanation = page.getByTestId('flow-step-explanation');
+    assert.match(await explanation.innerText(), /2단계 프론트 처리/);
+    assert.equal(await explanation.getByRole('heading', { level: 3 }).innerText(), await story.getByTestId('story-step').getByRole('heading', { level: 3 }).innerText());
+    assert.ok((await explanation.innerText()).includes(`${selectedName} · `));
     await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
     const selectedEvidence = await story.getByTestId('evidence-range').innerText();
     await story.getByRole('button', { name: '이 함수 안 순서', exact: true }).click();
@@ -1048,6 +1082,7 @@ try {
     await story.getByRole('button', { name: '4단계 서버 받는 곳', exact: true }).click();
     await story.getByText('DogsController.remove가 요청을 받아요 → DogsService.remove에 넘겨요', { exact: true }).waitFor();
     assert.match(await story.innerText(), /타입으로 찾음/);
+    await page.getByTestId('flow-step-explanation').getByText('타입으로 찾음', { exact: true }).waitFor();
     await story.getByRole('button', { name: '5단계 서버 처리', exact: true }).click();
     await story.getByText('5 / 7 · 서버 처리', { exact: true }).waitFor();
     assert.match(await location.locator('[aria-current="location"]').innerText(), /서버 쪽/);
@@ -1067,6 +1102,8 @@ try {
     await story.getByText('6 / 7 · 저장소', { exact: true }).waitFor();
     await story.getByRole('heading', { name: '저장소(DB)를 써요', exact: true }).waitFor();
     const storage = story.getByRole('region', { name: '저장소 호출', exact: true });
+    const storeNote = await storage.getByText('Prisma 호출 모양으로 찾았어요.', { exact: false }).innerText();
+    await page.getByTestId('flow-step-explanation').getByText(storeNote, { exact: true }).waitFor();
     await storage.getByRole('button', { name: '이 줄 보기', exact: true }).first().click();
     await until(async () => /api\/service.ts · 4–4줄/.test(await story.getByTestId('evidence-range').innerText()));
     assert.equal(await page.getByRole('button', { name: '흐름 따라가기', exact: true }).getAttribute('aria-current'), 'page');
@@ -1076,6 +1113,8 @@ try {
     await story.getByRole('button', { name: '7단계 화면 결과', exact: true }).click();
     await story.getByText('7 / 7 · 화면 결과', { exact: true }).waitFor();
     const after = story.getByRole('region', { name: '응답 뒤 화면', exact: true });
+    const afterNote = await after.getByText('코드 모양(onSuccess, await 다음 줄, catch)으로 찾았어요.', { exact: false }).innerText();
+    await page.getByTestId('flow-step-explanation').getByText(afterNote, { exact: true }).waitFor();
     await after.getByText('저장해 둔 데이터 바로 바꾸기', { exact: false }).waitFor();
     await after.getByRole('button', { name: '이 줄 보기', exact: true }).click();
     await until(async () => /web\/lib\/dogs.ts · 1–1줄/.test(await story.getByTestId('evidence-range').innerText()));
@@ -1183,6 +1222,8 @@ try {
     await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
     await app.evaluate(({ powerMonitor }) => powerMonitor.emit('resume'));
     await page.locator('.feature-page').getByText('다시 확인 필요: 파일이 바뀌었거나 잠자기에서 돌아왔어요.', { exact: false }).waitFor();
+    await page.getByRole('region', { name: '설명', exact: true }).getByText('다시 확인 필요: 파일이 바뀌었거나 잠자기에서 돌아왔어요. 주소를 다시 찾아 주세요.', { exact: true }).waitFor();
+    assert.equal(await page.getByTestId('flow-step-explanation').count(), 0);
     await page.getByRole('button', { name: '다른 기능 고르기', exact: true }).click();
     assert.equal(await route.isDisabled(), true);
     await page.getByRole('button', { name: '다시 찾기', exact: true }).click();
@@ -1215,6 +1256,11 @@ try {
     await story.getByText('화면 /login에서 입력 양식을 보내면 시작해요', { exact: true }).waitFor();
     await story.getByRole('button', { name: '2단계 프론트 처리', exact: true }).click();
     await story.getByTestId('story-step').getByText('훅이 돌려준 login 함수를 불러요', { exact: false }).waitFor();
+    const explanation = page.getByTestId('flow-step-explanation');
+    await explanation.getByText('추정', { exact: true }).waitFor();
+    const reasons = await story.getByTestId('story-step').locator('p').filter({ has: page.getByText('추정', { exact: true }) }).innerText();
+    assert.ok(reasons.length > '추정'.length);
+    assert.ok((await explanation.innerText()).includes(reasons));
     await story.getByRole('button', { name: '5단계 화면 결과', exact: true }).click();
     await story.getByRole('heading', { name: '응답이 온 뒤 화면이 바뀌어요', exact: true }).waitFor();
     const result = story.getByRole('region', { name: '응답 뒤 화면', exact: true });
@@ -1226,6 +1272,27 @@ try {
     await story.getByTestId('flow-code').locator('.cm-content').focus();
     await until(async () => await page.evaluate(() => getSelection()?.toString()) === "router.push('/')");
     await page.screenshot({ path: path.join(artifacts, 'feature-flow-login-result.png') });
+  });
+  await check('Flow panel drops the previous explanation after current or related file changes', async () => {
+    for (const relativePath of ['web/app/login/page.tsx', 'api/controller.ts']) {
+      await dialogTo(loginFlowFixture);
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      await page.getByRole('heading', { name: '로그인 흐름 프로젝트', exact: true }).waitFor();
+      await page.getByRole('region', { name: '기능 목록', exact: true }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+      const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
+      await story.getByTestId('flow-code').waitFor();
+      const explanation = page.getByRole('region', { name: '설명', exact: true });
+      await explanation.getByTestId('flow-step-explanation').waitFor();
+      assert.match(await explanation.innerText(), / · web\/app\/login\/page.tsx \d+–\d+행/);
+      try {
+        await writeFile(path.join(loginFlowFixture, relativePath), loginFlowFiles[relativePath] + '\n// panel stale check\n');
+        await explanation.getByText('다시 확인 필요: 파일이 바뀌었거나 잠자기에서 돌아왔어요. 주소를 다시 찾아 주세요.', { exact: true }).waitFor();
+        assert.equal(await explanation.getByTestId('flow-step-explanation').count(), 0);
+        assert.equal(await explanation.getByText('함수나 구문을 고르면', { exact: false }).count(), 0);
+      } finally {
+        await writeFile(path.join(loginFlowFixture, relativePath), loginFlowFiles[relativePath]);
+      }
+    }
   });
   await check('Flow walk keeps late responses out of code reading, retries failures and refuses changed code', async () => {
     await dialogTo(featureFlowFixture);
@@ -1635,7 +1702,11 @@ try {
     await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
     await page.getByRole('button', { name: '주문', exact: true }).click();
-    await page.getByRole('tab', { name: '질문', exact: true }).click();
+    await openAiSection('질문하기');
+    assert.equal(await page.getByRole('button', { name: '설정', exact: true }).getAttribute('aria-expanded'), 'false');
+    assert.equal(await page.getByRole('combobox', { name: 'AI 사용 방식' }).isVisible(), false);
+    await page.getByText('AI · 로컬 워커 · 설치 확인 필요', { exact: true }).waitFor();
+    await openAiSection('설정');
     const selector = page.getByRole('combobox', { name: 'AI 사용 방식' });
     assert.equal(await selector.inputValue(), 'local-worker');
     assert.deepEqual(await selector.locator('option').evaluateAll(options => options.map(option => option.value)),
@@ -1643,7 +1714,8 @@ try {
     await page.getByRole('textbox', { name: '선택한 코드에 질문' }).fill('설정 보존 확인');
     // Original production handler: fixed installation candidates and --version only.
     // No authentication or AI request is performed by this button.
-    await page.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
+    await openAiSection('설정');
+    await page.locator('.ai-panel').getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
     const installs = page.getByRole('list', { name: '로컬 AI 설치 상태' });
     await installs.waitFor({ timeout: 35_000 });
     // With both workers installed (as on the development Mac) the local worker is ready and states its
@@ -1674,7 +1746,7 @@ try {
     assert.equal(await selector.inputValue(), 'local-worker');
     assert.equal(await page.getByRole('textbox', { name: '선택한 코드에 질문' }).inputValue(), '설정 보존 확인');
   });
-  await check('FAKE AI IPC: completion before start response is retained across panel/tab changes', async () => {
+  await check('FAKE AI IPC: completion before start response is retained across panel/question folding', async () => {
     // Test-only replacement after ALL real IPC checks. This never starts an AI CLI.
     await app.evaluate(({ ipcMain }) => {
       for (const channel of ['learning:connections', 'learning:explain', 'learning:cancel-explanation']) ipcMain.removeHandler(channel);
@@ -1730,6 +1802,7 @@ try {
         };
         const completed = { kind: 'completed', jobId, projectId: request.projectId, result };
         globalThis.testFakeAiCalls.push({ jobId, request });
+        if (globalThis.testFakeAiBehavior === 'fail') return { ok: false, code: 'AI_FAILED', message: '가짜 질문 실패' };
         if (globalThis.testFakeAiBehavior === 'hold') {
           globalThis.testFakeAiLate = () => event.sender.send('learning:ai-event', completed);
         } else {
@@ -1739,17 +1812,22 @@ try {
         return { ok: true, value: { jobId } };
       });
     });
-    await page.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
+    await openAiSection('설정');
+    await page.locator('.ai-panel').getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
     await until(async () => (await page.getByTestId('ai-readiness').innerText()).includes('테스트 전용'));
     await page.getByRole('textbox', { name: '선택한 코드에 질문' }).fill('빠른 응답');
     await page.getByRole('checkbox').check();
     await page.getByRole('button', { name: '질문 보내기', exact: true }).click();
     await page.getByText('가짜 설명: 빠른 응답', { exact: true }).waitFor();
+    await page.getByText('AI · 로컬 워커 · 준비됨', { exact: true }).waitFor();
     await page.getByText('Antigravity · 호출 모델 gemini-3.8-flash-high · 응답 모델 미보고', { exact: true }).waitFor();
     await page.getByRole('button', { name: '패널 접기', exact: true }).click();
     await page.getByRole('button', { name: '설명 패널 펼치기', exact: true }).click();
-    await page.getByRole('tab', { name: '쉬운 설명', exact: true }).click();
-    await page.getByRole('tab', { name: '질문', exact: true }).click();
+    await page.getByRole('button', { name: '질문하기', exact: true }).click();
+    assert.equal(await page.getByText('가짜 설명: 빠른 응답', { exact: true }).isVisible(), true);
+    assert.equal(await page.getByTestId('question-scope').isVisible(), true);
+    assert.equal(await page.getByTestId('question-scope').count(), 1);
+    await openAiSection('질문하기');
     await page.getByText('가짜 설명: 빠른 응답', { exact: true }).waitFor();
     assert.equal(await page.getByRole('region', { name: 'AI 설명' }).count(), 1);
     assert.equal(await page.getByRole('region', { name: '예시로 따라가기', exact: true }).count(), 0);
@@ -1761,8 +1839,14 @@ try {
     await until(() => app.evaluate(() => globalThis.testFakeAiCalls.length === 2));
     // Allow the immediate start response to register its job before cancellation.
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.getByRole('button', { name: '질문하기', exact: true }).click();
+    assert.equal(await page.getByRole('textbox', { name: '선택한 코드에 질문' }).isVisible(), false);
+    assert.equal(await page.locator('.ai-panel > [role="status"]').isVisible(), true);
+    assert.equal(await page.getByTestId('question-scope').isVisible(), true);
+    assert.equal(await page.getByTestId('question-scope').count(), 1);
     await page.getByRole('button', { name: 'AI 작업 취소', exact: true }).click();
     await page.getByText('AI 작업을 취소했습니다.', { exact: true }).waitFor();
+    await openAiSection('질문하기');
     await until(() => app.evaluate(() => globalThis.testFakeAiCancelled.includes(globalThis.testFakeAiCalls[1].jobId)));
     await app.evaluate(() => globalThis.testFakeAiLate());
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -1811,6 +1895,19 @@ try {
     await page.getByRole('button', { name: '주문', exact: true }).click();
     assert.equal(await page.getByRole('region', { name: 'AI 설명' }).count(), 0);
   });
+  await check('AI question failure stays visible when the question is folded', async () => {
+    await app.evaluate(() => { globalThis.testFakeAiBehavior = 'fail'; });
+    await openAiSection('질문하기');
+    const panel = page.locator('.ai-panel');
+    await panel.getByRole('textbox').fill('실패할 질문');
+    await panel.getByRole('checkbox').check();
+    await panel.getByRole('button', { name: '질문 보내기', exact: true }).click();
+    await panel.getByRole('alert').filter({ hasText: '가짜 질문 실패' }).waitFor();
+    await panel.getByRole('button', { name: '질문하기', exact: true }).click();
+    assert.equal(await panel.getByRole('alert').isVisible(), true);
+    assert.equal(await panel.getByRole('textbox').isVisible(), false);
+    await app.evaluate(() => { globalThis.testFakeAiBehavior = 'early'; });
+  });
   await check('Flow question (fake AI): keeps the step and narrow code selection, asks consent and renders easy-to-code layers', async () => {
     const { story, question, ask } = await openLoginFlowQuestion();
     const topic = await story.locator(':scope > .map-actions > h3').innerText();
@@ -1820,11 +1917,11 @@ try {
     const range = await story.getByTestId('evidence-range').innerText();
     const code = await story.getByTestId('flow-code').innerText();
     const calls = await app.evaluate(() => globalThis.testFakeAiCalls.length);
-    await page.getByRole('tab', { name: '쉬운 설명', exact: true }).click();
+    await page.getByRole('button', { name: '질문하기', exact: true }).click();
     await page.getByRole('button', { name: '패널 접기', exact: true }).click();
     await ask.click();
     await until(async () => await question.inputValue() === expected);
-    assert.equal(await page.getByRole('tab', { name: '질문', exact: true }).getAttribute('aria-selected'), 'true');
+    assert.equal(await page.getByRole('button', { name: '질문하기', exact: true }).getAttribute('aria-expanded'), 'true');
     assert.equal(await page.getByRole('button', { name: '흐름 따라가기', exact: true }).getAttribute('aria-current'), 'page');
     assert.equal(await story.getByRole('button', { name: '4단계 서버 받는 곳', exact: true }).getAttribute('aria-current'), 'step');
     assert.equal(await story.getByTestId('evidence-range').innerText(), range);
@@ -2005,6 +2102,7 @@ try {
             await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
             await openTreeFile('order.ts');
             await page.getByRole('button', { name: '주문', exact: true }).click();
+            await openAiSection('질문하기');
             await page.getByTestId('question-scope').waitFor();
             await question.fill('새 프로젝트 질문');
           }
@@ -2120,6 +2218,7 @@ try {
     assert.equal(await more.evaluate(element => element.open), true);
     assert.equal(await card.getByText('개요 작업 시작 중', { exact: true }).isVisible(), true);
     assert.equal(await card.getByRole('button', { name: '개요 작업 취소', exact: true }).isVisible(), true);
+    await openAiSection('설정');
     assert.equal(await page.locator('.ai-panel').getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).isDisabled(), true);
     // The fake handler reads three files before it keeps the reply, so wait for it rather than racing those reads.
     await until(() => app.evaluate(() => typeof globalThis.testOverviewLate === 'function'));
@@ -2527,16 +2626,18 @@ try {
     await page.getByText('표시는 살펴볼 곳이에요. 나쁜 코드라는 판정이 아니에요. 기준: 본문 60줄 넘음, 중첩 4단계 넘음.', { exact: true }).first().waitFor();
     // A step inside makes the step the question's code, until the AI button chooses the whole function again.
     await page.getByRole('list', { name: 'long 내부 구문' }).getByRole('button', { name: '조건 확인', exact: true }).click();
+    await openAiSection('질문하기');
     await until(async () => (await page.getByTestId('question-scope').innerText()).endsWith('4–6행'));
     await page.getByRole('button', { name: 'AI에게 단순하게 쓰는 법 묻기', exact: true }).click();
     await until(async () => (await page.getByTestId('question-scope').innerText()) === '질문 기준: src/work.ts · 3–66행');
-    assert.equal(await page.getByRole('tab', { name: '질문', exact: true }).getAttribute('aria-selected'), 'true');
+    assert.equal(await page.getByRole('button', { name: '질문하기', exact: true }).getAttribute('aria-expanded'), 'true');
     const question = '이 함수를 더 단순하고 읽기 쉽게 쓸 수 있을까요? 바꾼다면 어디를 어떻게 바꾸면 좋을지 알려 주세요.';
-    // The question box is filled by an effect right after the tab opens.
+    // The draft effect fills the question box and opens its input area.
     await until(async () => await page.getByRole('textbox', { name: '선택한 코드에 질문' }).inputValue() === question);
     await page.screenshot({ path: path.join(artifacts, 'hard-code-reader.png') });
     // Sent through the test-only AI handlers above: the request names the whole function's evidence.
-    await page.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
+    await openAiSection('설정');
+    await page.locator('.ai-panel').getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
     await until(async () => (await page.getByTestId('ai-readiness').innerText()).includes('테스트 전용'));
     await page.getByRole('checkbox').check();
     await page.getByRole('button', { name: '질문 보내기', exact: true }).click();
@@ -2760,11 +2861,13 @@ try {
     await dialogTo(guideFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await openTreeFile('src/auth.controller.ts');
-    const guide = page.locator('.file-guide');
+    const guide = page.locator('.panel .file-guide');
+    assert.equal(await page.locator('.center .file-guide, .center .file-explanation, .reader__cards').count(), 0);
+    assert.deepEqual(await page.locator('.reader').evaluate(reader => [...reader.children].map(child => child.className)), ['reader__head', 'reader__body']);
     await guide.getByText('NestJS 컨트롤러', { exact: true }).waitFor();
     assert.match(await guide.innerText(), /POST \/auth\/login.*앱 공통 앞 경로는 빼고 봤어요/);
     await guide.getByRole('button', { name: '이 함수 고르기', exact: true }).click();
-    await page.getByRole('tab', { name: '질문', exact: true }).click();
+    await openAiSection('질문하기');
     await until(async () => await page.locator('.symbols__item[aria-pressed="true"]').innerText() === 'Auth.login');
     await until(async () => /auth.controller.ts · 3–3행/.test(await page.getByTestId('question-scope').innerText()));
     const scope = await page.getByTestId('question-scope').innerText();
@@ -2817,6 +2920,7 @@ try {
       ipcMain.removeHandler('learning:file-explanation');
       globalThis.testFileExplanationCalls = [];
       ipcMain.handle('learning:file-explanation', async (event, request) => {
+        if (globalThis.testFileExplanationFail) return { ok: false, code: 'AI_FAILED', message: '가짜 파일 설명 실패' };
         const { randomUUID } = process.getBuiltinModule('node:crypto');
         const read = ipcMain._invokeHandlers.get('learning:read');
         const opened = await read(event, { projectId: request.projectId, fileId: request.fileId });
@@ -2850,12 +2954,16 @@ try {
     await page.getByRole('button', { name: 'README.md', exact: true }).click();
     assert.equal(await page.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).count(), 0);
     await page.getByRole('button', { name: 'chunks.ts', exact: true }).click();
-    const card = page.getByRole('region', { name: '이 파일 설명', exact: true });
+    const card = page.locator('.panel').getByRole('region', { name: '이 파일 설명', exact: true });
+    const disclosure = page.locator('.panel > details').filter({ has: page.getByText('AI로 이 파일 설명 만들기', { exact: true }) });
+    assert.equal(await disclosure.evaluate(element => element.open), false);
+    await disclosure.locator(':scope > summary').click();
     assert.equal(await card.getByRole('checkbox').count(), 0);
     assert.equal(await app.evaluate(() => globalThis.testFileExplanationCalls.length), 0);
     await page.getByRole('button', { name: 'run', exact: true }).click();
-    await page.getByRole('tab', { name: '질문', exact: true }).click();
+    await openAiSection('질문하기');
     const panel = page.locator('.ai-panel');
+    await openAiSection('설정');
     for (const [mode, recipient] of [['local-worker', 'Gemini와 Codex'], ['antigravity', 'Gemini(Antigravity)'], ['claude-code', 'Claude Code']]) {
       await panel.getByRole('combobox', { name: 'AI 사용 방식' }).selectOption(mode);
       await card.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
@@ -2916,6 +3024,15 @@ try {
     await checkConsentDisclosure(card, '이 파일의 경로와 원문(비밀값처럼 보이는 형태는 가림)·덩어리 목록(ID·종류·이름·행 범위)을 Codex에 보내는 데 동의합니다. 다른 파일은 보내지 않습니다. 모든 비밀값을 찾는다고 보장하지는 않습니다.');
     assert.equal(await create.isDisabled(), true);
     await card.getByRole('checkbox').check();
+    await app.evaluate(() => { globalThis.testFileExplanationFail = true; });
+    await create.click();
+    await card.getByText('가짜 파일 설명 실패', { exact: true }).waitFor();
+    assert.equal(await disclosure.evaluate(element => element.open), true);
+    assert.equal(await card.getByTestId('file-summary').count(), 0);
+    await disclosure.locator(':scope > summary').click();
+    assert.equal(await card.getByText('가짜 파일 설명 실패', { exact: true }).isVisible(), true);
+    await app.evaluate(() => { globalThis.testFileExplanationFail = false; });
+    await card.getByRole('checkbox').check();
     await create.click();
     await card.getByTestId('file-summary').waitFor();
     await card.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
@@ -2939,22 +3056,57 @@ try {
     await page.getByTestId('function-chunk-summary').getByText('run 덩어리 설명', { exact: true }).waitFor();
     await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
     await page.getByTestId('function-chunk-summary').getByText('run 덩어리 설명', { exact: true }).waitFor();
+    assert.equal(await page.locator('.file-guide').count(), 0);
     await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
     await page.getByRole('button', { name: 'map에 넘긴 함수 (1행)', exact: true }).click();
     await page.getByTestId('function-chunk-summary').getByText('이 함수는 따로 설명한 덩어리가 없어요', { exact: true }).waitFor();
   });
+  await check('File explanation without a result stays open during progress and after cancellation', async () => {
+    await page.getByRole('button', { name: 'other0.ts', exact: true }).click();
+    // The panel keeps the previous file's card until the new file is read, so wait for the new one.
+    await until(async () => (await page.locator('.panel .scope').innerText()).includes('other0.ts'));
+    const card = page.locator('.panel').getByRole('region', { name: '이 파일 설명', exact: true });
+    const disclosure = page.locator('.panel > details');
+    assert.equal(await disclosure.evaluate(element => element.open), false);
+    await disclosure.locator(':scope > summary').click();
+    await app.evaluate(() => { globalThis.testFileExplanationHold = true; globalThis.testFileExplanationLate = null; });
+    await card.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
+    await card.getByRole('checkbox').check();
+    await card.getByRole('button', { name: '동의하고 파일 설명 만들기', exact: true }).click();
+    await until(() => app.evaluate(() => typeof globalThis.testFileExplanationLate === 'function'));
+    await page.getByRole('button', { name: 'chunks.ts', exact: true }).click();
+    await page.getByRole('button', { name: 'other0.ts', exact: true }).click();
+    await card.getByRole('button', { name: 'AI 작업 취소', exact: true }).waitFor();
+    assert.equal(await disclosure.evaluate(element => element.open), true);
+    assert.equal(await card.getByTestId('file-summary').count(), 0);
+    await disclosure.locator(':scope > summary').click();
+    assert.equal(await card.getByRole('button', { name: 'AI 작업 취소', exact: true }).isVisible(), true);
+    await page.getByRole('button', { name: '패널 접기', exact: true }).click();
+    await page.locator('.topbar').getByText('파일 설명 진행 중', { exact: false }).waitFor();
+    await page.getByRole('button', { name: '파일 설명 작업 취소', exact: true }).click();
+    await page.getByRole('button', { name: '설명 패널 펼치기', exact: true }).click();
+    await card.getByText('AI 작업을 취소했습니다.', { exact: true }).waitFor();
+    await page.getByRole('button', { name: 'chunks.ts', exact: true }).click();
+    await page.getByRole('button', { name: 'other0.ts', exact: true }).click();
+    await card.getByText('AI 작업을 취소했습니다.', { exact: true }).waitFor();
+    assert.equal(await disclosure.evaluate(element => element.open), true);
+    await app.evaluate(() => { globalThis.testFileExplanationLate(); globalThis.testFileExplanationHold = false; });
+    await page.getByRole('button', { name: 'chunks.ts', exact: true }).click();
+  });
   await check('File explanation (fake AI): 80 ranges survive other reads, cancellation, stale files and project reopening', async () => {
-    const card = page.getByRole('region', { name: '이 파일 설명', exact: true });
+    const card = page.locator('.panel').getByRole('region', { name: '이 파일 설명', exact: true });
     for (let index = 0; index < 6; index++) {
       await page.getByRole('button', { name: `other${index}.ts`, exact: true }).click();
       await page.getByRole('heading', { name: `other${index}.ts`, exact: true }).waitFor();
     }
+    await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).click();
     await card.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
     await card.getByRole('checkbox').check();
     await card.getByRole('button', { name: '동의하고 파일 설명 만들기', exact: true }).click();
     await card.getByTestId('file-summary').getByText('other5.ts 파일 설명', { exact: true }).waitFor();
     await page.getByRole('button', { name: 'chunks.ts', exact: true }).click();
     await card.getByTestId('file-summary').getByText('chunks.ts 파일 설명', { exact: true }).waitFor();
+    assert.equal(await card.locator('..').evaluate(element => element.open), true);
     await card.getByRole('button', { name: '코드 보기', exact: true }).first().click();
     await until(async () => /chunks.ts · 1–1줄/.test(await page.getByTestId('evidence-range').innerText()));
     await card.getByRole('button', { name: '더 보기', exact: true }).click();
@@ -2969,7 +3121,10 @@ try {
     await card.getByRole('button', { name: 'AI 작업 취소', exact: true }).waitFor();
     assert.equal(await page.locator('.ai-panel').getByRole('combobox', { name: 'AI 사용 방식' }).isDisabled(), true);
     await until(() => app.evaluate(() => typeof globalThis.testFileExplanationLate === 'function'));
-    await card.getByRole('button', { name: 'AI 작업 취소', exact: true }).click();
+    await page.getByRole('button', { name: '패널 접기', exact: true }).click();
+    await page.locator('.topbar').getByText('파일 설명 진행 중', { exact: false }).waitFor();
+    await page.getByRole('button', { name: '파일 설명 작업 취소', exact: true }).click();
+    await page.getByRole('button', { name: '설명 패널 펼치기', exact: true }).click();
     await card.getByText('AI 작업을 취소했습니다.', { exact: true }).waitFor();
     await app.evaluate(() => { globalThis.testFileExplanationLate(); globalThis.testFileExplanationHold = false; });
     await card.getByText('AI 작업을 취소했습니다.', { exact: true }).waitFor();
