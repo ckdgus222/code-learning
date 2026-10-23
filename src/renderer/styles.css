@@ -374,6 +374,11 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 /* Boxes share one row when it fits and wrap on narrow windows; the arrow text wraps instead of pushing the server box down. */
 .picture__box { flex: 1 1 150px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
 .picture__arrow { flex: 0 1 120px; align-self: center; text-align: center; color: var(--muted); }
+.picture--mini .picture__box { flex: 1 1 110px; padding: 8px; font-size: .9rem; }
+.picture--mini [aria-current="location"] { background: var(--accent-soft); outline: 2px solid var(--accent); }
+.flow-summary { overflow-wrap: anywhere; }
+.flow-summary__field { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; max-width: 100%; }
+.flow-summary__field input { min-width: 0; max-width: 100%; margin: 0; }
 .map-canvas .react-flow__node.feature-box--front { background: var(--accent-soft); border-color: var(--accent); }
 .map-canvas .react-flow__node.feature-box--back { background: var(--ok-soft); border-color: var(--ok); }
 .map-canvas .react-flow__node.feature-box--request { background: var(--surface); border-color: var(--accent); }

@@ -306,6 +306,26 @@ it('shows only each request path results and omits an empty result step', () => 
   expect(storyOf(example).some(step => step.kind === 'result')).toBe(false);
 });
 
+it('uses code labels for a request path without screen evidence, even if another caller is a screen', () => {
+  const plain = node('plain', 'front', 3);
+  const prepare = node('prepare', 'front', 1, { after: [{ when: 'success', action: 'call', target: 'done', site: site('prepare', 1) }] });
+  const steps = storyOf(flow([plain, prepare, { ...screen, depth: 0 }, request, handler], [edge(plain.id, prepare.id),
+    edge(prepare.id, request.id), edge(screen.id, request.id), edge(request.id, handler.id)]));
+  expect(steps.map(step => step.label)).toEqual(['시작', '코드 처리', '요청', '서버 받는 곳', '요청 뒤 처리']);
+  expect(steps[0].title).toBe('이 함수에서 시작해요');
+  expect(steps[1].title).toBe('코드가 요청을 준비해요');
+  expect(steps.at(-1)!.title).toBe('응답이 온 뒤 코드가 이어서 일해요');
+});
+
+it.each(['screen', 'event'] as const)('keeps screen wording with %s evidence alone', evidence => {
+  const start = node('start', 'front', 2, { [evidence]: evidence === 'screen' ? '/dogs' : 'onClick' });
+  const prepare = node('prepare', 'front', 1, { after: [{ when: 'success', action: 'call', target: 'done', site: site('prepare', 1) }] });
+  const steps = storyOf(flow([start, prepare, request, handler], [edge(start.id, prepare.id), edge(prepare.id, request.id)]));
+  expect(steps.map(step => step.label)).toEqual(['화면', '프론트 처리', '요청', '서버 받는 곳', '화면 결과']);
+  expect(steps[1].title).toBe('화면 쪽 코드가 요청을 준비해요');
+  expect(steps.at(-1)!.title).toBe('응답이 온 뒤 화면이 바뀌어요');
+});
+
 
 it.each([
   ['refresh', null, '목록을 새로 불러오게 하기'], ['cache', null, '저장해 둔 데이터 바로 바꾸기'],

@@ -875,6 +875,7 @@ function App() {
             title={features.selectedFeature?.name ?? codeNameOf(features.routes.routes[features.flow.routeIndex])}
             about={features.selectedFeature?.about}
             codeName={codeNameOf(features.routes.routes[features.flow.routeIndex])} walk={features.walk} selection={features.selection}
+            summary={features.summary} setSummary={features.setSummary}
             setStory={id => void showFlowNode(features.setStory(id))} setStep={index => void showFlowNode(features.setStep(index))}
             setNode={id => void showFlowNode(features.setNode(id))} locked={busy} stale={features.stale}
             onChoose={features.clearFlow} onCode={site => void showValueSite(site)} onSite={(id, site) => void showFlowSite(id, site)}
