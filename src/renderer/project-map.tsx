@@ -6,8 +6,6 @@ import { folderName, visibleGraph, type MapArrow, type MapBox } from './map-layo
 import { COMPLEXITY_NOTE, ComplexityTags } from './complexity';
 import { ChangeList, kindLabels } from './changes';
 
-// Plan v2.3 A (user, 2026-10-19): with more code files than this the map starts in the design view.
-const FOLD_OVER = 60;
 // One file can hold thousands of imports, so each list shows this many rows and counts the rest.
 const LIST_LIMIT = 300;
 export const firstRows = <T,>(items: T[]) => items.slice(0, LIST_LIMIT);
@@ -85,8 +83,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
 }) {
   const folders = useMemo(() => [...new Set(map.files.map(file => file.folder))], [map]);
   const paths = useMemo(() => new Map(map.files.map(file => [file.id, file.relativePath])), [map]);
-  const codeFiles = map.files.filter(file => file.checked !== 'not-code').length;
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set(codeFiles > FOLD_OVER ? [] : folders));
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const [selected, setSelected] = useState<MapArrow | null>(null);
   const graph = useMemo(() => visibleGraph(map, expanded), [map, expanded]);
   // The folder-to-folder arrows are the design at a glance, so they are also listed as text.

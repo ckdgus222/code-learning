@@ -2,7 +2,7 @@ import React, { useEffect, useId, useRef, useState } from 'react';
 import type { Evidence } from '../shared/contracts';
 import { GEMINI_MODEL, type ConnectionReport, type LearningEvent, type LearningMode, type LearningPhase, type LearningResult } from '../shared/ai';
 
-export const modes: { id: LearningMode; label: string }[] = [
+const modes: { id: LearningMode; label: string }[] = [
   { id: 'local-worker', label: '로컬 워커 · Codex → Gemini → Codex' },
   { id: 'codex', label: 'Codex 단독 · 대조 없음' },
   { id: 'claude-code', label: 'Claude Code 단독 · 준비 중' },

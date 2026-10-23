@@ -50,7 +50,7 @@ try {
   const page = await app.firstWindow();
   await page.getByRole('heading', { name: 'Code Learning', exact: true }).waitFor();
   assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme), 'dark');
-  assert.doesNotMatch(await page.locator('.statusbar').innerText(), /파일 \d+개/);
+  assert.equal(await page.locator('.files h3').count(), 0);
   await app.evaluate(({ dialog }, project) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [project] }); }, project);
   await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
   await page.getByRole('button', { name: 'sample.ts', exact: true }).click();
@@ -63,15 +63,17 @@ try {
   assert.equal(await markers.first().getAttribute('title'), '1단계 · 조건 확인');
   assert.equal(await markers.first().getAttribute('tabindex'), '-1');
   assert.equal(await markers.first().getAttribute('aria-pressed'), 'true');
-  const firstEvidence = await page.getByTestId('evidence-range').innerText();
+  // Both steps sit on line 1, so the exact range is read from the element's UTF-16 attribute.
+  const firstEvidence = await page.getByTestId('evidence-range').getAttribute('data-utf16');
   await page.locator('.steps__item').nth(1).click();
   await page.waitForFunction(() => document.querySelectorAll('.steps__item')[1]?.getAttribute('aria-pressed') === 'true');
   assert.equal(await markers.first().getAttribute('aria-pressed'), 'true');
-  assert.notEqual(await page.getByTestId('evidence-range').innerText(), firstEvidence);
+  assert.notEqual(await page.getByTestId('evidence-range').getAttribute('data-utf16'), firstEvidence);
   await markers.first().click();
-  await page.waitForFunction(expected => document.querySelector('[data-testid="evidence-range"]')?.textContent === expected, firstEvidence);
+  await page.waitForFunction(expected => document.querySelector('[data-testid="evidence-range"]')?.getAttribute('data-utf16') === expected, firstEvidence);
   assert.equal(await page.locator('.steps__item').first().getAttribute('aria-pressed'), 'true');
-  assert.equal(await page.locator('.statusbar').getByText('파일 3개', { exact: true }).count(), 1);
+  assert.equal(await page.locator('.files h3').innerText(), '파일 3개');
+  assert.equal(await page.locator('.statusbar').count(), 0);
   assert.equal(await page.locator('.views__item').count(), 5);
   // The packaged reader colours syntax and takes keyboard focus, as in development.
   const reader = await page.evaluate(() => {
@@ -106,6 +108,9 @@ try {
   await page.screenshot({ path: path.join(root, 'test-results/packaged-value-shapes.png') });
   // The project map's library and its stylesheet are in the bundle and work under the packaged CSP.
   await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+  // The map starts in the design view (folders); the file view draws the file-to-file arrow checked below.
+  await page.getByRole('button', { name: '설계 보기', exact: true, pressed: true }).waitFor({ timeout: 30_000 });
+  await page.getByRole('button', { name: '파일 보기', exact: true }).click();
   // The one arrow runs straight down inside one folder, a box of zero width that Playwright calls hidden,
   // so the drawn path itself is checked.
   const arrow = page.locator('.react-flow__edge-path');
@@ -151,13 +156,13 @@ try {
   assert.equal(await description.isVisible(), false);
   assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
   await page.screenshot({ path: path.join(root, 'test-results/packaged-local-ai.png') });
-  await page.getByRole('button', { name: '작업 취소·프로젝트 닫기' }).click();
+  await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
   const cancellation = page.getByRole('status').filter({ hasText: '작업을 취소했습니다.' });
   await cancellation.waitFor();
   assert.equal(await cancellation.innerText(), '작업을 취소했습니다.');
   assert.match(await cancellation.getAttribute('class'), /(?:^|\s)notice--info(?:\s|$)/);
   assert.equal(await page.getByRole('alert').count(), 0);
-  assert.doesNotMatch(await page.locator('.statusbar').innerText(), /파일 \d+개/);
+  assert.equal(await page.locator('.files h3').count(), 0);
   await app.evaluate(({ dialog }, folder) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] }); }, treeFixture);
   await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
   await page.getByRole('heading', { name: '폴더 트리 프로젝트', exact: true }).waitFor();
