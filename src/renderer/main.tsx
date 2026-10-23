@@ -11,7 +11,7 @@ import { FileGuideCard } from './file-guide';
 import { FileExplanationCard, rememberFileExplanation, type FileExplanationEntry, type FileExplanationState } from './file-explanation';
 import { Flow } from './flow';
 import { ProjectMapView, type MapEntry } from './project-map';
-import { FeatureChooser, FeatureList, FlowLimits, FlowWalk, hasFlowCode, RoutesStatus, siteOf, useFeatureFlows } from './feature-flow';
+import { AFTER_FLOW_NOTE, STORE_FLOW_NOTE, FLOW_ORDER_NOTE, FeatureChooser, FeatureList, FlowLimits, FlowWalk, hasFlowCode, RoutesStatus, siteOf, useFeatureFlows } from './feature-flow';
 import { codeNameOf } from '../core/analysis/flow-story';
 import { matchCallStep, matchFunction, matchImport } from './map-layout';
 import { CallsFacts, type CallFunction, type CallsState } from './calls';
@@ -80,7 +80,6 @@ function App() {
   const [watchError, setWatchError] = useState(false);
   const [search, setSearch] = useState('');
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
-  const [panel, setPanel] = useState<'explain' | 'ask'>('explain');
   const [panelOpen, setPanelOpen] = useState(true);
   const [draft, setDraft] = useState<{ text: string; id: number; topic?: { name: string; evidenceId: string } } | null>(null);
   // The AI installation check, shared by the question panel and the overview card.
@@ -143,6 +142,10 @@ function App() {
   const fileExplanationStale = fileExplanation !== null &&
     (fileExplanation.revision !== revision.current || fileExplanation.result.range.fileHash !== source?.hash);
   const fileExplanationRunning = fileExplanationState?.status === 'running';
+  // The AI file explanation job of the file now read, if any (another file's job is shown in the top bar).
+  const sourceExplanationState = source && fileExplanationState?.fileId === source.fileId ? fileExplanationState : null;
+  const fileExplanationOpen = !!fileExplanation || (sourceExplanationState !== null &&
+    (sourceExplanationState.status === 'running' || !!sourceExplanationState.message));
   const functionChunk = symbol && fileExplanation?.result.chunks.find(chunk =>
     chunk.functionRange?.startUtf16 === symbol.evidence.startUtf16 && chunk.functionRange.endUtf16 === symbol.evidence.endUtf16);
   const functionExplanation = symbol && fileExplanation && !fileExplanationStale
@@ -389,7 +392,7 @@ function App() {
   }
   /** Puts a question in the box and shows it; a topic ties it to the code it was prepared for (AiPanel). */
   function openQuestion(text: string, topic?: { name: string; evidenceId: string }) {
-    setPanel('ask'); setPanelOpen(true);
+    setPanelOpen(true);
     setDraft(current => ({ text, id: (current?.id ?? 0) + 1, ...(topic ? { topic } : {}) }));
   }
 
@@ -771,6 +774,10 @@ function App() {
   const pathOf = (fileId: string) => project?.files.find(file => file.id === fileId)?.relativePath ?? '(목록에 없는 파일)';
   const fileTree = useMemo(() => buildFileTree(project?.files ?? []), [project?.files]);
   const visibleFileTree = useMemo(() => filterFileTree(fileTree, search), [fileTree, search]);
+  const flowStep = features.selection.step;
+  const flowNode = features.currentNode;
+  const flowCodeName = features.flow && features.routes ? codeNameOf(features.routes.routes[features.flow.routeIndex]) : '';
+  const flowTitle = features.selectedFeature?.name ?? flowCodeName;
   const intro = project?.overview.intro;
   const scope = [project?.name, source?.relativePath, symbol?.name, step?.title].filter(Boolean);
 
@@ -785,7 +792,7 @@ function App() {
       </nav>}
       <div className="topbar__actions">
         {busy && <span role="status" className="busy"><span className="spinner" aria-hidden="true" />처리 중…</span>}
-        {fileExplanationState?.status === 'running' && (view !== 'code' || source?.fileId !== fileExplanationState.fileId) &&
+        {fileExplanationState?.status === 'running' && (view !== 'code' || source?.fileId !== fileExplanationState.fileId || !panelOpen) &&
           <span role="status">파일 설명 진행 중 <button className="btn btn--small" onClick={() => void cancelFileExplanation()}>파일 설명 작업 취소</button></span>}
         <button className="btn" onClick={openProject} disabled={busy}>프로젝트 폴더 열기</button>
         <button className="btn btn--ghost" onClick={cancel} disabled={!project && !busy}>프로젝트 닫기</button>
@@ -809,7 +816,7 @@ function App() {
       </ol>
       <ul className="welcome__promises">
         <li>원본 파일을 수정하지 않아요.</li>
-        <li>AI에는 질문 탭에서 동의한 질문만 보내요. 알려진 한계는 README에 있어요.</li>
+        <li>AI에는 오른쪽 AI 칸에서 동의한 질문만 보내요. 알려진 한계는 README에 있어요.</li>
       </ul>
     </main> : <>
       <nav aria-label="보기" className="views">
@@ -916,9 +923,9 @@ function App() {
               disabled={busy || features.stale} onFollow={index => void followFeatureRoute(index)} />}
           </>}
           {features.flow && features.routes && <FlowWalk flow={features.flow}
-            title={features.selectedFeature?.name ?? codeNameOf(features.routes.routes[features.flow.routeIndex])}
+            title={flowTitle}
             about={features.selectedFeature?.about}
-            codeName={codeNameOf(features.routes.routes[features.flow.routeIndex])} walk={features.walk} selection={features.selection}
+            codeName={flowCodeName} walk={features.walk} selection={features.selection}
             summary={features.summary} setSummary={features.setSummary}
             setStory={id => void showFlowNode(features.setStory(id))} setStep={index => void showFlowNode(features.setStep(index))}
             setNode={id => void showFlowNode(features.setNode(id))} locked={busy} stale={features.stale}
@@ -984,22 +991,6 @@ function App() {
               <button className="btn btn--icon" aria-label="줄바꿈" title="줄바꿈" aria-pressed={wrap} onClick={() => setWrap(on => !on)}><Icon name="wrap" /></button>
             </div>
           </div>
-          {/* Both cards share one scroll area so together they never take more of the window than one did. */}
-          <div className="reader__cards">
-            {source.guide && <FileGuideCard key={`${source.fileId}:${source.hash}`} guide={source.guide} busy={busy} stale={stale}
-              onShow={showFileGuideRange} onSelect={id => {
-                if (busy || stale) return;
-                const item = source.analysis.symbols.find(item => item.id === id);
-                if (item) { selectSymbol(item.id); void showEvidence(item.evidence, null); }
-              }} />}
-            {source.analysis.language !== 'text' && <FileExplanationCard source={source} entry={fileExplanation}
-              state={fileExplanationState?.fileId === source.fileId ? fileExplanationState : null} stale={fileExplanationStale}
-              mode={mode} locked={busy} running={questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running'}
-              checking={checking} connections={connections}
-              onInspect={() => { void inspectConnections().then(message => { if (message) setError(message); }); }}
-              onStart={() => void startFileExplanation()} onCancel={() => void cancelFileExplanation()}
-              onShow={range => void showFileExplanationRange(range)} />}
-          </div>
           {functionExplanation && <p className="function-explanation" data-testid="function-chunk-summary">{functionExplanation}</p>}
           <div className="reader__body">
             <section aria-label="구문과 코드" className="outline">
@@ -1036,33 +1027,55 @@ function App() {
 
       <aside className="panel" aria-label="설명과 질문" hidden={!panelOpen}>
         <div className="panel__head">
-          <div role="tablist" className="tabs">
-            <button role="tab" aria-selected={panel === 'explain'} onClick={() => setPanel('explain')}>쉬운 설명</button>
-            <button role="tab" aria-selected={panel === 'ask'} onClick={() => setPanel('ask')}>질문</button>
-          </div>
           <button className="btn btn--ghost btn--icon" aria-label="패널 접기" title="패널 접기" onClick={() => setPanelOpen(false)}><Icon name="collapse" /></button>
         </div>
         <p className="scope"><span className="eyebrow">현재 범위</span>{scope.join(' › ')}</p>
-        {panel === 'explain' && <div className="panel__body">
-          {step && evidence ? <section className="fact">
+        <section className="panel__body" aria-label="설명">
+          {view === 'flow' && features.stale && <p className="notice notice--warn">다시 확인 필요: 파일이 바뀌었거나 잠자기에서 돌아왔어요. 주소를 다시 찾아 주세요.</p>}
+          {view === 'flow' && !features.stale && flowStep && flowNode && <article className="fact" data-testid="flow-step-explanation">
+            <p>{flowTitle} › {features.walk.step + 1}단계 {flowStep.label}</p>
+            <h3>{flowStep.title}</h3>
+            <p>{flowStep.text}</p>
+            <p>{flowNode.name} · {flowNode.relativePath} {flowNode.range.startLine}–{flowNode.range.endLine}행</p>
+            {flowStep.inferred && <p><span className="tag tag--unknown">추정</span> {flowStep.reasons.join(' · ')}</p>}
+            {flowStep.typed && <p><span className="tag tag--doc">타입으로 찾음</span></p>}
+            {flowStep.afterGroups.groups.length > 0 && <p className="hint">{AFTER_FLOW_NOTE}</p>}
+            {flowStep.storeGroups.groups.length > 0 && <p className="hint">{STORE_FLOW_NOTE}</p>}
+            {(flowStep.afterGroups.groups.length > 1 || flowStep.storeGroups.groups.length > 1) && <p className="hint">{FLOW_ORDER_NOTE}</p>}
+          </article>}
+          {view !== 'flow' && (step && evidence ? <section className="fact">
             <span className="tag tag--ok">코드에서 확인됨</span>
             <p><b>{symbol?.name}</b> 함수 안의 <b>{step.title}</b> 부분이에요. 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요.</p>
           </section> : symbol && evidence ? <section className="fact">
             <span className="tag tag--ok">코드에서 확인됨</span>
             <p><b>{symbol.name}</b> 함수는 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요. 왼쪽에서 구문을 골라 한 부분씩 볼 수 있어요.</p>
-          </section> : <p className="hint">함수나 구문을 고르면 그 부분을 여기서 짚어 줘요.</p>}
-          <section className="fact fact--muted">
-            <span className="tag tag--unknown">AI 설명은 질문 탭에서</span>
-            <p>여기에는 코드에서 확인한 내용만 보여요. AI 설명은 질문 탭에서 동의하고 질문하면 받을 수 있어요.</p>
-          </section>
-        </div>}
-        <div hidden={panel !== 'ask'}>
-          <AiPanel key={project.id} projectId={project.id} evidence={questionEvidence} stale={stale} draft={draft}
-            connections={connections} checking={checking} otherRunning={overviewAi?.status === 'running' || fileExplanationRunning || featureGuideRunning} onInspect={inspectConnections}
-            mode={mode} onMode={setMode} onRunning={setQuestionRunning}
-            relativePath={project.files.find(file => file.id === questionEvidence?.fileId)?.relativePath ?? ''}
-            onEvidence={next => { setView('code'); void showEvidence(next, null, 'answer'); }} />
-        </div>
+          </section> : <p className="hint">함수나 구문을 고르면 그 부분을 여기서 짚어 줘요.</p>)}
+          {view === 'code' && source?.guide && <FileGuideCard key={`${source.fileId}:${source.hash}`} guide={source.guide} busy={busy} stale={stale}
+            onShow={showFileGuideRange} onSelect={id => {
+              if (busy || stale) return;
+              const item = source.analysis.symbols.find(item => item.id === id);
+              if (item) { selectSymbol(item.id); void showEvidence(item.evidence, null); }
+            }} />}
+        </section>
+        <AiPanel key={project.id} projectId={project.id} evidence={questionEvidence} stale={stale} draft={draft}
+          connections={connections} checking={checking} otherRunning={overviewAi?.status === 'running' || fileExplanationRunning || featureGuideRunning} onInspect={inspectConnections}
+          mode={mode} onMode={setMode} onRunning={setQuestionRunning}
+          relativePath={project.files.find(file => file.id === questionEvidence?.fileId)?.relativePath ?? ''}
+          onEvidence={next => { setView('code'); void showEvidence(next, null, 'answer'); }} />
+        {view === 'code' && source && source.analysis.language !== 'text' && <details className="card"
+          key={`${source.fileId}:${source.hash}`}
+          open={fileExplanationOpen}>
+          <summary onClick={event => {
+            if (fileExplanationOpen) event.preventDefault();
+          }}>AI로 이 파일 설명 만들기</summary>
+          <FileExplanationCard source={source} entry={fileExplanation}
+            state={sourceExplanationState} stale={fileExplanationStale}
+            mode={mode} locked={busy} running={questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running'}
+            checking={checking} connections={connections}
+            onInspect={() => { void inspectConnections().then(message => { if (message) setError(message); }); }}
+            onStart={() => void startFileExplanation()} onCancel={() => void cancelFileExplanation()}
+            onShow={range => void showFileExplanationRange(range)} />
+        </details>}
       </aside>
       {!panelOpen && <button className="panel-reopen btn btn--small" onClick={() => setPanelOpen(true)}>설명 패널 펼치기</button>}
     </>}

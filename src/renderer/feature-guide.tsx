@@ -75,7 +75,7 @@ export function FeatureGuideCard({ projectId, routesId, result, mode, locked, ru
     {!preparing && !working && <button className="btn" disabled={locked || running} onClick={() => setPreparing(true)}>AI로 기능 정리하기</button>}
     {preparing && !working && <div>
       <p>{modes[mode]}</p>
-      <p className="hint">방식은 질문 탭에서 고를 수 있어요. 답변 생성은 AI 제공자 서버에서 이뤄져요.
+      <p className="hint">방식은 오른쪽 AI 칸의 ‘설정’에서 고를 수 있어요. 답변 생성은 AI 제공자 서버에서 이뤄져요.
         {mode !== 'codex' && mode !== 'claude-code' && ` Gemini 3.8 Flash · High (${GEMINI_MODEL})를 요청해요.`}</p>
       <button className="btn" disabled={checking || running} onClick={() => void onInspect().then(message => setError(message ?? ''))}>{checking ? '설치 확인 중…' : '로컬 AI 설치 확인'}</button>
       <p className="hint">{ready?.reason ?? '먼저 설치 상태를 확인해 주세요. 설치 확인만으로 로그인이나 실제 AI 연결이 검증되는 것은 아닙니다.'}</p>

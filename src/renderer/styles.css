@@ -185,10 +185,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 
 /* Code reader */
 .reader { display: flex; flex-direction: column; height: 100%; }
-/* A share of the reader, not of the window: when the side panel stacks below, the reader itself is short. */
-.reader__cards { flex: 0 1 auto; max-height: 40%; overflow: auto; }
-.reader__cards:empty { display: none; }
-.file-guide, .file-explanation { margin: 8px 16px; }
+.panel > details { margin: 0 16px 16px; }
 .file-guide__chunks, .file-explanation__chunks { padding-left: 20px; }
 .file-guide__chunks > li, .file-explanation__chunks > li { margin-block: 12px; }
 .function-explanation { margin: 8px 16px; color: var(--muted); }
@@ -275,6 +272,13 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 
 /* Explanation panel */
 .panel { grid-area: panel; display: flex; flex-direction: column; min-height: 0; overflow: auto; border-left: 1px solid var(--line); background: var(--side); }
+.panel > * { flex-shrink: 0; min-width: 0; }
+.panel .card { overflow-wrap: anywhere; }
+.ai-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
+.ai-line > span { flex: 1 1 auto; overflow-wrap: anywhere; }
+.ai-line > button { flex: 0 0 auto; }
+.ai-settings, .ai-question { display: grid; gap: 12px; }
+.ai-settings[hidden], .ai-question[hidden] { display: none; }
 .panel[hidden] { display: none; }
 .ai-panel label { display: grid; gap: 6px; font-size: 14px; }
 .ai-panel select, .ai-panel textarea { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; }
@@ -285,10 +289,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .ai-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .ai-panel ul { display: grid; gap: 8px; }
 .ai-panel .fact { overflow-wrap: anywhere; }
-.panel__head { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px 0; border-bottom: 1px solid var(--line); }
-.tabs { display: flex; gap: 4px; }
-.tabs button { padding: 6px 10px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font-size: 14px; font-weight: 600; }
-.tabs button[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--ink); }
+.panel__head { display: flex; align-items: center; justify-content: flex-end; padding: 8px 12px 0; border-bottom: 1px solid var(--line); }
 .scope { padding: 12px 16px; border-bottom: 1px solid var(--line); font-size: 14px; overflow-wrap: anywhere; }
 .panel__body { display: grid; gap: 12px; padding: 16px; }
 .fact { background: var(--raised); display: grid; gap: 6px; justify-items: start; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); }

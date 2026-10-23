@@ -8,6 +8,10 @@ import type { ConnectionReport, FeatureGuide, FeatureGuideResult, LearningMode }
 import { FeatureGuideCard } from './feature-guide';
 import { afterText, afterWhen, byWhen, codeNameOf, groupNameOf, stopText, storeText, storyOf, zoneOf, type StoryStep } from '../core/analysis/flow-story';
 
+export const AFTER_FLOW_NOTE = '코드 모양(onSuccess, await 다음 줄, catch)으로 찾았어요. 실제로 실행되는 순서와 여부는 확인하지 않았어요.';
+export const STORE_FLOW_NOTE = 'Prisma 호출 모양으로 찾았어요. 함수 안에서는 코드에 적힌 순서이고, 조건에 따라 일부만 실행될 수 있어요.';
+export const FLOW_ORDER_NOTE = '함수끼리 어떤 순서로 실행되는지는 확인하지 않았어요.';
+
 export const siteOf = (node: FlowNode): ValueSite => ({ fileId: node.fileId, fileHash: node.fileHash, ...node.range, text: node.name });
 const targetOf = (node: FlowNode): CallTarget => ({ fileId: node.fileId, fileHash: node.fileHash, ...node.range, name: node.name });
 
@@ -196,8 +200,8 @@ export function FlowWalk({ flow, title, about, codeName, walk, selection, setSto
             </section>)}
           </section>)}
           {step.afterGroups.omitted > 0 && <p className="hint">외 {step.afterGroups.omitted}개 더</p>}
-          <p className="hint">코드 모양(onSuccess, await 다음 줄, catch)으로 찾았어요. 실제로 실행되는 순서와 여부는 확인하지 않았어요.</p>
-          {step.afterGroups.groups.length > 1 && <p className="hint">함수끼리 어떤 순서로 실행되는지는 확인하지 않았어요.</p>}
+          <p className="hint">{AFTER_FLOW_NOTE}</p>
+          {step.afterGroups.groups.length > 1 && <p className="hint">{FLOW_ORDER_NOTE}</p>}
         </section>}
         {step.storeGroups.groups.length > 0 && <section aria-label="저장소 호출">
           {step.storeGroups.groups.map((group, index) => <section key={group.node.id}>
@@ -206,8 +210,8 @@ export function FlowWalk({ flow, title, about, codeName, walk, selection, setSto
               hint: codeHint(store.site) }))}
               omitted={index === step.storeGroups.groups.length - 1 ? step.storeGroups.omitted : 0} disabled={disabled} onSite={onSite} />
           </section>)}
-          <p className="hint">Prisma 호출 모양으로 찾았어요. 함수 안에서는 코드에 적힌 순서이고, 조건에 따라 일부만 실행될 수 있어요.</p>
-          {step.storeGroups.groups.length > 1 && <p className="hint">함수끼리 어떤 순서로 실행되는지는 확인하지 않았어요.</p>}
+          <p className="hint">{STORE_FLOW_NOTE}</p>
+          {step.storeGroups.groups.length > 1 && <p className="hint">{FLOW_ORDER_NOTE}</p>}
         </section>}
         {step.outside.items.length > 0 && <details><summary>코드에서 부르는 다른 것 {step.outside.items.length + step.outside.omitted}개</summary>
           <ul className="map-list">{step.outside.items.map((text, index) => <li key={index}><code>{text}</code></li>)}</ul>

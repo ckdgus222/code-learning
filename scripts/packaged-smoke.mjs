@@ -126,7 +126,8 @@ try {
   const changed = page.getByRole('region', { name: '바뀐 파일 목록' }).getByRole('list', { name: '바뀐 파일' });
   await changed.waitFor({ timeout: 30_000 });
   assert.deepEqual(await changed.locator('li').allInnerTexts(), ['수정 price.ts 비교 보기']);
-  await page.getByRole('tab', { name: '질문', exact: true }).click();
+  await page.getByRole('button', { name: '질문하기', exact: true }).click();
+  await page.getByRole('button', { name: '설정', exact: true }).click();
   assert.equal(await page.getByRole('combobox', { name: 'AI 사용 방식' }).inputValue(), 'local-worker');
   await page.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
   await page.getByRole('list', { name: '로컬 AI 설치 상태' }).waitFor({ timeout: 35_000 });
