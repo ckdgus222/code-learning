@@ -44,6 +44,17 @@ function context(request: StageRequest) {
 }
 
 describe('local worker workflow with fake adapters', () => {
+  it.each(['local-worker', 'codex', 'antigravity'] as const)('sends easy writing and glossary rules to every question stage in %s mode', async mode => {
+    const f = fixture();
+    expect((await f.finish({ ...f.request, mode })).kind).toBe('completed');
+    expect(f.run).toHaveBeenCalledTimes(mode === 'local-worker' ? 3 : 1);
+    for (const [input] of f.run.mock.calls) {
+      expect(input.prompt).toContain('설명 글은 12살도 읽을 수 있게 짧은 문장과 일상적인 말로 쓴다. summary는 3~5개의 짧은 문장으로 쓰고 한 문장에는 한 가지 일만 적는다.');
+      expect(input.prompt).toContain('코드 용어나 영어 이름은 처음 나올 때 괄호로 쉬운 뜻을 붙이고, terms에 term은 코드에 적힌 이름, meaning은 쉬운 뜻으로 담는다.');
+      expect(input.prompt).toContain('자세한 조건·순서·실패하는 경우는 steps에 적는다. 쉽게 쓰더라도 조건·숫자·실패하는 경우를 빼거나 확인하지 않은 것을 단정하지 않는다.');
+    }
+  });
+
   it('enforces readiness before any code capture or model execution', () => {
     const f = fixture();
     f.assertReady.mockImplementation(() => { throw new AppError('AI_UNAVAILABLE', '격리 미검증'); });

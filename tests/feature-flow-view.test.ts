@@ -1,7 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it } from 'vitest';
-import { FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowSteps, FlowWalk, hasFlowCode, hintSteps, summaryKey, RoutesStatus, useFeatureFlows, walkSelection } from '../src/renderer/feature-flow';
+import { FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowSteps, FlowWalk, hasFlowCode, hintSteps, stepQuestion, summaryKey, RoutesStatus, useFeatureFlows, walkSelection } from '../src/renderer/feature-flow';
 import type { Evidence, FeatureFlow, FlowNode, ProjectRoutes, ProjectView } from '../src/shared/contracts';
 import { storyOf } from '../src/core/analysis/flow-story';
 import type { FeatureGuide } from '../src/shared/ai';
@@ -58,7 +58,7 @@ it('highlights the selected node in each request group without marking other ste
 const walkProps = {
   title: '삭제', codeName: '지우기 · /dogs', walk: { storyId: null, step: 0, nodeId: null, site: null },
   summary: ['', '', ''] as [string, string, string], setSummary() {},
-  locked: false, stale: false, setStory() {}, setStep() {}, setNode() {}, onSite() {}, onCode() {}, onFunction() {}, onChoose() {},
+  locked: false, stale: false, setStory() {}, setStep() {}, setNode() {}, onSite() {}, onCode() {}, onFunction() {}, onChoose() {}, onAsk() {},
 };
 // In the app the hook works the selection out; here it is worked out the same way from the props.
 const walkOf = (props: Omit<Parameters<typeof FlowWalk>[0], 'selection'>) =>
@@ -628,4 +628,30 @@ it.each([{ locked: true, stale: false }, { locked: false, stale: true }])('rende
   const lineButtons = html.match(/<button[^>]*>이 줄 보기<\/button>/g)!;
   expect(lineButtons).toHaveLength(4);
   expect(lineButtons.every(button => button.includes('disabled=""'))).toBe(true);
+});
+
+it('prepares the exact step question and caps each title at 80 characters', () => {
+  const ending = '무엇을 받아서, 무엇을 확인하고, 무엇을 돌려주거나 바꾸는지 알려 주고, 실패하거나 멈추는 경우도 적어 주세요.';
+  expect(stepQuestion('로그인', 4, '서버가 받아요')).toBe(
+    '‘로그인’ 기능의 4번째 단계 ‘서버가 받아요’에서 이 함수가 하는 일을 쉽게 설명해 주세요. ' + ending);
+  for (const length of [0, 79, 80, 81, 3000]) {
+    const feature = '가'.repeat(length);
+    const title = '나'.repeat(length);
+    const question = stepQuestion(feature, 1, title);
+    expect(question).toBe(`‘${feature.slice(0, 80)}’ 기능의 1번째 단계 ‘${title.slice(0, 80)}’에서 이 함수가 하는 일을 쉽게 설명해 주세요. ` + ending);
+    expect(question.length).toBeLessThanOrEqual(2000);
+  }
+});
+
+it.each([
+  { step: 0, locked: false, stale: false, shown: true, disabled: false },
+  { step: 1, locked: false, stale: false, shown: false, disabled: false },
+  { step: 2, locked: false, stale: false, shown: true, disabled: false },
+  { step: 2, locked: true, stale: false, shown: true, disabled: true },
+  { step: 2, locked: false, stale: true, shown: true, disabled: true },
+])('offers step questions only for functions and locks them with the flow: %o', ({ step, locked, stale, shown, disabled }) => {
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow, locked, stale, walk: { ...walkProps.walk, step } }));
+  const button = html.match(/<button[^>]*>AI에게 쉽게 물어보기<\/button>/);
+  expect(button !== null).toBe(shown);
+  if (shown) expect(button![0].includes('disabled=""')).toBe(disabled);
 });

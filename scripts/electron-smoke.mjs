@@ -186,6 +186,25 @@ async function openFunctionFlow() {
   if (await page.locator('.symbols__item[aria-pressed="true"]').count() === 0) await page.locator('.symbols__item').first().click();
   await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
 }
+// Keep a question about another function ready while the flow displays the server handler.
+async function openLoginFlowQuestion() {
+  await dialogTo(loginFlowFixture);
+  await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+  await page.getByRole('heading', { name: '로그인 흐름 프로젝트', exact: true }).waitFor();
+  await openTreeFile('web/lib/auth.ts');
+  await page.getByRole('button', { name: 'login', exact: true }).click();
+  await page.getByRole('tab', { name: '질문', exact: true }).click();
+  await page.getByTestId('question-scope').waitFor();
+  const question = page.getByRole('textbox', { name: '선택한 코드에 질문' });
+  await question.fill('기존 질문 유지');
+  await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+  await page.getByRole('region', { name: '기능 목록', exact: true }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+  const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
+  await story.getByRole('button', { name: '4단계 서버 받는 곳', exact: true }).click();
+  await until(async () => /api\/controller.ts/.test(await story.getByTestId('evidence-range').innerText()));
+  await until(() => story.getByRole('button', { name: 'AI에게 쉽게 물어보기', exact: true }).isEnabled());
+  return { story, question, ask: story.getByRole('button', { name: 'AI에게 쉽게 물어보기', exact: true }) };
+}
 async function check(name, action) { await action(); checks.push(name); console.log(`PASS ${name}`); }
 // All three consent forms keep the full disclosure available through the checkbox even while it is folded.
 async function checkConsentDisclosure(container, expectedText) {
@@ -232,7 +251,9 @@ async function openTreeFile(relativePath) {
     if (Date.now() > deadline) throw new Error(`Timed out showing ${relativePath} in the file tree`);
     for (const folder of folders) {
       const button = page.getByRole('button', { name: `폴더 ${folder}`, exact: true });
-      if (await button.count() && await button.getAttribute('aria-expanded') === 'false') await button.click();
+      // The tree can be redrawn between these calls, so a vanished button is tried again on the next pass.
+      const expanded = await button.getAttribute('aria-expanded', { timeout: 200 }).catch(() => null);
+      if (expanded === 'false') await button.click({ timeout: 1000 }).catch(() => {});
     }
     await new Promise(resolve => setTimeout(resolve, 40));
   }
@@ -1624,7 +1645,9 @@ try {
             steps: [{ title: '가짜 단계', input: '수량', action: '비교', output: '결과', alternatives: [],
               evidenceIds: [request.evidenceId, related.id, request.evidenceId] }],
             claims: [{ kind: 'code', text: '테스트용 설명입니다.', evidenceIds: [request.evidenceId] },
-              { kind: 'concept', text: '일반 개념 설명입니다.' }], terms: [], unknowns: [] },
+              { kind: 'concept', text: '일반 개념 설명입니다.' }],
+            terms: globalThis.testFakeAiFlow ? [{ term: 'login', meaning: '로그인 요청을 보내는 함수' }] : [],
+            unknowns: globalThis.testFakeAiFlow ? ['실제 서버 응답은 확인하지 못했어요.'] : [] },
           review: 'AI 검토됨', models: [{ stage: 'explaining', provider: 'antigravity',
             requestedModel: 'gemini-3.8-flash-high', reportedModel: null }],
         };
@@ -1693,6 +1716,7 @@ try {
     await page.screenshot({ path: path.join(artifacts, 'fake-ai-related-evidence.png') });
     // Plan G1·E1: each step and code claim names its own sources, a repeated one once; a whole file says so.
     const answer = page.getByRole('region', { name: 'AI 설명' }).last();
+    await answer.locator('details > summary').click();
     const stepSources = answer.getByRole('list', { name: '‘가짜 단계’의 근거' }).getByRole('button');
     assert.deepEqual(await stepSources.allInnerTexts(), ['order.ts · 1–1행', 'related.ts · 파일 전체 근거 · 세부 위치 미확인']);
     assert.deepEqual(await answer.getByRole('list', { name: '이 설명의 근거' }).getByRole('button').allInnerTexts(), ['order.ts · 1–1행']);
@@ -1708,6 +1732,222 @@ try {
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
     await page.getByRole('button', { name: '주문', exact: true }).click();
     assert.equal(await page.getByRole('region', { name: 'AI 설명' }).count(), 0);
+  });
+  await check('Flow question (fake AI): keeps the step and narrow code selection, asks consent and renders easy-to-code layers', async () => {
+    const { story, question, ask } = await openLoginFlowQuestion();
+    const topic = await story.locator(':scope > .map-actions > h3').innerText();
+    const title = await story.getByTestId('story-step').getByRole('heading', { level: 3 }).innerText();
+    const expected = `‘${topic.slice(0, 80)}’ 기능의 4번째 단계 ‘${title.slice(0, 80)}’에서 이 함수가 하는 일을 쉽게 설명해 주세요. `
+      + '무엇을 받아서, 무엇을 확인하고, 무엇을 돌려주거나 바꾸는지 알려 주고, 실패하거나 멈추는 경우도 적어 주세요.';
+    const range = await story.getByTestId('evidence-range').innerText();
+    const code = await story.getByTestId('flow-code').innerText();
+    const calls = await app.evaluate(() => globalThis.testFakeAiCalls.length);
+    await page.getByRole('tab', { name: '쉬운 설명', exact: true }).click();
+    await page.getByRole('button', { name: '패널 접기', exact: true }).click();
+    await ask.click();
+    await until(async () => await question.inputValue() === expected);
+    assert.equal(await page.getByRole('tab', { name: '질문', exact: true }).getAttribute('aria-selected'), 'true');
+    assert.equal(await page.getByRole('button', { name: '흐름 따라가기', exact: true }).getAttribute('aria-current'), 'page');
+    assert.equal(await story.getByRole('button', { name: '4단계 서버 받는 곳', exact: true }).getAttribute('aria-current'), 'step');
+    assert.equal(await story.getByTestId('evidence-range').innerText(), range);
+    assert.equal(await story.getByTestId('flow-code').innerText(), code);
+    assert.equal(await page.getByTestId('question-scope').innerText(), '질문 기준: api/controller.ts · 1–1행');
+    assert.equal(await app.evaluate(() => globalThis.testFakeAiCalls.length), calls);
+    const panel = page.locator('.ai-panel');
+    const consent = panel.getByRole('checkbox', { name: '보낼 자료에 동의', exact: true });
+    assert.equal(await consent.isChecked(), false);
+    assert.equal(await panel.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
+    await app.evaluate(() => { globalThis.testFakeAiFlow = true; });
+    try {
+      await consent.check();
+      await panel.getByRole('button', { name: '질문 보내기', exact: true }).click();
+      const answer = panel.getByRole('region', { name: 'AI 설명', exact: true }).last();
+      await answer.getByText(`학습 주제: ${topic}`, { exact: true }).waitFor();
+      assert.equal(await answer.locator(':scope > b').innerText(), expected);
+      assert.deepEqual(await answer.locator(':scope > h4, :scope > section h4, :scope > details > summary').allInnerTexts(),
+        ['쉽게', '낱말 풀이', '자세히 보기 · 단계 1개 · 설명 2개', '코드']);
+      assert.deepEqual(await answer.getByRole('region', { name: '낱말 풀이', exact: true }).locator('dt, dd').allInnerTexts(),
+        ['login', '로그인 요청을 보내는 함수']);
+      assert.equal(await answer.locator('details').evaluate(element => element.open), false);
+      assert.equal(await answer.getByText('가짜 단계', { exact: true }).isVisible(), false);
+      const unknown = answer.getByText('확인하지 못함: 실제 서버 응답은 확인하지 못했어요.', { exact: true });
+      assert.equal(await unknown.isVisible(), true);
+      assert.equal(await unknown.evaluate(element => !!(element.previousElementSibling?.matches('ul[aria-label="답변에 제공한 파일"]'))), true);
+      await answer.locator('details > summary').click();
+      await answer.getByText('가짜 단계', { exact: true }).waitFor();
+      await answer.getByRole('list', { name: '‘가짜 단계’의 근거' }).waitFor();
+      // A moved step does not retarget the prepared question. A narrow line stays narrow when asking about its function.
+      const scope = await page.getByTestId('question-scope').innerText();
+      await story.getByRole('button', { name: '5단계 화면 결과', exact: true }).click();
+      await story.getByRole('region', { name: '응답 뒤 화면', exact: true }).getByRole('button', { name: '이 줄 보기', exact: true }).click();
+      await until(async () => /web\/app\/login\/page.tsx · 6–6줄/.test(await story.getByTestId('evidence-range').innerText()));
+      assert.equal(await page.getByTestId('question-scope').innerText(), scope);
+      const narrowRange = await story.getByTestId('evidence-range').innerText();
+      const narrowCode = await story.getByTestId('flow-code').innerText();
+      // The old answer makes this a follow-up conversation, cancelled when a new step question is prepared.
+      await question.fill('진행 중인 질문');
+      await app.evaluate(() => { globalThis.testFakeAiBehavior = 'hold'; });
+      await panel.getByRole('button', { name: '질문 보내기', exact: true }).click();
+      await until(() => app.evaluate(() => globalThis.testFakeAiCalls.at(-1).request.question === '진행 중인 질문'));
+      await panel.getByRole('button', { name: 'AI 작업 취소', exact: true }).waitFor();
+      await ask.click();
+      await until(async () => (await question.inputValue()).includes('5번째 단계'));
+      await until(() => app.evaluate(() => globalThis.testFakeAiCancelled.includes(globalThis.testFakeAiCalls.at(-1).jobId)));
+      assert.equal(await consent.isChecked(), false);
+      assert.equal(await story.getByTestId('evidence-range').innerText(), narrowRange);
+      assert.equal(await story.getByTestId('flow-code').innerText(), narrowCode);
+      assert.equal(await story.getByRole('button', { name: '5단계 화면 결과', exact: true }).getAttribute('aria-current'), 'step');
+      assert.equal(await page.getByTestId('question-scope').innerText(), '질문 기준: web/app/login/page.tsx · 4–7행');
+      await story.getByTestId('flow-code').locator('.cm-content').focus();
+      await until(async () => await page.evaluate(() => getSelection()?.toString()) === "router.push('/')");
+      await app.evaluate(() => { globalThis.testFakeAiLate(); globalThis.testFakeAiBehavior = 'early'; });
+      await consent.check();
+      await panel.getByRole('button', { name: '질문 보내기', exact: true }).click();
+      await until(() => app.evaluate(() => globalThis.testFakeAiCalls.at(-1).request.question.includes('5번째 단계')));
+      assert.equal(await app.evaluate(() => globalThis.testFakeAiCalls.at(-1).request.conversationId), undefined);
+      await panel.getByRole('region', { name: 'AI 설명', exact: true }).getByText(`학습 주제: ${topic}`, { exact: true }).waitFor();
+      assert.equal(await panel.getByText('가짜 설명: 진행 중인 질문', { exact: true }).count(), 0);
+    } finally {
+      await app.evaluate(() => { globalThis.testFakeAiFlow = false; globalThis.testFakeAiBehavior = 'early'; });
+    }
+  });
+  await check('Flow question: changed or missing function and read failures keep the question and release the lock', async () => {
+    for (const failure of ['changed', 'missing', 'source-IO', 'evidence-IO', 'evidence-CHANGED', 'evidence-NOT_ALLOWED']) {
+      const { story, question, ask } = await openLoginFlowQuestion();
+      const scope = await page.getByTestId('question-scope').innerText();
+      const range = await story.getByTestId('evidence-range').innerText();
+      const code = await story.getByTestId('flow-code').innerText();
+      await app.evaluate(({ ipcMain }, failure) => {
+        const channel = failure.startsWith('evidence-') ? 'learning:evidence' : 'learning:read';
+        const original = ipcMain._invokeHandlers.get(channel);
+        ipcMain._invokeHandlers.set(channel, async (...args) => {
+          ipcMain._invokeHandlers.set(channel, original);
+          if (failure.includes('-')) return { ok: false, code: failure.split('-')[1], message: `시험용 질문 준비 실패: ${failure}` };
+          const result = await original(...args);
+          if (!result.ok) throw new Error('Expected real source for flow question');
+          if (failure === 'changed') return { ...result, value: { ...result.value, hash: '0'.repeat(64) } };
+          return { ...result, value: { ...result.value, analysis: { ...result.value.analysis,
+            symbols: result.value.analysis.symbols.map(symbol => ({ ...symbol,
+              evidence: { ...symbol.evidence, startUtf16: symbol.evidence.startUtf16 + 1 } })) } } };
+        });
+      }, failure);
+      await ask.click();
+      const message = failure === 'changed' ? '흐름을 찾은 뒤 이 파일이 바뀌어 질문을 준비하지 않았어요. 주소를 다시 찾아 주세요.'
+        : failure === 'missing' ? '이 함수는 코드 분석 범위 밖이라 질문할 코드로 고르지 못했어요. 코드 읽기에서 범위를 골라 질문해 주세요.'
+          : `시험용 질문 준비 실패: ${failure}`;
+      await page.getByText(message, { exact: true }).waitFor();
+      assert.equal(await page.getByTestId('question-scope').innerText(), scope, failure);
+      assert.equal(await question.inputValue(), '기존 질문 유지', failure);
+      assert.equal(await story.getByTestId('evidence-range').innerText(), range, failure);
+      assert.equal(await story.getByTestId('flow-code').innerText(), code, failure);
+      assert.equal(await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).isEnabled(), true, failure);
+      if (['evidence-CHANGED', 'evidence-NOT_ALLOWED'].includes(failure)) {
+        await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).waitFor();
+      } else {
+        assert.equal(await story.getByRole('button', { name: '5단계 화면 결과', exact: true }).isEnabled(), true, failure);
+      }
+    }
+  });
+  await check('Flow question: both reads discard revision changes and superseded requests without unlocking a newer read', async () => {
+    for (const channel of ['learning:read', 'learning:evidence']) {
+      for (const transition of ['revision', 'other-read', 'close', 'switch']) {
+        const { story, question, ask } = await openLoginFlowQuestion();
+        // An answer's related-file button can start a newer read while question preparation is locked.
+        if (transition === 'other-read') {
+          await page.locator('.ai-panel').getByRole('checkbox', { name: '보낼 자료에 동의', exact: true }).check();
+          await page.getByRole('button', { name: '질문 보내기', exact: true }).click();
+          await page.getByText('가짜 설명: 기존 질문 유지', { exact: true }).waitFor();
+          await question.fill('다른 읽기 뒤에도 남을 질문');
+        }
+        await app.evaluate(({ ipcMain }, channel) => {
+          const originals = new Map(['learning:read', 'learning:evidence'].map(name => [name, ipcMain._invokeHandlers.get(name)]));
+          const state = { calls: { 'learning:read': 0, 'learning:evidence': 0 }, waiting: false, returned: false,
+            otherWaiting: false, holdOther: false, release: null, releaseOther: null };
+          globalThis.testFlowQuestion = state;
+          globalThis.testRestoreFlowQuestion = () => {
+            for (const [name, original] of originals) ipcMain._invokeHandlers.set(name, original);
+            state.release?.(); state.releaseOther?.();
+          };
+          for (const [name, original] of originals) ipcMain._invokeHandlers.set(name, async (event, request) => {
+            state.calls[name]++;
+            const result = await original(event, request);
+            if (name === channel && !state.waiting) {
+              if (!result.ok) throw new Error('Expected successful read before delaying flow question');
+              state.projectId = request.projectId;
+              state.waiting = true;
+              await new Promise(resolve => { state.release = resolve; });
+              state.returned = true;
+            } else if (name === 'learning:evidence' && state.holdOther) {
+              state.holdOther = false;
+              state.otherWaiting = true;
+              await new Promise(resolve => { state.releaseOther = resolve; });
+            }
+            return result;
+          });
+        }, channel);
+        try {
+          await ask.click();
+          await until(() => app.evaluate(() => globalThis.testFlowQuestion.waiting));
+          assert.equal(await story.getByRole('button', { name: '5단계 화면 결과', exact: true }).isDisabled(), true);
+          const evidenceReads = await app.evaluate(() => globalThis.testFlowQuestion.calls['learning:evidence']);
+          if (transition === 'revision') {
+            // Only a renderer change notice: no new read and no request counter increment.
+            await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('learning:project-event',
+              { projectId: globalThis.testFlowQuestion.projectId, kind: 'changed' }));
+            await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).waitFor();
+            await until(async () => await page.getByTestId('question-scope').count() === 0);
+          } else if (transition === 'other-read') {
+            await app.evaluate(() => { globalThis.testFlowQuestion.holdOther = true; });
+            await page.getByRole('region', { name: 'AI 설명', exact: true }).getByRole('button', { name: 'related.ts · 1–1행', exact: true }).click();
+            await until(() => app.evaluate(() => globalThis.testFlowQuestion.otherWaiting));
+          } else {
+            await page.getByRole('button', { name: '작업 취소·프로젝트 닫기', exact: true }).click();
+            await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+            await until(() => page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).isEnabled());
+          }
+          if (transition === 'switch') {
+            await dialogTo(fixture);
+            await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+            await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
+            await openTreeFile('order.ts');
+            await page.getByRole('button', { name: '주문', exact: true }).click();
+            await page.getByTestId('question-scope').waitFor();
+            await question.fill('새 프로젝트 질문');
+          }
+          const scope = await page.getByTestId('question-scope').allTextContents();
+          const draft = await question.count() ? await question.inputValue() : null;
+          const alerts = await page.locator('.notices').allTextContents();
+          const view = await page.locator('.views__item[aria-current="page"]').allTextContents();
+          const readsBeforeRelease = await app.evaluate(() => globalThis.testFlowQuestion.calls['learning:evidence']);
+          await app.evaluate(() => globalThis.testFlowQuestion.release());
+          await until(() => app.evaluate(() => globalThis.testFlowQuestion.returned));
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          assert.deepEqual(await page.getByTestId('question-scope').allTextContents(), scope, `${channel} ${transition}`);
+          assert.equal(await question.count() ? await question.inputValue() : null, draft, `${channel} ${transition}`);
+          assert.deepEqual(await page.locator('.notices').allTextContents(), alerts, `${channel} ${transition}`);
+          assert.deepEqual(await page.locator('.views__item[aria-current="page"]').allTextContents(), view, `${channel} ${transition}`);
+          assert.equal(await app.evaluate(() => globalThis.testFlowQuestion.calls['learning:evidence']), readsBeforeRelease,
+            'An obsolete source reply must not start an evidence read');
+          if (transition === 'other-read') {
+            assert.equal(await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).isDisabled(), true,
+              'The old question must not unlock the newer evidence read');
+            await app.evaluate(() => globalThis.testFlowQuestion.releaseOther());
+            await until(async () => (await page.locator('.cm-line').allTextContents()).join('\n').includes('export const related'));
+            assert.deepEqual(await page.getByTestId('question-scope').allTextContents(), scope);
+            assert.equal(await question.inputValue(), draft);
+          }
+          await until(() => page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).isEnabled());
+          if (transition === 'revision') {
+            assert.equal(await app.evaluate(() => globalThis.testFlowQuestion.calls['learning:evidence']), evidenceReads);
+            await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).waitFor();
+            assert.equal(await story.getByRole('button', { name: '다른 기능 고르기', exact: true }).isEnabled(), true);
+            assert.equal(await ask.isDisabled(), true);
+          }
+        } finally {
+          await app.evaluate(() => globalThis.testRestoreFlowQuestion());
+        }
+      }
+    }
   });
   // Plan G1·E1·F1·U1. A test-only overview handler, after all real IPC checks: it never starts an AI CLI. It answers from
   // the opened folder's real files (read through the app), so following a feature reads real code.
@@ -1890,6 +2130,7 @@ try {
     await topicBar.getByRole('textbox', { name: '학습 이름' }).fill('배너 등록');
     // A step's source, then back to the start: the answers and the question's code stay.
     const scope = await page.getByTestId('question-scope').innerText();
+    await answers.last().locator('details > summary').click();
     await answers.last().getByRole('list', { name: '‘가짜 단계’의 근거' }).getByRole('button').nth(1).click();
     await until(async () => (await page.locator('.cm-line').allTextContents()).join('\n').includes('export const related'));
     await topicBar.getByRole('button', { name: '출발점으로', exact: true }).click();
