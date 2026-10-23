@@ -261,3 +261,15 @@ describe('overview with the real app reads and fake stages', () => {
     expect(result.result.limitations).toContain('관련 파일 탐색은 한 번, 최대 4개입니다. 제공되지 않은 파일의 동작은 확인하지 않았습니다.');
   });
 });
+
+it('keeps question-only writing rules out of this task', async () => {
+  const f = fake(material(files), written);
+  expect((await f.finish()).kind).toBe('overview-completed');
+  expect(f.run.mock.calls.length).toBeGreaterThan(0);
+  for (const [input] of f.run.mock.calls) {
+    expect(input.prompt).not.toContain('설명 글은 12살도 읽을 수 있게');
+    expect(input.prompt).not.toContain('summary는 3~5개의 짧은 문장');
+    expect(input.prompt).not.toContain('terms에 term은 코드에 적힌 이름');
+    expect(input.prompt).not.toContain('자세한 조건·순서·실패하는 경우는 steps에 적는다.');
+  }
+});

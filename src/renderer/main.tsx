@@ -382,8 +382,12 @@ function App() {
   // The question is about the whole function, so it becomes the question's code even when a step inside it was chosen.
   async function askSimpler(target: CodeSymbol) {
     if (!await showEvidence(target.evidence, null)) return;
+    openQuestion(SIMPLER_QUESTION);
+  }
+  /** Puts a question in the box and shows it; a topic ties it to the code it was prepared for (AiPanel). */
+  function openQuestion(text: string, topic?: { name: string; evidenceId: string }) {
     setPanel('ask'); setPanelOpen(true);
-    setDraft(current => ({ text: SIMPLER_QUESTION, id: (current?.id ?? 0) + 1 }));
+    setDraft(current => ({ text, id: (current?.id ?? 0) + 1, ...(topic ? { topic } : {}) }));
   }
 
   /** Resolves to an error message, or null; the result is shared with the overview card. */
@@ -497,8 +501,7 @@ function App() {
     const target = symbol;
     const name = topic.name.trim() || topic.original;
     if (!await showEvidence(target.evidence, null)) return;
-    setPanel('ask'); setPanelOpen(true);
-    setDraft(current => ({ text: featureQuestion(name), id: (current?.id ?? 0) + 1, topic: { name, evidenceId: target.evidence.id } }));
+    openQuestion(featureQuestion(name), { name, evidenceId: target.evidence.id });
   }
   // A role's function, named by the AI: chosen only while the file is as read and that name is its only function.
   async function showNamedFunction(name: string, at: Evidence) {
@@ -698,6 +701,35 @@ function App() {
     if (!node) return;
     await readSiteRange(siteOf(node), '흐름을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 주소를 다시 찾아 주세요.');
   }
+  // Only the question's code changes: readFile would clear the flow view's source and highlight, so both reads are direct.
+  async function askFlowStep(node: FlowNode, question: string, topic: string) {
+    if (!project || currentBusy.current) return;
+    const current = ++request.current;
+    const atRevision = revision.current;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const opened = await window.learning.readSource({ projectId: project.id, fileId: node.fileId });
+      if (current !== request.current || revision.current !== atRevision) return;
+      if (!opened.ok) { setError(opened.message); return; }
+      const found = matchFunction(opened.value, siteOf(node));
+      if (found.status !== 'found') {
+        setNotice(found.status === 'changed' ? '흐름을 찾은 뒤 이 파일이 바뀌어 질문을 준비하지 않았어요. 주소를 다시 찾아 주세요.'
+          : '이 함수는 코드 분석 범위 밖이라 질문할 코드로 고르지 못했어요. 코드 읽기에서 범위를 골라 질문해 주세요.');
+        return;
+      }
+      const result = await window.learning.readEvidence({ projectId: project.id, evidenceId: found.symbol.evidence.id });
+      if (current !== request.current || revision.current !== atRevision) return;
+      if (!result.ok) {
+        setError(result.message);
+        if (result.code === 'CHANGED' || result.code === 'NOT_ALLOWED') setStale(true);
+        return;
+      }
+      setQuestionEvidence(result.value.evidence);
+      openQuestion(question, { name: topic, evidenceId: result.value.evidence.id });
+    } finally {
+      if (current === request.current) setBusy(false);
+    }
+  }
   async function showFlowSite(nodeId: string, site: ValueSite) {
     if (currentBusy.current) return;
     features.setSite(nodeId, site);
@@ -879,7 +911,7 @@ function App() {
             setStory={id => void showFlowNode(features.setStory(id))} setStep={index => void showFlowNode(features.setStep(index))}
             setNode={id => void showFlowNode(features.setNode(id))} locked={busy} stale={features.stale}
             onChoose={features.clearFlow} onCode={site => void showValueSite(site)} onSite={(id, site) => void showFlowSite(id, site)}
-            onFunction={target => void showCallFunction(target)}>
+            onFunction={target => void showCallFunction(target)} onAsk={(node, question, topic) => void askFlowStep(node, question, topic)}>
             {features.currentNode && (source && evidence && hasFlowCode(source, evidence, features.currentNode, features.walk.site)
               ? <div className="code flow-walk-code" data-testid="flow-code">
                 <p className="evidence" data-testid="evidence-range">근거: {source.relativePath} · {evidence.startLine}–{evidence.endLine}줄 · UTF-16 [{evidence.startUtf16}, {evidence.endUtf16})</p>

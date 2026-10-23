@@ -232,27 +232,35 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
     <p className="hint">대화는 앱 실행 중에만 보관합니다. 코드 범위를 바꾸면 새 대화로 시작합니다.</p>
     {answers.map(answer => <section key={answer.jobId} className="fact" aria-label="AI 설명">
       {answerTopics[answer.jobId] && <span className="tag tag--doc">학습 주제: {answerTopics[answer.jobId]}</span>}
-      <b>{answer.question}</b><p>{answer.explanation.summary}</p>
+      <b>{answer.question}</b>
+      <h4>쉽게</h4><p>{answer.explanation.summary}</p>
       <span className="tag tag--unknown">{answer.review}</span>
-      <ol>{answer.explanation.steps.map((step, index) => <li key={index}>
-        <b>{step.title}</b><p>입력: {step.input}</p><p>처리: {step.action}</p><p>결과: {step.output}</p>
-        {step.alternatives.map((alternative, i) => <p key={i}>다른 경우: {alternative}</p>)}
-        <SourceButtons ids={step.evidenceIds} sources={answer.sources} selectionId={answer.evidence.id} stale={stale}
-          label={`‘${step.title}’의 근거`} onEvidence={onEvidence} />
-      </li>)}</ol>
-      <ul>{answer.explanation.claims.map((claim, index) => <li key={index}>{claim.kind === 'concept' ? '일반 개념: ' : ''}{claim.text}
-        {claim.kind === 'code' && <SourceButtons ids={claim.evidenceIds} sources={answer.sources} selectionId={answer.evidence.id}
-          stale={stale} label="이 설명의 근거" onEvidence={onEvidence} />}
-      </li>)}</ul>
-      <dl>{answer.explanation.terms.map((term, index) => <React.Fragment key={index}><dt>{term.term}</dt><dd>{term.meaning}</dd></React.Fragment>)}</dl>
-      {answer.explanation.unknowns.map((unknown, index) => <p key={index}>확인하지 못함: {unknown}</p>)}
-      {answer.limitations.map((limitation, index) => <p className="hint" key={index}>읽기 범위: {limitation}</p>)}
+      {answer.explanation.terms.length > 0 && <section aria-label="낱말 풀이">
+        <h4>낱말 풀이</h4>
+        <dl>{answer.explanation.terms.map((term, index) => <React.Fragment key={index}><dt>{term.term}</dt><dd>{term.meaning}</dd></React.Fragment>)}</dl>
+      </section>}
+      <details>
+        <summary>자세히 보기 · 단계 {answer.explanation.steps.length}개 · 설명 {answer.explanation.claims.length}개</summary>
+        <ol>{answer.explanation.steps.map((step, index) => <li key={index}>
+          <b>{step.title}</b><p>입력: {step.input}</p><p>처리: {step.action}</p><p>결과: {step.output}</p>
+          {step.alternatives.map((alternative, i) => <p key={i}>다른 경우: {alternative}</p>)}
+          <SourceButtons ids={step.evidenceIds} sources={answer.sources} selectionId={answer.evidence.id} stale={stale}
+            label={`‘${step.title}’의 근거`} onEvidence={onEvidence} />
+        </li>)}</ol>
+        <ul>{answer.explanation.claims.map((claim, index) => <li key={index}>{claim.kind === 'concept' ? '일반 개념: ' : ''}{claim.text}
+          {claim.kind === 'code' && <SourceButtons ids={claim.evidenceIds} sources={answer.sources} selectionId={answer.evidence.id}
+            stale={stale} label="이 설명의 근거" onEvidence={onEvidence} />}
+        </li>)}</ul>
+      </details>
+      <h4>코드</h4>
       <button className="btn btn--chip" disabled={stale} onClick={() => onEvidence(answer.evidence)}>답변 근거 코드 보기</button>
       <ul aria-label="답변에 제공한 파일">{answer.sources.filter(item => item.evidence.id !== answer.evidence.id).map(item => <li key={item.evidence.id}>
         <button className="btn btn--chip" disabled={stale} onClick={() => onEvidence(item.evidence)}>
           {item.relativePath} · {item.evidence.startLine}–{item.evidence.endLine}행
         </button>
       </li>)}</ul>
+      {answer.explanation.unknowns.map((unknown, index) => <p key={index}>확인하지 못함: {unknown}</p>)}
+      {answer.limitations.map((limitation, index) => <p className="hint" key={index}>읽기 범위: {limitation}</p>)}
       {answer.models.map(model => <p className="hint" key={model.stage}>{names[model.provider]} · {model.requestedModel ? `호출 모델 ${model.requestedModel}` : 'CLI 기본 모델 요청'} · {model.reportedModel ? `응답 모델 ${model.reportedModel}` : '응답 모델 미보고'}</p>)}
     </section>)}
   </div>;

@@ -185,3 +185,15 @@ describe('names sent to the AI', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
+
+it('keeps question-only writing rules out of this task', async () => {
+  const f = workflowFixture();
+  expect((await f.finish()).kind).toBe('feature-guide-completed');
+  expect(f.run.mock.calls.length).toBeGreaterThan(0);
+  for (const [input] of f.run.mock.calls) {
+    expect(input.prompt).not.toContain('설명 글은 12살도 읽을 수 있게');
+    expect(input.prompt).not.toContain('summary는 3~5개의 짧은 문장');
+    expect(input.prompt).not.toContain('terms에 term은 코드에 적힌 이름');
+    expect(input.prompt).not.toContain('자세한 조건·순서·실패하는 경우는 steps에 적는다.');
+  }
+});

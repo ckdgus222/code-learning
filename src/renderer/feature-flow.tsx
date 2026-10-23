@@ -11,6 +11,11 @@ import { afterText, afterWhen, byWhen, codeNameOf, groupNameOf, stopText, storeT
 export const siteOf = (node: FlowNode): ValueSite => ({ fileId: node.fileId, fileHash: node.fileHash, ...node.range, text: node.name });
 const targetOf = (node: FlowNode): CallTarget => ({ fileId: node.fileId, fileHash: node.fileHash, ...node.range, name: node.name });
 
+export function stepQuestion(feature: string, stepNumber: number, stepTitle: string): string {
+  return `‘${feature.slice(0, 80)}’ 기능의 ${stepNumber}번째 단계 ‘${stepTitle.slice(0, 80)}’에서 이 함수가 하는 일을 쉽게 설명해 주세요. `
+    + '무엇을 받아서, 무엇을 확인하고, 무엇을 돌려주거나 바꾸는지 알려 주고, 실패하거나 멈추는 경우도 적어 주세요.';
+}
+
 /** The two ways out of a step: the code range itself, and that function's own flow (a request is not a function). */
 function NodeButtons({ node, locked, onCode, onFunction }: {
   node: FlowNode; locked: boolean; onCode(site: ValueSite): void; onFunction(target: CallTarget): void;
@@ -88,12 +93,13 @@ function SiteList({ items, omitted, disabled, onSite }: {
 }
 
 export function FlowWalk({ flow, title, about, codeName, walk, selection, setStory, setStep, setNode, locked, stale,
-  summary, setSummary, onFunction, onCode, onSite, onChoose, children }: {
+  summary, setSummary, onFunction, onCode, onSite, onChoose, onAsk, children }: {
   flow: FeatureFlow; title: string; about?: string; codeName: string; walk: Walk; selection: WalkSelection;
   setStory(id: string): void; setStep(index: number): void; setNode(id: string): void;
   summary: [string, string, string]; setSummary(index: 0 | 1 | 2, value: string): void;
   locked: boolean; stale: boolean; onFunction(target: CallTarget): void; onCode(site: ValueSite): void;
   onSite(nodeId: string, site: ValueSite): void;
+  onAsk(node: FlowNode, question: string, topic: string): void;
   onChoose(): void; children?: React.ReactNode;
 }) {
   const { stories, storyId, steps, step, currentNode } = selection;
@@ -214,8 +220,12 @@ export function FlowWalk({ flow, title, about, codeName, walk, selection, setSto
           <button key={node.id} className="btn btn--small" aria-pressed={node.id === currentNode.id} disabled={disabled}
             onClick={() => setNode(node.id)}>{node.name}</button>)}</div>}
         <p>근거: {currentNode.relativePath} · {currentNode.name}{' '}
-          {currentNode.side !== 'request' && <button className="btn btn--small" disabled={disabled}
-            onClick={() => onFunction(targetOf(currentNode))}>이 함수 안 순서</button>}
+          {currentNode.side !== 'request' && <>
+            <button className="btn btn--small" disabled={disabled}
+              onClick={() => onFunction(targetOf(currentNode))}>이 함수 안 순서</button>{' '}
+            <button className="btn btn--small" disabled={disabled}
+              onClick={() => onAsk(currentNode, stepQuestion(title, walk.step + 1, step.title), title)}>AI에게 쉽게 물어보기</button>
+          </>}
         </p>
         {children}
       </article>
