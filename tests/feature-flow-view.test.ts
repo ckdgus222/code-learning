@@ -1,7 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it } from 'vitest';
-import { FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowSteps, FlowWalk, hasFlowCode, hintSteps, stepQuestion, summaryKey, RoutesStatus, useFeatureFlows, walkSelection } from '../src/renderer/feature-flow';
+import { FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowLimits, FlowSteps, FlowWalk, hasFlowCode, hintSteps, stepQuestion, summaryKey, RoutesStatus, useFeatureFlows, walkSelection } from '../src/renderer/feature-flow';
 import type { Evidence, FeatureFlow, FlowNode, ProjectRoutes, ProjectView } from '../src/shared/contracts';
 import { storyOf } from '../src/core/analysis/flow-story';
 import type { FeatureGuide } from '../src/shared/ai';
@@ -654,4 +654,77 @@ it.each([
   const button = html.match(/<button[^>]*>AI에게 쉽게 물어보기<\/button>/);
   expect(button !== null).toBe(shown);
   if (shown) expect(button![0].includes('disabled=""')).toBe(disabled);
+});
+
+it.each([
+  { finding: false, error: '', stale: false, found: true, button: null },
+  { finding: false, error: '', stale: false, found: false, button: '주소 찾기' },
+  { finding: false, error: '실패', stale: false, found: false, button: '다시 찾기' },
+  { finding: false, error: '실패', stale: false, found: true, button: '다시 찾기' },
+  { finding: false, error: '', stale: true, found: true, button: '다시 찾기' },
+  { finding: true, error: '', stale: false, found: false, button: '주소 찾기 취소' },
+])('offers only the route action needed for %o', ({ found, button, ...status }) => {
+  const state = { ...status, routes: found ? routes : undefined, find() {}, cancelFind() {} } as unknown as Parameters<typeof RoutesStatus>[0]['state'];
+  const html = renderToStaticMarkup(React.createElement(RoutesStatus, { state }));
+  const buttons = [...html.matchAll(/<button[^>]*>(.*?)<\/button>/g)].map(match => match[1]);
+  expect(buttons).toEqual(button ? [button] : []);
+  expect(html.includes('주소를 찾는 중…')).toBe(status.finding);
+});
+
+it.each([
+  { sure: 2, inferred: 3, tag: '요청 코드와 이어짐', className: 'tag tag--ok' },
+  { sure: 0, inferred: 3, tag: '추정 연결', className: 'tag tag--unknown' },
+  { sure: 0, inferred: 0, tag: '요청 코드를 못 찾음', className: 'tag' },
+])('keeps connection counts and code names folded behind the $tag tag', ({ sure, inferred, tag, className }) => {
+  const groups = [{ name: 'dogs', about: '', features: [
+    { name: '삭제', about: 'DogsController.remove', routes: [0], ai: false, sure, inferred, haystack: '삭제' },
+  ] }];
+  const html = renderToStaticMarkup(React.createElement(FeatureList, { groups, routes, selected: null, disabled: false, search: '', setSearch() {}, onFollow() {} }));
+  const counts = `프론트 요청 확실 ${sure}곳 · 추정 ${inferred}곳`;
+  expect(html).toContain(`<span class="${className}" title="${counts}">${tag}</span>`);
+  expect(html).toContain(`<details class="feature-more"><summary>코드 이름·연결 근거</summary><p class="hint">DogsController.remove</p><p class="hint">${counts}</p></details>`);
+  expect(html.match(/DogsController.remove/g)).toHaveLength(1);
+  expect(html).toContain('>이 기능 따라가기</button>');
+});
+
+it('keeps AI feature descriptions and addresses outside the folded connection evidence', () => {
+  const groups = [{ name: 'dogs', about: '', features: [
+    { name: '삭제', about: '반려견 정보를 지워요.', routes: [0, 1], ai: true, sure: 1, inferred: 0, haystack: '삭제' },
+  ] }];
+  const addresses = { ...routes, routes: routes.routes.map((route, index) => ({ ...route, method: index ? 'GET' as const : 'DELETE' as const, path: '/dogs' })) };
+  const html = renderToStaticMarkup(React.createElement(FeatureList, { groups, routes: addresses, selected: null, disabled: false, search: '', setSearch() {}, onFollow() {} }));
+  const beforeDetails = html.slice(0, html.indexOf('<details'));
+  expect(beforeDetails).toContain('반려견 정보를 지워요.');
+  expect(beforeDetails).toContain('DELETE /dogs · GET /dogs');
+  expect(beforeDetails).toContain('>DELETE /dogs</button>');
+  expect(beforeDetails).toContain('>GET /dogs</button>');
+  expect(html.match(/반려견 정보를 지워요./g)).toHaveLength(1);
+});
+
+it.each([undefined, { ...routes, requests: [], links: [] }, {
+  ...routes, requests: [{ ...nodes[1].range, fileId: 'client', fileHash: 'h', text: 'fetch("/dogs")', host: null,
+    methods: ['GET'], prefix: 'known', path: '/dogs', args: [], inTest: false, inFunction: null }], links: [{ requestIndex: 0, routeIndex: 0, sure: true, reasons: [] }],
+}] as (ProjectRoutes | undefined)[])('omits empty request lists in the folded flow limits', routes => {
+  const html = renderToStaticMarkup(React.createElement(FlowLimits, { project, routes, flow, locked: false, onCode() {} }));
+  expect(html).toMatch(/^<details class="card"><summary>이 흐름을 찾은 방법과 한계<\/summary><p class="hint">코드 글자로 찾은 흐름이에요/);
+  expect(html).toContain('찾은 범위와 한계');
+  expect(html).not.toContain('이을 주소를 못 찾은 요청');
+  expect(html).not.toContain('다른 서버 주소 요청');
+  expect(html.match(/<details/g)).toHaveLength(1);
+});
+
+it.each([null, 'https://example.com'])('nests only the nonempty request list inside the flow limits: %s', host => {
+  const request: ProjectRoutes['requests'][number] = { ...nodes[1].range, fileId: 'client', fileHash: 'h', text: 'fetch("/dogs")', host,
+    methods: ['GET'], prefix: 'known', path: '/dogs', args: [], inTest: false, inFunction: null };
+  const html = renderToStaticMarkup(React.createElement(FlowLimits, { project,
+    routes: { ...routes, requests: [request], links: [], limited: true, notes: ['한도'] }, flow, locked: true, onCode() {} }));
+  expect(html).toMatch(/^<details class="card"><summary>이 흐름을 찾은 방법과 한계<\/summary>/);
+  expect(html).toContain(`<details class="card"><summary>${host ? '다른 서버 주소 요청' : '이을 주소를 못 찾은 요청'} 1개</summary>`);
+  expect(html).not.toContain(host ? '이을 주소를 못 찾은 요청' : '다른 서버 주소 요청');
+  expect(html).toContain('web/request.ts 1행');
+  expect(html).toContain('disabled="">코드 보기</button>');
+  expect(html).toContain('일부 흐름만 확인했어요.');
+  expect(html).toContain('한도');
+  expect(html.match(/<details/g)).toHaveLength(2);
+  expect(html).toMatch(/<\/details><\/details>$/);
 });

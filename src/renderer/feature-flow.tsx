@@ -147,9 +147,9 @@ export function FlowWalk({ flow, title, about, codeName, walk, selection, setSto
       {/* Above the step: the code below it can be long, and the way on should stay in view. */}
       <nav aria-label="이야기 단계" className="flow-nav">
         <button className="btn" disabled={disabled || walk.step === 0} onClick={() => setStep(walk.step - 1)}>◀ 이전</button>
-        {steps.map((item, index) => <button key={item.kind} className="btn" disabled={disabled}
+        <div className="flow-nav__steps">{steps.map((item, index) => <button key={item.kind} className="btn" disabled={disabled}
           aria-label={`${index + 1}단계 ${item.label}`} aria-current={index === walk.step ? 'step' : undefined}
-          onClick={() => setStep(index)}>{String.fromCodePoint(0x2460 + index)} {item.label}</button>)}
+          onClick={() => setStep(index)}>{String.fromCodePoint(0x2460 + index)} {item.label}</button>)}</div>
         <button className="btn" disabled={disabled || walk.step === steps.length - 1} onClick={() => setStep(walk.step + 1)}>다음 ▶</button>
       </nav>
       <ol className="picture picture--mini" aria-label="지금 여기">
@@ -564,6 +564,13 @@ export function recommendedFeature(groups: ReturnType<typeof featureGroups>): Gu
   return recommended;
 }
 
+/** How surely a feature's requests were found, in one short tag; the counts stay in its title. */
+function LinkTag({ feature }: { feature: GuideFeature }) {
+  const [className, label] = feature.sure > 0 ? ['tag tag--ok', '요청 코드와 이어짐']
+    : feature.inferred > 0 ? ['tag tag--unknown', '추정 연결'] : ['tag', '요청 코드를 못 찾음'];
+  return <span className={className} title={`프론트 요청 확실 ${feature.sure}곳 · 추정 ${feature.inferred}곳`}>{label}</span>;
+}
+
 export function FeatureList({ groups, routes, selected, disabled, onFollow, search, setSearch, children }: {
   groups: ReturnType<typeof featureGroups>; routes: ProjectRoutes; selected: number | null;
   disabled: boolean; onFollow(routeIndex: number): void; search: string; setSearch(value: string): void;
@@ -584,11 +591,17 @@ export function FeatureList({ groups, routes, selected, disabled, onFollow, sear
         <b>{feature.name}</b>{' '}
         <button className="btn btn--small" aria-pressed={selected !== null && feature.routes.includes(selected)} disabled={disabled}
           onClick={() => onFollow(feature.routes[0])}>이 기능 따라가기</button>
-        <p className="hint">{feature.about}</p>
-        {feature.ai && <p className="hint">{feature.routes.map(index => routeLabel(routes.routes[index])).join(' · ')}</p>}
+        {feature.ai && <>
+          <p className="hint">{feature.about}</p>
+          <p className="hint">{feature.routes.map(index => routeLabel(routes.routes[index])).join(' · ')}</p>
+        </>}
         {feature.routes.length > 1 && <div className="map-actions">{feature.routes.map(index => <button key={index} className="btn btn--small"
           aria-pressed={selected === index} disabled={disabled} onClick={() => onFollow(index)}>{routeLabel(routes.routes[index])}</button>)}</div>}
-        <span className="hint">프론트 요청 확실 {feature.sure}곳 · 추정 {feature.inferred}곳</span>
+        <LinkTag feature={feature} />
+        <details className="feature-more"><summary>코드 이름·연결 근거</summary>
+          {!feature.ai && <p className="hint">{feature.about}</p>}
+          <p className="hint">프론트 요청 확실 {feature.sure}곳 · 추정 {feature.inferred}곳</p>
+        </details>
       </li>)}</ul><Omitted count={group.features.length} />
     </section>)}
     {!visible.length && <p className="hint">{routes.routes.length ? '검색어와 맞는 기능이 없어요.' : '서버 코드(요청을 받는 곳)를 찾지 못했어요.'}</p>}
@@ -632,7 +645,9 @@ export function RoutesStatus({ state, retry, retryDisabled = false }: { state: F
     <div className="map-actions">{state.finding ? <>
       <span role="status" className="busy"><span className="spinner" aria-hidden="true" />주소를 찾는 중…</span>
       <button className="btn btn--small" onClick={state.cancelFind}>주소 찾기 취소</button>
-    </> : <button className="btn btn--small" onClick={() => void state.find()}>다시 찾기</button>}</div>
+    </> : (state.error || state.stale || !state.routes) && <button className="btn btn--small" onClick={() => void state.find()}>
+      {state.error || state.stale ? '다시 찾기' : '주소 찾기'}
+    </button>}</div>
     {state.error && <div><p role="alert" className="notice notice--warn">{state.error}</p>
       {retry && <button className="btn" disabled={retryDisabled} onClick={retry}>다시 시도</button>}
     </div>}
@@ -645,22 +660,23 @@ export function FlowLimits({ project, routes, flow, locked, onCode }: {
 }) {
   const pathById = useMemo(() => new Map(project.files.map(file => [file.id, file.relativePath])), [project.files]);
   const pathOf = (fileId: string) => pathById.get(fileId) ?? '';
-  const requestList = (items: Request[], title: string) => <details className="card"><summary>{title} {items.length}개</summary>
+  const requestList = (items: Request[], title: string) => items.length > 0 && <details className="card"><summary>{title} {items.length}개</summary>
     <ul className="map-list">{firstRows(items).map(request => <li key={`${request.fileId}:${request.startUtf16}`}>
       <code>{request.text}</code> · <span className="path">{pathOf(request.fileId)} {request.startLine}행</span>{' '}
       <button className="btn btn--small" disabled={locked} onClick={() => onCode(request)}>코드 보기</button>
     </li>)}</ul><Omitted count={items.length} />
   </details>;
-  return <>
+  return <details className="card"><summary>이 흐름을 찾은 방법과 한계</summary>
     <p className="hint">코드 글자로 찾은 흐름이에요. 실행 순서나 실제 요청을 확인한 것은 아니에요. AI 정리는 동의한 목록만 보내요.</p>
-    <details className="card"><summary>찾은 범위와 한계</summary>
+    <section aria-label="찾은 범위와 한계">
+      <h3>찾은 범위와 한계</h3>
       <p>TS/JS의 NestJS·Next API·Express 주소와 fetch·axios 요청을 찾아요. 다른 언어·서버 방식과 app.use의 주소 연결·경로 별칭은 따라가지 않아요. 추정은 확실한 연결 수에 넣지 않아요. 실패는 throw new …만, 저장소는 Prisma 모양만 찾아요.</p>
       {(routes?.limited || flow?.limited) && <p>일부 흐름만 확인했어요.</p>}
       {[...new Set([...(routes?.notes ?? []), ...(flow?.notes ?? [])])].map(note => <p key={note} className="hint">{note}</p>)}
-    </details>
+    </section>
     {routes && <>
       {requestList(routes.requests.filter((request, index) => !request.host && !routes.links.some(link => link.requestIndex === index)), '이을 주소를 못 찾은 요청')}
       {requestList(routes.requests.filter(request => request.host !== null), '다른 서버 주소 요청')}
     </>}
-  </>;
+  </details>;
 }

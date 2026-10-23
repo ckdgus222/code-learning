@@ -6,7 +6,7 @@ import { useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
 import { Icon } from './icons';
 import { ancestorFolderPaths, buildFileTree, filterFileTree, type TreeFolder } from './file-tree';
-import { AiPanel, modes } from './ai-panel';
+import { AiPanel } from './ai-panel';
 import { FileGuideCard } from './file-guide';
 import { FileExplanationCard, rememberFileExplanation, type FileExplanationEntry, type FileExplanationState } from './file-explanation';
 import { Flow } from './flow';
@@ -22,9 +22,9 @@ import { OverviewAi, TopicBar, recordPlace, type OverviewState, type Place, type
 import type { ConnectionReport, LearningEvent, OverviewFeature, LearningMode, FileExplanationRange } from '../shared/ai';
 import './styles.css';
 
-const views: { id: Exclude<View, 'function'>; label: string }[] = [
+const views: { id: Exclude<View, 'function'>; label: string; more?: true }[] = [
   { id: 'overview', label: '한눈에 보기' }, { id: 'flow', label: '흐름 따라가기' },
-  { id: 'code', label: '코드 읽기' }, { id: 'map', label: '프로젝트 지도' }, { id: 'changes', label: '달라진 내용' },
+  { id: 'code', label: '코드 읽기' }, { id: 'map', label: '프로젝트 지도', more: true }, { id: 'changes', label: '달라진 내용', more: true },
 ];
 const candidateReasons: Record<StartCandidate['reason'], string> = {
   'package-main': 'package.json의 main이 가리키는 파일',
@@ -207,6 +207,9 @@ function App() {
   useEffect(() => {
     if (view !== 'overview' || !focusAnchor) return;
     const target = document.querySelector<HTMLElement>(`[data-anchor="${CSS.escape(focusAnchor)}"]`) ?? document.querySelector<HTMLElement>('[data-anchor="overview"]');
+    for (let details = target?.closest('details'); details; details = details.parentElement?.closest('details')) {
+      details.open = true;
+    }
     target?.focus();
     setFocusAnchor(null);
   }, [view, focusAnchor, overviewAi]);
@@ -771,6 +774,9 @@ function App() {
   const intro = project?.overview.intro;
   const scope = [project?.name, source?.relativePath, symbol?.name, step?.title].filter(Boolean);
 
+  const viewButton = (item: typeof views[number]) => <button key={item.id} className={`views__item${item.more ? ' views__item--more' : ''}`}
+    aria-current={(view === 'function' ? 'code' : view) === item.id ? 'page' : undefined}
+    onClick={() => setView(item.id)}><Icon name={item.id} /><span>{item.label}</span></button>;
   return <div className={`app${project ? '' : ' app--empty'}${panelOpen ? '' : ' app--panel-closed'}`}>
     <header className="topbar">
       <h1 className="brand">Code Learning</h1>
@@ -782,7 +788,7 @@ function App() {
         {fileExplanationState?.status === 'running' && (view !== 'code' || source?.fileId !== fileExplanationState.fileId) &&
           <span role="status">파일 설명 진행 중 <button className="btn btn--small" onClick={() => void cancelFileExplanation()}>파일 설명 작업 취소</button></span>}
         <button className="btn" onClick={openProject} disabled={busy}>프로젝트 폴더 열기</button>
-        <button className="btn btn--ghost" onClick={cancel} disabled={!project && !busy}>작업 취소·프로젝트 닫기</button>
+        <button className="btn btn--ghost" onClick={cancel} disabled={!project && !busy}>프로젝트 닫기</button>
       </div>
     </header>
 
@@ -807,8 +813,9 @@ function App() {
       </ul>
     </main> : <>
       <nav aria-label="보기" className="views">
-        {views.map(item => <button key={item.id} className="views__item" aria-current={(view === 'function' ? 'code' : view) === item.id ? 'page' : undefined}
-          onClick={() => setView(item.id)}><Icon name={item.id} /><span>{item.label}</span></button>)}
+        {views.filter(item => !item.more).map(viewButton)}
+        <p className="views__more">더 보기</p>
+        {views.filter(item => item.more).map(viewButton)}
       </nav>
       <aside className="sidebar" aria-label="보기와 파일">
         <div className="sidebar__project">
@@ -855,7 +862,12 @@ function App() {
               mode={mode} running={questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running'}
               checking={checking} connections={connections} onInspect={inspectConnections} onRunning={setFeatureGuideRunning}
               revision={revision.current} locked={busy} onFollow={index => void followFeatureRoute(index)} />
-            {view === 'overview' && <>
+            {view === 'overview' && <details key={overviewCard} className="card card--wide" aria-label="더 알아보기"
+              // Once an overview was asked for, its progress, result or error stays in view (the prop never turns false again).
+              open={features.routes?.routes.length === 0 || !!features.error || overviewAi !== null}>
+            <summary onClick={event => { if (overviewAi?.status === 'running') event.preventDefault(); }}>
+              더 알아보기 · 시작 파일 후보 · AI 개요 · 확인한 범위
+            </summary>
             <section className="card card--wide card--accent" aria-labelledby="overview-start">
               <h3 id="overview-start">어디부터 읽을까요?</h3>
               {project.overview.candidates.length > 0 ? <ul className="starts">{project.overview.candidates.map(item =>
@@ -889,7 +901,7 @@ function App() {
               {project.warnings.map(message => <p key={message} className="hint">{message}</p>)}
               <p className="hint">새 파일 목록은 폴더를 다시 열어 갱신합니다. 현재 파일·제외 규칙의 변경은 읽기 전에 다시 확인합니다.</p>
             </section>
-            </>}
+            </details>}
           </div>
         </div>
 
@@ -914,7 +926,7 @@ function App() {
             onFunction={target => void showCallFunction(target)} onAsk={(node, question, topic) => void askFlowStep(node, question, topic)}>
             {features.currentNode && (source && evidence && hasFlowCode(source, evidence, features.currentNode, features.walk.site)
               ? <div className="code flow-walk-code" data-testid="flow-code">
-                <p className="evidence" data-testid="evidence-range">근거: {source.relativePath} · {evidence.startLine}–{evidence.endLine}줄 · UTF-16 [{evidence.startUtf16}, {evidence.endUtf16})</p>
+                <p className="evidence" data-testid="evidence-range" data-utf16={`${evidence.startUtf16},${evidence.endUtf16}`}>근거: {source.relativePath} · {evidence.startLine}–{evidence.endLine}줄</p>
                 <Reader source={source} evidence={evidence} codeSize={codeSize} wrap={wrap}
                   symbolId={null} stepId={null} locked={busy || stale} />
               </div>
@@ -1013,7 +1025,7 @@ function App() {
               </li>)}</ul>
             </section>
             <div className="code">
-              {evidence && <p data-testid="evidence-range" className="evidence">근거: {source.relativePath} · {evidence.startLine}–{evidence.endLine}줄 · UTF-16 [{evidence.startUtf16}, {evidence.endUtf16})</p>}
+              {evidence && <p data-testid="evidence-range" data-utf16={`${evidence.startUtf16},${evidence.endUtf16}`} className="evidence">근거: {source.relativePath} · {evidence.startLine}–{evidence.endLine}줄</p>}
               <Reader ref={reader} source={source} evidence={evidence} codeSize={codeSize} wrap={wrap}
                 symbolId={symbolId} stepId={stepId} locked={busy || stale}
                 onStep={next => { if (!busy && !stale) void showEvidence(next.evidence, next.id); }} />
@@ -1054,10 +1066,6 @@ function App() {
       </aside>
       {!panelOpen && <button className="panel-reopen btn btn--small" onClick={() => setPanelOpen(true)}>설명 패널 펼치기</button>}
     </>}
-    <footer className="statusbar" aria-label="작업 상태">
-      <div className="statusbar__group"><span><Icon name="lock" />읽기 전용</span>{project && <span>파일 {project.files.length}개</span>}</div>
-      <div className="statusbar__group"><span className="badge badge--muted" title="질문 탭에서 동의하고 보낸 질문만 Codex·Gemini에 보냅니다. 알려진 한계는 README에 있습니다.">AI는 동의한 질문만</span><span>{mode === 'local-worker' ? 'Codex → Gemini → Codex' : modes.find(item => item.id === mode)?.label}</span></div>
-    </footer>
   </div>;
 }
 

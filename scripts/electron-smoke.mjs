@@ -341,14 +341,11 @@ try {
     assert.equal(await page.evaluate(() => typeof window.require), 'undefined');
     assert.ok((await readFile(path.join(profile, 'learning.sqlite'))).length > 0);
   });
-  await check('Dark welcome shows only factual status before opening a project', async () => {
+  await check('Dark welcome keeps the read-only promise without a status bar', async () => {
     assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme), 'dark');
-    const status = page.getByRole('contentinfo', { name: '작업 상태' });
-    assert.match(await status.innerText(), /읽기 전용/);
-    assert.match(await status.innerText(), /Codex → Gemini → Codex/);
-    assert.doesNotMatch(await status.innerText(), /파일 \d+개|파일 해시 확인됨|UTF-8|LF/);
+    assert.equal(await page.getByRole('contentinfo', { name: '작업 상태' }).count(), 0);
+    await page.getByText('원본 파일을 수정하지 않아요.', { exact: true }).waitFor();
     assert.equal(await page.locator('.topbar').getByText('AI는 동의한 질문만').count(), 0);
-    assert.equal(await status.getByText('AI는 동의한 질문만').getAttribute('title'), '질문 탭에서 동의하고 보낸 질문만 Codex·Gemini에 보냅니다. 알려진 한계는 README에 있습니다.');
     await page.screenshot({ path: path.join(artifacts, 'dark-welcome.png') });
   });
   await dialogTo(fixture);
@@ -356,7 +353,13 @@ try {
   await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
   await check('Open a real folder; secret filenames excluded', async () => {
     assert.equal(await page.locator('.views__item').count(), 5);
-    assert.equal(await page.locator('.statusbar').getByText(await page.locator('.files h3').innerText(), { exact: true }).count(), 1);
+    assert.equal(await page.getByRole('contentinfo', { name: '작업 상태' }).count(), 0);
+    const menu = page.getByRole('navigation', { name: '보기', exact: true });
+    assert.deepEqual(await menu.locator(':scope > *').allTextContents(),
+      ['한눈에 보기', '흐름 따라가기', '코드 읽기', '더 보기', '프로젝트 지도', '달라진 내용']);
+    assert.equal(await menu.locator('p.views__more').getAttribute('aria-hidden'), null);
+    assert.deepEqual(await menu.locator('.views__item--more').allTextContents(), ['프로젝트 지도', '달라진 내용']);
+    for (const button of await menu.locator('.views__item--more').all()) assert.equal(await button.isVisible(), true);
     assert.equal(await page.getByRole('button', { name: '.env', exact: true }).count(), 0);
     assert.equal(await page.getByRole('button', { name: 'auth.json', exact: true }).count(), 0);
     assert.equal(await page.getByRole('button', { name: '한눈에 보기', exact: true }).getAttribute('aria-current'), 'page');
@@ -369,7 +372,8 @@ try {
     await page.getByRole('button', { name: '주문', exact: true }).click();
     await page.getByRole('button', { name: '조건 확인', exact: true }).click();
     const label = await page.getByTestId('evidence-range').innerText();
-    const offsets = label.match(/UTF-16 \[(\d+), (\d+)\)/);
+    assert.doesNotMatch(label, /UTF-16/);
+    const offsets = (await page.getByTestId('evidence-range').getAttribute('data-utf16')).match(/^(\d+),(\d+)$/);
     assert.ok(offsets);
     const selected = source.slice(Number(offsets[1]), Number(offsets[2]));
     assert.equal(selected, 'if (수량 < 1) {\r\n\t\treturn "실패 📦";\r\n\t}');
@@ -540,7 +544,7 @@ try {
       await field.waitFor();
       assert.deepEqual(await layoutProblems(), [], `${width}x${height}`);
       const workspaceProblems = await page.evaluate(() => {
-        const elements = [...document.querySelectorAll('.views__item, .topbar .btn, .statusbar__group > span, .reader__head .btn')];
+        const elements = [...document.querySelectorAll('.views__item, .topbar .btn, .reader__head .btn')];
         const problems = [];
         for (const element of elements) {
           const r = element.getBoundingClientRect();
@@ -552,8 +556,7 @@ try {
         }
         const center = document.querySelector('.center').getBoundingClientRect();
         const panel = document.querySelector('.panel').getBoundingClientRect();
-        const status = document.querySelector('.statusbar').getBoundingClientRect();
-        if (panel.bottom > status.top + 0.5 || center.bottom > status.top + 0.5) problems.push('workspace overlaps status');
+        if (panel.bottom > innerHeight + 0.5 || center.bottom > innerHeight + 0.5) problems.push('workspace goes past the window');
         if (innerWidth <= 1100 && panel.top < center.bottom - 0.5) problems.push('panel did not stack');
         return problems;
       });
@@ -692,7 +695,8 @@ try {
     await card.getByRole('button', { name: '이전 단계', exact: true }).click();
     await card.getByText('"실패 📦"', { exact: true }).waitFor();
     await card.getByRole('button', { name: '코드 크게 보기', exact: true }).click();
-    const offsets = (await page.getByTestId('evidence-range').innerText()).match(/UTF-16 \[(\d+), (\d+)\)/);
+    const offsets = (await page.getByTestId('evidence-range').getAttribute('data-utf16')).match(/^(\d+),(\d+)$/);
+    assert.ok(offsets);
     assert.equal(source.slice(Number(offsets[1]), Number(offsets[2])), 'return "실패 📦";');
     await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
     await card.getByText('"실패 📦"', { exact: true }).waitFor();
@@ -754,6 +758,7 @@ try {
     const starts = page.getByRole('region', { name: '어디부터 읽을까요?' });
     const noServer = page.getByText('서버 코드(요청을 받는 곳)를 찾지 못해서 기능별로 따라갈 수 없어요.', { exact: false });
     await noServer.waitFor();
+    assert.equal(await page.locator('details[aria-label="더 알아보기"]').evaluate(element => element.open), true);
     // The notice points down to the start candidates, so they must come after it on the page.
     assert.equal(await noServer.evaluate(element =>
       !!(element.compareDocumentPosition(document.getElementById('overview-start')) & Node.DOCUMENT_POSITION_FOLLOWING)), true);
@@ -945,7 +950,30 @@ try {
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
     const route = page.getByRole('region', { name: '기능 목록', exact: true }).getByRole('listitem').filter({ hasText: '지우기 · /api/dogs/:id' }).getByRole('button', { name: '이 기능 따라가기', exact: true });
     await route.waitFor();
-    await page.getByText('프론트 요청 확실 1곳 · 추정 0곳', { exact: true }).waitFor();
+    const connection = page.getByRole('region', { name: '기능 목록', exact: true }).getByText('요청 코드와 이어짐', { exact: true });
+    await connection.waitFor();
+    assert.equal(await connection.getAttribute('title'), '프론트 요청 확실 1곳 · 추정 0곳');
+    assert.equal(await page.getByRole('button', { name: '다시 찾기', exact: true }).count(), 0);
+    const more = page.locator('details[aria-label="더 알아보기"]');
+    assert.equal(await more.evaluate(element => element.open), false);
+    assert.equal(await page.getByRole('contentinfo', { name: '작업 상태' }).count(), 0);
+    await more.locator(':scope > summary').click();
+    const candidate = more.locator('.starts__item').first();
+    const anchor = await candidate.getAttribute('data-anchor');
+    await candidate.click();
+    const topic = page.getByRole('region', { name: '학습 주제' });
+    await topic.waitFor();
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    assert.equal(await more.evaluate(element => element.open), false);
+    await topic.getByRole('button', { name: '한눈에 보기로', exact: true }).click();
+    await until(() => page.evaluate(anchor => document.activeElement?.getAttribute('data-anchor') === anchor, anchor));
+    assert.equal(await more.evaluate(element => element.open), true);
+    assert.equal(await candidate.isVisible(), true);
+    await topic.getByRole('button', { name: '주제 닫기', exact: true }).click();
+    await openTreeFile('api/controller.ts');
+    await page.getByRole('button', { name: 'DogsController.remove', exact: true }).click();
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    assert.equal(await page.getByTestId('question-scope').innerText(), scope);
     await page.getByRole('textbox', { name: '기능 검색' }).fill('missing');
     assert.equal(await route.count(), 0);
     await page.getByRole('textbox', { name: '기능 검색' }).fill('dogs');
@@ -962,6 +990,30 @@ try {
     await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
     assert.equal(await story.getByRole('button', { name: '◀ 이전', exact: true }).isDisabled(), true);
     assert.equal(await story.getByRole('navigation', { name: '이야기 단계' }).getByRole('button').count(), 9);
+    const windowSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
+    for (const width of [1000, 1280, 1440]) {
+      await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const nav = story.getByRole('navigation', { name: '이야기 단계' });
+      const bounds = await nav.boundingBox();
+      const buttons = await Promise.all((await nav.getByRole('button').all()).map(button => button.boundingBox()));
+      assert.equal(buttons.length, 9);
+      assert.ok(buttons.every(Boolean));
+      const previous = buttons[0], next = buttons.at(-1);
+      assert.ok(Math.abs(previous.y - next.y) <= 1, `next stayed beside previous at ${width}px`);
+      assert.ok(buttons.slice(1, -1).some(button => Math.abs(button.y - next.y) <= 1), `next shares a row with steps at ${width}px`);
+      for (const [index, button] of buttons.entries()) {
+        assert.ok(button.width > 0 && button.height > 0);
+        assert.ok(button.x >= bounds.x - 1 && button.x + button.width <= bounds.x + bounds.width + 1, `button fits at ${width}px`);
+        assert.ok(button.y >= bounds.y - 1 && button.y + button.height <= bounds.y + bounds.height + 1);
+        for (const other of buttons.slice(index + 1)) {
+          assert.ok(button.x + button.width <= other.x + 1 || other.x + other.width <= button.x + 1
+            || button.y + button.height <= other.y + 1 || other.y + other.height <= button.y + 1, `buttons do not overlap at ${width}px`);
+        }
+      }
+      assert.equal(await nav.evaluate(element => element.scrollWidth <= element.clientWidth), true);
+    }
+    await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), windowSize);
     await story.getByRole('button', { name: '다음 ▶', exact: true }).click();
     await story.getByText('2 / 7 · 프론트 처리', { exact: true }).waitFor();
     await story.getByRole('heading', { name: '화면 쪽 코드가 요청을 준비해요', exact: true }).waitFor();
@@ -1048,7 +1100,21 @@ try {
     await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
     await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
     assert.equal(await summary.getByRole('textbox', { name: '확인하는 것', exact: true }).inputValue(), '반려견 정보');
+    await app.evaluate(({ powerMonitor }) => powerMonitor.emit('resume'));
+    await page.getByRole('button', { name: '다시 찾기', exact: true }).waitFor();
+    await holdWorkerMessages();
     await page.getByRole('button', { name: '다시 찾기', exact: true }).click();
+    await page.getByRole('button', { name: '주소 찾기 취소', exact: true }).click();
+    await page.getByRole('button', { name: '주소 찾기', exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: '다시 찾기', exact: true }).count(), 0);
+    await releaseWorkerMessages();
+    await page.getByRole('button', { name: '주소 찾기', exact: true }).click();
+    await route.waitFor();
+    // Waking deliberately clears the question scope; select it again before checking navigation preserves it.
+    await openTreeFile('api/controller.ts');
+    await page.getByRole('button', { name: 'DogsController.remove', exact: true }).click();
+    await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    assert.equal(await page.getByTestId('question-scope').innerText(), scope);
     await route.click();
     await story.getByRole('button', { name: '7단계 화면 결과', exact: true }).click();
     assert.equal(await summary.getByRole('textbox', { name: '받는 것', exact: true }).inputValue(), '삭제 요청');
@@ -1225,7 +1291,7 @@ try {
     await story.getByRole('button', { name: '이 단계 코드 보기', exact: true }).click();
     await page.getByText('흐름을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 주소를 다시 찾아 주세요.', { exact: true }).waitFor();
     assert.equal(await story.getByTestId('flow-code').count(), 0);
-    await page.getByRole('button', { name: '작업 취소·프로젝트 닫기', exact: true }).click();
+    await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
     await writeFile(changedFile, featureFlowFiles['web/lib/dogs.ts']);
   });
@@ -1236,7 +1302,11 @@ try {
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
     assert.equal(await page.getByRole('tablist', { name: '프로젝트 지도 보기' }).count(), 0);
     const boxes = page.locator('.react-flow__node');
-    // Five code files are fewer than 60, so the map starts in the file view; the deep file was never listed.
+    // Small projects also start with folded folders; the deep file was never listed.
+    await until(async () => await boxes.count() === 3);
+    assert.equal(await page.getByRole('button', { name: '설계 보기', exact: true }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.getByRole('button', { name: '파일 보기', exact: true }).getAttribute('aria-pressed'), 'false');
+    await page.getByRole('button', { name: '파일 보기', exact: true }).click();
     await until(async () => await boxes.count() === 5);
     // The feature guide keeps its own (hidden) copy of the folder warnings while the full map is shown.
     await page.getByText('초기 탐색 제한(파일 1,000개·항목 5,000개·깊이 20)에 도달했습니다.', { exact: false }).filter({ visible: true }).waitFor();
@@ -1346,6 +1416,9 @@ try {
     const allTab = page.getByRole('button', { name: '프로젝트 지도', exact: true });
     await until(async () => {
       if (await allTab.getAttribute('aria-current') !== 'page') await allTab.click();
+      // The map can be redrawn between these calls, so a vanished button is tried again on the next pass.
+      const fileView = page.getByRole('button', { name: '파일 보기', exact: true });
+      if (await fileView.getAttribute('aria-pressed', { timeout: 200 }).catch(() => null) === 'false') await fileView.click({ timeout: 1000 }).catch(() => {});
       return await boxes.count() === 6;
     });
     assert.equal(await page.getByText('지도를 만드는 동안', { exact: false }).count(), 0);
@@ -1391,7 +1464,7 @@ try {
       // Opening runs the overview, which parses up to 20 files of about 100 KB.
       await dialogTo(bigMapFixture);
       await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
-      await page.getByRole('button', { name: '작업 취소·프로젝트 닫기' }).click();
+      await page.getByRole('button', { name: '프로젝트 닫기' }).click();
       assert.equal(await app.evaluate(() => 'alive'), 'alive');
       await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).waitFor();
     }
@@ -1401,7 +1474,7 @@ try {
       await page.getByRole('heading', { name: '큰 지도 프로젝트', exact: true }).waitFor();
       await page.getByRole('button', { name: `폴더 part${round}`, exact: true }).click();
       await page.getByRole('button', { name: `part${round}/file${round}.ts`, exact: true }).click();
-      await page.getByRole('button', { name: '작업 취소·프로젝트 닫기' }).click();
+      await page.getByRole('button', { name: '프로젝트 닫기' }).click();
       assert.equal(await app.evaluate(() => 'alive'), 'alive');
     }
     await dialogTo(second);
@@ -1442,9 +1515,9 @@ try {
         return result;
       });
     });
-    await page.getByRole('button', { name: '작업 취소·프로젝트 닫기' }).click();
+    await page.getByRole('button', { name: '프로젝트 닫기' }).click();
     await until(() => app.evaluate(() => globalThis.testUiTerminateWaiting === true));
-    await page.getByRole('button', { name: '작업 취소·프로젝트 닫기' }).click();
+    await page.getByRole('button', { name: '프로젝트 닫기' }).click();
     await until(() => page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).isEnabled());
     await app.evaluate(({ dialog }, folder) => {
       dialog.showOpenDialog = async () => {
@@ -1516,7 +1589,7 @@ try {
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
     assert.equal(await page.getByRole('alert').count(), 0);
-    await page.getByRole('button', { name: '작업 취소·프로젝트 닫기' }).click();
+    await page.getByRole('button', { name: '프로젝트 닫기' }).click();
     const notice = page.getByRole('status').filter({ hasText: '작업을 취소했습니다.' });
     await notice.waitFor();
     assert.equal(await notice.innerText(), '작업을 취소했습니다.');
@@ -1585,7 +1658,6 @@ try {
     // Each single mode opens with its own CLI, names it, and reads no other file.
     for (const [mode, binary, recipient] of [['codex', 'Codex', 'Codex'], ['antigravity', 'Antigravity', 'Gemini(Antigravity)']]) {
       await selector.selectOption(mode);
-      assert.equal(await page.locator('.statusbar').getByText(await selector.locator('option:checked').innerText(), { exact: true }).count(), 1);
       const found = new RegExp(`${binary} · 설치 확인`).test(listed);
       assert.match(await page.getByTestId('ai-readiness').innerText(), found ? /한 AI가 바로 설명하고 다른 AI의 대조는 없어요/ : /단독에는 .+ 필요해요/);
       assert.equal(await page.getByRole('checkbox').isEnabled(), found);
@@ -1923,7 +1995,7 @@ try {
             await page.getByRole('region', { name: 'AI 설명', exact: true }).getByRole('button', { name: 'related.ts · 1–1행', exact: true }).click();
             await until(() => app.evaluate(() => globalThis.testFlowQuestion.otherWaiting));
           } else {
-            await page.getByRole('button', { name: '작업 취소·프로젝트 닫기', exact: true }).click();
+            await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
             await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
             await until(() => page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).isEnabled());
           }
@@ -2040,6 +2112,14 @@ try {
     await app.evaluate(() => { globalThis.testOverviewHold = true; });
     await create.click();
     await card.getByText('개요 작업 시작 중', { exact: true }).waitFor();
+    const more = page.locator('details[aria-label="더 알아보기"]');
+    await more.locator(':scope > summary').click();
+    assert.equal(await more.evaluate(element => element.open), true);
+    await more.locator(':scope > summary').focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await more.evaluate(element => element.open), true);
+    assert.equal(await card.getByText('개요 작업 시작 중', { exact: true }).isVisible(), true);
+    assert.equal(await card.getByRole('button', { name: '개요 작업 취소', exact: true }).isVisible(), true);
     assert.equal(await page.locator('.ai-panel').getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).isDisabled(), true);
     // The fake handler reads three files before it keeps the reply, so wait for it rather than racing those reads.
     await until(() => app.evaluate(() => typeof globalThis.testOverviewLate === 'function'));
@@ -2642,6 +2722,7 @@ try {
     // The map marks the boxes of files now and lists every change, the deleted one too.
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
     const box = name => page.locator('.react-flow__node').filter({ hasText: name });
+    await page.getByRole('button', { name: '파일 보기', exact: true }).click();
     await box('edit.ts').getByText('수정', { exact: true }).waitFor({ timeout: 30_000 });
     for (const [name, kind] of [['added.ts', '추가'], ['new-name.ts', '이름 변경'], ['untracked.ts', '미추적']]) await box(name).getByText(kind, { exact: true }).waitFor();
     assert.equal(await page.getByRole('region', { name: '변경 목록' }).getByRole('list', { name: '바뀐 파일' }).locator('li').count(), 5);
@@ -2918,7 +2999,7 @@ try {
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('button', { name: 'chunks.ts', exact: true }).click();
     assert.equal(await card.getByTestId('file-summary').count(), 0);
-    await page.getByRole('button', { name: '작업 취소·프로젝트 닫기', exact: true }).click();
+    await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
   });
   await check('Feature guide (fake AI): consent, grouped routes, route-specific stories, refresh and late result rejection', async () => {
@@ -3004,6 +3085,7 @@ try {
     await page.getByRole('textbox', { name: '기능 검색' }).fill('DogsController.get');
     await list.getByRole('button', { name: '이 기능 따라가기', exact: true }).waitFor();
     await page.getByRole('textbox', { name: '기능 검색' }).fill('');
+    await app.evaluate(({ powerMonitor }) => powerMonitor.emit('resume'));
     await page.getByRole('button', { name: '다시 찾기', exact: true }).click();
     await list.getByText('지우기 · /api/dogs/:id', { exact: true }).waitFor();
     assert.equal(await list.getByRole('heading', { name: '반려견 관리', exact: true }).count(), 0);
@@ -3012,6 +3094,7 @@ try {
     await list.getByRole('checkbox').check(); await send.click();
     await list.getByRole('button', { name: 'AI 작업 취소', exact: true }).waitFor();
     await until(async () => await app.evaluate(() => typeof globalThis.testGuideLate === 'function'));
+    await app.evaluate(({ powerMonitor }) => powerMonitor.emit('resume'));
     await page.getByRole('button', { name: '다시 찾기', exact: true }).click();
     await list.getByText('지우기 · /api/dogs/:id', { exact: true }).waitFor();
     await app.evaluate(() => { globalThis.testGuideLate(); globalThis.testGuideHold = false; });
@@ -3025,7 +3108,7 @@ try {
     await list.getByText('지우기 · /api/dogs/:id', { exact: true }).waitFor();
     assert.equal(await list.getByRole('heading', { name: '반려견 관리', exact: true }).count(), 0);
     assert.equal(await list.getByRole('button', { name: 'AI로 기능 정리하기', exact: true }).isDisabled(), true);
-    await page.getByRole('button', { name: '작업 취소·프로젝트 닫기', exact: true }).click();
+    await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
   });
   await check('Quitting while files are parsed waits for the workers and ends cleanly', async () => {
@@ -3040,7 +3123,7 @@ try {
     await dialogTo(bigMapFixture);
     ended = ending();
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
-    await page.getByRole('button', { name: '작업 취소·프로젝트 닫기' }).click();
+    await page.getByRole('button', { name: '프로젝트 닫기' }).click();
     await app.evaluate(({ app: electronApp }) => { electronApp.quit(); electronApp.quit(); });
     assert.deepEqual(await endsWithin(ended, '(b) cancel, then quit twice'), { code: 0, signal: null });
     // (c) While quitting waits for a worker (its answer held back), no new folder or map is started.
