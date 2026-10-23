@@ -258,6 +258,17 @@ export interface FlowStore {
   action: 'read' | 'count' | 'create' | 'update' | 'upsert' | 'delete' | 'raw';
   site: ValueSite;
 }
+/** The element whose event starts the flow, read from JSX. */
+export interface FlowControl { tag: string; texts: string[] }
+/** A first-statement confirmation that returns without a value on cancellation. */
+export interface FlowAsk { message: string | null; site: ValueSite }
+/** What front code does once the response arrives, by code shape only. */
+export interface FlowAfter {
+  when: 'success' | 'error' | 'settled';
+  action: 'refresh' | 'cache' | 'cancel' | 'navigate' | 'state' | 'notify' | 'call';
+  target: string | null;
+  site: ValueSite;
+}
 export interface FlowNode {
   id: string;
   side: 'front' | 'request' | 'back';
@@ -268,6 +279,10 @@ export interface FlowNode {
   name: string;
   range: { startUtf16: number; endUtf16: number; startLine: number; endLine: number };
   event: string | null;
+  control: FlowControl | null;
+  asks: FlowAsk[];
+  after: FlowAfter[];
+  afterOmitted: number;
   screen: string | null;
   outside: string[];
   outsideOmitted: number;

@@ -11,7 +11,7 @@ const nodes: FlowNode[] = [
   { id: 'event', side: 'front', depth: 1, name: 'onClick 함수', event: 'onClick' },
   { id: 'screen', side: 'front', depth: 2, name: 'DogsPage', screen: '/dogs' },
 ].map(node => ({ fileId: 'f', fileHash: 'h', relativePath: 'src/example.ts', range: { startUtf16: 0, endUtf16: 10, startLine: 1, endLine: 1 },
-  event: null, screen: null, outside: [], outsideOmitted: 0, stops: [], stopsOmitted: 0, stores: [], storesOmitted: 0, ...node } as FlowNode));
+  event: null, control: null, asks: [], after: [], afterOmitted: 0, screen: null, outside: [], outsideOmitted: 0, stops: [], stopsOmitted: 0, stores: [], storesOmitted: 0, ...node } as FlowNode));
 const flow: FeatureFlow = { projectId: 'p', routesId: 'r', routeIndex: 0, nodes, limited: false, notes: [], edges: [
   { from: 'screen', to: 'event', kind: 'inside', sure: true, reasons: [], site: null },
   { from: 'event', to: 'request', kind: 'hook', sure: false, reasons: ['훅이 돌려준 값 remove를 써요'], site: null },
@@ -463,4 +463,52 @@ it('distinguishes missing server code from a search with no matching features', 
   const filtered = renderToStaticMarkup(React.createElement(FeatureList, { ...props, groups, search: 'missing' }));
   expect(filtered).toContain('검색어와 맞는 기능이 없어요.');
   expect(filtered).not.toContain('서버 코드(요청을 받는 곳)를 찾지 못했어요.');
+});
+
+it.each([null, '삭제?'])('renders confirmation wording without the server-error disclaimer: %s', message => {
+  const changed = { ...flow, nodes: nodes.map(node => node.id === 'event' ? { ...node,
+    control: { tag: 'button', texts: ['삭제'] }, asks: [{ message, site: { fileId: 'f', fileHash: 'h', ...node.range, text: 'if (!confirm(message)) return;' } }],
+  } : node) };
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: changed, locked: true }));
+  expect(html).toContain('화면 /dogs에서 ‘삭제’ 버튼을 누르면 시작해요');
+  expect(html).toContain('aria-label="다른 경우"');
+  expect(html).toContain('다른 경우 1개');
+  expect(html).toContain(`${message === null ? '' : '‘삭제?’ '}확인 창에서 취소하면 여기서 멈춰요`);
+  expect(html).not.toContain('코드에 적힌 오류예요');
+  expect(html).toMatch(/<button[^>]*disabled=""[^>]*>이 줄 보기<\/button>/);
+});
+
+it('adds stops and confirmations to the same count and keeps the error disclaimer for stops', () => {
+  const changed = { ...flow, nodes: nodes.map(node => node.id === 'back' ? { ...node,
+    stops: [{ kind: 'Error', message: '실패', condition: null, site: { fileId: 'f', fileHash: 'h', ...node.range, text: 'throw new Error();' } }], stopsOmitted: 2,
+  } : node) };
+  const walk = { ...walkProps.walk, step: 2 };
+  const selection = walkSelection(changed, walk);
+  const step = { ...selection.step!, asks: { items: [{ nodeId: 'back', message: '계속?', site: { fileId: 'f', fileHash: 'h', ...nodes[0].range, startUtf16: 2, text: 'confirm()' } }], omitted: 0 } };
+  const html = renderToStaticMarkup(React.createElement(FlowWalk, { ...walkProps, flow: changed, walk, selection: { ...selection, step } }));
+  expect(html).toContain('다른 경우 4개');
+  expect(html).toContain('코드에 적힌 오류예요');
+  expect(html).toContain('외 2개 더');
+});
+
+it.each([{ locked: true, stale: false }, { locked: false, stale: true }])('renders grouped result actions and disables line buttons for %o', status => {
+  const changed = { ...flow, nodes: nodes.map(node => {
+    const site = { fileId: 'f', fileHash: 'h', ...node.range, text: 'action()' };
+    if (node.id === 'screen') return { ...node, after: [{ when: 'success' as const, action: 'cancel' as const, target: null, site }], afterOmitted: 1 };
+    if (node.id !== 'event') return node;
+    return { ...node, after: [
+      { when: 'success' as const, action: 'navigate' as const, target: '/', site },
+      { when: 'error' as const, action: 'state' as const, target: 'error', site: { ...site, startUtf16: 2 } },
+      { when: 'settled' as const, action: 'notify' as const, target: null, site: { ...site, startUtf16: 4 } },
+    ], afterOmitted: 2 };
+  }) };
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, ...status, flow: changed, walk: { ...walkProps.walk, step: 3 } }));
+  for (const text of ['aria-label="응답 뒤 화면"', '화면 결과', '<h4>DogsPage</h4>', '<h4>onClick 함수</h4>',
+    '<h5>성공하면</h5>', '<h5>실패하면</h5>', '<h5>끝나면</h5>', '하던 불러오기 멈추기', '화면 /로 이동하기',
+    '화면 값 error 바꾸기', '알림 보여 주기', '외 3개 더', '코드 모양(onSuccess, await 다음 줄, catch)으로 찾았어요.',
+    '실제로 실행되는 순서와 여부는 확인하지 않았어요.', '함수끼리 어떤 순서로 실행되는지는 확인하지 않았어요.']) expect(html).toContain(text);
+  expect(html).not.toContain('aria-label="다른 경우"');
+  const lineButtons = html.match(/<button[^>]*>이 줄 보기<\/button>/g)!;
+  expect(lineButtons).toHaveLength(4);
+  expect(lineButtons.every(button => button.includes('disabled=""'))).toBe(true);
 });

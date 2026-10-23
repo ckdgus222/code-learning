@@ -37,8 +37,8 @@ const featureFlowFixture = path.join(temporary, '기능 흐름 프로젝트');
 const featureFlowFiles = {
   'web/next.config.ts': 'export default {};',
   'web/app/dogs/page.tsx': "import {DogList} from '../../components/DogList'; export default function DogsPage() { return <DogList />; }",
-  'web/components/DogList.tsx': "import {useDeleteDog} from '../lib/dogs'; export function DogList() { const remove = useDeleteDog(); const removeDog = dog => remove.mutate(dog.id); return dogs.map(dog => <button onClick={() => removeDog(dog)}>삭제</button>); }",
-  'web/lib/dogs.ts': "import {useMutation} from 'query'; import {request} from './request'; export function useDeleteDog() { return useMutation({mutationFn: id => request(`/api/dogs/${id}`, {method:'DELETE'})}); }",
+  'web/components/DogList.tsx': "import {useDeleteDog} from '../lib/dogs'; export function DogList() { const remove = useDeleteDog(); const removeDog = dog => { if (!window.confirm(`${dog.name}의 정보를 삭제할까요?`)) return; remove.mutate(dog.id); }; return dogs.map(dog => <button onClick={() => removeDog(dog)}>삭제</button>); }",
+  'web/lib/dogs.ts': "import {useMutation} from 'query'; import {request} from './request'; export function useDeleteDog() { return useMutation({mutationFn: id => request(`/api/dogs/${id}`, {method:'DELETE'}), onSuccess: () => queryClient.setQueryData(key, dogs => dogs.filter(dog => dog.id !== id))}); }",
   'web/lib/request.ts': 'export function request(path, init) { return fetch(path, init); }',
   'api/setup.ts': "app.setGlobalPrefix('api');",
   'api/controller.ts': "import {DogsService} from './service'; @Controller('dogs') export class DogsController { constructor(private dogs: DogsService) {} @Delete(':id') remove(id) { return this.dogs.remove(id); } }",
@@ -53,6 +53,27 @@ const featureFlowFiles = {
 for (const [name, text] of Object.entries(featureFlowFiles)) {
   await mkdir(path.dirname(path.join(featureFlowFixture, name)), { recursive: true });
   await writeFile(path.join(featureFlowFixture, name), text);
+}
+// A returned hook function connects the form to the original request function.
+const loginFlowFixture = path.join(temporary, '로그인 흐름 프로젝트');
+const loginFlowFiles = {
+  'web/next.config.ts': 'export default {};',
+  'web/lib/auth.ts': "export async function login() { return fetch('/api/auth/login', {method: 'POST'}); }",
+  'web/lib/provider.ts': "import {login} from './auth'; export function useAuth() { return {login}; }",
+  'web/app/login/page.tsx': `import {useAuth} from '../../lib/provider';
+export default function LoginPage() {
+  const {login} = useAuth();
+  async function handleSubmit() {
+    await login();
+    router.push('/');
+  }
+  return <form onSubmit={handleSubmit}><button>로그인</button></form>;
+}`,
+  'api/controller.ts': "@Controller('api/auth') export class AuthController { @Post('login') login() {} }",
+};
+for (const [name, text] of Object.entries(loginFlowFiles)) {
+  await mkdir(path.dirname(path.join(loginFlowFixture, name)), { recursive: true });
+  await writeFile(path.join(loginFlowFixture, name), text);
 }
 // The project map: ui uses store twice and shared once, store uses ui once and shared once, and ui uses itself.
 // A folder 21 levels deep stops the folder scan at its depth limit without reaching the map's own limits.
@@ -879,7 +900,7 @@ try {
     await page.waitForFunction(() => document.querySelector('.files button[aria-label="폴더 api"]')?.getAttribute('aria-expanded') === 'false');
     assert.equal(await main.isVisible(), false);
   });
-  await check('Feature guide: overview, five story steps, route search, diagram, code and question preservation', async () => {
+  await check('Feature guide: overview, seven story steps, route search, diagram, code and question preservation', async () => {
     await dialogTo(featureFlowFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '기능 흐름 프로젝트', exact: true }).waitFor();
@@ -898,7 +919,7 @@ try {
     const recommendation = page.getByRole('region', { name: '처음 따라갈 기능', exact: true });
     await recommendation.getByText('지우기 · /api/dogs/:id', { exact: true }).waitFor();
     await recommendation.getByRole('button', { name: '이 기능부터 따라가기', exact: true }).click();
-    await page.getByRole('region', { name: '기능 따라가기', exact: true }).getByText('1 / 6 · 화면', { exact: true }).waitFor();
+    await page.getByRole('region', { name: '기능 따라가기', exact: true }).getByText('1 / 7 · 화면', { exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: '흐름 따라가기', exact: true }).getAttribute('aria-current'), 'page');
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
     const route = page.getByRole('region', { name: '기능 목록', exact: true }).getByRole('listitem').filter({ hasText: '지우기 · /api/dogs/:id' }).getByRole('button', { name: '이 기능 따라가기', exact: true });
@@ -911,19 +932,26 @@ try {
     await page.getByRole('textbox', { name: '기능 검색' }).fill('지우기');
     await route.click();
     const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
-    await story.getByText('화면 /dogs에서 onClick 동작이 일어나요', { exact: true }).waitFor();
+    await story.getByText('화면 /dogs에서 ‘삭제’ 버튼을 누르면 시작해요', { exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: '흐름 따라가기', exact: true }).getAttribute('aria-current'), 'page');
-    await story.getByText('1 / 6 · 화면', { exact: true }).waitFor();
+    await story.getByText('1 / 7 · 화면', { exact: true }).waitFor();
     await story.getByRole('heading', { name: '화면 동작에서 시작해요', exact: true }).waitFor();
     await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
     assert.equal(await story.getByRole('button', { name: '◀ 이전', exact: true }).isDisabled(), true);
-    assert.equal(await story.getByRole('navigation', { name: '이야기 단계' }).getByRole('button').count(), 8);
+    assert.equal(await story.getByRole('navigation', { name: '이야기 단계' }).getByRole('button').count(), 9);
     await story.getByRole('button', { name: '다음 ▶', exact: true }).click();
-    await story.getByText('2 / 6 · 프론트 처리', { exact: true }).waitFor();
+    await story.getByText('2 / 7 · 프론트 처리', { exact: true }).waitFor();
     await story.getByRole('heading', { name: '화면 쪽 코드가 요청을 준비해요', exact: true }).waitFor();
     assert.match(await story.locator('[data-kind="front"]').innerText(), /removeDog → useDeleteDog → mutationFn/);
     await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
     assert.match(await story.getByTestId('evidence-range').innerText(), /web\/lib\/dogs.ts/);
+    const confirmation = story.getByRole('region', { name: '다른 경우', exact: true });
+    await confirmation.getByText('‘…의 정보를 삭제할까요?’ 확인 창에서 취소하면 여기서 멈춰요', { exact: false }).waitFor();
+    await confirmation.getByRole('button', { name: '이 줄 보기', exact: true }).click();
+    await until(async () => /web\/components\/DogList.tsx · 1–1줄/.test(await story.getByTestId('evidence-range').innerText()));
+    await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
+    await story.getByTestId('flow-code').locator('.cm-content').focus();
+    await until(async () => await page.evaluate(() => getSelection()?.toString()) === 'if (!window.confirm(`${dog.name}의 정보를 삭제할까요?`)) return;');
     const functions = story.getByRole('group', { name: '이 단계의 함수' }).getByRole('button');
     await functions.nth(1).click();
     const selectedName = await functions.nth(1).innerText();
@@ -933,7 +961,7 @@ try {
     await page.getByRole('heading', { name: '함수 안 순서', exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: '코드 읽기', exact: true }).getAttribute('aria-current'), 'page');
     await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
-    await story.getByText('2 / 6 · 프론트 처리', { exact: true }).waitFor();
+    await story.getByText('2 / 7 · 프론트 처리', { exact: true }).waitFor();
     assert.equal(await story.getByRole('group', { name: '이 단계의 함수' }).getByRole('button', { name: selectedName, exact: true }).getAttribute('aria-pressed'), 'true');
     await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
     assert.equal(await story.getByTestId('evidence-range').innerText(), selectedEvidence);
@@ -944,7 +972,7 @@ try {
     await story.getByText('DogsController.remove가 요청을 받아요 → DogsService.remove에 넘겨요', { exact: true }).waitFor();
     assert.match(await story.innerText(), /타입으로 찾음/);
     await story.getByRole('button', { name: '5단계', exact: true }).click();
-    await story.getByText('5 / 6 · 서버 처리', { exact: true }).waitFor();
+    await story.getByText('5 / 7 · 서버 처리', { exact: true }).waitFor();
     const stops = story.getByRole('region', { name: '다른 경우', exact: true });
     await stops.getByRole('heading', { name: '다른 경우 1개', exact: true }).waitFor();
     await stops.getByRole('button', { name: '이 줄 보기', exact: true }).click();
@@ -958,23 +986,33 @@ try {
     const sixth = story.getByRole('button', { name: '6단계', exact: true });
     assert.equal(await sixth.innerText(), '⑥');
     await sixth.click();
-    await story.getByText('6 / 6 · 저장소', { exact: true }).waitFor();
+    await story.getByText('6 / 7 · 저장소', { exact: true }).waitFor();
     await story.getByRole('heading', { name: '저장소(DB)를 써요', exact: true }).waitFor();
     const storage = story.getByRole('region', { name: '저장소 호출', exact: true });
     await storage.getByRole('button', { name: '이 줄 보기', exact: true }).first().click();
     await until(async () => /api\/service.ts · 4–4줄/.test(await story.getByTestId('evidence-range').innerText()));
     assert.equal(await page.getByRole('button', { name: '흐름 따라가기', exact: true }).getAttribute('aria-current'), 'page');
-    assert.equal(await story.getByRole('button', { name: '다음 ▶', exact: true }).isDisabled(), true);
+    assert.equal(await story.getByRole('button', { name: '다음 ▶', exact: true }).isDisabled(), false);
     await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
     assert.match(await story.getByTestId('evidence-range').innerText(), /api\/service.ts/);
+    await story.getByRole('button', { name: '7단계', exact: true }).click();
+    await story.getByText('7 / 7 · 화면 결과', { exact: true }).waitFor();
+    const after = story.getByRole('region', { name: '응답 뒤 화면', exact: true });
+    await after.getByText('저장해 둔 데이터 바로 바꾸기', { exact: false }).waitFor();
+    await after.getByRole('button', { name: '이 줄 보기', exact: true }).click();
+    await until(async () => /web\/lib\/dogs.ts · 1–1줄/.test(await story.getByTestId('evidence-range').innerText()));
+    await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
+    await story.getByTestId('flow-code').locator('.cm-content').focus();
+    await until(async () => await page.evaluate(() => getSelection()?.toString()) === 'queryClient.setQueryData(key, dogs => dogs.filter(dog => dog.id !== id))');
+    assert.equal(await story.getByRole('button', { name: '다음 ▶', exact: true }).isDisabled(), true);
     assert.equal(await page.getByTestId('question-scope').innerText(), scope);
     await story.getByRole('button', { name: '1단계', exact: true }).click();
-    await story.getByText('1 / 6 · 화면', { exact: true }).waitFor();
+    await story.getByText('1 / 7 · 화면', { exact: true }).waitFor();
     await story.getByRole('button', { name: '2단계', exact: true }).click();
-    await story.getByText('2 / 6 · 프론트 처리', { exact: true }).waitFor();
+    await story.getByText('2 / 7 · 프론트 처리', { exact: true }).waitFor();
     await story.getByRole('button', { name: '다른 기능 고르기', exact: true }).click();
     await route.click();
-    await story.getByText('1 / 6 · 화면', { exact: true }).waitFor();
+    await story.getByText('1 / 7 · 화면', { exact: true }).waitFor();
     const disclosure = page.locator('details').filter({ has: page.locator('summary', { hasText: /^전체 그림과 단계 보기$/ }) });
     assert.equal(await disclosure.getAttribute('open'), null);
     await disclosure.locator('summary').first().click();
@@ -1054,6 +1092,27 @@ try {
     assert.deepEqual(invalid.map(result => result.code), ['INVALID_REQUEST', 'INVALID_REQUEST', 'CHANGED', 'INVALID_REQUEST',
       'INVALID_REQUEST', 'INVALID_REQUEST', 'INVALID_REQUEST', 'CHANGED']);
   });
+  await check('Returned hook function: form event, inferred call and navigation result', async () => {
+    await dialogTo(loginFlowFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '로그인 흐름 프로젝트', exact: true }).waitFor();
+    await page.getByRole('region', { name: '기능 목록', exact: true }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+    const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
+    await story.getByText('화면 /login에서 입력 양식을 보내면 시작해요', { exact: true }).waitFor();
+    await story.getByRole('button', { name: '2단계', exact: true }).click();
+    await story.getByTestId('story-step').getByText('훅이 돌려준 login 함수를 불러요', { exact: false }).waitFor();
+    await story.getByRole('button', { name: '5단계', exact: true }).click();
+    await story.getByRole('heading', { name: '응답이 온 뒤 화면이 바뀌어요', exact: true }).waitFor();
+    const result = story.getByRole('region', { name: '응답 뒤 화면', exact: true });
+    await result.getByText('화면 /로 이동하기', { exact: false }).waitFor();
+    await result.getByRole('button', { name: '이 줄 보기', exact: true }).click();
+    await until(async () => /web\/app\/login\/page.tsx · 6–6줄/.test(await story.getByTestId('evidence-range').innerText()));
+    await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
+    assert.equal(await story.getByRole('button', { name: '다음 ▶', exact: true }).isDisabled(), true);
+    await story.getByTestId('flow-code').locator('.cm-content').focus();
+    await until(async () => await page.evaluate(() => getSelection()?.toString()) === "router.push('/')");
+    await page.screenshot({ path: path.join(artifacts, 'feature-flow-login-result.png') });
+  });
   await check('Flow walk keeps late responses out of code reading, retries failures and refuses changed code', async () => {
     await dialogTo(featureFlowFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
@@ -1088,7 +1147,7 @@ try {
     assert.equal(await page.getByTestId('source-editor').innerText(), beforeCode);
     await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
     const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
-    await story.getByText('1 / 6 · 화면', { exact: true }).waitFor();
+    await story.getByText('1 / 7 · 화면', { exact: true }).waitFor();
     assert.equal(await story.getByTestId('flow-code').count(), 0);
     await story.getByRole('button', { name: '이 단계 코드 보기', exact: true }).click();
     await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
@@ -1107,7 +1166,7 @@ try {
     await flowPage.getByRole('alert').getByText('시험용 흐름 찾기 실패', { exact: true }).waitFor();
     await follow.waitFor();
     await flowPage.getByRole('button', { name: '다시 시도', exact: true }).click();
-    await story.getByText('1 / 6 · 화면', { exact: true }).waitFor();
+    await story.getByText('1 / 7 · 화면', { exact: true }).waitFor();
     await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
     await story.getByRole('button', { name: '2단계', exact: true }).click();
     await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();

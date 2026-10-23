@@ -63,11 +63,12 @@ it('connects a Next screen, nested event, hook result, request, controller and s
   const reachable = new Set([node('DogsPage').id]);
   for (let i = 0; i < flow.nodes.length; i++) for (const edge of flow.edges) if (reachable.has(edge.from)) reachable.add(edge.to);
   expect(reachable.has(node('DogsService.remove').id)).toBe(true);
-  expect(flow.limited).toBe(false);
+  expect(flow.limited).toBe(true);
+  expect(flow.notes).toContain('여러 곳을 부르는 함수는 확인 창과 응답 뒤 할 일을 찾지 않았어요.');
   const story = storyOf(flow);
   expect(story.map(step => step.kind)).toEqual(['screen', 'front', 'request', 'handler', 'back', 'store']);
   // The click path, not DogList's direct hook call, even though DogList is deeper.
-  expect(story[0].text).toBe('화면 /dogs에서 onClick 동작이 일어나요');
+  expect(story[0].text).toBe('화면 /dogs에서 ‘삭제’ 버튼을 누르면 시작해요');
   expect(story[0].nodes.map(node => node.name)).toEqual(expect.arrayContaining(['DogsPage', 'DogList']));
   expect(story[1].text).toBe('removeDog → useDeleteDog → mutationFn 순서로 이어져요');
   expect(story[4].representative.name).toBe('DogsService.remove');
@@ -281,4 +282,298 @@ it('caps storage calls and keeps front and request nodes empty', async () => {
   for (const node of flow.nodes.filter(node => node.side !== 'back')) {
     expect(node).toMatchObject({ stops: [], stopsOmitted: 0, stores: [], storesOmitted: 0 });
   }
+});
+
+async function frontFixture(code: string) {
+  await put('server.ts', "@Controller('x') class C { @Get() get() {} }");
+  await put('client.tsx', code);
+  return (await analyze()).flow;
+}
+
+it.each([
+  ['<button onClick={() => send()}>삭제</button>', 'button', ['삭제']],
+  ['<button onClick={() => send()}>{busy ? "삭제 중…" : "삭제"}</button>', 'button', ['삭제 중…', '삭제']],
+  ["<button onClick={() => send()}>{kind === 'danger' ? '삭제' : '저장'}</button>", 'button', ['삭제', '저장']],
+  ['<button onClick={() => send()}>{busy && "저장 중"}</button>', 'button', ['저장 중']],
+  ['<button onClick={() => send()}>{busy ? (other ? "A" : "B") : "C"}</button>', 'button', ['A', 'B', 'C']],
+  ['<button aria-label="닫기" onClick={() => send()}><Icon/></button>', 'button', ['닫기']],
+  ["<button onClick={() => send()}>{t('x')}</button>", 'button', []],
+  ['<form onSubmit={() => send()}>이름 <button>보내기</button></form>', 'form', []],
+  ['<input onChange={() => send()} value="x"/>', 'input', ['x']],
+  ['<input onChange={() => send()} aria-label="이름" title="설명" value="x"/>', 'input', ['이름']],
+  ['<input onChange={() => send()} title="설명" value="x"/>', 'input', ['설명']],
+  ['<button onClick={() => send()}>모두 <span>삭제</span></button>', 'button', ['모두 삭제']],
+  ['<button onClick={() => send()}>{icon} 저장</button>', 'button', ['저장']],
+  ["<button onClick={() => send()}>모두 {busy ? '삭제' : '저장'}</button>", 'button', ['모두']],
+])('reads only visible control text: %s', async (jsx, tag, texts) => {
+  const flow = await frontFixture(`function send() { return fetch('/x'); } function Page() { return ${jsx}; }`);
+  expect(flow.nodes.find(node => node.event)?.control).toEqual({ tag, texts });
+});
+
+it('bounds control text and removes duplicate branches', async () => {
+  const long = '가'.repeat(35);
+  const flow = await frontFixture(`function Page() { return <button onClick={() => fetch('/x')}>{busy ? '${long}' : '${long}'}</button>; }`);
+  expect(flow.nodes.find(node => node.event)?.control?.texts).toEqual(['가'.repeat(30) + '…']);
+});
+
+it.each(['const handleSubmit = async () => { await send(); };', 'async function handleSubmit() { await send(); }'])('resolves a named JSX handler: %s', async handler => {
+  const flow = await frontFixture(`function send() { return fetch('/x'); } function Page() { ${handler} return <form onSubmit={handleSubmit}>이름</form>; }`);
+  const submit = flow.nodes.find(node => node.name === 'handleSubmit')!;
+  expect(submit).toMatchObject({ event: 'onSubmit', control: { tag: 'form', texts: [] } });
+  expect(flow.edges.find(edge => edge.from === submit.id)).toMatchObject({ kind: 'event' });
+});
+
+it('does not assign a shadowed handler or an unused event to a control', async () => {
+  const flow = await frontFixture(`function send() { return fetch('/x'); } function Page() {
+    function handleSubmit() { send(); } function Other(handleSubmit) { return <form onSubmit={handleSubmit}/>; }
+    return handleSubmit;
+  }`);
+  expect(flow.nodes.find(node => node.name === 'handleSubmit')).toMatchObject({ event: null, control: null });
+});
+
+it('does not assign a reassigned named handler to an event', async () => {
+  const flow = await frontFixture(`function Page() {
+    let handleSubmit = () => fetch('/x'); handleSubmit = other;
+    return <form onSubmit={handleSubmit}/>;
+  }`);
+  expect(flow.nodes.find(node => node.name === 'handleSubmit')).toMatchObject({ event: null, control: null });
+});
+
+it('does not infer an event from an object property name', async () => {
+  const flow = await frontFixture("const handlers = { onClick: () => fetch('/x') };");
+  expect(flow.nodes.filter(node => node.side === 'front')).toEqual([expect.objectContaining({ event: null, control: null })]);
+});
+
+it.each([
+  ["if (!confirm('정말?')) { return; }", '정말?'],
+  ['if (!(window.confirm(`${name}를 지울까요?`))) return;', '…를 지울까요?'],
+  ['if (!confirm(message)) return;', null],
+])('reads a first-statement confirmation: %s', async (guard, message) => {
+  const flow = await frontFixture(`function run() { ${guard} fetch('/x'); }`);
+  expect(flow.nodes.find(node => node.name === 'run')?.asks).toEqual([expect.objectContaining({ message,
+    site: expect.objectContaining({ text: guard }) })]);
+});
+
+it.each([
+  "if (!confirm('정말?')) return fetch('/x');",
+  "fetch('/x'); if (!confirm('정말?')) return;",
+  "try { if (!confirm('정말?')) return; fetch('/x'); } finally { clean(); }",
+  "const unused = () => { if (!confirm('정말?')) return; }; fetch('/x');",
+  "ready(); if (!confirm('정말?')) return; fetch('/x');",
+  "if (!confirm('정말?')) { ready(); return; } fetch('/x');",
+])('rejects confirmation shapes that cannot stop the whole function: %s', async body => {
+  const flow = await frontFixture(`function run() { ${body} }`);
+  expect(flow.nodes.find(node => node.name === 'run')?.asks).toEqual([]);
+});
+
+it('keeps only the first confirmation and clips its message', async () => {
+  const flow = await frontFixture(`function run() { ${Array.from({ length: 4 }, () => `if (!confirm('${'가'.repeat(90)}')) return;`).join(' ')} fetch('/x'); }`);
+  expect(flow.nodes.find(node => node.name === 'run')?.asks.map(ask => ask.message)).toEqual(['가'.repeat(80) + '…']);
+});
+
+it.each([
+  ['export const useAuth = () => ({ login });', 'const { login } = useAuth();', 'login', 'login'],
+  ['export function useAuth() { return { user, login }; }', 'const { login } = useAuth();', 'login', 'login'],
+  ['export function useAuth() { return { signIn: login }; }', 'const { signIn: enter } = useAuth();', 'enter', 'signIn'],
+  ['export function useAuth() { return { login: login }; }', 'const auth = useAuth();', 'auth.login', 'login'],
+])('follows returned functions through %s and %s', async (hook, binding, call, property) => {
+  await put('web/next.config.ts', 'export default {}');
+  await put('server.ts', "@Controller('x') class C { @Get() get() {} }");
+  await put('web/lib/auth.ts', "export function login() { return fetch('/x'); } export function direct() { return login(); }");
+  await put('web/lib/provider.ts', `import {login} from './auth'; ${hook}`);
+  await put('web/app/login/page.tsx', `import {useAuth} from '../../lib/provider'; export default function LoginPage() {
+    ${binding} const handleSubmit = async () => { try { await ${call}(); router.push('/'); } catch { setError('bad'); } finally { setPending(false); } };
+    return <form onSubmit={handleSubmit}>계정</form>;
+  }`);
+  const { flow } = await analyze();
+  const handler = flow.nodes.find(node => node.name === 'handleSubmit')!;
+  expect(flow.edges.find(edge => edge.from === handler?.id && edge.kind === 'hook')).toMatchObject({ sure: false, reasons: [`훅이 돌려준 ${property} 함수를 불러요`] });
+  expect(flow.nodes.find(node => node.name === 'LoginPage')?.screen).toBe('/login');
+  expect(handler).toMatchObject({ event: 'onSubmit', control: { tag: 'form', texts: [] } });
+  expect(handler.after.map(item => [item.when, item.action, item.target])).toEqual([
+    ['success', 'navigate', '/'], ['error', 'state', 'error'], ['settled', 'state', 'pending'],
+  ]);
+  expect(storyOf(flow)[0].text).toBe('화면 /login에서 입력 양식을 보내면 시작해요');
+  expect(storyOf(flow).at(-1)?.text).toBe('handleSubmit · 성공하면: 화면 /로 이동하기 · 실패하면: 화면 값 error 바꾸기 · 끝나면: 화면 값 pending 바꾸기');
+});
+
+it.each([
+  "import {login} from './other'; export function useAuth() { return {login}; }",
+  "import {login} from './auth'; export function useAuth() { login = other; return {login}; }",
+  "import {login} from './auth'; export function useAuth(login) { return {login}; }",
+  "import {login} from './auth'; export function factory() { return {login}; }",
+])('does not resolve a different, reassigned, shadowed or non-hook function: %s', async provider => {
+  await put('server.ts', "@Controller('x') class C { @Get() get() {} }");
+  await put('auth.ts', "export function login() { return fetch('/x'); }");
+  await put('other.ts', 'export function login() {}');
+  await put('provider.ts', provider);
+  await put('page.tsx', "import {useAuth, factory} from './provider'; function Page() { const {login} = useAuth(); const auth = factory(); function submit() { login(); auth.login(); } return <form onSubmit={submit}/>; }");
+  expect((await analyze()).flow.edges.filter(edge => edge.kind === 'hook')).toEqual([]);
+});
+
+it.each(['let {login} = useAuth(); login = other;', 'let auth = useAuth(); auth = other;'])('rejects reassigned returned bindings: %s', async binding => {
+  const flow = await frontFixture(`function login() { return fetch('/x'); } function useAuth() { return {login}; }
+    function Page() { ${binding} function submit() { login(); auth.login(); } return <form onSubmit={submit}/>; }`);
+  expect(flow.edges.filter(edge => edge.kind === 'hook')).toEqual([]);
+});
+
+it('reads only the request-body option object and preserves dog-walk cancel/cache callbacks', async () => {
+  const flow = await frontFixture(`function useDeleteDog() { return useMutation({ mutationFn: () => fetch('/x'),
+    onSuccess: async () => { await queryClient.cancelQueries({queryKey: key}); queryClient.setQueryData(key, dogs => dogs?.filter(dog => dog.id !== id)); },
+    onError: handleError, onSettled: () => { void toast.done(); }
+  }); }`);
+  expect(flow.nodes.find(node => node.name === 'useDeleteDog')?.after.map(item => [item.when, item.action, item.target])).toEqual([
+    ['success', 'cancel', null], ['success', 'cache', null], ['error', 'call', 'handleError'], ['settled', 'notify', null],
+  ]);
+});
+
+it('does not attach an onSuccess notification to the request sent inside onSuccess', async () => {
+  const flow = await frontFixture(`function useSave() { return useMutation({mutationFn: () => fetch('/save'), onSuccess: () => { toast('saved'); return fetch('/x'); }}); }`);
+  expect(flow.nodes.flatMap(node => node.after)).toEqual([]);
+});
+
+it('ignores unrelated option objects', async () => {
+  const flow = await frontFixture(`async function run() { const unrelated = {onSuccess: () => toast('wrong')}; await fetch('/x'); }`);
+  expect(flow.nodes.flatMap(node => node.after)).toEqual([]);
+});
+
+it('reads mutate options at the hook-result call', async () => {
+  const flow = await frontFixture(`function useSave() { return useMutation({mutationFn: () => fetch('/x')}); }
+    function Page() { const save = useSave(); function submit() { save.mutate(1, {onSuccess: () => router.replace('/done'), onError: fail}); } return <form onSubmit={submit}/>; }`);
+  expect(flow.nodes.find(node => node.name === 'submit')?.after.map(item => [item.when, item.action, item.target])).toEqual([
+    ['success', 'navigate', '/done'], ['error', 'call', 'fail'],
+  ]);
+});
+
+it.each([
+  ['queryClient.invalidateQueries()', 'refresh', null], ['queryClient.refetchQueries()', 'refresh', null],
+  ['queryClient.resetQueries()', 'refresh', null], ['refetch()', 'refresh', null], ['queryClient.setQueryData(key)', 'cache', null],
+  ['queryClient.cancelQueries()', 'cancel', null], ["router.push('/done')", 'navigate', '/done'],
+  ["router.replace(`/dogs/${id}`)", 'navigate', '/dogs/…'], ['navigate(path)', 'navigate', null],
+  ["redirect('/done')", 'navigate', '/done'], ['setError(error)', 'state', 'error'],
+  ["alert('ok')", 'notify', null], ["window.alert('ok')", 'notify', null], ["toast('ok')", 'notify', null],
+  ["toast.success('ok')", 'notify', null], ['other.push(path)', 'call', 'other.push(path)'],
+])('classifies response action %s', async (call, action, target) => {
+  const flow = await frontFixture(`async function run() { await fetch('/x'); ${call}; }`);
+  expect(flow.nodes.find(node => node.name === 'run')?.after).toEqual([expect.objectContaining({ when: 'success', action, target })]);
+});
+
+it('bounds after actions and excludes inner callback bodies', async () => {
+  const flow = await frontFixture(`async function run() { await fetch('/x'); const later = () => toast('hidden'); ${Array.from({ length: 8 }, (_, i) => `toast('${i}');`).join(' ')} }`);
+  const node = flow.nodes.find(node => node.name === 'run')!;
+  expect(node.after).toHaveLength(6);
+  expect(node.afterOmitted).toBe(2);
+  expect(node.after[0].site.text).toBe("toast('0')");
+});
+
+it.each([
+  "async function run() { await fetch('/x'); toast('a'); await fetch('/x'); }",
+  "async function run() { await fetch('/x'); if (!confirm('계속?')) return; await fetch('/y'); toast('b'); }",
+  "async function send() { return fetch('/x'); } async function run() { await send(); if (!confirm('계속?')) return; await send(); }",
+  "function a() { return fetch('/x'); } function b() { return fetch('/y'); } async function run() { if (!confirm('계속?')) return; await a(); await b(); toast('done'); }",
+  "function a() { return fetch('/x'); } function validate() {} async function run() { if (!confirm('계속?')) return; validate(); await a(); toast('done'); }",
+  "function a() { return fetch('/x'); } function c() { return fetch('/x'); } function b() { return c(); } async function run() { if (!confirm('계속?')) return; await a(); await b(); toast('done'); }",
+])('guards multiple call positions after graph completion: %s', async code => {
+  const flow = await frontFixture(code);
+  expect(flow.nodes.find(node => node.name === 'run')).toMatchObject({ asks: [], after: [], afterOmitted: 0 });
+  expect(flow.notes).toContain('여러 곳을 부르는 함수는 확인 창과 응답 뒤 할 일을 찾지 않았어요.');
+});
+
+it.each(['/x', '/y'])('rejects two request-body options even if only one request is in this graph: %s', async second => {
+  const flow = await frontFixture(`function useSave() { const a = useMutation({mutationFn: () => fetch('/x'), onSuccess: () => toast('a')}); return useMutation({mutationFn: () => fetch('${second}'), onSuccess: () => toast('b')}); }`);
+  expect(flow.nodes.find(node => node.name === 'useSave')?.after).toEqual([]);
+});
+
+it('rejects await-following actions when two returned functions are awaited', async () => {
+  const flow = await frontFixture(`function login() { return fetch('/x'); } function logout() { return fetch('/y'); }
+    function useAuth() { return {login, logout}; } function Page() { const {login, logout} = useAuth();
+      async function submit() { await login(); await logout(); router.push('/'); } return <form onSubmit={submit}/>; }`);
+  expect(flow.nodes.find(node => node.name === 'submit')?.after).toEqual([]);
+});
+
+it('reads the statement immediately after await without requiring whitespace', async () => {
+  const flow = await frontFixture("async function run(){await fetch('/x');toast('ok');}");
+  expect(flow.nodes.find(node => node.name === 'run')?.after.map(item => item.action)).toEqual(['notify']);
+});
+
+it('does not read inherited option names as response callbacks', async () => {
+  const flow = await frontFixture("function useSave() { return useMutation({mutationFn: () => fetch('/x'), constructor: () => toast('wrong'), toString: wrong}); }");
+  expect(flow.nodes.flatMap(node => node.after)).toEqual([]);
+});
+
+it('deduplicates callbacks also seen after await and ignores nested await expressions', async () => {
+  const flow = await frontFixture(`function useSave() { return useMutation({mutationFn: () => fetch('/x')}); }
+    function Page() { const save = useSave(); async function submit() {
+      const unused = async () => { await other(); };
+      await save.mutateAsync(1, {onSuccess: () => toast('saved')}); router.push('/');
+    } return <form onSubmit={submit}/>; }`);
+  expect(flow.nodes.find(node => node.name === 'submit')?.after.map(item => item.action)).toEqual(['notify', 'navigate']);
+});
+
+it('accepts a default imported function but rejects a reassigned export', async () => {
+  await put('server.ts', "@Controller('x') class C { @Get() get() {} }");
+  await put('auth.ts', "export default function login() { return fetch('/x'); }");
+  await put('provider.ts', "import enter from './auth'; export function useAuth() { return {login: enter}; }");
+  await put('page.tsx', 'import {useAuth} from "./provider"; function Page() { const {login} = useAuth(); const submit = () => login(); return <form onSubmit={submit}/>; }');
+  expect((await analyze()).flow.edges.filter(edge => edge.kind === 'hook')).toHaveLength(1);
+  await put('auth.ts', "export default function login() { return fetch('/x'); } login = other;");
+  expect((await analyze()).flow.edges.filter(edge => edge.kind === 'hook')).toEqual([]);
+});
+
+it('caps returned hooks at three and uses at three across properties of each hook', async () => {
+  const flow = await frontFixture(`function login() { return fetch('/x'); }
+    ${Array.from({ length: 4 }, (_, i) => `function useAuth${i}() { return {login, signIn: login}; }
+      function Page${i}() { const {login, signIn} = useAuth${i}(); function submit() { login(); signIn(); login(); signIn(); }
+        return <form onSubmit={submit}/>; }`).join('\n')}`);
+  const hooks = flow.edges.filter(edge => edge.kind === 'hook');
+  expect(hooks).toHaveLength(9);
+  expect(new Set(hooks.map(edge => edge.from)).size).toBe(3);
+  expect(flow.notes).toContain('돌려주는 훅은 함수마다 3개까지만 봐요.');
+  expect(flow.notes).toContain('훅 결과를 쓰는 곳은 훅마다 3개까지만 보여요.');
+});
+
+it('keeps returned properties tied to their functions when reusing a hook for multiple flow nodes', async () => {
+  const flow = await frontFixture(`function login() { return fetch('/x'); } function logout() { return fetch('/x'); }
+    function useAuth() { return {login, logout}; }
+    function Page() { const {login, logout} = useAuth();
+      function enter() { login(); } function leave() { logout(); }
+      return <><button onClick={enter}>로그인</button><button onClick={leave}>로그아웃</button></>;
+    }`);
+  expect(flow.edges.filter(edge => edge.kind === 'hook').map(edge => [
+    flow.nodes.find(node => node.id === edge.from)?.name,
+    flow.nodes.find(node => node.id === edge.to)?.name,
+  ])).toEqual([['enter', 'login'], ['leave', 'logout']]);
+});
+
+it('excludes hook users in test files and shadowed returned bindings', async () => {
+  await put('page.test.tsx', 'import {useAuth} from "./client"; function Page() { const {login} = useAuth(); function submit() { login(); } return <form onSubmit={submit}/>; }');
+  const flow = await frontFixture(`function login() { return fetch('/x'); } export function useAuth() { return {login}; }
+    function Page() { const {login} = useAuth(); function submit(login) { login(); } return <form onSubmit={submit}/>; }`);
+  expect(flow.edges.filter(edge => edge.kind === 'hook')).toEqual([]);
+});
+
+it('keeps a confirmation in the screen event step and response actions in the last step', async () => {
+  const flow = await frontFixture(`function send() { return fetch('/x'); }
+    function Page() { return <button onClick={async () => { if (!confirm('삭제?')) return; await send(); toast('done'); }}>삭제</button>; }`);
+  const steps = storyOf(flow);
+  expect(steps[0].asks.items.map(ask => ask.message)).toEqual(['삭제?']);
+  expect(steps[1].asks.items).toEqual([]);
+  expect(steps.at(-1)?.afterGroups.groups[0].items.map(item => item.action)).toEqual(['notify']);
+});
+
+it('keeps non-front screen facts empty', async () => {
+  const flow = await frontFixture("function run() { return fetch('/x'); }");
+  for (const node of flow.nodes.filter(node => node.side !== 'front')) expect(node).toMatchObject({ control: null, asks: [], after: [], afterOmitted: 0 });
+});
+
+it.each(['() => handleSuccess', 'createCallback()'])('does not mistake callback setup or a returned value for a response action: %s', callback => {
+  return frontFixture(`function useSave() { return useMutation({mutationFn: () => fetch('/x'), onSuccess: ${callback}}); }`)
+    .then(flow => expect(flow.nodes.flatMap(node => node.after)).toEqual([]));
+});
+
+it('reads queryFn options and uses the first line for an unknown action', async () => {
+  const flow = await frontFixture(`function useLoad() { return useQuery({queryFn: () => fetch('/x'), onSuccess: () => unknownAction(
+    first, second
+  )}); }`);
+  expect(flow.nodes.find(node => node.name === 'useLoad')?.after).toEqual([expect.objectContaining({ action: 'call', target: 'unknownAction( …' })]);
 });
