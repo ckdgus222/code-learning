@@ -698,6 +698,11 @@ function App() {
     if (!node) return;
     await readSiteRange(siteOf(node), '흐름을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 주소를 다시 찾아 주세요.');
   }
+  async function showFlowSite(nodeId: string, site: ValueSite) {
+    if (currentBusy.current) return;
+    features.setSite(nodeId, site);
+    await readSiteRange(site, '흐름을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 주소를 다시 찾아 주세요.');
+  }
   async function followFeatureRoute(routeIndex: number) {
     if (currentBusy.current) return;
     setView('flow');
@@ -872,8 +877,9 @@ function App() {
             codeName={codeNameOf(features.routes.routes[features.flow.routeIndex])} walk={features.walk} selection={features.selection}
             setStory={id => void showFlowNode(features.setStory(id))} setStep={index => void showFlowNode(features.setStep(index))}
             setNode={id => void showFlowNode(features.setNode(id))} locked={busy} stale={features.stale}
-            onChoose={features.clearFlow} onCode={site => void showValueSite(site)} onFunction={target => void showCallFunction(target)}>
-            {features.currentNode && (source && evidence && hasFlowCode(source, evidence, features.currentNode)
+            onChoose={features.clearFlow} onCode={site => void showValueSite(site)} onSite={(id, site) => void showFlowSite(id, site)}
+            onFunction={target => void showCallFunction(target)}>
+            {features.currentNode && (source && evidence && hasFlowCode(source, evidence, features.currentNode, features.walk.site)
               ? <div className="code flow-walk-code" data-testid="flow-code">
                 <p className="evidence" data-testid="evidence-range">근거: {source.relativePath} · {evidence.startLine}–{evidence.endLine}줄 · UTF-16 [{evidence.startUtf16}, {evidence.endUtf16})</p>
                 <Reader source={source} evidence={evidence} codeSize={codeSize} wrap={wrap}

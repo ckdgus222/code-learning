@@ -6,7 +6,7 @@ import { layoutFlow } from './flow-layout';
 import { isNextConfig, nextRouteOf } from '../core/analysis/next-routes';
 import type { ConnectionReport, FeatureGuide, FeatureGuideResult, LearningMode } from '../shared/ai';
 import { FeatureGuideCard } from './feature-guide';
-import { codeNameOf, groupNameOf, storyOf } from '../core/analysis/flow-story';
+import { codeNameOf, groupNameOf, stopText, storeText, storyOf } from '../core/analysis/flow-story';
 
 export const siteOf = (node: FlowNode): ValueSite => ({ fileId: node.fileId, fileHash: node.fileHash, ...node.range, text: node.name });
 const targetOf = (node: FlowNode): CallTarget => ({ fileId: node.fileId, fileHash: node.fileHash, ...node.range, name: node.name });
@@ -26,8 +26,9 @@ export interface Walk {
   storyId: string | null;
   step: number;
   nodeId: string | null;
+  site: ValueSite | null;
 }
-const firstWalk: Walk = { storyId: null, step: 0, nodeId: null };
+const firstWalk: Walk = { storyId: null, step: 0, nodeId: null, site: null };
 
 export type WalkSelection = ReturnType<typeof walkSelection>;
 export function walkSelection(flow: FeatureFlow | null, walk: Walk) {
@@ -40,18 +41,35 @@ export function walkSelection(flow: FeatureFlow | null, walk: Walk) {
   return { stories, storyId, steps, step, currentNode };
 }
 
-export function hasFlowCode(source: Pick<SourceView, 'fileId' | 'hash'> | null, evidence: Evidence | null, node: FlowNode): boolean {
-  return !!source && !!evidence && source.fileId === node.fileId && source.hash === node.fileHash
-    && evidence.fileId === node.fileId && evidence.fileHash === node.fileHash
-    && evidence.startUtf16 === node.range.startUtf16 && evidence.endUtf16 === node.range.endUtf16
-    && evidence.startLine === node.range.startLine && evidence.endLine === node.range.endLine;
+export function hasFlowCode(source: Pick<SourceView, 'fileId' | 'hash'> | null, evidence: Evidence | null,
+  node: FlowNode, site: ValueSite | null = null): boolean {
+  const target = site ?? siteOf(node);
+  return !!source && !!evidence && source.fileId === target.fileId && source.hash === target.fileHash
+    && evidence.fileId === target.fileId && evidence.fileHash === target.fileHash
+    && evidence.startUtf16 === target.startUtf16 && evidence.endUtf16 === target.endUtf16
+    && evidence.startLine === target.startLine && evidence.endLine === target.endLine;
+}
+
+function SiteList({ items, omitted, disabled, onSite }: {
+  items: { nodeId: string; site: ValueSite; text: string; hint: React.ReactNode }[];
+  omitted: number; disabled: boolean; onSite(nodeId: string, site: ValueSite): void;
+}) {
+  return <>
+    <ul className="map-list">{items.map(item => <li key={`${item.nodeId}:${item.site.fileId}:${item.site.startUtf16}`}>
+      {item.text}{' '}
+      <button className="btn btn--small" disabled={disabled} onClick={() => onSite(item.nodeId, item.site)}>이 줄 보기</button>
+      {item.hint !== null && <p className="hint">{item.hint}</p>}
+    </li>)}</ul>
+    {omitted > 0 && <p className="hint">외 {omitted}개 더</p>}
+  </>;
 }
 
 export function FlowWalk({ flow, title, about, codeName, walk, selection, setStory, setStep, setNode, locked, stale,
-  onFunction, onCode, onChoose, children }: {
+  onFunction, onCode, onSite, onChoose, children }: {
   flow: FeatureFlow; title: string; about?: string; codeName: string; walk: Walk; selection: WalkSelection;
   setStory(id: string): void; setStep(index: number): void; setNode(id: string): void;
   locked: boolean; stale: boolean; onFunction(target: CallTarget): void; onCode(site: ValueSite): void;
+  onSite(nodeId: string, site: ValueSite): void;
   onChoose(): void; children?: React.ReactNode;
 }) {
   const { stories, storyId, steps, step, currentNode } = selection;
@@ -72,12 +90,34 @@ export function FlowWalk({ flow, title, about, codeName, walk, selection, setSto
       <nav aria-label="이야기 단계" className="flow-nav">
         <button className="btn" disabled={disabled || walk.step === 0} onClick={() => setStep(walk.step - 1)}>◀ 이전</button>
         {steps.map((item, index) => <button key={item.kind} className="btn" disabled={disabled}
-          aria-current={index === walk.step ? 'step' : undefined} onClick={() => setStep(index)}>{['①', '②', '③', '④', '⑤'][index]}</button>)}
+          aria-label={`${index + 1}단계`} aria-current={index === walk.step ? 'step' : undefined}
+          onClick={() => setStep(index)}>{String.fromCodePoint(0x2460 + index)}</button>)}
         <button className="btn" disabled={disabled || walk.step === steps.length - 1} onClick={() => setStep(walk.step + 1)}>다음 ▶</button>
       </nav>
       <article className="card" data-testid="story-step" data-kind={step.kind}>
         <p>{walk.step + 1} / {steps.length} · {step.label}</p>
         <h3>{step.title}</h3><p>{step.text}</p>
+        {(step.stops.items.length > 0 || step.stops.omitted > 0) && <section aria-label="다른 경우">
+          <h4>다른 경우 {step.stops.items.length + step.stops.omitted}개</h4>
+          <SiteList items={step.stops.items.map(stop => ({ nodeId: stop.nodeId, site: stop.site, text: stopText(stop),
+            hint: stop.condition !== null ? <>조건(코드): <code>{stop.condition}</code></> : null }))}
+            omitted={step.stops.omitted} disabled={disabled} onSite={onSite} />
+          <p className="hint">코드에 적힌 오류예요. 다른 곳에서 이 오류를 잡아 계속 진행하는지는 확인하지 않았어요.</p>
+        </section>}
+        {step.storeGroups.groups.length > 0 && <section aria-label="저장소 호출">
+          {step.storeGroups.groups.map((group, index) => <section key={group.node.id}>
+            <h4>{group.node.name}</h4>
+            <SiteList items={group.items.map(store => ({ nodeId: group.node.id, site: store.site, text: storeText(store),
+              hint: <code>{store.site.text.replace(/\s+/g, ' ')}</code> }))}
+              omitted={index === step.storeGroups.groups.length - 1 ? step.storeGroups.omitted : 0} disabled={disabled} onSite={onSite} />
+          </section>)}
+          <p className="hint">Prisma 호출 모양으로 찾았어요. 함수 안에서는 코드에 적힌 순서이고, 조건에 따라 일부만 실행될 수 있어요.</p>
+          {step.storeGroups.groups.length > 1 && <p className="hint">함수끼리 어떤 순서로 실행되는지는 확인하지 않았어요.</p>}
+        </section>}
+        {step.outside.items.length > 0 && <details><summary>코드에서 부르는 다른 것 {step.outside.items.length + step.outside.omitted}개</summary>
+          <ul className="map-list">{step.outside.items.map((text, index) => <li key={index}><code>{text}</code></li>)}</ul>
+          {step.outside.omitted > 0 && <p className="hint">외 {step.outside.omitted}개 더</p>}
+        </details>}
         {step.inferred && <p><span className="tag tag--unknown">추정</span> {step.reasons.join(' · ')}</p>}
         {step.typed && <p><span className="tag tag--doc">타입으로 찾음</span></p>}
         {step.stopped && <p>서로 부르는 함수가 있어 여기서 멈췄어요</p>}
@@ -376,9 +416,10 @@ export function useFeatureFlows(project: ProjectView | null, revision: number) {
   return { routes, finding, stale, error, search, setSearch, guide, setGuideResult, groups, flow, following, selected, walk,
     selection, currentNode: selection.currentNode, selectedFeature,
     start, find, cancelFind, follow, cancelFollow, clearFlow,
-    setStory: (storyId: string) => changeWalk({ storyId, step: 0, nodeId: null }),
-    setStep: (step: number) => changeWalk({ ...walk, step, nodeId: null }),
-    setNode: (nodeId: string) => changeWalk({ ...walk, nodeId }),
+    setStory: (storyId: string) => changeWalk({ storyId, step: 0, nodeId: null, site: null }),
+    setStep: (step: number) => changeWalk({ ...walk, step, nodeId: null, site: null }),
+    setSite: (nodeId: string, site: ValueSite) => changeWalk({ ...walk, nodeId, site }),
+    setNode: (nodeId: string) => changeWalk({ ...walk, nodeId, site: null }),
   };
 }
 
@@ -482,7 +523,7 @@ export function FlowLimits({ project, routes, flow, locked, onCode }: {
   return <>
     <p className="hint">코드 글자로 찾은 흐름이에요. 실행 순서나 실제 요청을 확인한 것은 아니에요. AI 정리는 동의한 목록만 보내요.</p>
     <details className="card"><summary>찾은 범위와 한계</summary>
-      <p>TS/JS의 NestJS·Next API·Express 주소와 fetch·axios 요청을 찾아요. 다른 언어·서버 방식과 app.use의 주소 연결·경로 별칭은 따라가지 않아요. 추정은 확실한 연결 수에 넣지 않아요.</p>
+      <p>TS/JS의 NestJS·Next API·Express 주소와 fetch·axios 요청을 찾아요. 다른 언어·서버 방식과 app.use의 주소 연결·경로 별칭은 따라가지 않아요. 추정은 확실한 연결 수에 넣지 않아요. 실패는 throw new …만, 저장소는 Prisma 모양만 찾아요.</p>
       {(routes?.limited || flow?.limited) && <p>일부 흐름만 확인했어요.</p>}
       {[...new Set([...(routes?.notes ?? []), ...(flow?.notes ?? [])])].map(note => <p key={note} className="hint">{note}</p>)}
     </details>

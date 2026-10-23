@@ -1,7 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it } from 'vitest';
-import { FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowSteps, FlowWalk, hasFlowCode, RoutesStatus, walkSelection } from '../src/renderer/feature-flow';
+import { FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowSteps, FlowWalk, hasFlowCode, RoutesStatus, useFeatureFlows, walkSelection } from '../src/renderer/feature-flow';
 import type { Evidence, FeatureFlow, FlowNode, ProjectRoutes, ProjectView } from '../src/shared/contracts';
 import type { FeatureGuide } from '../src/shared/ai';
 
@@ -11,7 +11,7 @@ const nodes: FlowNode[] = [
   { id: 'event', side: 'front', depth: 1, name: 'onClick 함수', event: 'onClick' },
   { id: 'screen', side: 'front', depth: 2, name: 'DogsPage', screen: '/dogs' },
 ].map(node => ({ fileId: 'f', fileHash: 'h', relativePath: 'src/example.ts', range: { startUtf16: 0, endUtf16: 10, startLine: 1, endLine: 1 },
-  event: null, screen: null, outside: [], outsideOmitted: 0, ...node } as FlowNode));
+  event: null, screen: null, outside: [], outsideOmitted: 0, stops: [], stopsOmitted: 0, stores: [], storesOmitted: 0, ...node } as FlowNode));
 const flow: FeatureFlow = { projectId: 'p', routesId: 'r', routeIndex: 0, nodes, limited: false, notes: [], edges: [
   { from: 'screen', to: 'event', kind: 'inside', sure: true, reasons: [], site: null },
   { from: 'event', to: 'request', kind: 'hook', sure: false, reasons: ['훅이 돌려준 값 remove를 써요'], site: null },
@@ -55,8 +55,8 @@ it('highlights the selected node in each request group without marking other ste
 });
 
 const walkProps = {
-  title: '삭제', codeName: '지우기 · /dogs', walk: { storyId: null, step: 0, nodeId: null },
-  locked: false, stale: false, setStory() {}, setStep() {}, setNode() {}, onCode() {}, onFunction() {}, onChoose() {},
+  title: '삭제', codeName: '지우기 · /dogs', walk: { storyId: null, step: 0, nodeId: null, site: null },
+  locked: false, stale: false, setStory() {}, setStep() {}, setNode() {}, onSite() {}, onCode() {}, onFunction() {}, onChoose() {},
 };
 // In the app the hook works the selection out; here it is worked out the same way from the props.
 const walkOf = (props: Omit<Parameters<typeof FlowWalk>[0], 'selection'>) =>
@@ -101,7 +101,7 @@ it('chooses between requests and folds other callers into the same story', () =>
   expect(html).toContain('otherCaller');
 });
 it('shows the selected function and disables next on the last step', () => {
-  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow, walk: { storyId: 'request', step: 0, nodeId: 'screen' } }));
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow, walk: { storyId: 'request', step: 0, nodeId: 'screen', site: null } }));
   expect(html).toMatch(/aria-pressed="true">DogsPage/);
   const last = renderToStaticMarkup(walkOf({ ...walkProps, flow, walk: { ...walkProps.walk, step: 2 } }));
   expect(last).toMatch(/disabled="">다음 ▶/);
@@ -116,8 +116,8 @@ it('shows a failure with an enabled retry and escapes the message', () => {
   expect(html).toContain('>다시 시도</button>');
   expect(html).not.toContain('disabled');
 });
-it('shows code only for an exactly matching file, hash and evidence range', () => {
-  const node = nodes[0];
+it('shows code only for the exact node range, file and hash', () => {
+  const node = { ...nodes[0], range: { startUtf16: 10, endUtf16: 100, startLine: 2, endLine: 10 } };
   const source = { fileId: node.fileId, hash: node.fileHash };
   const evidence: Evidence = { id: 'e', projectId: 'p', fileId: node.fileId, fileHash: node.fileHash, ...node.range };
   expect(hasFlowCode(source, evidence, node)).toBe(true);
@@ -125,9 +125,133 @@ it('shows code only for an exactly matching file, hash and evidence range', () =
   expect(hasFlowCode(source, null, node)).toBe(false);
   expect(hasFlowCode({ ...source, fileId: 'other' }, evidence, node)).toBe(false);
   expect(hasFlowCode({ ...source, hash: 'other' }, evidence, node)).toBe(false);
-  for (const field of ['fileId', 'fileHash', 'startUtf16', 'endUtf16', 'startLine', 'endLine'] as const) {
-    expect(hasFlowCode(source, { ...evidence, [field]: typeof evidence[field] === 'number' ? Number(evidence[field]) + 1 : 'other' }, node)).toBe(false);
+  expect(hasFlowCode(source, { ...evidence, startUtf16: 20, endUtf16: 50, startLine: 3, endLine: 5 }, node)).toBe(false);
+  for (const change of [{ fileId: 'other' }, { fileHash: 'other' }, { startUtf16: 9 }, { endUtf16: 101 },
+    { startLine: 1 }, { endLine: 11 }, { startUtf16: 11 }, { endUtf16: 99 }, { startLine: 3 }, { endLine: 9 }, { startUtf16: 101, endUtf16: 110 }, { startUtf16: 1, endUtf16: 9 }]) {
+    expect(hasFlowCode(source, { ...evidence, ...change }, node)).toBe(false);
   }
+});
+
+it('shows a selected site only when every evidence coordinate, file and hash matches', () => {
+  const node = { ...nodes[0], range: { startUtf16: 10, endUtf16: 100, startLine: 2, endLine: 10 } };
+  const source = { fileId: node.fileId, hash: node.fileHash };
+  const site = { fileId: node.fileId, fileHash: node.fileHash, startUtf16: 20, endUtf16: 50, startLine: 3, endLine: 5, text: 'throw' };
+  const evidence: Evidence = { id: 'e', projectId: 'p', ...site };
+  expect(hasFlowCode(source, evidence, node)).toBe(false);
+  expect(hasFlowCode(source, evidence, node, site)).toBe(true);
+  expect(hasFlowCode(source, { ...evidence, ...node.range }, node, site)).toBe(false);
+  expect(hasFlowCode(null, evidence, node, site)).toBe(false);
+  expect(hasFlowCode(source, null, node, site)).toBe(false);
+  expect(hasFlowCode({ ...source, fileId: 'other' }, evidence, node, site)).toBe(false);
+  expect(hasFlowCode({ ...source, hash: 'other' }, evidence, node, site)).toBe(false);
+  for (const change of [{ fileId: 'other' }, { fileHash: 'other' }, { startUtf16: 21 }, { endUtf16: 49 },
+    { startLine: 4 }, { endLine: 4 }]) {
+    expect(hasFlowCode(source, { ...evidence, ...change }, node, site)).toBe(false);
+  }
+});
+
+it('hides inner function evidence after selecting its enclosing function', () => {
+  const inner = { ...nodes[2], range: { startUtf16: 20, endUtf16: 50, startLine: 3, endLine: 5 } };
+  const outer = { ...nodes[3], range: { startUtf16: 10, endUtf16: 100, startLine: 2, endLine: 10 } };
+  const nested = { ...flow, nodes: [nodes[0], nodes[1], inner, outer] };
+  const source = { fileId: inner.fileId, hash: inner.fileHash };
+  const evidence: Evidence = { id: 'e', projectId: 'p', fileId: inner.fileId, fileHash: inner.fileHash, ...inner.range };
+  const selected = walkSelection(nested, { ...walkProps.walk, nodeId: inner.id });
+  expect(hasFlowCode(source, evidence, selected.currentNode!)).toBe(true);
+  const changed = walkSelection(nested, { ...walkProps.walk, nodeId: outer.id });
+  expect(changed.currentNode).toBe(outer);
+  expect(hasFlowCode(source, evidence, changed.currentNode!, null)).toBe(false);
+});
+
+it.each(['step', 'node', 'story'] as const)('clears the selected site when changing the %s', change => {
+  const site = { fileId: 'f', fileHash: 'h', startUtf16: 1, endUtf16: 2, startLine: 1, endLine: 1, text: 'throw' };
+  const walks: ReturnType<typeof useFeatureFlows>['walk'][] = [];
+  function Harness() {
+    const features = useFeatureFlows(null, 0);
+    const [phase, setPhase] = React.useState(0);
+    walks.push(features.walk);
+    if (phase === 0) {
+      features.setSite('back', site);
+      setPhase(1);
+    }
+    if (phase === 1) {
+      if (change === 'step') features.setStep(1);
+      if (change === 'node') features.setNode('screen');
+      if (change === 'story') features.setStory('request');
+      setPhase(2);
+    }
+    return null;
+  }
+  renderToStaticMarkup(React.createElement(Harness));
+  expect(walks).toHaveLength(3);
+  expect(walks[0]).toEqual({ storyId: null, step: 0, nodeId: null, site: null });
+  expect(walks[1]).toEqual({ storyId: null, step: 0, nodeId: 'back', site });
+  expect(walks[2].site).toBeNull();
+  if (change === 'step') expect(walks[2]).toMatchObject({ step: 1, nodeId: null });
+  if (change === 'node') expect(walks[2]).toMatchObject({ nodeId: 'screen' });
+  if (change === 'story') expect(walks[2]).toMatchObject({ storyId: 'request', step: 0, nodeId: null });
+});
+
+it('renders written errors, easy names, conditions and omitted counts without claiming execution stopped', () => {
+  const site = { fileId: 'f', fileHash: 'h', startUtf16: 1, endUtf16: 2, startLine: 1, endLine: 1, text: 'throw' };
+  const kinds = ['NotFoundException', 'BadRequestException', 'UnauthorizedException', 'ForbiddenException',
+    'ConflictException', 'UnprocessableEntityException', 'InternalServerErrorException', 'CustomError', 'toString'];
+  const backend = { ...nodes[0], stops: kinds.map((kind, index) => ({ kind,
+    message: index === 0 ? '<찾지 못함>' : null, condition: index === 0 ? '!dog' : null, site: { ...site, startUtf16: index } })), stopsOmitted: 2 };
+  const changed = { ...flow, nodes: [backend], edges: [] };
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: changed }));
+  expect(html).toContain('aria-label="다른 경우"');
+  expect(html).toContain('다른 경우 11개');
+  expect(html).toContain('“&lt;찾지 못함&gt;” 오류를 내요 (찾을 수 없음)');
+  for (const label of ['잘못된 요청', '로그인 필요', '권한 없음', '충돌', '처리할 수 없는 내용', '서버 오류']) expect(html).toContain(`(${label})`);
+  expect(html).toContain('CustomError 오류를 내요');
+  expect(html).not.toContain('CustomError 오류를 내요 (');
+  expect(html).not.toContain('toString 오류를 내요 (');
+  expect(html.match(/조건\(코드\):/g)).toHaveLength(1);
+  expect(html).toContain('<code>!dog</code>');
+  expect(html).toContain('외 2개 더');
+  expect(html).toContain('코드에 적힌 오류예요. 다른 곳에서 이 오류를 잡아 계속 진행하는지는 확인하지 않았어요.');
+  expect(html).not.toContain('멈춰요');
+  expect(html.match(/>이 줄 보기<\/button>/g)).toHaveLength(kinds.length);
+  const locked = renderToStaticMarkup(walkOf({ ...walkProps, flow: changed, locked: true }));
+  expect(locked.match(/<button[^>]*>이 줄 보기<\/button>/g)!.every(button => button.includes('disabled=""'))).toBe(true);
+});
+
+it('shows storage groups with the same name separately and explains code order and omissions', () => {
+  const site = { fileId: 'f', fileHash: 'h', startUtf16: 1, endUtf16: 2, startLine: 1, endLine: 1, text: 'prisma.dog.\nupsert()' };
+  const changed: FeatureFlow = { ...flow, edges: [], nodes: [
+    { ...nodes[0], name: 'save', stores: [{ model: 'dog', action: 'upsert', site }], storesOmitted: 3 },
+    { ...nodes[0], id: 'service', depth: 1, name: 'save', stores: [{ model: null, action: 'raw', site: { ...site, fileId: 'other', text: 'prisma.$queryRaw`SQL`' } }] },
+  ] };
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: changed, walk: { ...walkProps.walk, step: 2 }, locked: true }));
+  expect(html).toContain('aria-label="저장소 호출"');
+  expect(html.match(/<h4>save<\/h4>/g)).toHaveLength(2);
+  expect(html).toContain('dog 없으면 새로 저장하고 있으면 바꾸기');
+  expect(html).toContain('SQL 직접 실행');
+  expect(html).toContain('<code>prisma.dog. upsert()</code>');
+  expect(html).toContain('외 3개 더');
+  expect(html).toContain('Prisma 호출 모양으로 찾았어요. 함수 안에서는 코드에 적힌 순서이고, 조건에 따라 일부만 실행될 수 있어요.');
+  expect(html).toContain('함수끼리 어떤 순서로 실행되는지는 확인하지 않았어요.');
+  expect(html.match(/<button[^>]*>이 줄 보기<\/button>/g)!.every(button => button.includes('disabled=""'))).toBe(true);
+});
+
+it('renders the sixth step button and folded outside calls with their total count', () => {
+  const site = { fileId: 'f', fileHash: 'h', startUtf16: 1, endUtf16: 2, startLine: 1, endLine: 1, text: 'prisma.dog.delete()' };
+  const changed: FeatureFlow = { ...flow, nodes: [...nodes,
+    { ...nodes[2], id: 'prepare', name: 'prepare', event: null },
+    { ...nodes[0], id: 'service', depth: 1, outside: ['external()'], outsideOmitted: 4, stores: [{ model: 'dog', action: 'delete', site }] },
+  ], edges: [flow.edges[0], { ...flow.edges[1], to: 'prepare' }, { ...flow.edges[1], from: 'prepare' }, flow.edges[2],
+    { ...flow.edges[0], from: 'back', to: 'service' }] };
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: changed, walk: { ...walkProps.walk, step: 4 } }));
+  expect(html).toContain('5 / 6 · 서버 처리');
+  expect(html).toContain('aria-label="6단계">⑥</button>');
+  expect(html).toContain('<details><summary>코드에서 부르는 다른 것 5개</summary>');
+  expect(html).toContain('외 4개 더');
+  expect(html).not.toContain('<details open');
+  const last = renderToStaticMarkup(walkOf({ ...walkProps, flow: changed, walk: { ...walkProps.walk, step: 5 } }));
+  expect(last).toContain('6 / 6 · 저장소');
+  expect(last).toContain('aria-label="6단계" aria-current="step">⑥</button>');
+  expect(last).not.toContain('함수끼리 어떤 순서로 실행되는지는 확인하지 않았어요.');
 });
 const project = {
   files: [
