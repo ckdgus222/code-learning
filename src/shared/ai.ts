@@ -93,6 +93,9 @@ export const explanationSchema = z.object({
     z.object({ kind: z.literal('concept'), text: description }).strict(),
   ])).min(1).max(64),
   terms: z.array(z.object({ term: z.string().trim().min(1).max(160), meaning: description }).strict()).max(32),
+  examples: z.array(z.object({
+    given: z.string().trim().min(1).max(300), result: description, evidenceIds: references,
+  }).strict()).max(3),
   unknowns: z.array(description).max(32),
 }).strict();
 export type Explanation = z.infer<typeof explanationSchema>;

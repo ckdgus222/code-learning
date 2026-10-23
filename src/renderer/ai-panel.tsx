@@ -239,6 +239,17 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
         <h4>낱말 풀이</h4>
         <dl>{answer.explanation.terms.map((term, index) => <React.Fragment key={index}><dt>{term.term}</dt><dd>{term.meaning}</dd></React.Fragment>)}</dl>
       </section>}
+      {answer.explanation.examples.length > 0 && <section aria-label="예시로 따라가기">
+        <h4>예시로 따라가기</h4>
+        <p className="hint">코드를 실제로 실행한 결과가 아니에요. AI가 코드를 읽고 만든 가상의 값이에요.</p>
+        <ol>{answer.explanation.examples.map((example, index) => <li key={index}>
+          <span className="tag tag--unknown">가상의 예시 · 실행하지 않음</span>
+          <p><b>예를 들어 {example.given}</b></p>
+          <p>→ {example.result}</p>
+          <SourceButtons ids={example.evidenceIds} sources={answer.sources} selectionId={answer.evidence.id} stale={stale}
+            label={`예시 ${index + 1}의 근거`} onEvidence={onEvidence} />
+        </li>)}</ol>
+      </section>}
       <details>
         <summary>자세히 보기 · 단계 {answer.explanation.steps.length}개 · 설명 {answer.explanation.claims.length}개</summary>
         <ol>{answer.explanation.steps.map((step, index) => <li key={index}>

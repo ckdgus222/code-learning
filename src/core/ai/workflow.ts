@@ -41,7 +41,8 @@ interface Job { kind: 'feature-guide' | 'other'; id: string; projectId: string; 
 function checkReferences(explanation: Explanation, snapshot: EvidenceSnapshot) {
   const allowed = new Set([snapshot.evidence.id, ...snapshot.files.map(file => file.evidence.id)]);
   const ids = [...explanation.steps.flatMap(step => step.evidenceIds),
-    ...explanation.claims.flatMap(claim => claim.kind === 'code' ? claim.evidenceIds : [])];
+    ...explanation.claims.flatMap(claim => claim.kind === 'code' ? claim.evidenceIds : []),
+    ...explanation.examples.flatMap(example => example.evidenceIds)];
   if (!ids.length || ids.some(id => !allowed.has(id))) {
     throw new AppError('AI_RESPONSE', '설명에 현재 코드에서 확인할 수 없는 근거가 있습니다.');
   }
@@ -340,6 +341,10 @@ export class LocalWorkerWorkflow {
       + '설명 글은 12살도 읽을 수 있게 짧은 문장과 일상적인 말로 쓴다. summary는 3~5개의 짧은 문장으로 쓰고 한 문장에는 한 가지 일만 적는다. '
       + '코드 용어나 영어 이름은 처음 나올 때 괄호로 쉬운 뜻을 붙이고, terms에 term은 코드에 적힌 이름, meaning은 쉬운 뜻으로 담는다. '
       + '자세한 조건·순서·실패하는 경우는 steps에 적는다. 쉽게 쓰더라도 조건·숫자·실패하는 경우를 빼거나 확인하지 않은 것을 단정하지 않는다. '
+      + 'examples에는 실행하지 않은 가상의 값으로 이 코드가 어떻게 흘러가는지 1~3개 보여 준다. 가능하면 끝까지 잘 되는 경우 하나와 멈추거나 실패하는 경우 하나를 쓴다. '
+      + 'given에는 코드가 받는 값의 모양에 맞는 가상의 값을 가정해 적는다(코드에 적힌 값이 아니어도 된다). '
+      + 'result에는 그 가정한 값으로 코드에서 확인한 조건과 처리를 따라가 무엇을 하고 어떻게 끝나는지 쉬운 말로 적는다. '
+      + '실제로 실행한 결과처럼 쓰지 않고, 코드에서 확인하지 못한 조건·처리·외부 동작(다른 파일, 서버, 저장소의 결과 등)은 단정하지 않는다. 확인한 코드로 따라갈 수 없으면 빈 배열로 둔다. '
       // Only the local worker has a stage that reads requested files.
       + (single ? '이번 방식에서는 관련 파일을 더 요청할 수 없다. 제공된 code와 files만 근거로 설명하고, files에 없는 파일의 동작은 단정하지 않고 unknowns에 적는다. '
         : '연관 파일은 availableFiles의 ID로 요청하면 앱이 읽어서 files에 제공한다. ')
@@ -373,6 +378,7 @@ export class LocalWorkerWorkflow {
       // Any issue below discards the answer, so issues must hold only what is left unfixed; otherwise a
       // corrected explanation is thrown away because its fixes were also listed.
       const review = await run('reviewing', reviewSchema, '동일한 원본 코드와 다음 설명을 대조하라. 잘못된 설명을 바로잡은 explanation을 반환하라. '
+        + 'examples도 같은 코드와 대조한다. given의 가상 값과 그 값으로 코드를 따라가 얻은 결과는 허용하고, 코드에 없는 조건·처리나 확인하지 않은 외부 동작을 단정한 부분이 있으면 바로잡거나 지운다. '
         + 'issues에는 바로잡지 못하고 남은 문제만 적는다. 바로잡은 내용은 explanation에만 반영하고 issues에 적지 않는다. '
         + '근거가 부족해 받아들일 수 없으면 accepted=false로 표시하라.\n' + JSON.stringify(draft));
       if (!review.accepted || review.issues.length) throw new AppError('AI_RESPONSE', 'AI 대조에서 해결하지 못한 문제가 있어 설명을 표시하지 않았습니다.');

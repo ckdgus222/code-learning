@@ -271,5 +271,9 @@ it('keeps question-only writing rules out of this task', async () => {
     expect(input.prompt).not.toContain('summary는 3~5개의 짧은 문장');
     expect(input.prompt).not.toContain('terms에 term은 코드에 적힌 이름');
     expect(input.prompt).not.toContain('자세한 조건·순서·실패하는 경우는 steps에 적는다.');
+    expect(input.prompt).not.toContain('examples에는');
+    expect(input.prompt).not.toContain('given에는');
+    expect(input.prompt).not.toContain('result에는');
+    expect(input.prompt).not.toContain('examples도 같은 코드와 대조한다.');
   }
 });

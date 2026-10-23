@@ -16,7 +16,7 @@ function fixture() {
   const request: ExplainRequest = { projectId: snapshot.evidence.projectId, evidenceId: snapshot.evidence.id,
     expectedFileHash: snapshot.evidence.fileHash, question: '이 값은 무엇인가요?', mode: 'local-worker', consent: true };
   const explanation: Explanation = { summary: '값을 저장합니다.', steps: [],
-    claims: [{ kind: 'code', text: 'answer에 42를 저장합니다.', evidenceIds: [snapshot.evidence.id] }], terms: [], unknowns: [] };
+    claims: [{ kind: 'code', text: 'answer에 42를 저장합니다.', evidenceIds: [snapshot.evidence.id] }], terms: [], examples: [], unknowns: [] };
   const events: LearningEvent[] = [];
   const assertReady = vi.fn();
   const capture = vi.fn(async () => structuredClone(snapshot));
@@ -52,7 +52,59 @@ describe('local worker workflow with fake adapters', () => {
       expect(input.prompt).toContain('설명 글은 12살도 읽을 수 있게 짧은 문장과 일상적인 말로 쓴다. summary는 3~5개의 짧은 문장으로 쓰고 한 문장에는 한 가지 일만 적는다.');
       expect(input.prompt).toContain('코드 용어나 영어 이름은 처음 나올 때 괄호로 쉬운 뜻을 붙이고, terms에 term은 코드에 적힌 이름, meaning은 쉬운 뜻으로 담는다.');
       expect(input.prompt).toContain('자세한 조건·순서·실패하는 경우는 steps에 적는다. 쉽게 쓰더라도 조건·숫자·실패하는 경우를 빼거나 확인하지 않은 것을 단정하지 않는다.');
+      expect(input.prompt).toContain('examples에는 실행하지 않은 가상의 값으로 이 코드가 어떻게 흘러가는지 1~3개 보여 준다. 가능하면 끝까지 잘 되는 경우 하나와 멈추거나 실패하는 경우 하나를 쓴다.');
+      expect(input.prompt).toContain('given에는 코드가 받는 값의 모양에 맞는 가상의 값을 가정해 적는다(코드에 적힌 값이 아니어도 된다).');
+      expect(input.prompt).toContain('result에는 그 가정한 값으로 코드에서 확인한 조건과 처리를 따라가 무엇을 하고 어떻게 끝나는지 쉬운 말로 적는다.');
+      expect(input.prompt).toContain('실제로 실행한 결과처럼 쓰지 않고, 코드에서 확인하지 못한 조건·처리·외부 동작(다른 파일, 서버, 저장소의 결과 등)은 단정하지 않는다. 확인한 코드로 따라갈 수 없으면 빈 배열로 둔다.');
     }
+  });
+
+  it('accepts empty examples and the example size limits', () => {
+    const f = fixture();
+    expect(explanationSchema.safeParse(f.explanation).success).toBe(true);
+    const example = { given: '가'.repeat(300), result: '나'.repeat(2000), evidenceIds: Array(16).fill(f.snapshot.evidence.id) };
+    expect(explanationSchema.safeParse({ ...f.explanation, examples: Array(3).fill(example) }).success).toBe(true);
+  });
+
+  it.each(['missing', 'too many', 'long given', 'empty given', 'long result', 'empty result', 'no evidence', 'too many references', 'extra field'])('rejects examples with %s', invalid => {
+    const f = fixture();
+    const example = { given: '주문 2개, 재고 5개일 때', result: '남은 재고 3개를 돌려줘요.', evidenceIds: [f.snapshot.evidence.id] };
+    let examples: unknown = [example];
+    if (invalid === 'missing') examples = undefined;
+    if (invalid === 'too many') examples = Array(4).fill(example);
+    if (invalid === 'long given') example.given = '가'.repeat(301);
+    if (invalid === 'empty given') example.given = '   ';
+    if (invalid === 'long result') example.result = '가'.repeat(2001);
+    if (invalid === 'empty result') example.result = '   ';
+    if (invalid === 'no evidence') example.evidenceIds = [];
+    if (invalid === 'too many references') example.evidenceIds = Array(17).fill(f.snapshot.evidence.id);
+    if (invalid === 'extra field') examples = [{ ...example, executed: true }];
+    expect(explanationSchema.safeParse({ ...f.explanation, examples }).success).toBe(false);
+  });
+
+  it.each(['explaining', 'reviewing', 'codex', 'antigravity'] as const)('rejects one unknown example reference in %s', async stage => {
+    const f = fixture();
+    const normal = f.run.getMockImplementation()!;
+    const explanation = { ...f.explanation, examples: [{ given: '함수를 부를 때', result: '값을 돌려줘요.',
+      evidenceIds: [f.snapshot.evidence.id, randomUUID()] }] };
+    const single = stage === 'codex' || stage === 'antigravity';
+    f.run.mockImplementation(async input => {
+      if (input.stage !== (single ? 'explaining' : stage)) return normal(input);
+      return { reportedModel: null, value: stage === 'reviewing' ? { accepted: true, issues: [], explanation } : explanation };
+    });
+    expect(await f.finish({ ...f.request, mode: single ? stage : 'local-worker' }))
+      .toMatchObject({ kind: 'failed', error: { code: 'AI_RESPONSE' } });
+    expect(f.run).toHaveBeenCalledTimes(single ? 1 : stage === 'explaining' ? 2 : 3);
+    expect(f.events.some(event => event.kind === 'completed')).toBe(false);
+  });
+
+  it('publishes examples that reference the selected code and provided files', async () => {
+    const f = fixture();
+    const related = { evidence: { ...f.snapshot.evidence, id: randomUUID(), fileId: randomUUID() },
+      relativePath: 'src/related.ts', code: 'export const value = 42;' };
+    f.snapshot.files.push(related);
+    f.explanation.examples = [{ given: '값을 읽을 때', result: '42를 읽어요.', evidenceIds: [f.snapshot.evidence.id, related.evidence.id] }];
+    expect(await f.finish()).toMatchObject({ kind: 'completed', result: { explanation: { examples: f.explanation.examples } } });
   });
 
   it('enforces readiness before any code capture or model execution', () => {
@@ -200,6 +252,7 @@ describe('local worker workflow with fake adapters', () => {
     await f.finish();
     const reviewing = f.run.mock.calls.map(([input]) => input).find(input => input.stage === 'reviewing')!;
     expect(reviewing.prompt).toContain('issues에는 바로잡지 못하고 남은 문제만 적는다. 바로잡은 내용은 explanation에만 반영하고 issues에 적지 않는다.');
+    expect(reviewing.prompt).toContain('examples도 같은 코드와 대조한다. given의 가상 값과 그 값으로 코드를 따라가 얻은 결과는 허용하고, 코드에 없는 조건·처리나 확인하지 않은 외부 동작을 단정한 부분이 있으면 바로잡거나 지운다.');
   });
 
   it.each(['organizing', 'explaining', 'reviewing'] as const)('cancels during %s without continuing or completing', async stage => {
