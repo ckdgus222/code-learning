@@ -48,7 +48,7 @@ async function setup(habit: Habit) {
       const oldId = material.history.at(-1)?.explanation.claims.find((claim: { kind: string }) => claim.kind === 'code')?.evidenceIds[0];
       const cited = habit === 'cite-selection' ? material.evidence.id
         : !followUp || habit === 'reread' ? related.evidence.id : habit === 'reuse-old' ? oldId : randomUUID();
-      draft = { summary: 'helper 값을 씁니다.', steps: [], claims: [{ kind: 'code', text: 'b.ts의 helper가 42를 돌려줍니다.', evidenceIds: [cited] }], terms: [], unknowns: [] };
+      draft = { summary: 'helper 값을 씁니다.', steps: [], claims: [{ kind: 'code', text: 'b.ts의 helper가 42를 돌려줍니다.', evidenceIds: [cited] }], terms: [], examples: [], unknowns: [] };
       return { reportedModel: GEMINI_MODEL, value: draft };
     }
     return { reportedModel: null, value: { accepted: true, issues: [], explanation: draft } };

@@ -121,7 +121,7 @@ const runStage = (request: StageRequest): Promise<StageResponse> =>
 const evidenceId = randomUUID();
 const prompt = '코드 학습 앱의 연결 시험이다. 도구·파일·셸·웹을 사용하지 않는다. 아래 JSON 자료만 보고 JSON schema를 따르는 JSON 하나만 출력한다.\n자료:\n'
   + JSON.stringify({ question: '이 함수는 무엇을 하나요?', evidence: { id: evidenceId }, code: 'export function add(a: number, b: number) { return a + b; }' })
-  + `\n과제:\n쉬운 한국어로 설명하라. steps는 빈 배열, claims에는 kind "code"와 evidenceIds [${evidenceId}]인 주장 하나, terms·unknowns는 빈 배열로 한다.`;
+  + `\n과제:\n쉬운 한국어로 설명하라. steps는 빈 배열, claims에는 kind "code"와 evidenceIds [${evidenceId}]인 주장 하나, terms·examples·unknowns는 빈 배열로 한다.`;
 const stage = (signal: AbortSignal): StageRequest => ({
   stage: 'explaining', provider: 'antigravity', prompt, schema: z.toJSONSchema(explanationSchema), signal,
 });
@@ -392,7 +392,7 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
     // Size and change time only; the app-only home must not be touched by a local probe.
     const fileStates = () => Promise.all(appFiles.map(file => stat(file).then(info => `${info.size}:${info.mtimeMs}`, () => 'missing')));
     const before = await fileStates();
-    const answer = { summary: '시험 응답', steps: [], claims: [{ kind: 'concept', text: '시험 응답' }], terms: [], unknowns: [] };
+    const answer = { summary: '시험 응답', steps: [], claims: [{ kind: 'concept', text: '시험 응답' }], terms: [], examples: [], unknowns: [] };
     let probe: AgyProbe | undefined;
     let details: Record<string, unknown> = {};
     try {
@@ -438,7 +438,7 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
     const appFiles = ['antigravity-cli/settings.json', 'config/hooks.json', 'config/mcp_config.json'].map(file => path.join(appAgyHome, '.gemini', file));
     const fileStates = () => Promise.all(appFiles.map(file => stat(file).then(info => `${info.size}:${info.mtimeMs}`, () => 'missing')));
     const before = await fileStates();
-    const answer = { summary: '시험 응답', steps: [], claims: [{ kind: 'concept', text: '시험 응답' }], terms: [], unknowns: [] };
+    const answer = { summary: '시험 응답', steps: [], claims: [{ kind: 'concept', text: '시험 응답' }], terms: [], examples: [], unknowns: [] };
     let probe: AgyProbe | undefined;
     let fixture: Awaited<ReturnType<typeof isolationFixture>> | undefined;
     let details: Record<string, unknown> = {};

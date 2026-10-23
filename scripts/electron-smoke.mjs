@@ -1647,6 +1647,11 @@ try {
             claims: [{ kind: 'code', text: '테스트용 설명입니다.', evidenceIds: [request.evidenceId] },
               { kind: 'concept', text: '일반 개념 설명입니다.' }],
             terms: globalThis.testFakeAiFlow ? [{ term: 'login', meaning: '로그인 요청을 보내는 함수' }] : [],
+            examples: globalThis.testFakeAiFlow ? [
+              { given: '주문 2개, 재고 5개일 때', result: '주문 가능한지 확인하고 남은 재고 3개를 돌려줘요.',
+                evidenceIds: [request.evidenceId, related.id, request.evidenceId] },
+              { given: '주문 8개, 재고 5개일 때', result: '재고가 부족합니다에서 멈춰요.', evidenceIds: [request.evidenceId] },
+            ] : [],
             unknowns: globalThis.testFakeAiFlow ? ['실제 서버 응답은 확인하지 못했어요.'] : [] },
           review: 'AI 검토됨', models: [{ stage: 'explaining', provider: 'antigravity',
             requestedModel: 'gemini-3.8-flash-high', reportedModel: null }],
@@ -1675,6 +1680,7 @@ try {
     await page.getByRole('tab', { name: '질문', exact: true }).click();
     await page.getByText('가짜 설명: 빠른 응답', { exact: true }).waitFor();
     assert.equal(await page.getByRole('region', { name: 'AI 설명' }).count(), 1);
+    assert.equal(await page.getByRole('region', { name: '예시로 따라가기', exact: true }).count(), 0);
   });
   await check('FAKE AI IPC: cancelled job completion is ignored and a subsequent question succeeds', async () => {
     await app.evaluate(() => { globalThis.testFakeAiBehavior = 'hold'; });
@@ -1765,9 +1771,25 @@ try {
       await answer.getByText(`학습 주제: ${topic}`, { exact: true }).waitFor();
       assert.equal(await answer.locator(':scope > b').innerText(), expected);
       assert.deepEqual(await answer.locator(':scope > h4, :scope > section h4, :scope > details > summary').allInnerTexts(),
-        ['쉽게', '낱말 풀이', '자세히 보기 · 단계 1개 · 설명 2개', '코드']);
+        ['쉽게', '낱말 풀이', '예시로 따라가기', '자세히 보기 · 단계 1개 · 설명 2개', '코드']);
       assert.deepEqual(await answer.getByRole('region', { name: '낱말 풀이', exact: true }).locator('dt, dd').allInnerTexts(),
         ['login', '로그인 요청을 보내는 함수']);
+      const examples = answer.getByRole('region', { name: '예시로 따라가기', exact: true });
+      assert.equal(await examples.isVisible(), true);
+      assert.equal(await examples.getByText('코드를 실제로 실행한 결과가 아니에요. AI가 코드를 읽고 만든 가상의 값이에요.', { exact: true }).isVisible(), true);
+      const items = examples.locator(':scope > ol > li');
+      assert.equal(await items.count(), 2);
+      for (const item of await items.all()) {
+        assert.equal(await item.getByText('가상의 예시 · 실행하지 않음', { exact: true }).isVisible(), true);
+        assert.equal(await item.getByRole('button').first().isEnabled(), true);
+      }
+      assert.deepEqual(await items.locator(':scope > p').allInnerTexts(), [
+        '예를 들어 주문 2개, 재고 5개일 때', '→ 주문 가능한지 확인하고 남은 재고 3개를 돌려줘요.',
+        '예를 들어 주문 8개, 재고 5개일 때', '→ 재고가 부족합니다에서 멈춰요.',
+      ]);
+      assert.deepEqual(await examples.getByRole('list', { name: '예시 1의 근거', exact: true }).getByRole('button').allInnerTexts(),
+        ['order.ts · 1–1행', 'related.ts · 파일 전체 근거 · 세부 위치 미확인']);
+      assert.deepEqual(await examples.getByRole('list', { name: '예시 2의 근거', exact: true }).getByRole('button').allInnerTexts(), ['order.ts · 1–1행']);
       assert.equal(await answer.locator('details').evaluate(element => element.open), false);
       assert.equal(await answer.getByText('가짜 단계', { exact: true }).isVisible(), false);
       const unknown = answer.getByText('확인하지 못함: 실제 서버 응답은 확인하지 못했어요.', { exact: true });
