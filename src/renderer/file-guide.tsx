@@ -1,23 +1,41 @@
-import React, { useState } from 'react';
+import React, { useLayoutEffect, useRef, useState } from 'react';
 import { STRUCTURE_NOTE, type Analysis, type FileGuide, type GuideRange } from '../shared/contracts';
 import { ComplexityTags } from './complexity';
+import { functionParams } from './code-bands';
 
 const kinds = { imports: '가져오기', class: '클래스', function: '메서드/함수', field: '필드', variable: '값', statement: '문장' };
 const importStatuses = { project: '', ambiguous: '어느 파일인지 하나로 정하지 못함', 'not-found': '프로젝트에서 찾지 못함',
   outside: '프로젝트 폴더 밖 · 확인 못 함', 'not-static': '실행할 때 정하는 가져오기 · 확인 못 함',
   unreadable: '가져올 경로를 읽지 못함', syntax: '구문 오류로 확인 못 함' };
+// Function cards shown before '더 보기'.
+const FIRST_FUNCTIONS = 8;
 
-export function FileGuideCard({ guide, analysis, busy, stale, onShow, onSelect, onOpenFile }: {
+export function FileGuideCard({ guide, analysis, busy, stale, onShow, onSelect, onOpenFile, focus = null }: {
   guide: FileGuide; analysis: Analysis; busy: boolean; stale: boolean;
+  /** A header click in the code; a new object each click, so the same function can be brought back into view. */
+  focus?: { symbolId: string } | null;
   onShow(range: GuideRange): void; onSelect(symbolId: string): void; onOpenFile(fileId: string): void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [otherExpanded, setOtherExpanded] = useState(false);
+  const card = useRef<HTMLDetailsElement>(null);
+  useLayoutEffect(() => {
+    if (!focus || !card.current) return;
+    const index = analysis.symbols.findIndex(symbol => symbol.id === focus.symbolId);
+    if (index < 0) return;
+    card.current.open = true;
+    if (index >= FIRST_FUNCTIONS) setExpanded(true);
+    // After the expanded list is drawn.
+    const frame = requestAnimationFrame(() => {
+      card.current?.querySelector(`[data-symbol-id="${CSS.escape(focus.symbolId)}"]`)?.scrollIntoView({ block: 'nearest' });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focus]);
   const locked = busy || stale;
   const basis = guide.role.basis;
   const facts = new Map(guide.functions.map(item => [item.symbolId, item]));
   const otherChunks = guide.chunks.filter(item => !item.chunk.functionRange);
-  return <details open className="card file-guide" aria-label="이 파일은">
+  return <details ref={card} open className="card file-guide" aria-label="이 파일은">
     <summary>이 파일은</summary>
     <p><span className="badge">{guide.role.label}</span> <span className="badge">코드 모양으로 추정</span></p>
     <p>{guide.role.about}</p>
@@ -39,14 +57,13 @@ export function FileGuideCard({ guide, analysis, busy, stale, onShow, onSelect, 
     {analysis.warnings.filter(message => message !== STRUCTURE_NOTE).map(message => <p key={message} className="notice notice--warn">{message}</p>)}
     <h4>이 파일의 함수 {analysis.symbols.length}개</h4>
     <p className="hint">종류 표시는 코드 모양으로 판단했어요. 실제로 요청이 이어지는지는 흐름 따라가기에서 확인해요.</p>
-    <ol className="file-guide__functions">{(expanded ? analysis.symbols : analysis.symbols.slice(0, 8)).map(symbol => {
+    <ol className="file-guide__functions">{(expanded ? analysis.symbols : analysis.symbols.slice(0, FIRST_FUNCTIONS)).map(symbol => {
       const fact = facts.get(symbol.id);
-      const params = symbol.params.replace(/\s+/g, ' ').trim().replace(/^\(/, '').replace(/\)$/, '').trim();
-      return <li key={symbol.id}>
+      return <li key={symbol.id} data-symbol-id={symbol.id}>
         <div className="file-guide__function-heading"><strong>{symbol.name}</strong><span className="hint">{symbol.evidence.startLine}–{symbol.evidence.endLine}행</span></div>
         {fact?.tags.map(tag => <p key={tag}><span className="tag">{tag} · 모양으로 판단</span></p>)}
         {fact?.routeNote && <p className="hint">{fact.routeNote}</p>}
-        <p>받는 것: {params.length > 60 ? `${params.slice(0, 60)}…` : params || '없음'}</p>
+        <p>받는 것: {functionParams(symbol.params)}</p>
         {!!fact?.calls.length && <p>부르는 것: {fact.calls.join(', ')}{fact.callsOmitted > 0 && ` 외 ${fact.callsOmitted}개`}</p>}
         {!!fact?.hooks.length && <p>훅처럼 이름 붙인 호출: {fact.hooks.join(', ')}{fact.hooksOmitted > 0 && ` 외 ${fact.hooksOmitted}개`}</p>}
         <p>크기: {symbol.complexity.lines}줄 · 깊이 {symbol.complexity.depth}</p>
@@ -57,7 +74,7 @@ export function FileGuideCard({ guide, analysis, busy, stale, onShow, onSelect, 
         </div>
       </li>;
     })}</ol>
-    {analysis.symbols.length > 8 && <button className="btn btn--small" disabled={locked} onClick={() => setExpanded(value => !value)}>{expanded ? '접기' : '더 보기'}</button>}
+    {analysis.symbols.length > FIRST_FUNCTIONS && <button className="btn btn--small" disabled={locked} onClick={() => setExpanded(value => !value)}>{expanded ? '접기' : '더 보기'}</button>}
     <details>
       <summary>그 밖의 코드 {otherChunks.length}개</summary>
       <ol className="file-guide__chunks">{(otherExpanded ? otherChunks : otherChunks.slice(0, 8)).map(({ chunk, about }) => {

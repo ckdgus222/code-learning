@@ -105,6 +105,8 @@ function App() {
   // Reading settings live as long as the window: they stay across files and views, not across restarts.
   const [codeSize, setCodeSize] = useState(CODE_SIZE.start);
   const [wrap, setWrap] = useState(false);
+  const [bands, setBands] = useState(true);
+  const [functionFocus, setFunctionFocus] = useState<{ fileId: string; hash: string; symbolId: string } | null>(null);
   const reader = useRef<ReaderHandle>(null);
   const request = useRef(0);
   const revision = useRef(0);
@@ -383,6 +385,14 @@ function App() {
     selectStep(nextStep);
     if (from === 'overview') setStale(false);
     return true;
+  }
+
+  async function selectGuideFunction(id: string) {
+    if (busy || stale || !source) return false;
+    const item = source.analysis.symbols.find(item => item.id === id);
+    if (!item) return false;
+    selectSymbol(item.id);
+    return showEvidence(item.evidence, null);
   }
 
   // The question is about the whole function, so it becomes the question's code even when a step inside it was chosen.
@@ -989,7 +999,9 @@ function App() {
               <button className="btn btn--icon" aria-label="코드 글자 크게" title="코드 글자 크게" disabled={codeSize >= CODE_SIZE.max}
                 onClick={() => setCodeSize(size => size + 1)}><Icon name="larger" /></button>
               <button className="btn btn--icon" aria-label="줄바꿈" title="줄바꿈" aria-pressed={wrap} onClick={() => setWrap(on => !on)}><Icon name="wrap" /></button>
+              <button className="btn btn--small" aria-pressed={bands} onClick={() => setBands(on => !on)}>설명 줄</button>
             </div>
+            {stale && <p className="hint">파일이 바뀌어 설명 줄을 숨겼어요. 파일 다시 읽기를 눌러 주세요.</p>}
           </div>
           {functionExplanation && <p className="function-explanation" data-testid="function-chunk-summary">{functionExplanation}</p>}
           <div className="reader__body">
@@ -1018,6 +1030,12 @@ function App() {
             <div className="code">
               {evidence && <p data-testid="evidence-range" data-utf16={`${evidence.startUtf16},${evidence.endUtf16}`} className="evidence">근거: {source.relativePath} · {evidence.startLine}–{evidence.endLine}줄</p>}
               <Reader ref={reader} source={source} evidence={evidence} codeSize={codeSize} wrap={wrap}
+                bands={bands && !stale} onFunction={async id => {
+                  if (busy || stale) return;
+                  setPanelOpen(true);
+                  if (!await selectGuideFunction(id)) return;
+                  setFunctionFocus({ fileId: source.fileId, hash: source.hash, symbolId: id });
+                }}
                 symbolId={symbolId} stepId={stepId} locked={busy || stale}
                 onStep={next => { if (!busy && !stale) void showEvidence(next.evidence, next.id); }} />
             </div>
@@ -1051,12 +1069,9 @@ function App() {
             <p><b>{symbol.name}</b> 함수는 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요. 왼쪽에서 구문을 골라 한 부분씩 볼 수 있어요.</p>
           </section> : <p className="hint">함수나 구문을 고르면 그 부분을 여기서 짚어 줘요.</p>)}
           {view === 'code' && source?.guide && <FileGuideCard key={`${source.fileId}:${source.hash}`} guide={source.guide} analysis={source.analysis} busy={busy} stale={stale}
+            focus={functionFocus?.fileId === source.fileId && functionFocus.hash === source.hash ? functionFocus : null}
             onOpenFile={fileId => { if (busy || stale) return; void readFile(fileId); }}
-            onShow={showFileGuideRange} onSelect={id => {
-              if (busy || stale) return;
-              const item = source.analysis.symbols.find(item => item.id === id);
-              if (item) { selectSymbol(item.id); void showEvidence(item.evidence, null); }
-            }} />}
+            onShow={showFileGuideRange} onSelect={selectGuideFunction} />}
         </section>
         <AiPanel key={project.id} projectId={project.id} evidence={questionEvidence} stale={stale} draft={draft}
           connections={connections} checking={checking} otherRunning={overviewAi?.status === 'running' || fileExplanationRunning || featureGuideRunning} onInspect={inspectConnections}
