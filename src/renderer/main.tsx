@@ -1050,7 +1050,8 @@ function App() {
             <span className="tag tag--ok">코드에서 확인됨</span>
             <p><b>{symbol.name}</b> 함수는 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요. 왼쪽에서 구문을 골라 한 부분씩 볼 수 있어요.</p>
           </section> : <p className="hint">함수나 구문을 고르면 그 부분을 여기서 짚어 줘요.</p>)}
-          {view === 'code' && source?.guide && <FileGuideCard key={`${source.fileId}:${source.hash}`} guide={source.guide} busy={busy} stale={stale}
+          {view === 'code' && source?.guide && <FileGuideCard key={`${source.fileId}:${source.hash}`} guide={source.guide} analysis={source.analysis} busy={busy} stale={stale}
+            onOpenFile={fileId => { if (busy || stale) return; void readFile(fileId); }}
             onShow={showFileGuideRange} onSelect={id => {
               if (busy || stale) return;
               const item = source.analysis.symbols.find(item => item.id === id);

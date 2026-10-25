@@ -188,6 +188,13 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .panel > details { margin: 0 16px 16px; }
 .file-guide__chunks, .file-explanation__chunks { padding-left: 20px; }
 .file-guide__chunks > li, .file-explanation__chunks > li { margin-block: 12px; }
+.file-guide { overflow-wrap: anywhere; }
+.file-guide__functions, .file-guide__imports { padding: 0; list-style: none; }
+.file-guide__functions > li { margin-block: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.file-guide__function-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 8px; }
+.file-guide__function-heading .hint { white-space: nowrap; }
+.file-guide .tag { max-width: 100%; white-space: normal; }
+.file-guide__actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .function-explanation { margin: 8px 16px; color: var(--muted); }
 .reader__head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .path { min-width: 0; font: 600 14px var(--mono); overflow-wrap: anywhere; }

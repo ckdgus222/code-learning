@@ -7,7 +7,7 @@ import { splitFileChunks } from '../src/core/analysis/file-chunks';
 const fileId = randomUUID();
 const fileHash = 'a'.repeat(64);
 function guide(text: string, path = 'example.ts', paths: string[] = []) {
-  return describeFile(text, path, fileId, fileHash, analyzeSource(text, path, { projectId: randomUUID(), fileId, fileHash }), paths);
+  return describeFile(text, path, fileId, fileHash, analyzeSource(text, path, { projectId: randomUUID(), fileId, fileHash }), paths.map(relativePath => ({ id: relativePath, relativePath, size: 0 })));
 }
 
 describe('file guide roles', () => {
@@ -203,5 +203,122 @@ describe('file guide text', () => {
     guide(text);
     // Was over 3 seconds when each chunk filtered all nodes; generous for slow machines.
     expect(performance.now() - started).toBeLessThan(2000);
+  });
+});
+
+describe('file guide imports', () => {
+  it('resolves only a single candidate, keeps the first reference and separates external names', () => {
+    const result = guide(`import './one.js';
+export * from './one';
+import './many';
+import './missing';
+import '../../outside';
+import '/absolute';
+function load() { import('./one'); require(name); }
+import './a\\u002fb';
+import 'react';
+export * from 'react';
+import '@/utils';`, 'src/example.ts', ['src/one.ts', 'src/many.ts', 'src/many/index.ts']);
+    expect(result.imports).toEqual([
+      { specifier: './one.js', line: 1, status: 'project', target: { fileId: 'src/one.ts', relativePath: 'src/one.ts' } },
+      { specifier: './many', line: 3, status: 'ambiguous', target: null },
+      { specifier: './missing', line: 4, status: 'not-found', target: null },
+      { specifier: '../../outside', line: 5, status: 'outside', target: null },
+      { specifier: '/absolute', line: 6, status: 'outside', target: null },
+      { specifier: './one', line: 7, status: 'not-static', target: null },
+      { specifier: null, line: 7, status: 'not-static', target: null },
+      { specifier: null, line: 8, status: 'unreadable', target: null },
+    ]);
+    expect(result.external).toEqual(['react', '@/utils']);
+  });
+
+  it('preserves syntax errors and gives dynamic imports priority over unreadable paths', () => {
+    const result = guide("import { a,, b } from './bad';\nimport('./a\\u002fb');\nrequire('./ok');");
+    expect(result.imports.map(item => item.status)).toEqual(['syntax', 'not-static', 'not-static']);
+    expect(result.imports.every(item => item.target === null)).toBe(true);
+  });
+
+  it('caps import rows at thirty and distinct external paths at eight', () => {
+    const result = guide(Array.from({ length: 33 }, (_, i) => `import './missing${i}';`).join('\n')
+      + Array.from({ length: 10 }, (_, i) => `import 'package${i}'; import 'package${i}';`).join('\n'));
+    expect(result.imports).toHaveLength(30);
+    expect(result.importsOmitted).toBe(3);
+    expect(result.external).toHaveLength(8);
+    expect(result.externalOmitted).toBe(2);
+  });
+});
+
+describe('file guide function facts', () => {
+  it.each([
+    'function outer() { function inner() { inside(); } outside(); }',
+    'const a = () => 1, b = () => 2;',
+    'function a() { function same() { one(); } } function b() { function same() { two(); } }',
+  ])('follows analyzer ranges, order and count: %s', text => {
+    const analysis = analyzeSource(text, 'example.ts', { projectId: 'p', fileId, fileHash });
+    const result = describeFile(text, 'example.ts', fileId, fileHash, analysis, []);
+    expect(result.functions.map(item => item.symbolId)).toEqual(analysis.symbols.map(symbol => symbol.id));
+    if (text.includes('outer')) expect(result.functions.map(item => item.calls)).toEqual([['outside'], ['inside']]);
+    if (text.includes('same')) expect(result.functions.map(item => item.calls)).toEqual([[], ['one'], [], ['two']]);
+  });
+
+  it('does not provide facts when either end of the symbol range differs', () => {
+    const text = 'function run() { work(); }';
+    const analysis = analyzeSource(text, 'example.ts', { projectId: 'p', fileId, fileHash });
+    for (const field of ['startUtf16', 'endUtf16'] as const) {
+      const changed = { ...analysis, symbols: analysis.symbols.map(symbol => ({ ...symbol,
+        evidence: { ...symbol.evidence, [field]: symbol.evidence[field] + 1 } })) };
+      expect(describeFile(text, 'example.ts', fileId, fileHash, changed, []).functions).toEqual([]);
+    }
+  });
+
+  it('describes Nest shapes without requiring imports and keeps the prefix hint', () => {
+    const result = guide("@Controller('auth') class Auth { @Post('login') login(@Body() input: Input) { return this.auth.login(input); } }");
+    expect(result.functions[0]).toMatchObject({ tags: ['서버 받는 곳 모양 · POST /auth/login'],
+      routeNote: '앱 공통 앞 경로는 빼고 봤어요', calls: ['this.auth.login'] });
+  });
+
+  it.each([
+    "@Controller(prefix) class C { @Post('login') run() {} }",
+    "@Controller('auth') class C { @Post(path) run() {} }",
+    String.raw`@Controller('a\u0075th') class C { @Post('login') run() {} }`,
+    String.raw`@Controller('auth') class C { @Post('l\u006fgin') run() {} }`,
+  ])('does not report a literal route for %s', text => {
+    const result = guide(text);
+    expect(result.functions[0].tags).toEqual(['서버 받는 곳 모양 · 주소 확인 못 함']);
+    expect(result.chunks.find(item => item.chunk.functionRange)!.about).toContain('주소를 글자로 적지 않아 확인 못 함');
+    expect(result.chunks.map(item => item.about).join('\n')).not.toMatch(/\/a\\u0075th|\/auth\/l\\u006fgin/);
+    if (text.includes('a\\u0075th')) expect(result.chunks[0].about).toContain('주소를 글자로 적지 않아 확인 못 함');
+  });
+
+  it.each([
+    ['app/api/x/route.ts', 'export async function GET() {}', [['서버 받는 곳 모양 · Next · GET']]],
+    ['app/x/route.ts', 'export default function GET() {}', [[]]],
+    ['app/x/route.ts', 'const handler = () => 1; export { handler as POST };', [['서버 받는 곳 모양 · Next · POST']]],
+    ['pages/api/x.ts', 'export default function handler() {} export function GET() {}', [['서버 받는 곳 모양 · Next · 모든 방식'], []]],
+    ['pages/api/x.ts', 'const handler = () => 1; export { handler as default };', [['서버 받는 곳 모양 · Next · 모든 방식']]],
+  ])('distinguishes Next exports in %s: %s', (path, text, tags) => {
+    expect(guide(text, path, ['next.config.ts']).functions.map(item => item.tags)).toEqual(tags);
+  });
+
+  it('labels JSX return expressions, hook names and calls only by shape', () => {
+    const result = guide(`function App() { return <div/>; }
+function check() { return !!<div/>; }
+function useThing() { this.useCache(); }
+function plain() { return 1; }`, 'example.tsx');
+    expect(result.functions.map(item => item.tags)).toEqual([
+      ['JSX(화면 조각)가 든 코드를 돌려줘요'], ['JSX(화면 조각)가 든 코드를 돌려줘요'], ['훅 이름'], [],
+    ]);
+    expect(result.functions[2].hooks).toEqual(['this.useCache']);
+  });
+
+  it('uses declared hook names rather than generated callback labels', () => {
+    const result = guide('class C { useCache() {} } const useThing = () => 1; useMemo(() => 2);');
+    expect(result.functions.map(item => item.tags)).toEqual([['훅 이름'], ['훅 이름'], []]);
+  });
+
+  it('limits calls and distinct hook names and excludes nested function bodies', () => {
+    const result = guide('function run() { useA(); useB(); useC(() => nested()); useD(); useD(); function inner() { hidden(); } }');
+    expect(result.functions[0]).toMatchObject({ calls: ['useA', 'useB', 'useC'], callsOmitted: 2,
+      hooks: ['useA', 'useB', 'useC'], hooksOmitted: 1, tags: [], routeNote: null });
   });
 });

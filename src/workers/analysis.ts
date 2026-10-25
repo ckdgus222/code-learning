@@ -47,7 +47,7 @@ async function readSource(fileId: string): Promise<SourceView> {
   const analysis = analyzeSource(text, file.relativePath, { projectId, fileId, fileHash: hash });
   let guide: SourceView['guide'] = null;
   if (analysis.language !== 'text') {
-    try { guide = describeFile(text, file.relativePath, fileId, hash, analysis, project!.files.map(file => file.relativePath)); }
+    try { guide = describeFile(text, file.relativePath, fileId, hash, analysis, project!.files); }
     catch { /* A guide is optional: a failed description must not prevent reading the source. */ }
   }
   const result: SourceView = { projectId, fileId, relativePath: file.relativePath, text, hash, analysis, guide };
