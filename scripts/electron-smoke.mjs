@@ -119,7 +119,8 @@ for (let index = 0; index < 6; index++) await writeFile(path.join(fileExplanatio
 await writeFile(path.join(fileExplanationFixture, 'README.md'), '# 파일 설명 시험\n');
 const guideFixture = path.join(temporary, '파일 안내 프로젝트');
 await mkdir(path.join(guideFixture, 'src'), { recursive: true });
-await writeFile(path.join(guideFixture, 'src/auth.controller.ts'), "@Controller('auth')\nexport class Auth {\n@Post('login') login(input: string) { return this.service.login(input); }\n}\n");
+await writeFile(path.join(guideFixture, 'src/auth.controller.ts'), "@Controller('auth')\nexport class Auth {\n@Post('login') login(input: string) { return this.service.login(input); }\n}\nimport { Service } from './auth.service.js';\n");
+await writeFile(path.join(guideFixture, 'src/auth.service.ts'), 'export class Service { login(input: string) { return input; } }\n');
 await writeFile(path.join(guideFixture, 'src/broken.ts'), 'const before = 1;\nconst broken = ;\nconst after = 2;');
 await writeFile(path.join(guideFixture, 'src/many.ts'), Array.from({ length: 83 }, (_, i) => `const value${i} = ${i};`).join('\n'));
 await writeFile(path.join(guideFixture, 'README.md'), '# 파일 안내 시험\n');
@@ -2865,18 +2866,21 @@ try {
     assert.equal(await page.locator('.center .file-guide, .center .file-explanation, .reader__cards').count(), 0);
     assert.deepEqual(await page.locator('.reader').evaluate(reader => [...reader.children].map(child => child.className)), ['reader__head', 'reader__body']);
     await guide.getByText('NestJS 컨트롤러', { exact: true }).waitFor();
-    assert.match(await guide.innerText(), /POST \/auth\/login.*앱 공통 앞 경로는 빼고 봤어요/);
+    assert.match(await guide.innerText(), /POST \/auth\/login[\s\S]*앱 공통 앞 경로는 빼고 봤어요/);
     await guide.getByRole('button', { name: '이 함수 고르기', exact: true }).click();
     await openAiSection('질문하기');
     await until(async () => await page.locator('.symbols__item[aria-pressed="true"]').innerText() === 'Auth.login');
     await until(async () => /auth.controller.ts · 3–3행/.test(await page.getByTestId('question-scope').innerText()));
     const scope = await page.getByTestId('question-scope').innerText();
     await guide.getByRole('button', { name: '코드 보기', exact: true }).first().click();
-    await until(async () => /auth.controller.ts · 1–2줄/.test(await page.getByTestId('evidence-range').innerText()));
+    await until(async () => /auth.controller.ts · 3–3줄/.test(await page.getByTestId('evidence-range').innerText()));
     assert.equal(await page.locator('.symbols__item[aria-pressed="true"]').innerText(), 'Auth.login');
     assert.equal(await page.getByTestId('question-scope').innerText(), scope);
     await guide.getByRole('button', { name: /^근거:/ }).click();
     await until(async () => /auth.controller.ts · 1–1줄/.test(await page.getByTestId('evidence-range').innerText()));
+    await guide.getByRole('button', { name: 'auth.service.ts 열기', exact: true }).click();
+    await page.getByRole('heading', { name: 'src/auth.service.ts', exact: true }).waitFor();
+    await openTreeFile('src/auth.controller.ts');
     // The source can disagree with an old guide before a filesystem watch event arrives.
     await app.evaluate(({ ipcMain }) => {
       const read = ipcMain._invokeHandlers.get('learning:read');
@@ -2897,12 +2901,14 @@ try {
     await guide.getByText('구문 오류가 있어 일부 코드는 나누지 않았어요', { exact: true }).waitFor();
     await openTreeFile('src/many.ts');
     await guide.getByText('덩어리 3개는 설명하지 않았어요', { exact: true }).waitFor();
+    assert.equal(await guide.getByRole('button', { name: '코드 보기', exact: true }).count(), 0);
+    await guide.getByText('그 밖의 코드 80개', { exact: true }).click();
     assert.equal(await guide.getByRole('button', { name: '코드 보기', exact: true }).count(), 8);
     await guide.getByRole('button', { name: '더 보기', exact: true }).click();
     assert.equal(await guide.getByRole('button', { name: '코드 보기', exact: true }).count(), 80);
     await guide.getByRole('button', { name: '접기', exact: true }).click();
     assert.equal(await guide.getByText('덩어리 3개는 설명하지 않았어요', { exact: true }).isVisible(), true);
-    await guide.locator('summary').click();
+    await guide.locator(':scope > summary').click();
     assert.equal(await guide.getByRole('button', { name: '코드 보기', exact: true }).first().isVisible(), false);
     await openTreeFile('README.md');
     await page.getByRole('heading', { name: 'README.md', exact: true }).waitFor();
@@ -2999,7 +3005,9 @@ try {
       const reads = await app.evaluate(() => globalThis.testGuideReadCount);
       const answers = await page.getByRole('region', { name: 'AI 설명' }).allInnerTexts();
       const cancelled = await app.evaluate(() => globalThis.testFakeAiCancelled.length);
-      await guide.getByRole('button', { name: '코드 보기', exact: true }).nth(1).click();
+      const otherCode = guide.locator('details').filter({ has: page.getByText('그 밖의 코드 79개', { exact: true }) });
+      if (!await otherCode.evaluate(element => element.open)) await otherCode.locator('summary').click();
+      await otherCode.getByRole('button', { name: '코드 보기', exact: true }).first().click();
       await until(async () => /chunks.ts · 2–2줄/.test(await page.getByTestId('evidence-range').innerText()));
       for (const basis of [false, true]) {
         if (basis) await guide.getByRole('button', { name: /^근거:/ }).click();

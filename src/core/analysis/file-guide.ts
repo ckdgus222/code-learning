@@ -1,8 +1,8 @@
 import type Parser from 'tree-sitter';
-import type { Analysis, FileGuide, GuideRange } from '../../shared/contracts';
+import type { Analysis, FileGuide, GuideFunction, GuideImport, GuideRange, ProjectFile } from '../../shared/contracts';
 import { splitFileChunks } from './file-chunks';
-import { parse } from './project-map';
-import { functionTypes } from './syntax';
+import { candidatesFor, isRelative, parse } from './project-map';
+import { functionTypes, importOf } from './syntax';
 import { formatNextPath, nextRouteOf } from './next-routes';
 
 type Node = Parser.SyntaxNode;
@@ -46,7 +46,7 @@ const decoratorName = (node: Node) => {
 function decoratorPath(node: Node): string | null {
   const args = node.namedChildren[0]?.childForFieldName('arguments')?.namedChildren.filter(child => child.type !== 'comment') ?? [];
   if (!args.length) return '';
-  return args[0].type === 'string' ? args[0].text.slice(1, -1) : null;
+  return args[0].type === 'string' && !args[0].text.includes('\\') ? args[0].text.slice(1, -1) : null;
 }
 function returnsJsx(fn: Node): boolean {
   const body = fn.childForFieldName('body');
@@ -55,9 +55,24 @@ function returnsJsx(fn: Node): boolean {
     ? descendants(body, true).filter(node => node.type === 'return_statement') : [body];
   return expressions.some(node => descendants(node, true).some(child => child.type.startsWith('jsx_')));
 }
+/** What a function's own code shows: Nest route paths (null when a path is not plain text), the calls in its body and JSX in a return. */
+function shapeOf(fn: Node) {
+  const member = fieldTypes.has(fn.parent?.type ?? '') ? fn.parent! : fn;
+  const owner = member.parent?.type === 'class_body' ? member.parent.parent : null;
+  const prefix = owner && decorators(owner).find(node => decoratorName(node) === 'Controller');
+  const routes = decorators(member).filter(node => /^(Get|Post|Put|Patch|Delete|All)$/.test(decoratorName(node) ?? '')).map(decorator => {
+    const before = prefix ? decoratorPath(prefix) : '';
+    const after = decoratorPath(decorator);
+    return before === null || after === null ? null
+      : `${decoratorName(decorator)!.toUpperCase()} /${[before, after].map(path => path.replace(/^\/+|\/+$/g, '')).filter(Boolean).join('/')}`;
+  });
+  const body = fn.childForFieldName('body');
+  const calls = body ? descendants(body, true).filter(node => node.type === 'call_expression').map(node => node.childForFieldName('function')?.text ?? '?') : [];
+  return { routes, calls, hooks: [...new Set(calls.filter(name => /(?:^|\.)use[A-Z]/.test(name)))], jsx: returnsJsx(fn) };
+}
 
 export function describeFile(text: string, relativePath: string, fileId: string, fileHash: string,
-  analysis: Analysis, projectPaths: string[]): FileGuide {
+  analysis: Analysis, projectFiles: ProjectFile[]): FileGuide {
   const root = parse(text, relativePath);
   const split = splitFileChunks(text, relativePath, fileId, fileHash, root);
   const top = root.namedChildren.filter(node => !['comment', 'hash_bang_line', 'empty_statement'].includes(node.type));
@@ -71,7 +86,7 @@ export function describeFile(text: string, relativePath: string, fileId: string,
     basis: { text: typeof basis === 'string' ? clip(basis) : clip(basis.text), range: typeof basis === 'string' ? null : rangeOf(basis) } });
   const classDecorator = (name: string) => classes.flatMap(decorators).find(node => decoratorName(node) === name);
   const exportedNames: string[] = [];
-  const exportedFunctions: { name: string; fn: Node }[] = [];
+  const exportedFunctions: { name: string; fn: Node; isDefault?: boolean }[] = [];
   const bindings = new Map<string, Node>();
   for (const outer of top) {
     const node = declaration(outer);
@@ -91,7 +106,7 @@ export function describeFile(text: string, relativePath: string, fileId: string,
     if (isDefault) {
       exportedNames.push('default');
       const fn = functionTypes.has(node.type) ? node : bindings.get(node.text);
-      if (fn) exportedFunctions.push({ name: fn.childForFieldName('name')?.text ?? node.text, fn });
+      if (fn) exportedFunctions.push({ name: fn.childForFieldName('name')?.text ?? node.text, fn, isDefault: true });
       continue;
     }
     const name = node.childForFieldName('name');
@@ -126,7 +141,7 @@ export function describeFile(text: string, relativePath: string, fileId: string,
       if (!name) continue;
       exportedNames.push(name.text);
       const fn = !outer.childForFieldName('source') && original ? bindings.get(original.text) : null;
-      if (fn) exportedFunctions.push({ name: name.text, fn });
+      if (fn) exportedFunctions.push({ name: name.text, fn, isDefault: name.text === 'default' });
     }
     const namespace = outer.namedChildren.find(child => child.type === 'namespace_export');
     if (namespace) exportedNames.push(namespace.namedChildren.at(-1)?.text ?? '*');
@@ -141,7 +156,7 @@ export function describeFile(text: string, relativePath: string, fileId: string,
   const injectable = classDecorator('Injectable');
   const validator = root.descendantsOfType([...fieldTypes]).flatMap(decorators)
     .find(node => /^(?:Is.+|Min|Max|Length)$/.test(decoratorName(node) ?? ''));
-  const next = nextRouteOf(relativePath, projectPaths);
+  const next = nextRouteOf(relativePath, projectFiles.map(file => file.relativePath));
   let fileRole: FileGuide['role'];
   if (/(?:^|\/)(?:__tests__|e2e)\/|\.(?:test|spec)\./.test(relativePath)) fileRole = role('시험 파일', '다른 코드가 맞게 동작하는지 확인하는 시험이에요.', relativePath);
   else if (start) fileRole = role('NestJS 서버 시작 파일', '서버를 만들고 켜는 곳이에요.', start);
@@ -171,6 +186,57 @@ export function describeFile(text: string, relativePath: string, fileId: string,
     for (let node: Node | null = root.descendantForIndex(index); node; node = node.parent) if (accept(node)) return node;
     return null;
   };
+  // Function chunks and analyzer symbols mostly share ranges, so each function's shape is worked out once.
+  const shapes = new Map<string, ReturnType<typeof shapeOf>>();
+  const shapeAt = (fn: Node) => {
+    const key = `${fn.startIndex}:${fn.endIndex}`;
+    if (!shapes.has(key)) shapes.set(key, shapeOf(fn));
+    return shapes.get(key)!;
+  };
+  const functionFacts: GuideFunction[] = [];
+  for (const symbol of analysis.symbols) {
+    const { startUtf16, endUtf16 } = symbol.evidence;
+    const fn = climb(startUtf16, node => node.startIndex === startUtf16 && node.endIndex === endUtf16 && functionTypes.has(node.type));
+    if (!fn) continue;
+    const { routes, calls, hooks, jsx } = shapeAt(fn);
+    const tags = routes.map(route => `서버 받는 곳 모양 · ${route ?? '주소 확인 못 함'}`);
+    const exported = exportedFunctions.filter(item => item.fn.startIndex === startUtf16 && item.fn.endIndex === endUtf16);
+    if (next?.kind === 'pages-api' && exported.some(item => item.isDefault)) tags.push('서버 받는 곳 모양 · Next · 모든 방식');
+    if (next?.kind === 'route') {
+      const methods = exported.filter(item => !item.isDefault && /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(item.name));
+      for (const method of new Set(methods.map(item => item.name))) tags.push(`서버 받는 곳 모양 · Next · ${method}`);
+    }
+    if (jsx) tags.push('JSX(화면 조각)가 든 코드를 돌려줘요');
+    const parent = fn.parent;
+    const assignedName = parent && ['variable_declarator', 'public_field_definition', 'field_definition'].includes(parent.type)
+      ? parent.childForFieldName('name') : parent?.type === 'pair' ? parent.childForFieldName('key') : null;
+    if (/^use[A-Z]/.test(fn.childForFieldName('name')?.text ?? assignedName?.text ?? '')) tags.push('훅 이름');
+    functionFacts.push({ symbolId: symbol.id, tags, calls: calls.slice(0, 3), callsOmitted: Math.max(0, calls.length - 3),
+      hooks: hooks.slice(0, 3), hooksOmitted: Math.max(0, hooks.length - 3), routeNote: routes.length ? '앱 공통 앞 경로는 빼고 봤어요' : null });
+  }
+  const known = new Map(projectFiles.map(file => [file.relativePath, file]));
+  const imports: GuideImport[] = [];
+  const external = new Set<string>();
+  const targets = new Set<string>();
+  // As in the map, nothing inside an error node is trusted.
+  const insideError = (node: Node) => { for (let at: Node | null = node; at; at = at.parent) if (at.isError || at.isMissing) return true; return false; };
+  for (const node of root.descendantsOfType(['import_statement', 'export_statement', 'call_expression'])) {
+    const imported = importOf(node);
+    if (!imported || (root.hasError && insideError(node))) continue;
+    const { kind, specifier } = imported;
+    const item: GuideImport = { specifier, line: node.startPosition.row + 1, target: null, status: 'not-found' };
+    if (kind !== 'static') { imports.push({ ...item, status: kind }); continue; }
+    if (specifier === null) { imports.push({ ...item, status: 'unreadable' }); continue; }
+    if (specifier.startsWith('/')) { imports.push({ ...item, status: 'outside' }); continue; }
+    if (!isRelative(specifier)) { external.add(specifier); continue; }
+    const candidates = candidatesFor(relativePath, specifier, known);
+    if (candidates === null) { imports.push({ ...item, status: 'outside' }); continue; }
+    if (candidates.length !== 1) { imports.push({ ...item, status: candidates.length ? 'ambiguous' : 'not-found' }); continue; }
+    const target = known.get(candidates[0])!;
+    if (targets.has(target.id)) continue;
+    targets.add(target.id);
+    imports.push({ ...item, status: 'project', target: { fileId: target.id, relativePath: target.relativePath } });
+  }
   const chunks = split.chunks.map(chunk => {
     const symbol = chunk.functionRange && analysis.symbols.find(item => item.evidence.startUtf16 === chunk.functionRange!.startUtf16 && item.evidence.endUtf16 === chunk.functionRange!.endUtf16);
     const parts: string[] = [];
@@ -185,23 +251,15 @@ export function describeFile(text: string, relativePath: string, fileId: string,
     } else if (chunk.functionRange) {
       const { startUtf16, endUtf16 } = chunk.functionRange;
       const fn = climb(startUtf16, node => node.startIndex === startUtf16 && node.endIndex === endUtf16 && functionTypes.has(node.type))!;
-      const member = fieldTypes.has(fn.parent?.type ?? '') ? fn.parent! : fn;
-      const http = decorators(member).filter(node => /^(Get|Post|Put|Patch|Delete|All)$/.test(decoratorName(node) ?? ''));
-      const owner = member.parent?.type === 'class_body' ? member.parent.parent : null;
-      const prefix = owner && decorators(owner).find(node => decoratorName(node) === 'Controller');
-      for (const decorator of http) {
-        const before = prefix ? decoratorPath(prefix) : '';
-        const after = decoratorPath(decorator);
-        parts.push(before === null || after === null ? '요청을 받아요 · 주소를 글자로 적지 않아 확인 못 함'
-          : `요청을 받아요 · 이 파일 기준 경로 ${quoted(`${decoratorName(decorator)!.toUpperCase()} /${[before, after].map(path => path.replace(/^\/+|\/+$/g, '')).filter(Boolean).join('/')}`)} (앱 공통 앞 경로는 빼고 봤어요)`);
+      const { routes, calls, hooks, jsx } = shapeAt(fn);
+      for (const route of routes) {
+        parts.push(route === null ? '요청을 받아요 · 주소를 글자로 적지 않아 확인 못 함'
+          : `요청을 받아요 · 이 파일 기준 경로 ${quoted(route)} (앱 공통 앞 경로는 빼고 봤어요)`);
       }
       parts.push(`매개변수 ${clip(fn.childForFieldName('parameters')?.text ?? fn.childForFieldName('parameter')?.text ?? '()')}`);
       if (symbol) parts.push(`하는 일 단계 ${symbol.steps.length}개`);
-      const body = fn.childForFieldName('body');
-      const calls = body ? descendants(body, true).filter(node => node.type === 'call_expression').map(node => node.childForFieldName('function')?.text ?? '?') : [];
       if (calls.length) parts.push(`부르는 것: ${calls.slice(0, 3).map(quoted).join(', ')}${calls.length > 3 ? ` 외 ${calls.length - 3}개` : ''}`);
-      if (returnsJsx(fn)) parts.push('화면 조각을 그려요');
-      const hooks = [...new Set(calls.filter(name => /(?:^|\.)use[A-Z]/.test(name)))];
+      if (jsx) parts.push('화면 조각을 그려요');
       if (hooks.length) parts.push(`쓰는 훅: ${hooks.slice(0, 3).map(quoted).join(', ')}${hooks.length > 3 ? ` 외 ${hooks.length - 3}개` : ''}`);
     } else if (chunk.kind === 'class') {
       const node = classes.find(node => node.childForFieldName('body')?.startIndex === chunk.range.endUtf16)!;
@@ -229,5 +287,8 @@ export function describeFile(text: string, relativePath: string, fileId: string,
     return { chunk, about: parts.join(' · '), symbolId: symbol ? symbol.id : null };
   });
   const names = [...new Set(exportedNames)];
-  return { role: fileRole, notes, exports: names.slice(0, 20), exportsOmitted: Math.max(0, names.length - 20), chunks, limitations: split.limitations };
+  return { role: fileRole, notes, exports: names.slice(0, 20), exportsOmitted: Math.max(0, names.length - 20),
+    imports: imports.slice(0, 30), importsOmitted: Math.max(0, imports.length - 30),
+    external: [...external].slice(0, 8), externalOmitted: Math.max(0, external.size - 8),
+    functions: functionFacts, chunks, limitations: split.limitations };
 }

@@ -68,6 +68,9 @@ export interface CodeSymbol {
   complexity: { lines: number; depth: number };
 }
 
+/** Said for every TS/JS file; the file guide leaves it out of its warnings, which are kept for real limits. */
+export const STRUCTURE_NOTE = '코드에 적힌 구문 구조입니다. 실제 실행 순서와 호출 대상은 확인하지 않았습니다.';
+
 export interface Analysis {
   language: 'typescript' | 'javascript' | 'text';
   symbols: CodeSymbol[];
@@ -118,11 +121,34 @@ export interface ProjectView extends ProjectFiles {
   overview: ProjectOverview;
 }
 export type GuideRange = FileExplanationRange;
+export interface GuideImport {
+  /** The written path; null when it is not plain text. */
+  specifier: string | null;
+  line: number;
+  /** Set only when exactly one project file fits. */
+  target: { fileId: string; relativePath: string } | null;
+  status: 'project' | 'ambiguous' | 'not-found' | 'outside' | 'not-static' | 'unreadable' | 'syntax';
+}
+/** Facts matched to an analyzer symbol's exact syntax range. */
+export interface GuideFunction {
+  symbolId: string;
+  tags: string[];
+  calls: string[];
+  callsOmitted: number;
+  hooks: string[];
+  hooksOmitted: number;
+  routeNote: string | null;
+}
 export interface FileGuide {
   role: { label: string; about: string; basis: { text: string; range: GuideRange | null } };
   notes: string[];
   exports: string[];
   exportsOmitted: number;
+  imports: GuideImport[];
+  importsOmitted: number;
+  external: string[];
+  externalOmitted: number;
+  functions: GuideFunction[];
   chunks: { chunk: FileChunk; about: string; symbolId: string | null }[];
   limitations: string[];
 }

@@ -3,7 +3,7 @@ import { extname } from 'node:path';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
-import type { Analysis, CodeStep, Evidence } from '../../shared/contracts';
+import { STRUCTURE_NOTE, type Analysis, type CodeStep, type Evidence } from '../../shared/contracts';
 
 export const functionTypes = new Set([
   'function_declaration', 'generator_function_declaration', 'function_expression',
@@ -220,7 +220,7 @@ export function analyzeSource(
     : extension === '.tsx' ? TypeScript.tsx : TypeScript.typescript);
   // This binding's string callback needs room for the source plus its terminator.
   const root = parser.parse(text, undefined, { bufferSize: Math.max(32 * 1024, text.length + 1) }).rootNode;
-  result.warnings.push('코드에 적힌 구문 구조입니다. 실제 실행 순서와 호출 대상은 확인하지 않았습니다.');
+  result.warnings.push(STRUCTURE_NOTE);
   if (root.hasError) {
     result.warnings.push('구문 오류가 있습니다. 오류가 포함된 함수는 분석에서 제외합니다.');
   }
