@@ -123,6 +123,7 @@ await writeFile(path.join(guideFixture, 'src/auth.controller.ts'), "@Controller(
 await writeFile(path.join(guideFixture, 'src/auth.service.ts'), 'export class Service { login(input: string) { return input; } }\n');
 await writeFile(path.join(guideFixture, 'src/broken.ts'), 'const before = 1;\nconst broken = ;\nconst after = 2;');
 await writeFile(path.join(guideFixture, 'src/many.ts'), Array.from({ length: 83 }, (_, i) => `const value${i} = ${i};`).join('\n'));
+await writeFile(path.join(guideFixture, 'src/functions.ts'), Array.from({ length: 12 }, (_, i) => `export function run${i}() { return ${i}; }`).join('\n') + '\nconst a = () => 1, b = () => 2;\n');
 await writeFile(path.join(guideFixture, 'README.md'), '# 파일 안내 시험\n');
 // Plan v2.3 C-1: one function of 61 code lines (over the limit of 60) next to a short one.
 const hardFixture = path.join(temporary, '어려운 코드 프로젝트');
@@ -2857,6 +2858,138 @@ try {
     await diff.getByText('이전 코드를 열 수 없어요: 이전 코드가 256 KiB를 넘어 열지 않아요.', { exact: true }).waitFor();
     await diff.getByText('지금 코드만 열 수 있어 그것만 보여요.', { exact: true }).waitFor();
     assert.equal(await diff.getByText('고른 커밋에는 없던 파일이에요. 지금 코드예요.', { exact: true }).count(), 0);
+  });
+  await check('Function bands: exact lines, source-only search and copy, card focus, toggling and stale removal', async () => {
+    await dialogTo(guideFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await openTreeFile('src/auth.controller.ts');
+    const headers = page.locator('.code-function-header');
+    const buttons = page.locator('.code-function-button');
+    const toggle = page.getByRole('button', { name: '설명 줄', exact: true });
+    assert.equal(await toggle.getAttribute('aria-pressed'), 'true');
+    await buttons.first().waitFor();
+    const original = await readFile(path.join(guideFixture, 'src/auth.controller.ts'), 'utf8');
+    assert.equal(await headers.count(), await page.locator('.symbols__item').count());
+    assert.deepEqual(await headers.evaluateAll(elements => elements.map(element => ({
+      text: element.nextElementSibling.textContent, band: element.nextElementSibling.classList.contains('cm-function-band--server'),
+    }))), [{ text: original.split('\n')[2], band: true }]);
+    assert.match(await buttons.first().innerText(), /POST \/auth\/login \(공통 앞 경로 제외\)/);
+    assert.equal(await buttons.first().getAttribute('tabindex'), '-1');
+    // Inspect the actual CodeMirror document without adding an app test API.
+    const content = page.locator('.cm-content');
+    assert.equal(await content.evaluate(element => element.cmTile.root.view.state.doc.toString()), original);
+    const headerText = await buttons.first().innerText();
+    assert.equal(original.includes(headerText), false);
+    await content.focus();
+    await page.keyboard.press('Meta+f');
+    await page.locator('.cm-search input[name="search"]').fill(headerText);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.locator('.cm-searchMatch, .cm-searchMatch-selected').count(), 0);
+    await page.keyboard.press('Escape');
+    // The selected range crosses the widget; Cmd+C must copy only the raw source.
+    const copied = await content.evaluate(element => {
+      const editor = element.cmTile.root.view;
+      const end = editor.state.doc.line(3).to;
+      editor.dispatch({ selection: { anchor: 0, head: end } });
+      editor.focus();
+      return editor.state.doc.sliceString(0, end);
+    });
+    await app.evaluate(({ clipboard }) => clipboard.writeText('copy has not run'));
+    await page.keyboard.press('Meta+c');
+    await until(async () => await app.evaluate(({ clipboard }) => clipboard.readText()) === copied);
+    assert.equal(copied, original.split('\n').slice(0, 3).join('\n'));
+    const visibleCard = id => page.locator('.file-guide [data-symbol-id]').evaluateAll((cards, id) => {
+      const card = cards.find(card => card.dataset.symbolId === id);
+      if (!card) return false;
+      const rect = card.getBoundingClientRect(), panel = card.closest('.panel').getBoundingClientRect();
+      // scrollIntoView can leave the card a fraction of a pixel past the edge.
+      return rect.height > 0 && rect.top >= panel.top - 1 && rect.bottom <= Math.min(panel.bottom, innerHeight) + 1;
+    }, id);
+    const id = await buttons.first().getAttribute('data-symbol-id');
+    await buttons.first().click();
+    await until(async () => await page.locator('.symbols__item[aria-pressed="true"]').innerText() === 'Auth.login');
+    await until(() => visibleCard(id));
+    await until(() => buttons.first().isEnabled());
+    await toggle.click();
+    assert.equal(await toggle.getAttribute('aria-pressed'), 'false');
+    assert.equal(await page.locator('.code-function-header, .cm-function-band').count(), 0);
+    await toggle.click();
+    await buttons.first().waitFor();
+    assert.equal(await page.locator('.cm-function-band').count(), 1);
+
+    await openTreeFile('src/functions.ts');
+    await until(async () => await buttons.count() === 14);
+    assert.equal(await headers.count(), 13);
+    assert.deepEqual(await headers.last().locator('button').allTextContents(), ['a · 받는 것: 없음', 'b · 받는 것: 없음']);
+    const functionsSource = await readFile(path.join(guideFixture, 'src/functions.ts'), 'utf8');
+    assert.deepEqual(await headers.evaluateAll(elements => elements.map(element => element.nextElementSibling.textContent)), functionsSource.trimEnd().split('\n'));
+    const ninth = buttons.filter({ hasText: /^run8 ·/ });
+    const ninthId = await ninth.getAttribute('data-symbol-id');
+    const guide = page.locator('.file-guide');
+    assert.equal(await guide.locator('[data-symbol-id]').count(), 8);
+    await guide.locator(':scope > summary').click();
+    await page.getByRole('button', { name: '패널 접기', exact: true }).click();
+    await ninth.click();
+    await until(async () => await page.locator('.symbols__item[aria-pressed="true"]').innerText() === 'run8');
+    await until(() => visibleCard(ninthId));
+    assert.equal(await guide.evaluate(element => element.open), true);
+    assert.equal(await guide.locator('[data-symbol-id]').count(), 14);
+    await until(() => ninth.isEnabled());
+    await page.locator('.panel').evaluate(element => { element.scrollTop = 0; });
+    assert.equal(await visibleCard(ninthId), false);
+    await ninth.click();
+    await until(() => visibleCard(ninthId));
+    await until(() => ninth.isEnabled());
+    await page.screenshot({ path: path.join(artifacts, 'function-bands.png') });
+    await writeFile(path.join(guideFixture, 'src/functions.ts'), functionsSource + '// changed\n');
+    await page.getByText('파일이 바뀌어 설명 줄을 숨겼어요. 파일 다시 읽기를 눌러 주세요.', { exact: true }).waitFor();
+    assert.equal(await page.locator('.code-function-header, .cm-function-band').count(), 0);
+    await page.getByRole('button', { name: '파일 다시 읽기', exact: true }).click();
+    await buttons.first().waitFor();
+    assert.equal(await page.getByText('파일이 바뀌어 설명 줄을 숨겼어요.', { exact: false }).count(), 0);
+    assert.equal(await readFile(path.join(guideFixture, 'src/auth.controller.ts'), 'utf8'), original);
+  });
+  await check('Function bands: busy clicks are blocked and a missing guide still allows function selection', async () => {
+    await openTreeFile('src/auth.controller.ts');
+    await app.evaluate(({ ipcMain }) => {
+      const read = ipcMain._invokeHandlers.get('learning:read');
+      const evidence = ipcMain._invokeHandlers.get('learning:evidence');
+      globalThis.testBandHandlers = { read, evidence };
+      globalThis.testBandClicks = 0;
+      ipcMain.removeHandler('learning:read');
+      ipcMain.handle('learning:read', async (event, request) => {
+        const result = await read(event, request);
+        return result.ok ? { ...result, value: { ...result.value, guide: null } } : result;
+      });
+      ipcMain.removeHandler('learning:evidence');
+      ipcMain.handle('learning:evidence', async (event, request) => {
+        globalThis.testBandClicks++;
+        await new Promise(resolve => { globalThis.testBandRelease = resolve; });
+        const result = await evidence(event, request);
+        return result.ok ? { ...result, value: { ...result.value, source: { ...result.value.source, guide: null } } } : result;
+      });
+    });
+    try {
+      await page.getByRole('button', { name: '파일 다시 읽기', exact: true }).click();
+      const button = page.locator('.code-function-button');
+      await until(async () => await button.innerText() === 'Auth.login · 받는 것: input: string');
+      assert.equal(await page.locator('.file-guide').count(), 0);
+      await button.click();
+      await until(() => button.isDisabled());
+      await button.evaluate(element => element.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+      assert.equal(await app.evaluate(() => globalThis.testBandClicks), 1);
+      assert.equal(await page.locator('.cm-function-band--plain.cm-line').count(), 1);
+      await app.evaluate(() => globalThis.testBandRelease());
+      await until(() => button.isEnabled());
+      assert.equal(await page.locator('.symbols__item[aria-pressed="true"]').innerText(), 'Auth.login');
+      assert.equal(await page.locator('.file-guide').count(), 0);
+    } finally {
+      await app.evaluate(({ ipcMain }) => {
+        globalThis.testBandRelease?.();
+        ipcMain.removeHandler('learning:read'); ipcMain.handle('learning:read', globalThis.testBandHandlers.read);
+        ipcMain.removeHandler('learning:evidence'); ipcMain.handle('learning:evidence', globalThis.testBandHandlers.evidence);
+      });
+    }
   });
   await check('File guide: immediate roles, ranges, function selection, collapsed limitations and stale hash rejection', async () => {
     await dialogTo(guideFixture);

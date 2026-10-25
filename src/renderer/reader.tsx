@@ -1,6 +1,6 @@
 import React, { useEffect, useImperativeHandle, useRef, type Ref } from 'react';
 import { Compartment, EditorState, RangeSet } from '@codemirror/state';
-import { EditorView, GutterMarker, gutter, lineNumbers, drawSelection, keymap, type KeyBinding } from '@codemirror/view';
+import { Decoration, EditorView, GutterMarker, WidgetType, gutter, lineNumbers, drawSelection, keymap, type KeyBinding } from '@codemirror/view';
 import { syntaxHighlighting } from '@codemirror/language';
 import {
   cursorCharLeft, cursorCharRight, cursorDocEnd, cursorDocStart, cursorLineBoundaryBackward, cursorLineBoundaryForward, cursorLineDown,
@@ -12,6 +12,7 @@ import { javascript } from '@codemirror/lang-javascript';
 import { openSearchPanel, search, searchKeymap } from '@codemirror/search';
 import type { CodeStep, Evidence, SourceView } from '../shared/contracts';
 import { groupStepMarkers, type StepMarkerGroup } from './step-markers';
+import { functionBands, type FunctionBandItem } from './code-bands';
 
 // Reading only: move, select and select all. Copying is the browser's own, and Tab is left unbound so
 // it moves focus out of the code as anywhere else.
@@ -42,6 +43,29 @@ const wrapping = new Compartment();
 const sizing = new Compartment();
 const sizeTheme = (px: number) => EditorView.theme({ '.cm-scroller': { fontSize: `${px}px` } });
 const stepGutter = new Compartment();
+const functionBandsCompartment = new Compartment();
+
+class FunctionHeader extends WidgetType {
+  constructor(readonly items: FunctionBandItem[], readonly locked: boolean, readonly onFunction: (id: string) => void) { super(); }
+
+  toDOM() {
+    const header = document.createElement('div');
+    header.className = 'code-function-header';
+    for (const item of this.items) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `code-function-button cm-function-band--${item.kind}`;
+      button.dataset.symbolId = item.symbolId;
+      button.textContent = item.text;
+      button.title = item.text;
+      button.tabIndex = -1;
+      button.disabled = this.locked;
+      button.onclick = () => { if (!this.locked) this.onFunction(item.symbolId); };
+      header.append(button);
+    }
+    return header;
+  }
+}
 
 class StepMarker extends GutterMarker {
   constructor(readonly group: StepMarkerGroup, readonly selected: boolean, readonly locked: boolean,
@@ -64,8 +88,9 @@ class StepMarker extends GutterMarker {
 
 export interface ReaderHandle { openSearch(): void }
 
-export function Reader({ source, evidence, codeSize, wrap, symbolId, stepId, locked, onStep, ref }: {
+export function Reader({ source, evidence, codeSize, wrap, symbolId, stepId, locked, onStep, bands = false, onFunction, ref }: {
   source: SourceView; evidence: Evidence | null; codeSize: number; wrap: boolean; ref?: Ref<ReaderHandle>;
+  bands?: boolean; onFunction?: (symbolId: string) => void;
   symbolId: string | null; stepId: string | null; locked: boolean; onStep?: (step: CodeStep) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
@@ -77,7 +102,7 @@ export function Reader({ source, evidence, codeSize, wrap, symbolId, stepId, loc
       extensions: [
         // Keep CR and BOM characters rather than silently changing raw-source offsets.
         EditorState.lineSeparator.of('\n'), EditorState.readOnly.of(true), EditorView.editable.of(false),
-        codeTheme, stepGutter.of([]), lineNumbers(), drawSelection(), keymap.of([...readingKeys, ...searchKeymap]), search({ top: true }), searchPhrases,
+        codeTheme, stepGutter.of([]), functionBandsCompartment.of([]), lineNumbers(), drawSelection(), keymap.of([...readingKeys, ...searchKeymap]), search({ top: true }), searchPhrases,
         // A new editor is made for each file and starts with the current choices; later changes reconfigure it.
         wrapping.of(wrap ? EditorView.lineWrapping : []), sizing.of(sizeTheme(codeSize)),
         // A non-editable element takes keyboard focus only with a tabindex (CodeMirror read-only example).
@@ -93,6 +118,20 @@ export function Reader({ source, evidence, codeSize, wrap, symbolId, stepId, loc
   // The parent passes a new handler on every render; reading the latest one here keeps the gutter from being rebuilt each time.
   const latestOnStep = useRef(onStep);
   useEffect(() => { latestOnStep.current = onStep; });
+  const latestOnFunction = useRef(onFunction);
+  useEffect(() => { latestOnFunction.current = onFunction; });
+  useEffect(() => {
+    const editor = view.current;
+    if (!editor) return;
+    if (!bands) { editor.dispatch({ effects: functionBandsCompartment.reconfigure([]) }); return; }
+    const groups = functionBands(source.analysis, source.guide, editor.state.doc.lines);
+    const headers = groups.headers.map(header => Decoration.widget({
+      widget: new FunctionHeader(header.items, locked, id => latestOnFunction.current?.(id)), block: true, side: -1,
+    }).range(editor.state.doc.line(header.line).from));
+    const lines = groups.lines.map(line => Decoration.line({ class: `cm-function-band cm-function-band--${line.kind}` })
+      .range(editor.state.doc.line(line.line).from));
+    editor.dispatch({ effects: functionBandsCompartment.reconfigure(EditorView.decorations.of(Decoration.set([...headers, ...lines], true))) });
+  }, [source, bands, locked]);
   useEffect(() => {
     const editor = view.current;
     if (!editor) return;
