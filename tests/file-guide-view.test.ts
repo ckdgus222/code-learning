@@ -2,10 +2,17 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { FileUse } from '../src/renderer/screen-groups';
-import type { ProjectRoutes } from '../src/shared/contracts';
+import type { CallSite, FunctionCalls, MapImport, ProjectRoutes } from '../src/shared/contracts';
 import { FileGuideCard } from '../src/renderer/file-guide';
 import { describeFile } from '../src/core/analysis/file-guide';
 import { analyzeSource } from '../src/core/analysis/syntax';
+
+const emptyFacts = {
+  importers: { state: 'ready' as const, stale: false, result: { files: [], ambiguous: [], partly: false } },
+  does: { bySymbol: new Map(), changed: false, partly: { routes: false, flows: false } },
+  doesState: { routes: 'none' as const, flows: false }, callers: null,
+  onBuildMap() {}, onCancelMap() {}, onShowImport() {}, onFindCallers() {}, onCancelCallers() {}, onShowCallSite() {}, pathOf: (id: string) => id,
+};
 
 const emptyUses = { state: 'none' as const, uses: [], changed: false, routes: null };
 
@@ -16,7 +23,7 @@ const guide = describeFile(text, 'guide.ts', 'f', 'h', analysis, [{ id: 'importe
 
 describe('file guide card', () => {
   it('shows eight function cards, imports and limitations before the collapsed other code', () => {
-    const html = renderToStaticMarkup(React.createElement(FileGuideCard, { uses: emptyUses, onUse() {}, guide, analysis, onOpenFile() {}, busy: false, stale: false, onShow() {}, onSelect() {} }));
+    const html = renderToStaticMarkup(React.createElement(FileGuideCard, { ...emptyFacts, uses: emptyUses, onUse() {}, guide, analysis, onOpenFile() {}, busy: false, stale: false, onShow() {}, onSelect() {} }));
     expect(html).toContain('<details open=""');
     expect(html).toContain('이 파일은');
     expect(html).toContain('코드 모양으로 짐작했어요');
@@ -35,7 +42,7 @@ describe('file guide card', () => {
   });
 
   it.each([{ busy: true, stale: false }, { busy: false, stale: true }])('disables basis, code, function and expand buttons when %j', state => {
-    const html = renderToStaticMarkup(React.createElement(FileGuideCard, { uses: emptyUses, onUse() {}, guide, analysis, onOpenFile() {}, ...state, onShow() {}, onSelect() {} }));
+    const html = renderToStaticMarkup(React.createElement(FileGuideCard, { ...emptyFacts, uses: emptyUses, onUse() {}, guide, analysis, onOpenFile() {}, ...state, onShow() {}, onSelect() {} }));
     expect(html).toContain('a.ts 열기</button>');
     const buttons = html.match(/<button[^>]*>/g)!;
     expect(buttons.length).toBeGreaterThan(8);
@@ -43,7 +50,7 @@ describe('file guide card', () => {
   });
 
   it('omits missing ranges and exports, and renders source strings as plain text', () => {
-    const html = renderToStaticMarkup(React.createElement(FileGuideCard, { uses: emptyUses, onUse() {}, analysis, onOpenFile() {}, guide: { ...guide,
+    const html = renderToStaticMarkup(React.createElement(FileGuideCard, { ...emptyFacts, uses: emptyUses, onUse() {}, analysis, onOpenFile() {}, guide: { ...guide,
       role: { label: '시험 파일', about: '<script>bad()</script>', basis: { text: 'test.ts', range: null } }, exports: [], chunks: [] },
     busy: false, stale: false, onShow() {}, onSelect() {} }));
     expect(html).not.toContain('근거:');
@@ -56,7 +63,7 @@ describe('file guide function cards', () => {
   it.each(['function outer() { function inner() {} }', 'const a = () => 1, b = () => 2;'])('renders every analyzer symbol: %s', source => {
     const analysis = analyzeSource(source, 'example.ts', { projectId: 'p', fileId: 'f', fileHash: 'h' });
     const guide = describeFile(source, 'example.ts', 'f', 'h', analysis, []);
-    const html = renderToStaticMarkup(React.createElement(FileGuideCard, { uses: emptyUses, onUse() {}, guide, analysis, busy: false, stale: false,
+    const html = renderToStaticMarkup(React.createElement(FileGuideCard, { ...emptyFacts, uses: emptyUses, onUse() {}, guide, analysis, busy: false, stale: false,
       onShow() {}, onSelect() {}, onOpenFile() {} }));
     expect(html).toContain(`이 파일의 함수 ${analysis.symbols.length}개`);
     expect(html.match(/>이 함수 고르기<\/button>/g)).toHaveLength(analysis.symbols.length);
@@ -74,7 +81,7 @@ describe('file guide function cards', () => {
     const source = "@Controller('auth') class Auth { @Post('login') login() { this.useCache(); return <div/>; } }\nfunction useThing() {}";
     const analysis = analyzeSource(source, 'example.tsx', { projectId: 'p', fileId: 'f', fileHash: 'h' });
     const guide = describeFile(source, 'example.tsx', 'f', 'h', analysis, []);
-    const html = renderToStaticMarkup(React.createElement(FileGuideCard, { uses: emptyUses, onUse() {}, guide, analysis, busy: false, stale: false,
+    const html = renderToStaticMarkup(React.createElement(FileGuideCard, { ...emptyFacts, uses: emptyUses, onUse() {}, guide, analysis, busy: false, stale: false,
       onShow() {}, onSelect() {}, onOpenFile() {} }));
     expect(html).toContain('종류 표시는 코드 모양으로 판단했어요. 실제로 요청이 이어지는지는 흐름 따라가기에서 확인해요.');
     for (const tag of guide.functions.flatMap(item => item.tags)) expect(html).toContain(`${tag} · 모양으로 판단</span>`);
@@ -90,7 +97,7 @@ describe('file guide function cards', () => {
     expect(guide.limitations).toEqual([]);
     const warning = analysis.warnings.find(message => message.includes('분석량 제한'))!;
     expect(warning).toBeDefined();
-    const html = renderToStaticMarkup(React.createElement(FileGuideCard, { uses: emptyUses, onUse() {}, guide, analysis, busy: false, stale: false,
+    const html = renderToStaticMarkup(React.createElement(FileGuideCard, { ...emptyFacts, uses: emptyUses, onUse() {}, guide, analysis, busy: false, stale: false,
       onShow() {}, onSelect() {}, onOpenFile() {} }));
     expect(html.indexOf(warning)).toBeGreaterThan(-1);
     expect(html.indexOf(warning)).toBeLessThan(html.indexOf('이 파일의 함수'));
@@ -100,7 +107,7 @@ describe('file guide function cards', () => {
     const source = 'function run(\n first: string,\n second: number,\n third: VeryLongParameterTypeName,\n fourth: string\n) { call(); }';
     const analysis = analyzeSource(source, 'example.ts', { projectId: 'p', fileId: 'f', fileHash: 'h' });
     const guide = { ...describeFile(source, 'example.ts', 'f', 'h', analysis, []), functions: [] };
-    const html = renderToStaticMarkup(React.createElement(FileGuideCard, { uses: emptyUses, onUse() {}, guide, analysis, busy: false, stale: false,
+    const html = renderToStaticMarkup(React.createElement(FileGuideCard, { ...emptyFacts, uses: emptyUses, onUse() {}, guide, analysis, busy: false, stale: false,
       onShow() {}, onSelect() {}, onOpenFile() {} }));
     const params = analysis.symbols[0].params.replace(/\s+/g, ' ').trim().slice(1, -1).trim();
     expect(html).toContain(`받는 것: ${params.slice(0, 60)}…`);
@@ -119,7 +126,7 @@ describe('file uses', () => {
   const use: FileUse = { routeIndex: 0, screen: '/login', through: 'page', storyId: 'req@page', step: 1,
     label: '프론트 처리', nodeId: 'send', other: true, inferred: true, reasons: ['주소 추정'] };
   const render = (uses: React.ComponentProps<typeof FileGuideCard>['uses'], busy = false, stale = false) =>
-    renderToStaticMarkup(React.createElement(FileGuideCard, { guide, analysis, busy, stale, uses,
+    renderToStaticMarkup(React.createElement(FileGuideCard, { ...emptyFacts, guide, analysis, busy, stale, uses,
       onUse() {}, onOpenFile() {}, onShow() {}, onSelect() {} }));
 
   it.each([
@@ -150,5 +157,151 @@ describe('file uses', () => {
   it.each([[true, false], [false, true]])('locks use navigation for busy=%s stale=%s', (busy, stale) => {
     const html = render({ state: 'ready', changed: false, routes, uses: [use] }, busy, stale);
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>이 단계로<\/button>/);
+  });
+});
+
+describe('file guide importers, actions and callers', () => {
+  const source = `function login() { if (!user) throw new Error('이메일이 없어요'); prisma.user.findUnique({}); }\nfunction empty() {}`;
+  const analysis = analyzeSource(source, 'auth.ts', { projectId: 'p', fileId: 'f', fileHash: 'h' });
+  const guide = describeFile(source, 'auth.ts', 'f', 'h', analysis, []);
+  const symbolId = analysis.symbols[0].id;
+  type Props = React.ComponentProps<typeof FileGuideCard>;
+  const render = (props: Partial<Props> = {}) => renderToStaticMarkup(React.createElement(FileGuideCard, {
+    ...emptyFacts, uses: emptyUses, onUse() {}, guide, analysis, busy: false, stale: false,
+    onShow() {}, onSelect() {}, onOpenFile() {}, ...props,
+  }));
+  const item: MapImport = { fromFileId: 'from', fileHash: 'h', startUtf16: 1, endUtf16: 3, startLine: 2, endLine: 2, text: 'import', specifier: './auth' };
+  const importer = { fromFileId: 'from', relativePath: 'web/x.ts', item };
+  const site: CallSite = { fileId: 'web/x.ts', fileHash: 'h', startUtf16: 1, endUtf16: 3, startLine: 9, endLine: 9,
+    text: 'login()', args: [], inTest: false, inFunction: null };
+  const result: FunctionCalls = { projectId: 'p', fileId: 'f', fileHash: 'h', startUtf16: 0, endUtf16: source.length,
+    name: 'login', calls: [], callers: [], typedCallers: [], maybeCallers: [], names: { local: ['login'], exported: [], property: [] },
+    unexamined: [], values: [], limited: false, notes: [] };
+  const button = (html: string, label: string) => html.match(new RegExp(`<button[^>]*>${label}</button>`))![0];
+
+  it.each([
+    ['none', '프로젝트 지도를 만들면 이 파일을 가져다 쓰는 파일도 보여요.', '지도 만들어 찾기'],
+    ['running', '프로젝트 지도를 만드는 중이에요.', '취소'],
+    ['ready', '이 파일을 가져다 쓰는 파일을 찾지 못했어요.', null],
+  ] as const)('shows %s importers and always warns about aliases', (state, message, label) => {
+    const html = render({ importers: { ...emptyFacts.importers, state } });
+    expect(html).toContain(message);
+    if (label) expect(html).toContain(`>${label}</button>`);
+    expect(html).toContain('경로 별칭(@/…)이나 실행할 때 정하는 가져오기는 따라가지 않아서 더 있을 수 있어요.');
+  });
+  it('shows confirmed files separately from ambiguity, caps each list and keeps stale results', () => {
+    const html = render({ importers: { state: 'ready', stale: true, result: {
+      files: Array.from({ length: 14 }, (_, i) => ({ ...importer, fromFileId: `${i}`, relativePath: `web/${i}.ts` })),
+      ambiguous: Array.from({ length: 13 }, (_, i) => ({ ...importer, item: { ...item, startUtf16: i } })), partly: true,
+    } } });
+    expect(html).toContain('이 파일을 가져다 쓰는 파일 14개');
+    expect(html).toContain('web/0.ts · 2행');
+    expect(html).not.toContain('web/12.ts');
+    expect(html).toContain('여럿 중 하나로 정하지 못한 가져오기 13개:');
+    expect(html.match(/ 열기<\/button>/g)).toHaveLength(24);
+    expect(html).toContain('외 2개');
+    expect(html).toContain('외 1개');
+    expect(html).toContain('일부 파일을 끝까지 보지 못해 더 있을 수 있어요.');
+    expect(html).toContain('지도를 만든 뒤 프로젝트가 바뀌었어요. 아래 목록은 그 전 코드 기준이에요.');
+  });
+  it.each([true, false])('locks map only for busy, but navigation and call searches for stale (busy=%s)', busy => {
+    const html = render({ busy, stale: true, importers: { state: 'ready', stale: true,
+      result: { files: [importer], ambiguous: [], partly: false } } });
+    expect(button(html, '다시 찾기').includes('disabled')).toBe(busy);
+    expect(button(html, 'x.ts 열기')).toContain('disabled');
+    expect(button(html, '부르는 곳 찾기')).toContain('disabled');
+    expect(button(html, '코드 보기')).toContain('disabled');
+    const none = render({ busy, stale: true, importers: { state: 'none', stale: false, result: null } });
+    expect(button(none, '지도 만들어 찾기').includes('disabled')).toBe(busy);
+  });
+  it('leaves both cancel buttons enabled during busy and stale states', () => {
+    const html = render({ busy: true, stale: true, importers: { state: 'running', stale: false, result: null },
+      callers: { symbolId, state: { status: 'finding' }, stale: false } });
+    expect(html).toContain('부르는 곳을 찾는 중…');
+    expect(button(html, '취소')).not.toContain('disabled');
+    expect(button(html, '찾기 취소')).not.toContain('disabled');
+  });
+  it('renders requests, after, errors and stores in order with exact text, links and omitted warnings', () => {
+    const html = render({ doesState: { routes: 'ready', flows: true }, does: { changed: false, partly: { routes: false, flows: false },
+      bySymbol: new Map([[symbolId, { requests: [
+        { line: 24, text: 'POST /api/auth/login 요청을 보내요', links: [
+          { text: '서버 POST /api/auth/login', inferred: false, reasons: [] },
+          { text: '서버 POST /auth/login', inferred: true, reasons: ['앞 경로 추정'] },
+        ] }, { line: 26, text: 'GET /missing 요청을 보내요', links: [] },
+      ], after: [{ line: 27, text: '성공하면 화면 /로 이동하기' }], afterPartly: true }]]) },
+      guide: { ...guide, functions: guide.functions.map(fn => ({ ...fn, stopsOmitted: 2, storesOmitted: 3 })) },
+    });
+    expect(html).toContain('POST /api/auth/login 요청을 보내요 (24행)');
+    expect(html).toContain('→ 서버 POST /api/auth/login');
+    expect(html).toContain('title="앞 경로 추정">추정 연결');
+    expect(html.match(/>추정 연결</g)).toHaveLength(1);
+    expect(html).toContain('서버 주소와 잇지 못했어요');
+    const texts = ['요청을 보내요 (24행)', '성공하면 화면 /로 이동하기 · 모양으로 판단 (27행)',
+      '“이메일이 없어요” 오류를 내요 · 조건: !user (1행)', 'user 읽기 · 모양으로 판단 (1행)'];
+    for (const text of texts) expect(html).toContain(text);
+    expect(texts.map(text => html.indexOf(text))).toEqual(texts.map(text => html.indexOf(text)).toSorted((a, b) => a - b));
+    expect(html).toContain('일부 생략');
+    expect(html).toContain('외 2개');
+    expect(html).toContain('외 3개');
+    expect(html).toContain('코드에서 찾은 할 일이 없어요. AI에게 물어볼 수 있어요.');
+  });
+  it.each([
+    [{ routes: 'none', flows: false }, '서버 주소를 찾으면 함수가 보내는 요청도 여기 보여요.'],
+    [{ routes: 'ready', flows: false }, '기능 흐름을 만들면 요청 뒤 할 일도 여기 보여요.'],
+    [{ routes: 'stale', flows: false }, '프로젝트가 바뀌어 서버 주소를 다시 찾아야 해요.'],
+  ] as const)('shows action availability above the function list: %j', (doesState, message) => {
+    const html = render({ doesState });
+    expect(html.indexOf(message)).toBeGreaterThan(-1);
+    expect(html.indexOf(message)).toBeLessThan(html.indexOf('이 파일의 함수'));
+    if (doesState.routes === 'stale') expect(html).not.toContain('기능 흐름을 만들면');
+  });
+  it('shows changed hashes and analysis limits above functions even without omitted after actions', () => {
+    const html = render({ does: { ...emptyFacts.does, changed: true, partly: { routes: true, flows: true } } });
+    for (const message of ['파일이 바뀌어 보내는 요청과 요청 뒤 할 일을 다시 찾아야 해요.',
+      '서버 주소 찾기가 한도에 닿아 일부 파일은 보지 않았어요. 보내는 요청이 더 있을 수 있어요.',
+      '일부 기능 흐름은 끝까지 확인하지 못해 요청 뒤 할 일이 더 있을 수 있어요.']) {
+      expect(html.indexOf(message)).toBeGreaterThan(-1);
+      expect(html.indexOf(message)).toBeLessThan(html.indexOf('이 파일의 함수'));
+    }
+  });
+  it('shows failures and locks retry, while another card keeps its own search button', () => {
+    const html = render({ stale: true, callers: { symbolId, stale: false, state: { status: 'failed', message: '찾기 실패' } } });
+    expect(html).toContain('찾기 실패');
+    expect(button(html, '다시 찾기')).toContain('disabled');
+    expect(html.match(/>부르는 곳 찾기<\/button>/g)).toHaveLength(1);
+    const other = render({ callers: { symbolId: 'old', stale: false, state: { status: 'failed', message: '옛 결과' } } });
+    expect(other).not.toContain('옛 결과');
+    expect(other.match(/>부르는 곳 찾기<\/button>/g)).toHaveLength(2);
+  });
+  it.each([null, []])('distinguishes unnamed functions from no confirmed callers (%j)', callers => {
+    const html = render({ callers: { symbolId, stale: false, state: { status: 'done', result: { ...result, callers } } } });
+    expect(html).toContain(callers === null ? '이름이 없는 함수라 부르는 곳을 찾지 않았어요.' : '확정한 부르는 곳이 없어요.');
+  });
+  it('separates and limits confirmed and typed callers, shows tests and class-body calls, and summarizes uncertainty', () => {
+    const html = render({ callers: { symbolId, stale: true, state: { status: 'done', result: { ...result,
+      callers: Array.from({ length: 6 }, (_, i) => ({ ...site, startUtf16: i, inTest: true })),
+      typedCallers: Array.from({ length: 7 }, (_, i) => ({ ...site, startUtf16: i, basis: 'Auth 타입',
+        inFunction: i ? null : { name: 'useAuth', startUtf16: 0, endUtf16: 10, startLine: 1 } })),
+      maybeCallers: [{ ...site, reason: 'member', detail: null }, { ...site, reason: 'member', detail: null }],
+      unexamined: [{ fileId: 'skipped', relativePath: 'skipped.ts', reason: '한도' }],
+    } } } });
+    expect(html).toContain('web/x.ts 9행 · 함수 밖(파일 최상위·클래스 본문)');
+    expect(html).toContain('web/x.ts 9행 · useAuth 안');
+    expect(html).toContain('시험 코드');
+    expect(html).toContain('title="Auth 타입">타입으로 찾음');
+    expect(html.match(/>호출 위치<\/button>/g)).toHaveLength(10);
+    expect(html.match(/>타입으로 찾음</g)).toHaveLength(5);
+    expect(html).toContain('외 1개');
+    expect(html).toContain('외 2개');
+    expect(html).toContain('이름이 같지만 잇지 못한 호출 2개 · 함수 흐름 화면에서 자세히 볼 수 있어요');
+    expect(html).toContain('보지 못한 파일 1개가 있어 더 있을 수 있어요.');
+    expect(html).toContain('찾은 뒤 프로젝트가 바뀌었어요. 다시 찾아 주세요.');
+    expect(button(html, '다시 찾기')).not.toContain('disabled');
+  });
+  it.each([{ busy: true, stale: false }, { busy: false, stale: true }])('locks call sites and stale result retry for %j', state => {
+    const html = render({ ...state, callers: { symbolId, stale: true,
+      state: { status: 'done', result: { ...result, callers: [site] } } } });
+    expect(button(html, '호출 위치')).toContain('disabled');
+    expect(button(html, '다시 찾기')).toContain('disabled');
   });
 });

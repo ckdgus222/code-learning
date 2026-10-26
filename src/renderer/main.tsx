@@ -9,6 +9,7 @@ import { ancestorFolderPaths, buildFileTree, filterFileTree, type TreeFolder } f
 import { AiPanel } from './ai-panel';
 import { FileGuideCard } from './file-guide';
 import { fileUses } from './screen-groups';
+import { functionDoes, importersOf } from './guide-facts';
 import { FileExplanationCard, rememberFileExplanation, type FileExplanationEntry, type FileExplanationState } from './file-explanation';
 import { Flow } from './flow';
 import { ProjectMapView, type MapEntry } from './project-map';
@@ -132,6 +133,11 @@ function App() {
   const diffRequest = useRef(0);
   const { view, setView, symbolId, stepId, selectSymbol, selectStep } = useSelection();
   const features = useFeatureFlows(project, revision.current);
+  const importers = useMemo(() => source && projectMap ? importersOf(source.fileId, source.relativePath, projectMap.map) : null,
+    [source?.fileId, projectMap]);
+  const does = useMemo(() => functionDoes(source?.fileId ?? '', source?.hash ?? '', source?.analysis.symbols ?? [],
+    features.stale ? null : features.routes ?? null, features.groupingProps.flows),
+  [source?.fileId, source?.hash, features.routes, features.groupingProps.flows, features.stale]);
   const uses = useMemo(() => source && features.routes && features.groupingProps.flows
     ? fileUses(source.fileId, source.hash, features.routes, features.groupingProps.flows)
     : { uses: [], changed: false }, [source?.fileId, source?.hash, features.routes, features.groupingProps.flows]);
@@ -242,8 +248,8 @@ function App() {
   }, [view, source, symbol]);
   // The calls found lead to their value shapes; coming back to a function reuses both.
   useEffect(() => {
-    if (calls?.state.status === 'done' && shapes?.key !== calls.key) void findShapes(calls.key, calls.state.result);
-  }, [calls]);
+    if (view === 'function' && calls?.state.status === 'done' && shapes?.key !== calls.key) void findShapes(calls.key, calls.state.result);
+  }, [calls, view]);
   // The changes view reads the folder's commits the first time it is looked at, then compares with HEAD.
   useEffect(() => {
     if (view === 'changes' && project && !history) void loadHistory();
@@ -586,6 +592,11 @@ function App() {
   }
 
   const callsKey = (from: SourceView, item: CodeSymbol) => `${from.fileId}:${from.hash}:${item.evidence.startUtf16}:${item.evidence.endUtf16}`;
+  // The function card the last call search belongs to; looked up only while the file guide is drawn.
+  function guideCaller(found: NonNullable<typeof calls>) {
+    const item = source?.analysis.symbols.find(symbol => found.key === callsKey(source, symbol));
+    return item ? { symbolId: item.id, state: found.state, stale: found.revision !== revision.current } : null;
+  }
   function forgetCalls() { callsRequest.current++; setCalls(null); forgetShapes(); }
   // A search still running is replaced by the next one, so only its result is dropped here.
   function forgetShapes() { shapesRequest.current++; setShapes(null); }
@@ -1073,6 +1084,13 @@ function App() {
             <p><b>{symbol.name}</b> 함수는 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요. 왼쪽에서 구문을 골라 한 부분씩 볼 수 있어요.</p>
           </section> : <p className="hint">함수나 구문을 고르면 그 부분을 여기서 짚어 줘요.</p>)}
           {view === 'code' && source?.guide && <FileGuideCard key={`${source.fileId}:${source.hash}`} guide={source.guide} analysis={source.analysis} busy={busy} stale={stale}
+            importers={{ state: mapping ? 'running' : projectMap ? 'ready' : 'none',
+              stale: projectMap !== null && projectMap.revision !== revision.current, result: importers }}
+            onBuildMap={() => void buildMap()} onCancelMap={() => void cancelMap()} onShowImport={item => void showImport(item)}
+            does={does} doesState={{ routes: features.stale ? 'stale' : features.routes ? 'ready' : 'none', flows: features.groupingProps.flows !== null }}
+            callers={calls && guideCaller(calls)}
+            onFindCallers={item => void findCalls(source, item)}
+            onCancelCallers={() => void cancelCalls()} onShowCallSite={site => void showCallSite(site)} pathOf={pathOf}
             uses={{ ...uses, routes: features.routes ?? null,
               state: features.groupingProps.grouping ? 'running' : features.groupingProps.flows ? 'ready' : 'none' }}
             onUse={use => void followFeatureRoute(use.routeIndex, { through: use.through, storyId: use.storyId, step: use.step, nodeId: use.nodeId })}

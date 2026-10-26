@@ -1,7 +1,9 @@
 import type Parser from 'tree-sitter';
 import type { Analysis, FileGuide, GuideFunction, GuideImport, GuideRange, ProjectFile } from '../../shared/contracts';
 import { splitFileChunks } from './file-chunks';
-import { candidatesFor, isRelative, parse } from './project-map';
+import { candidatesFor, isRelative, MAP_LIMITS, parse } from './project-map';
+import { readFacts } from './names';
+import { serverFacts } from './feature-flow';
 import { functionTypes, importOf } from './syntax';
 import { formatNextPath, nextRouteOf } from './next-routes';
 
@@ -194,6 +196,10 @@ export function describeFile(text: string, relativePath: string, fileId: string,
     return shapes.get(key)!;
   };
   const functionFacts: GuideFunction[] = [];
+  // A stop needs `throw` and a store a `prisma` or `$transaction` receiver, so other files skip the name walk.
+  const facts = /throw|prisma|\$transaction/.test(text)
+    ? readFacts({ id: fileId, relativePath, size: text.length }, text, fileHash, MAP_LIMITS.nodesPerFile) : null;
+  const factFunctions = new Map(facts?.functions.map(fn => [`${fn.startIndex}:${fn.endIndex}`, fn]));
   for (const symbol of analysis.symbols) {
     const { startUtf16, endUtf16 } = symbol.evidence;
     const fn = climb(startUtf16, node => node.startIndex === startUtf16 && node.endIndex === endUtf16 && functionTypes.has(node.type));
@@ -211,7 +217,9 @@ export function describeFile(text: string, relativePath: string, fileId: string,
     const assignedName = parent && ['variable_declarator', 'public_field_definition', 'field_definition'].includes(parent.type)
       ? parent.childForFieldName('name') : parent?.type === 'pair' ? parent.childForFieldName('key') : null;
     if (/^use[A-Z]/.test(fn.childForFieldName('name')?.text ?? assignedName?.text ?? '')) tags.push('훅 이름');
-    functionFacts.push({ symbolId: symbol.id, tags, calls: calls.slice(0, 3), callsOmitted: Math.max(0, calls.length - 3),
+    const factFunction = factFunctions.get(`${startUtf16}:${endUtf16}`);
+    const bodyFacts = factFunction && facts ? serverFacts(factFunction, facts) : { stops: [], stopsOmitted: 0, stores: [], storesOmitted: 0 };
+    functionFacts.push({ symbolId: symbol.id, ...bodyFacts, tags, calls: calls.slice(0, 3), callsOmitted: Math.max(0, calls.length - 3),
       hooks: hooks.slice(0, 3), hooksOmitted: Math.max(0, hooks.length - 3), routeNote: routes.length ? '앱 공통 앞 경로는 빼고 봤어요' : null });
   }
   const known = new Map(projectFiles.map(file => [file.relativePath, file]));
