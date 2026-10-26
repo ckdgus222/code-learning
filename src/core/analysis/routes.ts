@@ -5,7 +5,7 @@ import { AppError } from '../../shared/errors';
 import { MAX_FILE_BYTES, readAllowed } from '../project/files';
 import { candidatesFor, codeFile, isRelative, MAP_LIMITS, type MapLimits } from './project-map';
 import { formatNextPath, nextRouteOf } from './next-routes';
-import { firstLine, lineRange, nearest, readFacts, reassigned, sameRange, type CallFact, type FileFacts, type Scope } from './names';
+import { firstLine, hasUnsupportedCertainty, lineRange, nearest, readFacts, reassigned, sameRange, simpleProperties, type CallFact, type FileFacts, type Scope } from './names';
 import { functionName, functionTypes } from './syntax';
 
 type Node = Parser.SyntaxNode;
@@ -212,7 +212,7 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
     }
   }
 
-  interface Sender { wrapped?: boolean; axios: boolean; method: string | null; base: string; unknown: boolean; forwards: boolean }
+  interface Sender { wrapped?: boolean; fixedMethod?: string | null; axios: boolean; method: string | null; base: string; unknown: boolean; forwards: boolean }
   // Any defaults write may occur outside the current file. Unread files cannot establish its absence.
   const axiosDefaults = incomplete || partial.some(text => /\bdefaults\b/.test(text)) || [...facts.values()].some(info => (trees.get(info.file.id) ?? []).some(node =>
     ['assignment_expression', 'augmented_assignment_expression', 'update_expression'].includes(node.type)
@@ -381,8 +381,17 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
       const sender = senders[0].sender!;
       // Conflicting terminal requests cannot establish a single method or base path.
       const consistent = senders.every(item => item.sender!.axios === sender.axios && item.sender!.method === sender.method && item.sender!.base === sender.base);
-      wrappers.set(key, { ...sender, wrapped: true, unknown: !consistent || senders.some(item => item.sender!.unknown),
-        forwards: consistent && senders.every(item => item.sender!.forwards) && forwardsOptions(info, fn, senders.map(item => item.call)) });
+      const forwards = consistent && senders.every(item => item.sender!.forwards) && forwardsOptions(info, fn, senders.map(item => item.call));
+      // Inspect every candidate call, including wrappers that have not been registered yet.
+      const fixedMethods = !forwards && !hasUnsupportedCertainty(info) ? calls.map(call => {
+        const direct = senderOf(info, call);
+        if (!direct || direct.wrapped) return null;
+        if (direct.method) return direct.method;
+        const method = simpleProperties(argsOf(call.node)[1] ?? null)?.get('method');
+        return method?.type === 'string' ? literal(method)?.toUpperCase() ?? null : null;
+      }) : [];
+      const fixedMethod = fixedMethods[0] != null && fixedMethods.every(method => method === fixedMethods[0]) ? fixedMethods[0] : null;
+      wrappers.set(key, { ...sender, wrapped: true, fixedMethod, unknown: !consistent || senders.some(item => item.sender!.unknown), forwards });
       changed = true;
     }
   }
@@ -412,7 +421,7 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
     if (remote) { host = remote[1]; raw = remote[2] || '/'; } else raw = full;
     const path = bounded(joinPath(raw.split(/[?#]/)[0].split('/').map(segment => segment.includes('*') ? '*' : segment).join('/')));
     if (path === null) { omitted = true; continue; }
-    let requestMethods: string[] | null = null;
+    let requestMethods: string[] | null = !sender.forwards && sender.fixedMethod ? [sender.fixedMethod] : null;
     if (sender.forwards) {
       if (sender.method) requestMethods = [sender.method];
       else if (!config || config.type === 'object' && !children(config).some(node => keyOf(node) === null)) {
