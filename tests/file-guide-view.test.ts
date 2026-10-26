@@ -9,6 +9,7 @@ import { analyzeSource } from '../src/core/analysis/syntax';
 import { functionDoes } from '../src/renderer/guide-facts';
 
 const emptyFacts = {
+  ai: { state: 'ready' as const, bySymbol: new Map<string, string>() },
   importers: { state: 'ready' as const, stale: false, result: { files: [], ambiguous: [], unread: [], limitedMap: false } },
   does: { bySymbol: new Map(), changed: false, notes: { routes: [], flows: [] } },
   doesState: { routes: 'none' as const, flows: false }, callers: null,
@@ -116,6 +117,61 @@ describe('file guide function cards', () => {
     expect(html).toContain('이 함수 고르기');
     expect(html).toContain('크기:');
     expect(html).not.toContain('부르는 것:');
+  });
+});
+
+describe('file guide AI function summaries', () => {
+  const source = 'function run() {}\nfunction other() {}';
+  const analysis = analyzeSource(source, 'example.ts', { projectId: 'p', fileId: 'f', fileHash: 'h' });
+  const guide = describeFile(source, 'example.ts', 'f', 'h', analysis, []);
+  const symbolId = analysis.symbols[0].id;
+  type Props = React.ComponentProps<typeof FileGuideCard>;
+  const render = (props: Partial<Props> = {}) => renderToStaticMarkup(React.createElement(FileGuideCard, {
+    ...emptyFacts, guide, analysis, uses: emptyUses, busy: false, stale: false,
+    onUse() {}, onShow() {}, onSelect() {}, onOpenFile() {}, ...props,
+  }));
+  const noneNotice = '아래 ‘AI로 이 파일 설명 만들기’를 쓰면, AI가 요약한 함수 카드에 AI 해석을 보여 줘요.';
+  const staleNotice = '파일이 바뀌어 AI 요약을 숨겼어요. 다시 만들어 주세요.';
+
+  it('shows the AI heading, interpretation tag and text only on a summarized function', () => {
+    const html = render({ ai: { state: 'ready', bySymbol: new Map([[symbolId, 'run 함수 설명']]) } });
+    expect(html.match(/<h5>AI 요약<\/h5>/g)).toHaveLength(1);
+    expect(html).toContain('<span class="tag tag--unknown">AI 해석</span> run 함수 설명');
+    expect(html.indexOf('<strong>run</strong>')).toBeLessThan(html.indexOf('<h5>AI 요약</h5>'));
+    expect(html.indexOf('<h5>AI 요약</h5>')).toBeLessThan(html.indexOf('<h5>부르는 곳</h5>'));
+    expect(html.slice(html.indexOf('<strong>other</strong>'))).not.toContain('AI 요약');
+    expect(html).not.toContain(noneNotice);
+    expect(html).not.toContain(staleNotice);
+  });
+  it.each([['none', noneNotice], ['stale', staleNotice]] as const)('shows the %s notice before the function list', (state, notice) => {
+    const html = render({ ai: { state, bySymbol: new Map() } });
+    expect(html).toContain(notice);
+    expect(html.indexOf(notice)).toBeLessThan(html.indexOf('이 파일의 함수'));
+    expect(html).not.toContain('<h5>AI 요약</h5>');
+  });
+  it('shows no notice or AI heading for a ready result without matching summaries', () => {
+    const html = render();
+    expect(html).not.toContain(noneNotice);
+    expect(html).not.toContain(staleNotice);
+    expect(html).not.toContain('<h5>AI 요약</h5>');
+  });
+  it.each(['none', 'stale'] as const)('hides the %s notice for plain text', state => {
+    const html = render({ analysis: { ...analysis, language: 'text', symbols: [] }, ai: { state, bySymbol: new Map() } });
+    expect(html).not.toContain(noneNotice);
+    expect(html).not.toContain(staleNotice);
+  });
+  it.each([false, true])('keeps the empty-facts message and suggests asking AI only without a summary (%s)', hasSummary => {
+    const html = render({ analysis: { ...analysis, symbols: [analysis.symbols[0]] }, guide: { ...guide, functions: [] },
+      ai: { state: 'ready', bySymbol: new Map(hasSummary ? [[symbolId, 'run 함수 설명']] : []) } });
+    expect(html).toContain('코드에서 찾은 할 일이 없어요.');
+    expect(html.includes('AI에게 물어볼 수 있어요')).toBe(!hasSummary);
+    if (hasSummary) expect(html.indexOf('코드에서 찾은 할 일이 없어요.')).toBeLessThan(html.indexOf('<h5>AI 요약</h5>'));
+  });
+  it('renders AI markup as escaped text', () => {
+    const html = render({ ai: { state: 'ready', bySymbol: new Map([[symbolId, '<b>함수 설명</b><script>bad()</script>']]) } });
+    expect(html).toContain('&lt;b&gt;함수 설명&lt;/b&gt;&lt;script&gt;bad()&lt;/script&gt;');
+    expect(html).not.toContain('<b>');
+    expect(html).not.toContain('<script>');
   });
 });
 

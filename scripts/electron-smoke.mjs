@@ -3365,6 +3365,10 @@ try {
     await card.getByRole('checkbox').check();
     await create.click();
     await card.getByTestId('file-summary').waitFor();
+    const runCard = guide.locator('.file-guide__functions > li').filter({ has: page.getByText('run', { exact: true }) });
+    await runCard.getByRole('heading', { name: 'AI 요약', exact: true }).waitFor();
+    await runCard.getByText('AI 해석', { exact: true }).waitFor();
+    assert.match(await runCard.innerText(), /run 덩어리 설명/);
     await card.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
     assert.equal(await card.getByRole('checkbox').isChecked(), false);
     assert.equal(await card.locator('.consent-details').evaluate(element => element.open), false);
@@ -3475,6 +3479,10 @@ try {
     await until(async () => await card.getByRole('button', { name: '파일 전체 근거', exact: true }).isEnabled());
     await writeFile(path.join(fileExplanationFixture, 'chunks.ts'), fileExplanationSource + '// changed\n');
     await card.getByText('다시 확인 필요:', { exact: false }).waitFor();
+    await page.locator('.file-guide').getByText('파일이 바뀌어 AI 요약을 숨겼어요. 다시 만들어 주세요.', { exact: true }).waitFor();
+    assert.equal(await page.locator('.file-guide').getByRole('heading', { name: 'AI 요약', exact: true }).count(), 0);
+    assert.equal(await page.locator('.file-guide').getByText('AI 해석', { exact: true }).count(), 0);
+    assert.doesNotMatch(await page.locator('.file-guide').innerText(), /run 덩어리 설명/);
     // The map buttons do not depend on the open file, so a change notice leaves them usable (plan E).
     const guideButtons = page.locator('.file-guide').getByRole('button')
       .filter({ hasNot: page.locator('xpath=self::*[ancestor::section[@aria-label="이 파일을 가져다 쓰는 파일"]]') });
