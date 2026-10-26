@@ -1294,6 +1294,81 @@ try {
     await until(async () => await page.evaluate(() => getSelection()?.toString()) === "router.push('/')");
     await page.screenshot({ path: path.join(artifacts, 'feature-flow-login-result.png') });
   });
+  await check('File guide E: reverse imports and caller navigation reuse existing searches without shape work', async () => {
+    await dialogTo(featureFlowFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '기능 흐름 프로젝트', exact: true }).waitFor();
+    await openTreeFile('web/lib/request.ts');
+    const guide = page.locator('.panel .file-guide');
+    const importers = guide.getByRole('region', { name: '이 파일을 가져다 쓰는 파일', exact: true });
+    await importers.getByRole('button', { name: '지도 만들어 찾기', exact: true }).click();
+    await importers.getByText('이 파일을 가져다 쓰는 파일 1개', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: '코드 읽기', exact: true }).getAttribute('aria-current'), 'page');
+    await importers.getByRole('button', { name: 'dogs.ts 열기', exact: true }).click();
+    await page.getByRole('heading', { name: 'web/lib/dogs.ts', exact: true }).waitFor();
+    await until(async () => /web\/lib\/dogs.ts · 1–1줄/.test(await page.getByTestId('evidence-range').innerText()));
+    await openTreeFile('web/lib/request.ts');
+    await app.evaluate(({ ipcMain }) => {
+      const handlers = ipcMain._invokeHandlers;
+      const calls = handlers.get('learning:calls');
+      const shapes = handlers.get('learning:shapes');
+      globalThis.guideCallsCount = 0;
+      globalThis.guideShapesCount = 0;
+      handlers.set('learning:calls', (...args) => { globalThis.guideCallsCount++; return calls(...args); });
+      handlers.set('learning:shapes', (...args) => { globalThis.guideShapesCount++; return shapes(...args); });
+      globalThis.restoreGuideSearches = () => {
+        handlers.set('learning:calls', calls);
+        handlers.set('learning:shapes', shapes);
+      };
+    });
+    try {
+      const card = guide.locator('[data-symbol-id]').first();
+      await card.getByRole('button', { name: '부르는 곳 찾기', exact: true }).click();
+      await card.getByRole('button', { name: '호출 위치', exact: true }).waitFor();
+      assert.match(await card.innerText(), /web\/lib\/dogs.ts 1행/);
+      assert.deepEqual(await app.evaluate(() => [globalThis.guideCallsCount, globalThis.guideShapesCount]), [1, 0]);
+      await card.getByRole('button', { name: '이 함수 고르기', exact: true }).click();
+      await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+      await until(async () => await app.evaluate(() => globalThis.guideShapesCount) === 1);
+      assert.equal(await app.evaluate(() => globalThis.guideCallsCount), 1);
+      await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+      await card.getByRole('button', { name: '호출 위치', exact: true }).click();
+      await page.getByRole('heading', { name: 'web/lib/dogs.ts', exact: true }).waitFor();
+      await page.getByTestId('evidence-range').waitFor();
+    } finally {
+      await app.evaluate(() => globalThis.restoreGuideSearches());
+    }
+  });
+  await check('File guide E: request, after, stop and store facts; server-only changes hide stale requests', async () => {
+    await dialogTo(featureFlowFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '기능 흐름 프로젝트', exact: true }).waitFor();
+    await openTreeFile('api/service.ts');
+    const guide = page.locator('.panel .file-guide');
+    await guide.getByText('“반려견을 찾을 수 없어요.” 오류를 내요 (찾을 수 없음) · 조건: !id (3행)', { exact: true }).waitFor();
+    await guide.getByText('dog 지우기 · 모양으로 판단 (4행)', { exact: true }).waitFor();
+    await dialogTo(loginFlowFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '로그인 흐름 프로젝트', exact: true }).waitFor();
+    await page.getByRole('region', { name: '화면 /login', exact: true }).waitFor();
+    await openTreeFile('web/app/login/page.tsx');
+    await guide.getByText('성공하면 화면 /로 이동하기 · 모양으로 판단 (6행)', { exact: true }).waitFor();
+    await openTreeFile('web/lib/auth.ts');
+    await guide.getByText('POST /api/auth/login 요청을 보내요 (1행)', { exact: false }).waitFor();
+    await page.screenshot({ path: path.join(artifacts, 'file-guide-e-requests.png') });
+    try {
+      await writeFile(path.join(loginFlowFixture, 'api/controller.ts'), loginFlowFiles['api/controller.ts'] + '\n// guide stale check\n');
+      await guide.getByText('프로젝트가 바뀌어 서버 주소를 다시 찾아야 해요.', { exact: true }).waitFor();
+      assert.equal(await guide.getByText('요청을 보내요', { exact: false }).count(), 0);
+      assert.equal(await guide.getByRole('button', { name: '부르는 곳 찾기', exact: true }).isDisabled(), true);
+      assert.equal(await guide.getByRole('button', { name: '지도 만들어 찾기', exact: true }).isEnabled(), true);
+      await guide.getByRole('button', { name: '지도 만들어 찾기', exact: true }).click();
+      await guide.getByText('이 파일을 가져다 쓰는 파일 1개', { exact: true }).waitFor();
+      assert.equal(await guide.getByRole('button', { name: 'provider.ts 열기', exact: true }).isDisabled(), true);
+    } finally {
+      await writeFile(path.join(loginFlowFixture, 'api/controller.ts'), loginFlowFiles['api/controller.ts']);
+    }
+  });
   await check('Flow panel drops the previous explanation after current or related file changes', async () => {
     for (const relativePath of ['web/app/login/page.tsx', 'api/controller.ts']) {
       await dialogTo(loginFlowFixture);
@@ -3401,9 +3476,12 @@ try {
     await until(async () => await card.getByRole('button', { name: '파일 전체 근거', exact: true }).isEnabled());
     await writeFile(path.join(fileExplanationFixture, 'chunks.ts'), fileExplanationSource + '// changed\n');
     await card.getByText('다시 확인 필요:', { exact: false }).waitFor();
-    const guideButtons = page.locator('.file-guide').getByRole('button');
+    // The map buttons do not depend on the open file, so a change notice leaves them usable (plan E).
+    const guideButtons = page.locator('.file-guide').getByRole('button')
+      .filter({ hasNot: page.locator('xpath=self::*[ancestor::section[@aria-label="이 파일을 가져다 쓰는 파일"]]') });
     assert.ok(await guideButtons.count() > 0);
     for (const button of await guideButtons.all()) assert.equal(await button.isDisabled(), true);
+    assert.equal(await page.locator('.file-guide').getByRole('button', { name: '지도 만들어 찾기', exact: true }).isDisabled(), false);
     assert.equal(await card.getByRole('button', { name: '파일 전체 근거', exact: true }).isDisabled(), true);
     assert.equal(await card.getByRole('button', { name: '코드 보기', exact: true }).first().isDisabled(), true);
     assert.equal(await page.getByTestId('evidence-range').count(), 0);

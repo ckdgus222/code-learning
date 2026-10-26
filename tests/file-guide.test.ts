@@ -322,3 +322,36 @@ function plain() { return 1; }`, 'example.tsx');
       hooks: ['useA', 'useB', 'useC'], hooksOmitted: 1, tags: [], routeNote: null });
   });
 });
+
+describe('file guide stops and stores', () => {
+  it('keeps nested functions and same-name functions separate, including front-end errors', () => {
+    const result = guide(`function outer() {
+  if (!user) throw new Error('이메일이 없어요');
+  prisma.user.findUnique({});
+  function same() { throw new Error('inner'); prisma.dog.delete({}); }
+}
+function other() { function same() { throw new Error('other'); prisma.cat.count({}); } }`, 'front.ts');
+    expect(result.functions.map(fn => fn.stops.map(stop => stop.message))).toEqual([['이메일이 없어요'], ['inner'], [], ['other']]);
+    expect(result.functions.map(fn => fn.stores.map(store => [store.model, store.action]))).toEqual([
+      [['user', 'read']], [['dog', 'delete']], [], [['cat', 'count']],
+    ]);
+    expect(result.functions[0].stops[0]).toMatchObject({ condition: '!user', site: { fileId, fileHash, startLine: 2 } });
+  });
+  it('uses nodes from the facts tree for transaction callbacks, following serverFacts ownership', () => {
+    const result = guide(`async function save() {
+  return prisma.$transaction(async tx => {
+    if (!user) throw new Error('missing');
+    return tx.user.create({});
+  });
+}`);
+    expect(result.functions.map(fn => fn.stops.map(stop => stop.message))).toEqual([['missing'], ['missing']]);
+    expect(result.functions.map(fn => fn.stores.map(store => [store.model, store.action]))).toEqual([[['user', 'create']], [['user', 'create']]]);
+  });
+  it('keeps existing stop and store limits and omitted counts', () => {
+    const result = guide(`function run() { ${Array.from({ length: 9 }, (_, i) => `if (n === ${i}) throw new Error('${i}'); prisma.user.count({});`).join('\n')} }`);
+    expect(result.functions[0].stops).toHaveLength(6);
+    expect(result.functions[0].stopsOmitted).toBe(3);
+    expect(result.functions[0].stores).toHaveLength(8);
+    expect(result.functions[0].storesOmitted).toBe(1);
+  });
+});

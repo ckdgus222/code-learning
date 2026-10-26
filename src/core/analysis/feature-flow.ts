@@ -63,7 +63,7 @@ function isTransactionParameter(receiver: Node, call: CallFact | undefined, fact
 }
 
 /** Reads this body and directly passed callbacks, without resolving any more calls or files. */
-function serverFacts(fn: Node, facts: FileFacts): Pick<FlowNode, 'stops' | 'stopsOmitted' | 'stores' | 'storesOmitted'> {
+export function serverFacts(fn: Node, facts: FileFacts): Pick<FlowNode, 'stops' | 'stopsOmitted' | 'stores' | 'storesOmitted'> {
   const stops: FlowStop[] = [];
   const stores: FlowStore[] = [];
   let stopsOmitted = 0;

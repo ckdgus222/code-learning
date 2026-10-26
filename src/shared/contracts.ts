@@ -131,7 +131,7 @@ export interface GuideImport {
   status: 'project' | 'ambiguous' | 'not-found' | 'outside' | 'not-static' | 'unreadable' | 'syntax';
 }
 /** Facts matched to an analyzer symbol's exact syntax range. */
-export interface GuideFunction {
+export interface GuideFunction extends Pick<FlowNode, 'stops' | 'stopsOmitted' | 'stores' | 'storesOmitted'> {
   symbolId: string;
   tags: string[];
   calls: string[];
