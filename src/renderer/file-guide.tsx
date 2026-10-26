@@ -19,7 +19,7 @@ const FIRST_ROWS = 12;
 export function FileGuideCard({ guide, analysis, busy, stale, uses, onUse, onShow, onSelect, onOpenFile, focus = null,
   importers, onBuildMap, onCancelMap, onShowImport, does, doesState, ai, callers, onFindCallers, onCancelCallers, onShowCallSite, pathOf }: {
   guide: FileGuide; analysis: Analysis; busy: boolean; stale: boolean;
-  uses: { state: 'none' | 'running' | 'ready'; uses: FileUse[]; changed: boolean; routes: ProjectRoutes | null };
+  uses: { state: 'none' | 'stale' | 'running' | 'ready'; uses: FileUse[]; changed: boolean; routes: ProjectRoutes | null };
   onUse(use: FileUse): void;
   /** A header click in the code; a new object each click, so the same function can be brought back into view. */
   focus?: { symbolId: string } | null;
@@ -65,6 +65,7 @@ export function FileGuideCard({ guide, analysis, busy, stale, uses, onUse, onSho
     <p>{guide.role.about}</p>
     <section aria-label="이 파일이 나오는 기능">
       {uses.state === 'none' && <p className="hint">기능 흐름을 아직 만들지 않았어요. 한눈에 보기에서 기능 목록을 찾으면 여기 보여요.</p>}
+      {uses.state === 'stale' && <p className="hint">코드가 바뀌어 기능 흐름을 다시 만들어야 해요. 한눈에 보기에서 주소를 다시 찾아 주세요.</p>}
       {uses.state === 'running' && <p className="hint">기능 흐름을 만드는 중이에요.</p>}
       {uses.state === 'ready' && <>
         {uses.uses.length > 0 && <>

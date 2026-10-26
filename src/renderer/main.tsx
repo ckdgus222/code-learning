@@ -1093,7 +1093,7 @@ function App() {
             onFindCallers={item => void findCalls(source, item)}
             onCancelCallers={() => void cancelCalls()} onShowCallSite={site => void showCallSite(site)} pathOf={pathOf}
             uses={{ ...uses, routes: features.routes ?? null,
-              state: features.groupingProps.grouping ? 'running' : features.groupingProps.flows ? 'ready' : 'none' }}
+              state: features.stale ? 'stale' : features.groupingProps.grouping ? 'running' : features.groupingProps.flows ? 'ready' : 'none' }}
             onUse={use => void followFeatureRoute(use.routeIndex, { through: use.through, storyId: use.storyId, step: use.step, nodeId: use.nodeId })}
             focus={functionFocus?.fileId === source.fileId && functionFocus.hash === source.hash ? functionFocus : null}
             onOpenFile={fileId => { if (busy || stale) return; void readFile(fileId); }}
