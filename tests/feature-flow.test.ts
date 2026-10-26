@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { scanProject } from '../src/core/project/files';
 import { findProjectRoutes } from '../src/core/analysis/routes';
-import { buildFeatureFlow } from '../src/core/analysis/feature-flow';
+import { buildFeatureFlow, buildFeatureFlows } from '../src/core/analysis/feature-flow';
 import { findFunctionCalls, type CallsCache } from '../src/core/analysis/calls';
 import { storyOf } from '../src/core/analysis/flow-story';
 import { MAP_LIMITS } from '../src/core/analysis/project-map';
@@ -576,4 +576,61 @@ it('reads queryFn options and uses the first line for an unknown action', async 
     first, second
   )}); }`);
   expect(flow.nodes.find(node => node.name === 'useLoad')?.after).toEqual([expect.objectContaining({ action: 'call', target: 'unknownAction( …' })]);
+});
+
+it.each(['next-nest', 'shared-hooks'] as const)('batch flows equal independent flows in every array order: %s', async kind => {
+  await fixture();
+  await put('web/app/other/page.tsx', "import {DogList} from '../../components/DogList'; export default function Other() { return <DogList />; }");
+  await put('api/extra.controller.ts', "@Controller('extra') class Extra { @Get() other() {} }");
+  if (kind === 'shared-hooks') {
+    await put('web/save.ts', "export function save() { return fetch('/api/save', {method:'POST'}); }");
+    await put('api/save.controller.ts', "@Controller('save') class Save { @Post() save() {} }");
+    for (const name of ['A', 'B', 'C', 'Z']) {
+      await put(`web/hooks${name}.tsx`, `import {save} from './save';
+export function use${name}() { return {save}; }
+export function Button${name}() { const hook = use${name}(); return <button onClick={() => hook.save()}>save</button>; }
+${name === 'Z' ? "@Controller('prime') class Prime { @Get() prime() {} }" : ''}`);
+    }
+  }
+  const project = await scanProject(root, randomUUID());
+  const routes = await findProjectRoutes(root, project.id, project.files);
+  // Parse Z first: reading the entire shared cache would change which first three hooks survive the cap.
+  routes.routes.sort((a, b) => Number(b.path === '/api/prime') - Number(a.path === '/api/prime'));
+  // Route indexes must still describe the reordered routes.
+  const original = await findProjectRoutes(root, project.id, project.files);
+  routes.links = original.links.map(link => ({ ...link, routeIndex: routes.routes.findIndex(route => route.path === original.routes[link.routeIndex].path) }));
+  const batch = await buildFeatureFlows(root, project.id, project.files, routes);
+  expect(batch).toHaveLength(routes.routes.length);
+  for (let index = 0; index < batch.length; index++) {
+    expect(batch[index], routes.routes[index].path!).toEqual(await buildFeatureFlow(root, project.id, project.files, routes, index));
+  }
+  expect(batch.some(flow => flow.nodes.filter(node => node.screen !== null).length === 2)).toBe(true);
+});
+it('rejects more than 200 routes before reading and honours cancellation, including an empty batch', async () => {
+  await fixture();
+  const { project, routes } = await analyze();
+  await expect(buildFeatureFlows(root, project.id, project.files, { ...routes, routes: Array(201).fill(routes.routes[0]) }))
+    .rejects.toMatchObject({ code: 'LIMIT' });
+  await expect(buildFeatureFlows(root, project.id, project.files, routes, MAP_LIMITS, () => true))
+    .rejects.toMatchObject({ code: 'CANCELLED' });
+  await expect(buildFeatureFlows(root, project.id, project.files, { ...routes, routes: [] }, MAP_LIMITS, () => true))
+    .rejects.toMatchObject({ code: 'CANCELLED' });
+  await expect(buildFeatureFlows(root, project.id, project.files, { ...routes, routes: [] })).resolves.toEqual([]);
+});
+
+
+it('accepts the 200-route boundary, cancels between flows and rejects an oversized combined result', async () => {
+  await put('server.ts', "@Controller('small') class Small { @Get() read() {} }");
+  const { project, routes } = await analyze();
+  const repeated = { ...routes, routes: Array(200).fill(routes.routes[0]) };
+  await expect(buildFeatureFlows(root, project.id, project.files, repeated)).resolves.toHaveLength(200);
+  let flowChecks = 0;
+  await buildFeatureFlow(root, project.id, project.files, repeated, 0, MAP_LIMITS, () => { flowChecks++; return false; });
+  let checks = 0;
+  // The batch checks once before the first flow, then again before starting the second.
+  await expect(buildFeatureFlows(root, project.id, project.files, repeated, MAP_LIMITS, () => ++checks > flowChecks + 1))
+    .rejects.toMatchObject({ code: 'CANCELLED' });
+  expect(checks).toBe(flowChecks + 2);
+  await expect(buildFeatureFlows(root, project.id, project.files, { ...repeated, notes: ['large'.repeat(10_000)] }))
+    .rejects.toMatchObject({ code: 'LIMIT' });
 });

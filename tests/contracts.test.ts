@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { sourceRequestSchema, evidenceRequestSchema, featureFlowRequestSchema, projectRequestSchema } from '../src/shared/contracts';
+import { sourceRequestSchema, evidenceRequestSchema, featureFlowsRequestSchema, featureFlowRequestSchema, projectRequestSchema } from '../src/shared/contracts';
 describe.each([
   ['source', sourceRequestSchema, 'fileId'],
   ['evidence', evidenceRequestSchema, 'evidenceId'],
+  ['feature flows', featureFlowsRequestSchema, 'routesId'],
 ] as const)('%s request boundary', (_name, schema, target) => {
   it('accepts only opaque project and target identifiers', () => {
     const request = { projectId: randomUUID(), [target]: randomUUID() };
@@ -32,4 +33,12 @@ describe('feature flow request boundary', () => {
       expect(projectRequestSchema.safeParse({ projectId: input.projectId, ...extra }).success).toBe(false);
     }
   });
+});
+
+
+it('rejects renderer-supplied batch limits, revisions, routes and file data', () => {
+  const input = { projectId: randomUUID(), routesId: randomUUID() };
+  for (const extra of [{ routes: [] }, { files: [] }, { revision: 0 }, { timeoutMs: 0 }, { limits: {} }, { routeIndex: 0 }]) {
+    expect(featureFlowsRequestSchema.safeParse({ ...input, ...extra }).success).toBe(false);
+  }
 });

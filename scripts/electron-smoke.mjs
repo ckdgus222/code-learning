@@ -213,6 +213,14 @@ async function openFunctionFlow() {
   if (await page.locator('.symbols__item[aria-pressed="true"]').count() === 0) await page.locator('.symbols__item').first().click();
   await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
 }
+// Wait for grouping before locating a legacy code-name or AI feature button.
+async function openServerFeatures() {
+  const list = page.getByRole('region', { name: '기능 목록', exact: true });
+  await list.getByRole('heading', { name: '기능 고르기', exact: true }).waitFor();
+  await until(async () => !await list.getByRole('status').filter({ hasText: '화면별로 묶는 중' }).count());
+  const details = list.locator('details').filter({ has: page.locator('summary', { hasText: /^서버 주소 기준 목록 \(AI 정리 포함\)$/ }) });
+  if (await details.count() && !await details.evaluate(element => element.open)) await details.locator(':scope > summary').click();
+}
 // Keep a question about another function ready while the flow displays the server handler.
 async function openLoginFlowQuestion() {
   await dialogTo(loginFlowFixture);
@@ -225,7 +233,7 @@ async function openLoginFlowQuestion() {
   const question = page.getByRole('textbox', { name: '선택한 코드에 질문' });
   await question.fill('기존 질문 유지');
   await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
-  await page.getByRole('region', { name: '기능 목록', exact: true }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+  await page.getByRole('region', { name: '화면 /login', exact: true }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
   const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
   await story.getByRole('button', { name: '4단계 서버 받는 곳', exact: true }).click();
   await until(async () => /api\/controller.ts/.test(await story.getByTestId('evidence-range').innerText()));
@@ -976,6 +984,7 @@ try {
     await page.getByRole('region', { name: '기능 따라가기', exact: true }).getByText('1 / 7 · 화면', { exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: '흐름 따라가기', exact: true }).getAttribute('aria-current'), 'page');
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await openServerFeatures();
     const route = page.getByRole('region', { name: '기능 목록', exact: true }).getByRole('listitem').filter({ hasText: '지우기 · /api/dogs/:id' }).getByRole('button', { name: '이 기능 따라가기', exact: true });
     await route.waitFor();
     const connection = page.getByRole('region', { name: '기능 목록', exact: true }).getByText('요청 코드와 이어짐', { exact: true });
@@ -1007,6 +1016,7 @@ try {
     await page.getByRole('textbox', { name: '기능 검색' }).fill('dogs');
     await route.waitFor();
     await page.getByRole('textbox', { name: '기능 검색' }).fill('지우기');
+    await openServerFeatures();
     await route.click();
     const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
     await story.getByText('화면 /dogs에서 ‘삭제’ 버튼을 누르면 시작해요', { exact: true }).waitFor();
@@ -1150,12 +1160,14 @@ try {
     assert.equal(await page.getByRole('button', { name: '다시 찾기', exact: true }).count(), 0);
     await releaseWorkerMessages();
     await page.getByRole('button', { name: '주소 찾기', exact: true }).click();
+    await openServerFeatures();
     await route.waitFor();
     // Waking deliberately clears the question scope; select it again before checking navigation preserves it.
     await openTreeFile('api/controller.ts');
     await page.getByRole('button', { name: 'DogsController.remove', exact: true }).click();
     await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
     assert.equal(await page.getByTestId('question-scope').innerText(), scope);
+    await openServerFeatures();
     await route.click();
     await story.getByRole('button', { name: '7단계 화면 결과', exact: true }).click();
     assert.equal(await summary.getByRole('textbox', { name: '받는 것', exact: true }).inputValue(), '삭제 요청');
@@ -1166,6 +1178,7 @@ try {
     await story.getByRole('button', { name: '2단계 프론트 처리', exact: true }).click();
     await story.getByText('2 / 7 · 프론트 처리', { exact: true }).waitFor();
     await story.getByRole('button', { name: '다른 기능 고르기', exact: true }).click();
+    await openServerFeatures();
     await route.click();
     await story.getByText('1 / 7 · 화면', { exact: true }).waitFor();
     const disclosure = page.locator('details').filter({ has: page.locator('summary', { hasText: /^전체 그림과 단계 보기$/ }) });
@@ -1229,6 +1242,7 @@ try {
     await page.getByRole('button', { name: '다른 기능 고르기', exact: true }).click();
     assert.equal(await route.isDisabled(), true);
     await page.getByRole('button', { name: '다시 찾기', exact: true }).click();
+    await openServerFeatures();
     await until(async () => await route.isEnabled());
     // Invalid renderer input cannot supply a path, range or a stale saved result.
     const invalid = await page.evaluate(async () => {
@@ -1236,6 +1250,10 @@ try {
       const projectId = project.value.id;
       const routes = await window.learning.routes({ projectId });
       return await Promise.all([
+        window.learning.featureFlows({ projectId, routesId: 'not-a-uuid' }),
+        window.learning.featureFlows({ projectId, routesId: routes.value.routesId, path: '/etc/passwd' }),
+        window.learning.featureFlows({ projectId, routesId: '00000000-0000-4000-8000-000000000000' }),
+        window.learning.cancelFeatureFlows({ projectId, path: '/etc/passwd' }),
         window.learning.featureFlow({ projectId, routesId: 'not-a-uuid', routeIndex: 0 }),
         window.learning.featureFlow({ projectId, routesId: routes.value.routesId, routeIndex: -1 }),
         window.learning.featureFlow({ projectId, routesId: routes.value.routesId, routeIndex: 999 }),
@@ -1247,13 +1265,14 @@ try {
       ]);
     });
     assert.deepEqual(invalid.map(result => result.code), ['INVALID_REQUEST', 'INVALID_REQUEST', 'CHANGED', 'INVALID_REQUEST',
+      'INVALID_REQUEST', 'INVALID_REQUEST', 'CHANGED', 'INVALID_REQUEST',
       'INVALID_REQUEST', 'INVALID_REQUEST', 'INVALID_REQUEST', 'CHANGED']);
   });
   await check('Returned hook function: form event, inferred call and navigation result', async () => {
     await dialogTo(loginFlowFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '로그인 흐름 프로젝트', exact: true }).waitFor();
-    await page.getByRole('region', { name: '기능 목록', exact: true }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+    await page.getByRole('region', { name: '화면 /login', exact: true }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
     const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
     await story.getByText('화면 /login에서 입력 양식을 보내면 시작해요', { exact: true }).waitFor();
     await story.getByRole('button', { name: '2단계 프론트 처리', exact: true }).click();
@@ -1280,7 +1299,7 @@ try {
       await dialogTo(loginFlowFixture);
       await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
       await page.getByRole('heading', { name: '로그인 흐름 프로젝트', exact: true }).waitFor();
-      await page.getByRole('region', { name: '기능 목록', exact: true }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+      await page.getByRole('region', { name: '화면 /login', exact: true }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
       const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
       await story.getByTestId('flow-code').waitFor();
       const explanation = page.getByRole('region', { name: '설명', exact: true });
@@ -1296,11 +1315,86 @@ try {
       }
     }
   });
+  await check('Screen grouping cancels, retries, discards late replies and opens cached stories without flow IPC', async () => {
+    const groupedFixture = path.join(temporary, '화면 묶기 프로젝트');
+    const files = { ...loginFlowFiles,
+      'web/lib/auth.ts': "export async function login() {\n if (remember) return fetch('/api/auth/login', {method:'POST'});\n return fetch('/api/auth/login', {method:'POST'});\n}",
+      'web/app/other/page.tsx': loginFlowFiles['web/app/login/page.tsx'].replace('LoginPage', 'OtherPage'),
+    };
+    for (const [name, text] of Object.entries(files)) {
+      await mkdir(path.dirname(path.join(groupedFixture, name)), { recursive: true });
+      await writeFile(path.join(groupedFixture, name), text);
+    }
+    await app.evaluate(({ ipcMain }) => {
+      const handlers = ipcMain._invokeHandlers;
+      globalThis.screenFlowOriginal = handlers.get('learning:feature-flow');
+      globalThis.screenFlowsOriginal = handlers.get('learning:feature-flows');
+      globalThis.screenFlowCalls = 0;
+      globalThis.screenBatchHeld = false;
+      handlers.set('learning:feature-flow', (...args) => {
+        globalThis.screenFlowCalls++;
+        return globalThis.screenFlowOriginal(...args);
+      });
+      handlers.set('learning:feature-flows', async (...args) => {
+        handlers.set('learning:feature-flows', globalThis.screenFlowsOriginal);
+        const result = await globalThis.screenFlowsOriginal(...args);
+        globalThis.screenBatchHeld = true;
+        await new Promise(resolve => { globalThis.releaseScreenBatch = resolve; });
+        return result;
+      });
+    });
+    try {
+      await dialogTo(groupedFixture);
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      const list = page.getByRole('region', { name: '기능 목록', exact: true });
+      await list.getByRole('status').getByText('화면별로 묶는 중…', { exact: false }).waitFor();
+      await list.getByText('만들기·보내기 · /api/auth/login', { exact: true }).waitFor();
+      await until(() => app.evaluate(() => globalThis.screenBatchHeld));
+      await list.getByRole('button', { name: '취소', exact: true }).click();
+      await list.getByRole('button', { name: '다시 묶기', exact: true }).waitFor();
+      await app.evaluate(() => globalThis.releaseScreenBatch());
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await list.getByRole('region', { name: '화면 /other', exact: true }).count(), 0);
+      await list.getByText('만들기·보내기 · /api/auth/login', { exact: true }).waitFor();
+      await list.getByRole('button', { name: '다시 묶기', exact: true }).click();
+      const other = list.getByRole('region', { name: '화면 /other', exact: true });
+      await other.waitFor();
+      await list.getByRole('region', { name: '화면 /login', exact: true }).waitFor();
+      assert.equal(await other.getByText('다른 화면에서도 써요', { exact: true }).count(), 1);
+      const server = list.locator('details').filter({ has: page.locator('summary', { hasText: /^서버 주소 기준 목록 \(AI 정리 포함\)$/ }) });
+      assert.equal(await server.evaluate(element => element.open), false);
+      await other.getByRole('listitem').filter({ hasText: 'POST /api/auth/login' }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+      const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
+      await story.getByText('화면 /other에서 입력 양식을 보내면 시작해요', { exact: true }).waitFor();
+      const requests = story.getByRole('group', { name: '요청 고르기', exact: true }).getByRole('button');
+      assert.equal(await requests.count(), 2);
+      assert.ok((await requests.allTextContents()).every(text => text.includes('web/lib/auth.ts') && text.includes('POST /api/auth/login')));
+      await requests.nth(1).click();
+      await story.getByText('화면 /other에서 입력 양식을 보내면 시작해요', { exact: true }).waitFor();
+      assert.equal(await app.evaluate(() => globalThis.screenFlowCalls), 0);
+      await page.screenshot({ path: path.join(artifacts, 'screen-group-story.png') });
+    } finally {
+      await app.evaluate(({ ipcMain }) => {
+        globalThis.releaseScreenBatch?.();
+        ipcMain._invokeHandlers.set('learning:feature-flow', globalThis.screenFlowOriginal);
+        ipcMain._invokeHandlers.set('learning:feature-flows', globalThis.screenFlowsOriginal);
+      });
+    }
+  });
   await check('Flow walk keeps late responses out of code reading, retries failures and refuses changed code', async () => {
+    await app.evaluate(({ ipcMain }) => {
+      const handlers = ipcMain._invokeHandlers;
+      const original = handlers.get('learning:feature-flows');
+      handlers.set('learning:feature-flows', async () => {
+        handlers.set('learning:feature-flows', original);
+        return { ok: false, code: 'LIMIT', message: '시험용 화면 묶기 한도' };
+      });
+    });
     await dialogTo(featureFlowFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '기능 흐름 프로젝트', exact: true }).waitFor();
     const follow = page.getByRole('region', { name: '기능 목록', exact: true }).getByRole('button', { name: '이 기능 따라가기', exact: true });
+    await page.getByRole('button', { name: '다시 묶기', exact: true }).waitFor();
     await follow.waitFor();
     // Run the real handler and hold only its reply, leaving ordinary file reads available.
     await app.evaluate(({ ipcMain }) => {
@@ -3333,7 +3427,9 @@ try {
     await page.getByRole('heading', { name: '기능 흐름 프로젝트', exact: true }).waitFor();
     await page.getByRole('heading', { name: '기능 고르기', exact: true }).waitFor();
     const overview = page.getByRole('region', { name: '큰 그림', exact: true });
+    await openServerFeatures();
     const list = page.getByRole('region', { name: '기능 목록', exact: true });
+    const aiFeature = list.getByRole('listitem').filter({ hasText: '반려견 정보를 조회하거나 삭제해요.' });
     await overview.getByText('기능 2개', { exact: true }).waitFor();
     await list.getByRole('button', { name: 'AI로 기능 정리하기', exact: true }).click();
     await list.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
@@ -3348,6 +3444,7 @@ try {
     await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
     await until(async () => await app.evaluate(() => typeof globalThis.testGuideLate === 'function'));
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await openServerFeatures();
     await list.getByRole('button', { name: 'AI 작업 취소', exact: true }).waitFor();
     await app.evaluate(() => { globalThis.testGuideLate(); globalThis.testGuideHold = false; });
     await overview.getByText('반려견의 정보를 관리하는 프로젝트예요.', { exact: false }).waitFor();
@@ -3356,7 +3453,7 @@ try {
     const calls = await app.evaluate(() => globalThis.testGuideCalls);
     assert.deepEqual(Object.keys(calls[0]).sort(), ['consent', 'mode', 'projectId', 'routesId']);
     assert.equal(calls[0].consent, true);
-    await list.getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+    await aiFeature.getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
     const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
     // DELETE has a sure frontend link, so it is preferred over GET regardless of the AI's order.
     await story.getByRole('button', { name: '4단계 서버 받는 곳', exact: true }).click();
@@ -3365,6 +3462,7 @@ try {
     const summary = story.getByRole('region', { name: '한 문장으로 정리', exact: true });
     await summary.getByRole('textbox', { name: '받는 것', exact: true }).fill('삭제할 번호');
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await openServerFeatures();
     await list.getByRole('button', { name: 'GET /api/dogs/:id', exact: true }).click();
     await story.getByText('DogsController.get가 요청을 받아요', { exact: true }).waitFor();
     for (const label of ['받는 것', '확인하는 것', '돌려주는 것']) {
@@ -3372,17 +3470,20 @@ try {
     }
     await summary.getByRole('textbox', { name: '받는 것', exact: true }).fill('조회할 번호');
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await openServerFeatures();
     await list.getByRole('button', { name: 'DELETE /api/dogs/:id', exact: true }).click();
     await story.getByRole('button', { name: '4단계 서버 받는 곳', exact: true }).click();
     await story.getByText('DogsController.remove가 요청을 받아요 → DogsService.remove에 넘겨요', { exact: true }).waitFor();
     await story.getByRole('button', { name: '7단계 화면 결과', exact: true }).click();
     assert.equal(await summary.getByRole('textbox', { name: '받는 것', exact: true }).inputValue(), '삭제할 번호');
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await openServerFeatures();
     await page.getByRole('textbox', { name: '기능 검색' }).fill('DogsController.get');
-    await list.getByRole('button', { name: '이 기능 따라가기', exact: true }).waitFor();
+    await aiFeature.getByRole('button', { name: '이 기능 따라가기', exact: true }).waitFor();
     await page.getByRole('textbox', { name: '기능 검색' }).fill('');
     await app.evaluate(({ powerMonitor }) => powerMonitor.emit('resume'));
     await page.getByRole('button', { name: '다시 찾기', exact: true }).click();
+    await openServerFeatures();
     await list.getByText('지우기 · /api/dogs/:id', { exact: true }).waitFor();
     assert.equal(await list.getByRole('heading', { name: '반려견 관리', exact: true }).count(), 0);
     await app.evaluate(() => { globalThis.testGuideHold = true; });
@@ -3392,6 +3493,7 @@ try {
     await until(async () => await app.evaluate(() => typeof globalThis.testGuideLate === 'function'));
     await app.evaluate(({ powerMonitor }) => powerMonitor.emit('resume'));
     await page.getByRole('button', { name: '다시 찾기', exact: true }).click();
+    await openServerFeatures();
     await list.getByText('지우기 · /api/dogs/:id', { exact: true }).waitFor();
     await app.evaluate(() => { globalThis.testGuideLate(); globalThis.testGuideHold = false; });
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -3401,6 +3503,7 @@ try {
     await list.getByRole('checkbox').check(); await send.click();
     await list.getByRole('heading', { name: '반려견 관리', exact: true }).waitFor();
     await writeFile(path.join(featureFlowFixture, 'api/controller.ts'), featureFlowFiles['api/controller.ts'] + '\n// changed\n');
+    await openServerFeatures();
     await list.getByText('지우기 · /api/dogs/:id', { exact: true }).waitFor();
     assert.equal(await list.getByRole('heading', { name: '반려견 관리', exact: true }).count(), 0);
     assert.equal(await list.getByRole('button', { name: 'AI로 기능 정리하기', exact: true }).isDisabled(), true);

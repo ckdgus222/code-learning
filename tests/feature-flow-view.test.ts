@@ -1,10 +1,16 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
+import * as ReactHooks from 'react';
 import { FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowLimits, FlowSteps, FlowWalk, hasFlowCode, hintSteps, stepQuestion, summaryKey, RoutesStatus, useFeatureFlows, walkSelection } from '../src/renderer/feature-flow';
 import type { Evidence, FeatureFlow, FlowNode, ProjectRoutes, ProjectView } from '../src/shared/contracts';
 import { storyOf } from '../src/core/analysis/flow-story';
 import type { FeatureGuide } from '../src/shared/ai';
+
+vi.mock('react', async importOriginal => {
+  const actual = await importOriginal<typeof import('react')>();
+  return { ...actual, useState: vi.fn(actual.useState) };
+});
 
 const nodes: FlowNode[] = [
   { id: 'back', side: 'back', depth: 0, name: 'Controller.remove' },
@@ -56,7 +62,7 @@ it('highlights the selected node in each request group without marking other ste
 });
 
 const walkProps = {
-  title: '삭제', codeName: '지우기 · /dogs', walk: { storyId: null, step: 0, nodeId: null, site: null },
+  title: '삭제', codeName: '지우기 · /dogs', walk: { through: null, storyId: null, step: 0, nodeId: null, site: null },
   summary: ['', '', ''] as [string, string, string], setSummary() {},
   locked: false, stale: false, setStory() {}, setStep() {}, setNode() {}, onSite() {}, onCode() {}, onFunction() {}, onChoose() {}, onAsk() {},
 };
@@ -218,7 +224,7 @@ it('chooses between requests and folds other callers into the same story', () =>
   expect(html).toContain('otherCaller');
 });
 it('shows the selected function and disables next on the last step', () => {
-  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow, walk: { storyId: 'request', step: 0, nodeId: 'screen', site: null } }));
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow, walk: { through: null, storyId: 'request', step: 0, nodeId: 'screen', site: null } }));
   expect(html).toMatch(/aria-pressed="true">DogsPage/);
   const last = renderToStaticMarkup(walkOf({ ...walkProps, flow, walk: { ...walkProps.walk, step: 2 } }));
   expect(last).toMatch(/disabled="">다음 ▶/);
@@ -301,12 +307,12 @@ it.each(['step', 'node', 'story'] as const)('clears the selected site when chang
   }
   renderToStaticMarkup(React.createElement(Harness));
   expect(walks).toHaveLength(3);
-  expect(walks[0]).toEqual({ storyId: null, step: 0, nodeId: null, site: null });
-  expect(walks[1]).toEqual({ storyId: null, step: 0, nodeId: 'back', site });
+  expect(walks[0]).toEqual({ through: null, storyId: null, step: 0, nodeId: null, site: null });
+  expect(walks[1]).toEqual({ through: null, storyId: null, step: 0, nodeId: 'back', site });
   expect(walks[2].site).toBeNull();
   if (change === 'step') expect(walks[2]).toMatchObject({ step: 1, nodeId: null });
   if (change === 'node') expect(walks[2]).toMatchObject({ nodeId: 'screen' });
-  if (change === 'story') expect(walks[2]).toMatchObject({ storyId: 'request', step: 0, nodeId: null });
+  if (change === 'story') expect(walks[2]).toMatchObject({ through: null, storyId: 'request', step: 0, nodeId: null });
 });
 
 it('renders written errors, easy names, conditions and omitted counts without claiming execution stopped', () => {
@@ -489,7 +495,7 @@ it('provides a follow button per feature and disables every route action when lo
     { name: '삭제', about: '삭제 요청', routes: [0, 1], ai: false, sure: 1, inferred: 0, haystack: '삭제' },
     { name: '조회', about: '', routes: [1], ai: false, sure: 0, inferred: 1, haystack: '조회' },
   ] }];
-  const html = renderToStaticMarkup(React.createElement(FeatureList, { groups, routes, selected: 0, disabled: true, search: '', setSearch() {}, onFollow() {} }));
+  const html = renderToStaticMarkup(React.createElement(FeatureList, { flows: null, groups, routes, selected: 0, disabled: true, search: '', setSearch() {}, onFollow() {} }));
   expect(html.match(/>이 기능 따라가기<\/button>/g)).toHaveLength(2);
   expect(html.match(/<button[^>]*>/g)!.every(button => button.includes('disabled=""'))).toBe(true);
 });
@@ -521,6 +527,7 @@ it('does not recommend an empty list or features without sure links', () => {
 const chooserProps: Parameters<typeof FeatureChooser>[0] = {
   project: { ...project, warnings: ['파일별 최대 256 KiB까지만 읽어요.'] },
   state: { routes, groups, stale: false, finding: false, error: '', guide: null, search: '', selected: null,
+    groupingProps: { flows: null, grouping: false, groupError: '', onRegroup() {}, onCancelGrouping() {} },
     setSearch() {}, setGuideResult() {}, find() {}, cancelFind() {},
   } as unknown as Parameters<typeof FeatureChooser>[0]['state'],
   revision: 0, locked: false, mode: 'local-worker', running: false, checking: false, connections: null,
@@ -538,7 +545,7 @@ it('places the recommendation before the list, moves AI controls inside the list
   const html = renderToStaticMarkup(React.createElement(FeatureChooser, chooserProps));
   expect(html.indexOf('aria-label="큰 그림"')).toBeLessThan(html.indexOf('aria-label="처음 따라갈 기능"'));
   expect(html.indexOf('aria-label="처음 따라갈 기능"')).toBeLessThan(html.indexOf('<h3>기능 고르기</h3>'));
-  expect(html).toMatch(/<section aria-label="기능 목록"><h3>기능 고르기<\/h3><div class="feature-guide-ai"[^>]*>.*?AI로 기능 정리하기<\/button><\/div><label>/);
+  expect(html).toMatch(/<section aria-label="기능 목록"><h3>기능 고르기<\/h3>.*<details open=""><summary hidden=""><\/summary><div class="feature-guide-ai"[^>]*>.*?AI로 기능 정리하기<\/button><\/div><p>기능 목록/);
   expect(html).toContain('이 기능에 요청을 보내는 코드 3곳을 확실히 찾았어요. 요청을 보내는 쪽부터 서버까지 따라가 볼 수 있어요.');
   expect(html).toContain('고른 기준: 요청을 보내는 코드와 확실히 이어진 곳이 가장 많은 기능');
   expect(html).toMatch(/<button class="btn">이 기능부터 따라가기<\/button>/);
@@ -573,7 +580,7 @@ it('omits the recommendation when routes exist but no feature has sure links', (
   expect(html).toContain('AI로 기능 정리하기');
 });
 it('distinguishes missing server code from a search with no matching features', () => {
-  const props = { routes, selected: null, disabled: false, search: '', setSearch() {}, onFollow() {} };
+  const props = { flows: null, routes, selected: null, disabled: false, search: '', setSearch() {}, onFollow() {} };
   const empty = renderToStaticMarkup(React.createElement(FeatureList, { ...props, routes: { ...routes, routes: [], links: [] }, groups: [] }));
   expect(empty).toContain('서버 코드(요청을 받는 곳)를 찾지 못했어요.');
   expect(empty).not.toContain('검색어와 맞는 기능이 없어요.');
@@ -679,7 +686,7 @@ it.each([
   const groups = [{ name: 'dogs', about: '', features: [
     { name: '삭제', about: 'DogsController.remove', routes: [0], ai: false, sure, inferred, haystack: '삭제' },
   ] }];
-  const html = renderToStaticMarkup(React.createElement(FeatureList, { groups, routes, selected: null, disabled: false, search: '', setSearch() {}, onFollow() {} }));
+  const html = renderToStaticMarkup(React.createElement(FeatureList, { flows: null, groups, routes, selected: null, disabled: false, search: '', setSearch() {}, onFollow() {} }));
   const counts = `프론트 요청 확실 ${sure}곳 · 추정 ${inferred}곳`;
   expect(html).toContain(`<span class="${className}" title="${counts}">${tag}</span>`);
   expect(html).toContain(`<details class="feature-more"><summary>코드 이름·연결 근거</summary><p class="hint">DogsController.remove</p><p class="hint">${counts}</p></details>`);
@@ -692,8 +699,8 @@ it('keeps AI feature descriptions and addresses outside the folded connection ev
     { name: '삭제', about: '반려견 정보를 지워요.', routes: [0, 1], ai: true, sure: 1, inferred: 0, haystack: '삭제' },
   ] }];
   const addresses = { ...routes, routes: routes.routes.map((route, index) => ({ ...route, method: index ? 'GET' as const : 'DELETE' as const, path: '/dogs' })) };
-  const html = renderToStaticMarkup(React.createElement(FeatureList, { groups, routes: addresses, selected: null, disabled: false, search: '', setSearch() {}, onFollow() {} }));
-  const beforeDetails = html.slice(0, html.indexOf('<details'));
+  const html = renderToStaticMarkup(React.createElement(FeatureList, { flows: null, groups, routes: addresses, selected: null, disabled: false, search: '', setSearch() {}, onFollow() {} }));
+  const beforeDetails = html.slice(0, html.indexOf('<details class="feature-more"'));
   expect(beforeDetails).toContain('반려견 정보를 지워요.');
   expect(beforeDetails).toContain('DELETE /dogs · GET /dogs');
   expect(beforeDetails).toContain('>DELETE /dogs</button>');
@@ -728,3 +735,78 @@ it.each([null, 'https://example.com'])('nests only the nonempty request list ins
   expect(html.match(/<details/g)).toHaveLength(2);
   expect(html).toMatch(/<\/details><\/details>$/);
 });
+
+it('renders screen rows, folded unmatched groups and the intact AI server list with a limited-flow notice', () => {
+  const result = { ...routes, routesId: flow.routesId, routes: routes.routes.map((route, index) => ({ ...route,
+    method: 'DELETE' as const, path: `/api/dogs/${index}`, handler: { ...route.handler, name: 'remove' },
+  })) };
+  const guide: FeatureGuide = { summary: '', unknowns: [], groups: [{ name: '반려견 관리', about: 'AI 묶음 설명', features: [
+    { name: '반려견 삭제', about: 'AI 기능 설명', routes: [0, 1] },
+  ] }] };
+  const html = renderToStaticMarkup(React.createElement(FeatureList, { groups: featureGroups(project, result, guide), routes: result,
+    flows: [{ ...flow, limited: true }], guide,
+    search: '', selected: null, disabled: false, setSearch() {}, onFollow() {}, children: 'AI로 기능 정리하기' }));
+  expect(html).toContain('aria-label="화면 /dogs"');
+  expect(html).toContain('title="훅이 돌려준 값 remove를 써요 · 방식 모름"');
+  expect(html).toContain('AI 해석 · 반려견 삭제');
+  for (const text of ['화면은 못 정했지만 요청 코드는 찾은 기능 0개', '화면과 연결을 찾지 못한 서버 기능 0개',
+    '서버 주소 기준 목록 (AI 정리 포함)']) expect(html).toContain(`<details class="card"><summary>${text}</summary>`);
+  expect(html).toContain('일부 기능은 분석 한도 때문에 흐름의 일부만 확인했어요.');
+  for (const text of ['AI 묶음 설명', 'AI 기능 설명', 'AI로 기능 정리하기', 'DELETE /api/dogs/0', 'DELETE /api/dogs/1']) expect(html).toContain(text);
+});
+it.each(['grouping', 'failure', 'unavailable'] as const)('keeps the server list visible for %s', state => {
+  const html = renderToStaticMarkup(React.createElement(FeatureList, { routes, groups, selected: null, disabled: false,
+    search: '', setSearch() {}, onFollow() {}, grouping: state === 'grouping', groupError: state === 'failure' ? '취소했어요' : '',
+    flows: null }));
+  expect(html).toContain('삭제 요청');
+  expect(html).not.toContain('서버 주소 기준 목록 (AI 정리 포함)');
+  if (state === 'grouping') { expect(html).toContain('화면별로 묶는 중…'); expect(html).toContain('>취소</button>'); }
+  if (state === 'failure') { expect(html).toContain('서버 주소 기준으로 보여 줘요.'); expect(html).toContain('>다시 묶기</button>'); }
+});
+it('names two through stories from their request steps and preserves the screen when changing stories', () => {
+  const second = { ...nodes[1], id: 'request2', name: 'second request', relativePath: 'second.ts' };
+  const graph = { ...flow, nodes: [...flow.nodes, second], edges: [...flow.edges, { ...flow.edges[1], to: second.id }] };
+  const walk = { ...walkProps.walk, through: 'screen', storyId: 'request@screen' };
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: graph, walk }));
+  expect(html).toContain('aria-label="요청 고르기"');
+  expect(html).toContain('second.ts 1행 · second request');
+  const changed = walkSelection(graph, { ...walk, storyId: 'request2@screen' });
+  expect(changed.stories).toEqual(['request@screen', 'request2@screen']);
+  expect(changed.steps[0].nodes[0].id).toBe('screen');
+});
+
+it.each(['current', 'other-routes', 'other-revision', 'stale', 'no-routes'] as const)(
+  'uses the same available flows for the list and following: %s', async state => {
+    const revision = 2;
+    const currentRoutes = { ...routes, routesId: flow.routesId };
+    const entry = state === 'no-routes' ? null : { result: currentRoutes, revision: state === 'stale' ? 1 : revision };
+    const cached = { status: 'done', routesId: state === 'other-routes' ? 'old' : currentRoutes.routesId,
+      revision: state === 'other-revision' ? 1 : revision, flows: [flow] };
+    // Seed the stored guide, route result and batch result; leave the remaining React hooks intact.
+    const useState = vi.mocked(ReactHooks.useState)
+      .mockImplementationOnce(() => [null, vi.fn()])
+      .mockImplementationOnce(() => [entry, vi.fn()])
+      .mockImplementationOnce(() => [cached, vi.fn()]);
+    const featureFlow = vi.fn().mockResolvedValue({ ok: true, value: flow });
+    vi.stubGlobal('window', { learning: { featureFlow } });
+    let features!: ReturnType<typeof useFeatureFlows>;
+    function Probe() {
+      features = useFeatureFlows(project, revision);
+      return React.createElement(FeatureList, { ...features.groupingProps, routes: currentRoutes, groups: features.groups,
+        selected: null, disabled: features.stale, search: '', setSearch() {}, onFollow() {} });
+    }
+    try {
+      const html = renderToStaticMarkup(React.createElement(Probe));
+      const current = state === 'current';
+      expect(features.groupingProps.flows).toBe(current ? cached.flows : null);
+      expect(html.includes('aria-label="화면 /dogs"')).toBe(current);
+      await features.follow(0, { through: 'screen', storyId: 'request@screen' });
+      const needsRequest = state === 'other-routes' || state === 'other-revision';
+      expect(featureFlow).toHaveBeenCalledTimes(needsRequest ? 1 : 0);
+      if (needsRequest) expect(featureFlow).toHaveBeenCalledWith({ projectId: project.id, routesId: currentRoutes.routesId, routeIndex: 0 });
+    } finally {
+      useState.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  },
+);

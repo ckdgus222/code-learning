@@ -117,6 +117,8 @@ function namesOf(fn: Parser.SyntaxNode, facts: FileFacts): FunctionCalls['names'
 export interface CallsCache {
   texts: Map<string, { text: string; hash: string }>;
   parsed: Map<string, FileFacts>;
+  /** Files parsed for the current flow, in first-use order, including cache hits. */
+  parsedFiles?: Set<string>;
 }
 
 /**
@@ -164,6 +166,7 @@ export async function findFunctionCalls(root: string, projectId: string, files: 
       // Ordinary calls keep only the chosen file's references. A flow reuses each file as a later target.
       const facts = cache?.parsed.get(file.id) ?? readFacts(file, source.text, source.hash, limits.nodesPerFile, !!cache || file.id === target.fileId);
       cache?.parsed.set(file.id, facts);
+      cache?.parsedFiles?.add(file.id);
       if (facts.incompleteReason) skip(file, facts.incompleteReason);
       else if (facts.unclear) skip(file, '파일에 with·eval·이스케이프로 쓴 이름·전역 객체의 동적 키·using 선언이 있어 이 파일의 이름은 확정하지 않았어요.');
       parsed.set(file.id, facts);

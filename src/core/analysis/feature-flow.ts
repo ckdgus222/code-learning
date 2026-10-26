@@ -304,12 +304,14 @@ function frontFacts(fn: Node, facts: FileFacts, toward: ValueSite, inside: boole
 
 /** A bounded graph for one receiving route. All arrows describe code, not observed execution. */
 export async function buildFeatureFlow(root: string, projectId: string, files: ProjectFile[], routes: ProjectRoutes, routeIndex: number,
-  limits: MapLimits = MAP_LIMITS, shouldStop: () => boolean = () => false): Promise<FeatureFlow> {
+  limits: MapLimits = MAP_LIMITS, shouldStop: () => boolean = () => false,
+  cache: CallsCache = { texts: new Map(), parsed: new Map() }): Promise<FeatureFlow> {
   const stop = () => { if (shouldStop()) throw new AppError('CANCELLED', '기능 흐름 찾기를 취소했어요.'); };
   const route = routes.routes[routeIndex];
   if (routes.projectId !== projectId || !route) throw new AppError('CHANGED', '기능 목록을 다시 찾아 주세요.');
   const flow: FeatureFlow = { projectId, routesId: routes.routesId, routeIndex, nodes: [], edges: [], limited: routes.limited, notes: [...routes.notes] };
-  const cache: CallsCache = { texts: new Map(), parsed: new Map() };
+  const parsedFiles = new Set<string>();
+  cache = { ...cache, parsedFiles };
   const results = new Map<string, { found: FunctionCalls; facts: FileFacts; fn: Node }>();
   const known = new Map(files.map(file => [file.relativePath, file]));
   const referencesByStart = new Map<string, Map<number, FileFacts['references'][number]>>();
@@ -511,7 +513,7 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
     }
     if (!already) {
       let hooks = 0;
-      hookFiles: for (const info of [...cache.parsed.values()]) {
+      hookFiles: for (const info of [...parsedFiles].map(id => cache.parsed.get(id)!)) {
         stop();
         if (!info.complete || info.unclear || isTestFile(info.file.relativePath)) continue;
         for (const { hook, properties: returned } of hooksOf(info)) {
@@ -547,7 +549,8 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
 
     if (!already && /^[A-Z]/.test(node.name)) {
       // A component's same-name import or default import must resolve to exactly this file.
-      for (const info of cache.parsed.values()) {
+      for (const id of parsedFiles) {
+        const info = cache.parsed.get(id)!;
         stop();
         if (!info.complete || info.unclear || isTestFile(info.file.relativePath)) continue;
         const names = new Set<string>();
@@ -618,4 +621,22 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
   for (const node of flow.nodes) if (node.side === 'front') node.depth = distance(node.id);
   assertResultSize(flow);
   return flow;
+}
+
+export const FLOW_BATCH_LIMIT = 200;
+
+/** Every route's flow with one shared read cache; each flow equals the one buildFeatureFlow makes alone. */
+export async function buildFeatureFlows(root: string, projectId: string, files: ProjectFile[], routes: ProjectRoutes,
+  limits: MapLimits = MAP_LIMITS, shouldStop: () => boolean = () => false): Promise<FeatureFlow[]> {
+  if (routes.routes.length > FLOW_BATCH_LIMIT) throw new AppError('LIMIT', `서버 주소가 ${FLOW_BATCH_LIMIT}개를 넘어 화면별로 묶지 않았어요.`);
+  if (routes.projectId !== projectId) throw new AppError('CHANGED', '기능 목록을 다시 찾아 주세요.');
+  const cache: CallsCache = { texts: new Map(), parsed: new Map() };
+  const flows: FeatureFlow[] = [];
+  for (let index = 0; index < routes.routes.length; index++) {
+    if (shouldStop()) throw new AppError('CANCELLED', '화면별로 묶기를 취소했어요.');
+    flows.push(await buildFeatureFlow(root, projectId, files, routes, index, limits, shouldStop, cache));
+  }
+  if (shouldStop()) throw new AppError('CANCELLED', '화면별로 묶기를 취소했어요.');
+  assertResultSize(flows);
+  return flows;
 }

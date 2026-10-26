@@ -4,6 +4,8 @@ const methodNames: Record<Route['method'], string> = {
   GET: '보기', POST: '만들기·보내기', PUT: '바꾸기', PATCH: '고치기', DELETE: '지우기', ALL: '받기',
 };
 
+export const routeLabel = (route: Route) => `${route.method} ${route.path ?? '주소 모름'}`;
+
 export function codeNameOf(route: Route): string {
   return `${methodNames[route.method]} · ${route.path ?? '주소 모름'}`;
 }
@@ -85,15 +87,25 @@ export interface StoryStep {
   outside: Listed<string>;
 }
 
+const THROUGH_PATH_LIMIT = 5_000;
+
 /** Reorders the existing graph without adding claims about execution or changing its analysis. */
-export function storyOf(flow: FeatureFlow): StoryStep[] {
+export function storyOf(flow: FeatureFlow, through: string | null = null): StoryStep[] {
   const byId = new Map(flow.nodes.map(node => [node.id, node]));
+  const start = through === null ? null : byId.get(through);
+  if (through !== null && start?.side !== 'front') return [];
+  const outgoing = new Map<string, number[]>();
+  if (through !== null) flow.edges.forEach((edge, index) => {
+    const indexes = outgoing.get(edge.from) ?? [];
+    indexes.push(index);
+    outgoing.set(edge.from, indexes);
+  });
   const requests = flow.nodes.filter(node => node.side === 'request');
   const back = flow.nodes.filter(node => node.side === 'back').sort((a, b) => a.depth - b.depth);
   const handler = back.find(node => node.depth === 0);
   // Functions a screen event leads to: the story follows the click, not a component that only sets the hook up.
   const fromEvent = new Set<string>();
-  const pending = flow.nodes.filter(node => node.event !== null);
+  const pending = through === null ? flow.nodes.filter(node => node.event !== null) : [];
   while (pending.length) {
     const node = pending.pop()!;
     if (fromEvent.has(node.id)) continue;
@@ -102,7 +114,7 @@ export function storyOf(flow: FeatureFlow): StoryStep[] {
   }
   const result: StoryStep[] = [];
   for (const request of requests.length ? requests : [null]) {
-    const storyId = request?.id ?? 'server';
+    const storyId = through === null ? request?.id ?? 'server' : `${request?.id}@${through}`;
     const upstream = new Set<string>();
     const cycles = new Set<string>();
     const visiting = new Set<string>();
@@ -128,18 +140,77 @@ export function storyOf(flow: FeatureFlow): StoryStep[] {
     const path: FlowNode[] = [];
     const arrows: FlowEdge[] = [];
     const seen = new Set<string>();
-    let current = request;
-    while (current) {
-      seen.add(current.id);
-      const incoming = flow.edges.filter(edge => edge.to === current!.id && byId.get(edge.from)?.side === 'front')
-        .sort((a, b) => Number(fromEvent.has(b.from)) - Number(fromEvent.has(a.from))
-          || byId.get(b.from)!.depth - byId.get(a.from)!.depth || Number(b.sure) - Number(a.sure));
-      const next = incoming[0];
-      if (!next) break;
-      if (seen.has(next.from)) { cycles.add(current.id); break; }
-      arrows.unshift(next);
-      current = byId.get(next.from)!;
-      path.unshift(current);
+    if (start) {
+      if (!request) continue;
+      // Breadth-first simple paths. States with the same visited nodes and end can share their best path.
+      type Path = { order: number[]; sure: number; event: boolean };
+      let pending: Path[] = [{ order: [], sure: 0, event: start.event !== null }];
+      const hasEvent = flow.nodes.some(node => upstream.has(node.id) && node.event !== null);
+      let chosen: Path | undefined;
+      let fallback: Path | undefined;
+      // Dense graphs can hold very many simple paths; past this many, the shortest path already found is used.
+      let explored = 0;
+      while (pending.length && !chosen && explored < THROUGH_PATH_LIMIT) {
+        explored += pending.length;
+        const next: Path[] = [];
+        for (const candidate of pending) {
+          const last = candidate.order.length ? flow.edges[candidate.order.at(-1)!].to : start.id;
+          if (last === request.id) {
+            fallback ??= candidate;
+            if (candidate.event || !hasEvent) { chosen = candidate; break; }
+            continue;
+          }
+          for (const index of outgoing.get(last) ?? []) {
+            const edge = flow.edges[index];
+            const target = byId.get(edge.to);
+            if (!target || (target.side !== 'front' && target.id !== request.id) || target.id === start.id
+              || candidate.order.some(index => flow.edges[index].to === target.id)) continue;
+            next.push({ order: [...candidate.order, index],
+              sure: candidate.sure + Number(edge.sure), event: candidate.event || target.event !== null });
+          }
+        }
+        next.sort((a, b) => {
+          if (a.sure !== b.sure) return b.sure - a.sure;
+          for (let index = 0; index < a.order.length; index++) {
+            if (a.order[index] !== b.order[index]) return a.order[index] - b.order[index];
+          }
+          return 0;
+        });
+        const states = new Set<string>();
+        pending = next.filter(candidate => {
+          const last = flow.edges[candidate.order.at(-1)!].to;
+          let key = `${last.length}:${last}`;
+          // Length prefixes keep arbitrary node IDs distinct; the start is shared by every candidate.
+          for (const id of candidate.order.map(index => flow.edges[index].to).sort()) key += `${id.length}:${id}`;
+          if (states.has(key)) return false;
+          states.add(key);
+          return true;
+        });
+      }
+      chosen ??= fallback;
+      if (!chosen) continue;
+      path.push(start);
+      seen.add(start.id);
+      for (const index of chosen.order) {
+        const edge = flow.edges[index];
+        arrows.push(edge);
+        seen.add(edge.to);
+        if (edge.to !== request.id) path.push(byId.get(edge.to)!);
+      }
+    } else {
+      let current = request;
+      while (current) {
+        seen.add(current.id);
+        const incoming = flow.edges.filter(edge => edge.to === current!.id && byId.get(edge.from)?.side === 'front')
+          .sort((a, b) => Number(fromEvent.has(b.from)) - Number(fromEvent.has(a.from))
+            || byId.get(b.from)!.depth - byId.get(a.from)!.depth || Number(b.sure) - Number(a.sure));
+        const next = incoming[0];
+        if (!next) break;
+        if (seen.has(next.from)) { cycles.add(current.id); break; }
+        arrows.unshift(next);
+        current = byId.get(next.from)!;
+        path.unshift(current);
+      }
     }
     const others = flow.nodes.filter(node => upstream.has(node.id) && !seen.has(node.id));
     const screenEvidence = path.some(node => node.screen !== null || node.event !== null);

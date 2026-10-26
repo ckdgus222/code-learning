@@ -3,7 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { mkdir, realpath } from 'node:fs/promises';
 import { z } from 'zod';
-import { channels, featureFlowRequestSchema, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, shapesRequestSchema, changesRequestSchema, diffRequestSchema, type Result, type Evidence } from '../shared/contracts';
+import { channels, featureFlowsRequestSchema, featureFlowRequestSchema, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, shapesRequestSchema, changesRequestSchema, diffRequestSchema, type Result, type Evidence } from '../shared/contracts';
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { ProjectSession, workersStopped } from './project-session';
@@ -215,6 +215,19 @@ app.whenReady().then(async () => {
   });
   handle(channels.cancelRoutes, async argument => {
     current(projectRequestSchema.parse(argument).projectId).cancelRoutes();
+    return null;
+  });
+  handle(channels.featureFlows, async argument => {
+    const input = featureFlowsRequestSchema.parse(argument);
+    if (quitting) throw new AppError('CANCELLED', '앱을 끝내는 중이에요.');
+    const active = current(input.projectId);
+    const revision = projectRevision;
+    const result = await active.featureFlows(input.routesId, revision);
+    if (session !== active || projectRevision !== revision) throw new AppError('CHANGED', '프로젝트가 바뀌었어요. 주소를 다시 찾아 주세요.');
+    return result;
+  });
+  handle(channels.cancelFeatureFlows, async argument => {
+    current(projectRequestSchema.parse(argument).projectId).cancelFeatureFlows();
     return null;
   });
   handle(channels.featureFlow, async argument => {
