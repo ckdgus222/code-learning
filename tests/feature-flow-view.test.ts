@@ -810,3 +810,37 @@ it.each(['current', 'other-routes', 'other-revision', 'stale', 'no-routes'] as c
     }
   },
 );
+
+it('selects a requested node found only in the step other paths', () => {
+  const alternate: FlowNode = { ...nodes[2], id: 'alternate', event: null, fileId: 'other-file' };
+  const graph = { ...flow, nodes: [...nodes, alternate], edges: [...flow.edges, { ...flow.edges[1], from: alternate.id }] };
+  const selection = walkSelection(graph, { ...walkProps.walk, through: 'screen', storyId: 'request@screen', nodeId: alternate.id });
+  expect(selection.step?.nodes.some(node => node.id === alternate.id)).toBe(false);
+  expect(selection.step?.others).toContain(alternate);
+  expect(selection.currentNode).toBe(alternate);
+});
+
+it.each([null, 'screen'])('opens the requested cached story, step and node with through=%s', async through => {
+  const currentRoutes = { ...routes, routesId: flow.routesId };
+  const setWalk = vi.fn();
+  const useState = vi.mocked(ReactHooks.useState)
+    .mockImplementationOnce(() => [null, vi.fn()])
+    .mockImplementationOnce(() => [{ result: currentRoutes, revision: 2 }, vi.fn()])
+    .mockImplementationOnce(() => [{ status: 'done', routesId: flow.routesId, revision: 2, flows: [flow] }, vi.fn()])
+    .mockImplementationOnce(() => [null, vi.fn()])
+    .mockImplementationOnce(() => [walkProps.walk, setWalk]);
+  const featureFlow = vi.fn();
+  vi.stubGlobal('window', { learning: { featureFlow } });
+  let features!: ReturnType<typeof useFeatureFlows>;
+  function Probe() { features = useFeatureFlows(project, 2); return null; }
+  try {
+    renderToStaticMarkup(React.createElement(Probe));
+    const start = { through, storyId: through === null ? 'request' : 'request@screen', step: 1, nodeId: 'request' };
+    expect(await features.follow(0, start)).toBe(nodes[1]);
+    expect(setWalk).toHaveBeenLastCalledWith({ ...walkProps.walk, ...start });
+    expect(featureFlow).not.toHaveBeenCalled();
+  } finally {
+    useState.mockRestore();
+    vi.unstubAllGlobals();
+  }
+});

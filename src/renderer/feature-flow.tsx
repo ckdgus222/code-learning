@@ -69,7 +69,8 @@ export function walkSelection(flow: FeatureFlow | null, walk: Walk) {
   const storyId = walk.storyId ?? stories[0];
   const steps = all.filter(step => step.storyId === storyId);
   const step = steps[walk.step];
-  const currentNode = step?.nodes.find(node => node.id === walk.nodeId) ?? step?.representative ?? null;
+  const currentNode = step?.nodes.find(node => node.id === walk.nodeId)
+    ?? step?.others.find(node => node.id === walk.nodeId) ?? step?.representative ?? null;
   return { stories, storyId, steps, step, currentNode, all };
 }
 
@@ -453,7 +454,7 @@ export function featureGroups(project: ProjectView, routes: ProjectRoutes, guide
   return groups;
 }
 
-export type FlowStart = { through: string; storyId: string };
+export type FlowStart = { through: string | null; storyId: string; step?: number; nodeId?: string };
 type GroupingState = { status: 'idle' } | { status: 'running' } | { status: 'failed'; message: string }
   | { status: 'done'; routesId: string; revision: number; flows: FeatureFlow[] };
 

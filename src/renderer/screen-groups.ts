@@ -15,6 +15,43 @@ export interface ScreenGroups {
   unlinked: RouteRow[];
 }
 
+export interface FileUse {
+  routeIndex: number; screen: string | null; through: string | null; storyId: string;
+  step: number; label: string; nodeId: string; other: boolean; inferred: boolean; reasons: string[];
+}
+
+export function fileUses(fileId: string, fileHash: string, routes: ProjectRoutes, flows: FeatureFlow[]):
+  { uses: FileUse[]; changed: boolean } {
+  const uses: FileUse[] = [];
+  const seen = new Set<string>();
+  const changed = flows.some(flow => flow.nodes.some(node => node.fileId === fileId && node.fileHash !== fileHash));
+  for (const flow of flows) {
+    if (!routes.routes[flow.routeIndex]) continue;
+    const screens = flow.nodes.filter(node => node.side === 'front' && node.screen !== null)
+      .map(node => ({ screen: node.screen, through: node.id, steps: storyOf(flow, node.id) }))
+      .filter(story => story.steps.length > 0);
+    const stories = screens.length ? screens : [{ screen: null, through: null, steps: storyOf(flow) }];
+    const paths = stories.flatMap(story => [...new Set(story.steps.map(step => step.storyId))]
+      .map(storyId => ({ ...story, storyId, steps: story.steps.filter(step => step.storyId === storyId) })));
+    for (const story of paths) {
+      const step = story.steps.findIndex(item => [...item.nodes, ...item.others].some(node => node.fileId === fileId));
+      if (step < 0) continue;
+      const item = story.steps[step];
+      const primary = item.nodes.find(node => node.fileId === fileId);
+      const node = primary ?? item.others.find(node => node.fileId === fileId)!;
+      if (node.fileHash !== fileHash) continue;
+      const key = JSON.stringify([flow.routeIndex, story.screen, step]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uses.push({ routeIndex: flow.routeIndex, screen: story.screen, through: story.through, storyId: story.storyId,
+        step, label: item.label, nodeId: node.id, other: !primary,
+        inferred: story.steps.some(item => item.inferred), reasons: [...new Set(story.steps.flatMap(item => item.reasons))] });
+    }
+  }
+  uses.sort((a, b) => a.routeIndex - b.routeIndex || (a.screen ?? '').localeCompare(b.screen ?? '') || a.step - b.step);
+  return { uses, changed };
+}
+
 export function screenGroups(routes: ProjectRoutes, flows: FeatureFlow[], guide?: FeatureGuide): ScreenGroups {
   const screens = new Map<string, ScreenRow[]>();
   const noScreen: RouteRow[] = [];

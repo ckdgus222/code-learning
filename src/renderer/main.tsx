@@ -8,6 +8,7 @@ import { Icon } from './icons';
 import { ancestorFolderPaths, buildFileTree, filterFileTree, type TreeFolder } from './file-tree';
 import { AiPanel } from './ai-panel';
 import { FileGuideCard } from './file-guide';
+import { fileUses } from './screen-groups';
 import { FileExplanationCard, rememberFileExplanation, type FileExplanationEntry, type FileExplanationState } from './file-explanation';
 import { Flow } from './flow';
 import { ProjectMapView, type MapEntry } from './project-map';
@@ -131,6 +132,9 @@ function App() {
   const diffRequest = useRef(0);
   const { view, setView, symbolId, stepId, selectSymbol, selectStep } = useSelection();
   const features = useFeatureFlows(project, revision.current);
+  const uses = useMemo(() => source && features.routes && features.groupingProps.flows
+    ? fileUses(source.fileId, source.hash, features.routes, features.groupingProps.flows)
+    : { uses: [], changed: false }, [source?.fileId, source?.hash, features.routes, features.groupingProps.flows]);
   const currentView = useRef(view);
   const currentBusy = useRef(busy);
   currentView.current = view;
@@ -1069,6 +1073,9 @@ function App() {
             <p><b>{symbol.name}</b> 함수는 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요. 왼쪽에서 구문을 골라 한 부분씩 볼 수 있어요.</p>
           </section> : <p className="hint">함수나 구문을 고르면 그 부분을 여기서 짚어 줘요.</p>)}
           {view === 'code' && source?.guide && <FileGuideCard key={`${source.fileId}:${source.hash}`} guide={source.guide} analysis={source.analysis} busy={busy} stale={stale}
+            uses={{ ...uses, routes: features.routes ?? null,
+              state: features.groupingProps.grouping ? 'running' : features.groupingProps.flows ? 'ready' : 'none' }}
+            onUse={use => void followFeatureRoute(use.routeIndex, { through: use.through, storyId: use.storyId, step: use.step, nodeId: use.nodeId })}
             focus={functionFocus?.fileId === source.fileId && functionFocus.hash === source.hash ? functionFocus : null}
             onOpenFile={fileId => { if (busy || stale) return; void readFile(fileId); }}
             onShow={showFileGuideRange} onSelect={selectGuideFunction} />}

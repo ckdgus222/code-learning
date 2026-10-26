@@ -1,5 +1,7 @@
 import React, { useLayoutEffect, useRef, useState } from 'react';
-import { STRUCTURE_NOTE, type Analysis, type FileGuide, type GuideRange } from '../shared/contracts';
+import { STRUCTURE_NOTE, type Analysis, type FileGuide, type GuideRange, type ProjectRoutes } from '../shared/contracts';
+import { routeLabel } from '../core/analysis/flow-story';
+import type { FileUse } from './screen-groups';
 import { ComplexityTags } from './complexity';
 import { functionParams } from './code-bands';
 
@@ -10,8 +12,10 @@ const importStatuses = { project: '', ambiguous: '어느 파일인지 하나로 
 // Function cards shown before '더 보기'.
 const FIRST_FUNCTIONS = 8;
 
-export function FileGuideCard({ guide, analysis, busy, stale, onShow, onSelect, onOpenFile, focus = null }: {
+export function FileGuideCard({ guide, analysis, busy, stale, uses, onUse, onShow, onSelect, onOpenFile, focus = null }: {
   guide: FileGuide; analysis: Analysis; busy: boolean; stale: boolean;
+  uses: { state: 'none' | 'running' | 'ready'; uses: FileUse[]; changed: boolean; routes: ProjectRoutes | null };
+  onUse(use: FileUse): void;
   /** A header click in the code; a new object each click, so the same function can be brought back into view. */
   focus?: { symbolId: string } | null;
   onShow(range: GuideRange): void; onSelect(symbolId: string): void; onOpenFile(fileId: string): void;
@@ -39,6 +43,25 @@ export function FileGuideCard({ guide, analysis, busy, stale, onShow, onSelect, 
     <summary>이 파일은</summary>
     <p><span className="badge">{guide.role.label}</span> <span className="badge">코드 모양으로 추정</span></p>
     <p>{guide.role.about}</p>
+    <section aria-label="이 파일이 나오는 기능">
+      {uses.state === 'none' && <p className="hint">기능 흐름을 아직 만들지 않았어요. 한눈에 보기에서 기능 목록을 찾으면 여기 보여요.</p>}
+      {uses.state === 'running' && <p className="hint">기능 흐름을 만드는 중이에요.</p>}
+      {uses.state === 'ready' && <>
+        {uses.uses.length > 0 && <>
+          <h4>이 파일이 나오는 기능 {uses.uses.length}개</h4>
+          <ul className="map-list">{uses.uses.slice(0, 12).map(use => <li key={JSON.stringify([use.routeIndex, use.screen, use.step])}>
+            {use.screen !== null && <>화면 {use.screen} · </>}
+            {uses.routes && routeLabel(uses.routes.routes[use.routeIndex])} · {use.step + 1}단계 {use.label}{' '}
+            {use.other && <span className="tag">다른 경로</span>}{' '}
+            {use.inferred && <span className="tag tag--unknown" title={use.reasons.join(' · ')}>추정 연결</span>}{' '}
+            <button className="btn btn--small" disabled={locked} onClick={() => onUse(use)}>이 단계로</button>
+          </li>)}</ul>
+          {uses.uses.length > 12 && <p className="hint">외 {uses.uses.length - 12}개</p>}
+        </>}
+        {uses.changed && <p className="hint">파일이 바뀌어 기능 단계를 다시 찾아야 해요.</p>}
+        {!uses.uses.length && !uses.changed && <p className="hint">이 파일이 들어간 기능을 찾지 못했어요.</p>}
+      </>}
+    </section>
     {basis.range && <button className="btn btn--chip" disabled={locked} onClick={() => onShow(basis.range!)}>
       근거: {basis.text} ({basis.range.startLine}행)
     </button>}
