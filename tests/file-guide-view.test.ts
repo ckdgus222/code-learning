@@ -188,6 +188,7 @@ describe('file uses', () => {
 
   it.each([
     ['none', false, '기능 흐름을 아직 만들지 않았어요. 한눈에 보기에서 기능 목록을 찾으면 여기 보여요.'],
+    ['stale', false, '코드가 바뀌어 기능 흐름을 다시 만들어야 해요. 한눈에 보기에서 주소를 다시 찾아 주세요.'],
     ['running', false, '기능 흐름을 만드는 중이에요.'],
     ['ready', false, '이 파일이 들어간 기능을 찾지 못했어요.'],
     ['ready', true, '파일이 바뀌어 기능 단계를 다시 찾아야 해요.'],
@@ -196,6 +197,7 @@ describe('file uses', () => {
     expect(html).toContain(message);
     expect(html).not.toContain('>이 단계로</button>');
     if (changed) expect(html).not.toContain('이 파일이 들어간 기능을 찾지 못했어요.');
+    if (state === 'stale') expect(html).not.toContain('아직 만들지 않았어요');
   });
   it('shows route, step, other path and inference, with a twelve row limit and omitted count', () => {
     const html = render({ state: 'ready', changed: true, routes,
