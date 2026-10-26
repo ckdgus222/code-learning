@@ -1268,7 +1268,7 @@ try {
       'INVALID_REQUEST', 'INVALID_REQUEST', 'CHANGED', 'INVALID_REQUEST',
       'INVALID_REQUEST', 'INVALID_REQUEST', 'INVALID_REQUEST', 'CHANGED']);
   });
-  await check('Returned hook function: form event, inferred call and navigation result', async () => {
+  await check('Returned hook function: form event, confirmed call and navigation result', async () => {
     await dialogTo(loginFlowFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '로그인 흐름 프로젝트', exact: true }).waitFor();
@@ -1276,12 +1276,11 @@ try {
     const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
     await story.getByText('화면 /login에서 입력 양식을 보내면 시작해요', { exact: true }).waitFor();
     await story.getByRole('button', { name: '2단계 프론트 처리', exact: true }).click();
-    await story.getByTestId('story-step').getByText('훅이 돌려준 login 함수를 불러요', { exact: false }).waitFor();
     const explanation = page.getByTestId('flow-step-explanation');
-    await explanation.getByText('추정', { exact: true }).waitFor();
-    const reasons = await story.getByTestId('story-step').locator('p').filter({ has: page.getByText('추정', { exact: true }) }).innerText();
-    assert.ok(reasons.length > '추정'.length);
-    assert.ok((await explanation.innerText()).includes(reasons));
+    assert.equal((await explanation.innerText()).includes('추정'), false);
+    await story.getByText('전체 그림과 단계 보기', { exact: true }).click();
+    await story.getByText('코드에서 확인됨: 훅이 돌려준 login 함수를 불러요', { exact: false }).waitFor();
+    await story.getByText('전체 그림과 단계 보기', { exact: true }).click();
     await story.getByRole('button', { name: '5단계 화면 결과', exact: true }).click();
     await story.getByRole('heading', { name: '응답이 온 뒤 화면이 바뀌어요', exact: true }).waitFor();
     const result = story.getByRole('region', { name: '응답 뒤 화면', exact: true });

@@ -51,7 +51,7 @@ it('connects a Next screen, nested event, hook result, request, controller and s
   expect(node('onClick 함수 (5행)').event).toBe('onClick');
   const kinds = flow.edges.map(edge => edge.kind);
   expect(kinds).toEqual(expect.arrayContaining(['placed', 'inside', 'event', 'hook', 'route', 'typed', 'calls']));
-  expect(flow.edges.filter(edge => !edge.sure).map(edge => edge.kind)).toEqual(['hook']);
+  expect(flow.edges.filter(edge => !edge.sure).map(edge => edge.kind)).toEqual([]);
   expect(node('DogsService.remove').outside).toEqual(expect.arrayContaining([
     expect.stringContaining('this.prisma.$transaction'), expect.stringContaining('안쪽 함수에서 tx.dog.findFirst'), expect.stringContaining('안쪽 함수에서 tx.dog.delete'),
   ]));
@@ -125,7 +125,7 @@ export default function DogList() {
 }`);
   await put('web/app/dogs/page.tsx', "import List from '../../components/DogList'; export default function DogsPage() { return <List />; }");
   const { flow } = await analyze();
-  expect(flow.edges.find(edge => edge.kind === 'hook')).toMatchObject({ sure: false, reasons: ['훅이 돌려준 값 mutate를 써요'] });
+  expect(flow.edges.find(edge => edge.kind === 'hook')).toMatchObject({ sure: true, reasons: ['코드에서 확인됨: 훅이 돌려준 mutate가 mutationFn을 불러요'] });
   expect(flow.nodes.find(node => node.name === 'DogsPage')?.screen).toBe('/dogs');
 });
 it('does not link a hook result that is reassigned', async () => {
@@ -387,7 +387,9 @@ it.each([
   }`);
   const { flow } = await analyze();
   const handler = flow.nodes.find(node => node.name === 'handleSubmit')!;
-  expect(flow.edges.find(edge => edge.from === handler?.id && edge.kind === 'hook')).toMatchObject({ sure: false, reasons: [`훅이 돌려준 ${property} 함수를 불러요`] });
+  expect(flow.edges.find(edge => edge.from === handler?.id && edge.kind === 'hook')).toMatchObject({
+    sure: call !== 'auth.login', reasons: [`${call !== 'auth.login' ? '코드에서 확인됨: ' : ''}훅이 돌려준 ${property} 함수를 불러요`],
+  });
   expect(flow.nodes.find(node => node.name === 'LoginPage')?.screen).toBe('/login');
   expect(handler).toMatchObject({ event: 'onSubmit', control: { tag: 'form', texts: [] } });
   expect(handler.after.map(item => [item.when, item.action, item.target])).toEqual([
@@ -633,4 +635,149 @@ it('accepts the 200-route boundary, cancels between flows and rejects an oversiz
   expect(checks).toBe(flowChecks + 2);
   await expect(buildFeatureFlows(root, project.id, project.files, { ...repeated, notes: ['large'.repeat(10_000)] }))
     .rejects.toMatchObject({ code: 'LIMIT' });
+});
+
+it('connects mutation calls but not reset buttons on the same supported result', async () => {
+  const flow = await frontFixture(`import {useMutation} from '@tanstack/react-query';
+    function useRemove() { return useMutation({mutationFn: () => fetch('/x')}); }
+    function Page() { const remove = useRemove(); const pending = remove.isPending;
+      return <><button onClick={() => remove.reset()}>수정</button><button onClick={() => remove.mutate()}>삭제</button></>;
+    }`);
+  const hooks = flow.edges.filter(edge => edge.kind === 'hook');
+  expect(hooks).toHaveLength(1);
+  expect(hooks[0]).toMatchObject({ sure: true, reasons: ['코드에서 확인됨: 훅이 돌려준 mutate가 mutationFn을 불러요'], site: { text: 'remove.mutate()' } });
+  expect(flow.nodes.filter(node => node.event).map(node => node.control?.texts)).toEqual([['삭제']]);
+});
+
+it.each([
+  ['function useSave() { return mutation({mutationFn: () => fetch("/x")}); }', 'const {mutateAsync: save, reset: clear} = useSave();', 'save', 'mutateAsync'],
+  ['const useSave = () => mutation({mutationFn: function () { return fetch("/x"); }});', 'const {mutate: save, reset: clear} = useSave();', 'save', 'mutate'],
+  ['const useSave = function () { return mutation({mutationFn: () => fetch("/x")}); };', 'const m = useSave();', 'm.mutateAsync', 'mutateAsync'],
+])('confirms imported aliases and supported hook forms: %s', async (hook, binding, call, property) => {
+  const flow = await frontFixture(`import {useMutation as mutation} from 'react-query'; ${hook}
+    function Page() { ${binding} function submit() { ${call}(); } function reset() { clear(); }
+      return <><button onClick={submit}>저장</button><button onClick={reset}>초기화</button></>; }`);
+  expect(flow.edges.filter(edge => edge.kind === 'hook')).toMatchObject([
+    { sure: true, reasons: [`코드에서 확인됨: 훅이 돌려준 ${property}가 mutationFn을 불러요`] },
+  ]);
+});
+
+it.each([
+  ["function useMutation(options) { return options; }", 'function useSave() { return useMutation({mutationFn: () => fetch("/x")}); }'],
+  ["import {useMutation} from 'other-query';", 'function useSave() { return useMutation({mutationFn: () => fetch("/x")}); }'],
+  ['', 'function useSave() { return useMutation({mutationFn: () => fetch("/x")}); }'],
+  ["import {useMutation} from '@tanstack/react-query';", 'async function useSave() { return useMutation({mutationFn: () => fetch("/x")}); }'],
+  ["import {useMutation} from '@tanstack/react-query';", 'function* useSave() { return useMutation({mutationFn: () => fetch("/x")}); }'],
+  ["import {useMutation} from '@tanstack/react-query';", 'function useSave() { if (flag) return other; return useMutation({mutationFn: () => fetch("/x")}); }'],
+  ["import {useMutation} from '@tanstack/react-query';", 'function useSave() { return useMutation({onSuccess: () => fetch("/x")}); }'],
+  ["import {useMutation} from '@tanstack/react-query';", 'function useSave() { return useMutation({mutationFn: () => fetch("/x"), get ready() { return true; }}); }'],
+  ["import {useMutation} from '@tanstack/react-query';", 'function useSave() { return useMutation({mutationFn: () => fetch("/x"), ...options}); }'],
+  ["import {useMutation} from '@tanstack/react-query';", 'function useSave() { return useMutation({mutationFn: () => fetch("/x"), [key]: other}); }'],
+  ["import {useMutation} from '@tanstack/react-query';", 'function useSave() { return useMutation({mutationFn: () => fetch("/x"), mutationFn: other}); }'],
+  ["import {useMutation} from '@tanstack/react-query'; useMutation = other;", 'function useSave() { return useMutation({mutationFn: () => fetch("/x")}); }'],
+])('keeps unsupported mutation providers inferred: %s %s', async (imports, hook) => {
+  const flow = await frontFixture(`${imports} ${hook} function Page() { const m = useSave();
+    function submit() { m.mutate(); } function reset() { m.reset(); } return <button onClick={submit}/>; }`);
+  const hooks = flow.edges.filter(edge => edge.kind === 'hook');
+  expect(hooks).toHaveLength(2);
+  expect(hooks.every(edge => !edge.sure)).toBe(true);
+});
+
+it.each([
+  ['const m = useSave(); m.mutate = other;', 'm.mutate()', 'm.reset()'],
+  ['const m = useSave(); m.mutate++;', 'm.mutate()', 'm.reset()'],
+  ['const m = useSave(); delete m.mutate;', 'm.mutate()', 'm.reset()'],
+  ['const m = useSave(); f(m);', 'm.mutate()', 'm.reset()'],
+  ['const m = useSave(); m[key]();', 'm.mutate()', 'm.reset()'],
+  ['const m = useSave(); const alias = m.valueOf(); alias.mutate = other;', 'm.mutate()', 'm.reset()'],
+  ['const m = useSave(); const alias = (m.valueOf)(); alias.mutate = other;', 'm.mutate()', 'm.reset()'],
+  ['const m = useSave(); const alias = m;', 'm.mutate()', 'm.reset()'],
+  ['const m = useSave(); const copy = {...m};', 'm.mutate()', 'm.reset()'],
+  ['let m = useSave();', 'm.mutate()', 'm.reset()'],
+  ['const {mutate = other, reset} = useSave();', 'mutate()', 'reset()'],
+  ['const {"mut\\u0061te": save, reset} = useSave();', 'save()', 'reset()'],
+  ['const {nested: {mutate}, reset} = useSave();', 'mutate()', 'reset()'],
+  ['const {mutate, ...rest} = useSave();', 'mutate()', 'rest.reset()'],
+])('keeps unsupported mutation users inferred: %s', async (binding, mutate, reset) => {
+  const flow = await frontFixture(`import {useMutation} from '@tanstack/react-query';
+    function useSave() { return useMutation({mutationFn: () => fetch('/x')}); }
+    function Page() { ${binding} function submit() { ${mutate}; } function clear() { ${reset}; } return <button onClick={submit}/>; }`);
+  const hooks = flow.edges.filter(edge => edge.kind === 'hook');
+  expect(hooks.some(edge => edge.site?.text === mutate)).toBe(true);
+  expect(hooks.every(edge => !edge.sure)).toBe(true);
+});
+
+it('checks each caller separately when one caller passes a mutation result elsewhere', async () => {
+  const flow = await frontFixture(`import {useMutation} from '@tanstack/react-query';
+    function useSave() { return useMutation({mutationFn: () => fetch('/x')}); }
+    function Safe() { const m = useSave(); function safe() { m.mutate(); } return <button onClick={safe}/>; }
+    function Unsafe() { const m = useSave(); f(m); function unsafe() { m.reset(); } return <button onClick={unsafe}/>; }`);
+  expect(flow.edges.filter(edge => edge.kind === 'hook').map(edge => [flow.nodes.find(node => node.id === edge.from)?.name, edge.sure]))
+    .toEqual([['safe', true], ['unsafe', false]]);
+});
+
+it.each([
+  ['function useAuth() { if (flag) return {login: () => {}}; return {login}; }', 'const {login} = useAuth();'],
+  ['function useAuth() { return {login, ...o}; }', 'const {login} = useAuth();'],
+  ['function useAuth() { return {[k]: x, login}; }', 'const {login} = useAuth();'],
+  ['function useAuth() { return {login, __proto__: p}; }', 'const {login} = useAuth();'],
+  ['function useAuth() { return {login, get ready() {return true;}}; }', 'const {login} = useAuth();'],
+  ['function useAuth() { return {login, login: other}; }', 'const {login} = useAuth();'],
+  ['function useAuth() { if (flag) return; return {login}; }', 'const {login} = useAuth();'],
+  ['function useAuth() { return {login}; }', 'const {nested: {login}} = useAuth();'],
+  ['function useAuth() { return {login}; }', 'const {login = other} = useAuth();'],
+  ['function useAuth() { return {login}; }', 'let {login} = useAuth();'],
+  ['async function useAuth() { return {login}; }', 'const {login} = useAuth();'],
+  ['function* useAuth() { return {login}; }', 'const {login} = useAuth();'],
+])('keeps unsupported returned functions inferred: %s %s', async (hook, binding) => {
+  const flow = await frontFixture(`function login() { return fetch('/x'); } ${hook}
+    function Page() { ${binding} function submit() { login(); } return <form onSubmit={submit}/>; }`);
+  const hooks = flow.edges.filter(edge => edge.kind === 'hook');
+  expect(hooks).toHaveLength(1);
+  expect(hooks[0].sure).toBe(false);
+});
+
+it('confirms all returned objects and ignores returns inside nested functions', async () => {
+  const flow = await frontFixture(`function login() { return fetch('/x'); }
+    function useAuth() { function helper() { return other; } if (flag) return {login}; return {'login': login}; }
+    function Page() { const {login: enter} = useAuth(); function submit() { enter(); } return <form onSubmit={submit}/>; }`);
+  expect(flow.edges.filter(edge => edge.kind === 'hook')).toMatchObject([
+    { sure: true, reasons: ['코드에서 확인됨: 훅이 돌려준 login 함수를 불러요'] },
+  ]);
+});
+
+it.each([
+  'var unrelated = 1;', 'function unrelated() { return arguments[0]; }',
+  'const unrelated = {get value() {return 1;}};', 'class Unrelated {set value(v) {}}',
+  'const unrelated = {__proto__: other};', 'other.__proto__;', 'other.__defineGetter__("x", fn);',
+  'other.__defineSetter__("x", fn);', 'Object.defineProperty(other, "x", descriptor);',
+  'Object["defineProperty"](other, "x", descriptor);', '(Object).defineProperty(other, "x", descriptor);',
+  'Object.defineProperties(other, descriptor);', 'Object.setPrototypeOf(other, proto);', 'Reflect.get(other, "x");', 'new Proxy(other, handler);',
+])('leaves mutation edges inferred when the user file has unsupported code: %s', async unusual => {
+  await put('hook.ts', "import {useMutation} from '@tanstack/react-query'; export function useSave() { return useMutation({mutationFn: () => fetch('/x')}); }");
+  const flow = await frontFixture(`import {useSave} from './hook'; ${unusual}
+    function Page() { const m = useSave(); function submit() { m.mutate(); m.reset(); } return <button onClick={submit}/>; }`);
+  const hooks = flow.edges.filter(edge => edge.kind === 'hook');
+  expect(hooks).toHaveLength(2);
+  for (const edge of hooks) expect(edge).toMatchObject({ sure: false, reasons: ['훅이 돌려준 값 m를 써요', '지원하지 않는 코드 모양이 있어 확정하지 않았어요'] });
+});
+
+it('does not treat ordinary strings or comments as unsupported names', async () => {
+  const flow = await frontFixture(`import {useMutation} from '@tanstack/react-query';
+    const labels = ['arguments', 'Proxy', 'Reflect', '__proto__']; // var x; Object.defineProperty(x);
+    function useSave() { return useMutation({mutationFn: () => fetch('/x')}); }
+    function Page() { const m = useSave(); function submit() { m.mutate(); } return <button onClick={submit}/>; }`);
+  expect(flow.edges.filter(edge => edge.kind === 'hook')).toMatchObject([{ sure: true }]);
+});
+
+it.each(['hook', 'function', 'user'])('checks unsupported code in each returned-function evidence file: %s', async location => {
+  const unusual = 'Object.defineProperty(other, "x", descriptor);';
+  await put('server.ts', "@Controller('x') class C { @Get() get() {} }");
+  await put('auth.ts', `export function login() { return fetch('/x'); } ${location === 'function' ? unusual : ''}`);
+  await put('hook.ts', `import {login} from './auth'; export function useAuth() { return {login}; } ${location === 'hook' ? unusual : ''}`);
+  await put('page.tsx', `import {useAuth} from './hook'; ${location === 'user' ? unusual : ''}
+    function Page() { const {login} = useAuth(); function submit() { login(); } return <form onSubmit={submit}/>; }`);
+  expect((await analyze()).flow.edges.filter(edge => edge.kind === 'hook')).toMatchObject([
+    { sure: false, reasons: ['훅이 돌려준 login 함수를 불러요', '지원하지 않는 코드 모양이 있어 확정하지 않았어요'] },
+  ]);
 });

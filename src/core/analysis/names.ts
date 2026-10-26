@@ -135,6 +135,55 @@ export function propertyName(node: Parser.SyntaxNode | null): string | null {
   if (node.type === 'string') return node.namedChildren.find(child => child.type === 'string_fragment')?.text ?? '';
   return node.type === 'computed_property_name' ? null : node.text;
 }
+
+/** Only literal, unique data properties; accessors, spreads and computed keys cannot prove a value. */
+export function simpleProperties(node: Parser.SyntaxNode | null): Map<string, Parser.SyntaxNode> | null {
+  if (node?.type !== 'object') return null;
+  const properties = new Map<string, Parser.SyntaxNode>();
+  for (const part of node.namedChildren) {
+    if (part.type === 'comment') continue;
+    const shorthand = part.type === 'shorthand_property_identifier';
+    const key = shorthand ? part : part.childForFieldName('key');
+    const value = shorthand ? part : part.childForFieldName('value');
+    if (!shorthand && part.type !== 'pair' || !key || !value
+      || !['identifier', 'property_identifier', 'shorthand_property_identifier', 'string'].includes(key.type) || key.text.includes('\\')) return null;
+    const name = propertyName(key)!;
+    if (name === '__proto__' || properties.has(name)) return null;
+    properties.set(name, value);
+  }
+  return properties;
+}
+
+const unsupportedCertainty = new WeakMap<FileFacts, boolean>();
+const unsupportedNames = new Set(['arguments', '__proto__', '__defineGetter__', '__defineSetter__', 'Reflect', 'Proxy']);
+/** Extra certainty guard, cached for the lifetime of these parsed file facts. */
+export function hasUnsupportedCertainty(facts: FileFacts): boolean {
+  const cached = unsupportedCertainty.get(facts);
+  if (cached !== undefined) return cached;
+  let unsupported = !facts.complete || facts.unclear;
+  let root = facts.functions[0] ?? facts.calls[0]?.node ?? facts.references[0]?.node ?? facts.variables[0]?.source;
+  while (root?.parent) root = root.parent;
+  const pending = root ? [root] : [];
+  while (!unsupported && pending.length) {
+    const node = pending.pop()!;
+    const parent = node.parent;
+    const propertyKey = parent && ['pair', 'pair_pattern'].includes(parent.type) ? parent.childForFieldName('key')
+      : parent?.type === 'method_definition' ? parent.childForFieldName('name')
+        : parent?.type === 'subscript_expression' ? parent.childForFieldName('index') : null;
+    const propertyString = node.type === 'string' && propertyKey && sameRange(propertyKey, node);
+    const name = propertyString || ['identifier', 'property_identifier', 'shorthand_property_identifier', 'shorthand_property_identifier_pattern'].includes(node.type)
+      ? propertyName(node) : null;
+    const object = node.childForFieldName('object');
+    const property = node.childForFieldName('property') ?? node.childForFieldName('index');
+    unsupported = node.type === 'variable_declaration' && hasToken(node, 'var')
+      || node.type === 'method_definition' && (hasToken(node, 'get') || hasToken(node, 'set'))
+      || name !== null && unsupportedNames.has(name)
+      || !!object && unwrapped(object).text === 'Object' && ['defineProperty', 'defineProperties', 'setPrototypeOf'].includes(propertyName(property) ?? '');
+    if (!unsupported) pending.push(...node.namedChildren);
+  }
+  unsupportedCertainty.set(facts, unsupported);
+  return unsupported;
+}
 /** The property a member call names: `obj.save()` and `obj['save']()`; null when it is computed. */
 export function calledProperty(callee: Parser.SyntaxNode): string | null {
   if (callee.type === 'member_expression') return propertyName(callee.childForFieldName('property'));

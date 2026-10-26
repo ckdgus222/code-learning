@@ -4,7 +4,7 @@ import { AppError } from '../../shared/errors';
 import { findFunctionCalls, type CallsCache } from './calls';
 import { candidatesFor, isRelative, MAP_LIMITS, type MapLimits } from './project-map';
 import { formatNextPath, nextRouteOf } from './next-routes';
-import { firstCode, firstLine, lineRange, nearest, reassigned, sameRange, unwrapped, propertyName, type CallFact, type Declaration, type FileFacts } from './names';
+import { firstCode, firstLine, hasToken, hasUnsupportedCertainty, lineRange, nearest, reassigned, sameRange, simpleProperties, unwrapped, propertyName, type CallFact, type Declaration, type FileFacts } from './names';
 import { functionName, functionTypes } from './syntax';
 import { assertResultSize, isTestFile, literal, requestSite, routeSite, shortName } from './routes';
 
@@ -134,6 +134,55 @@ function* bodyNodes(root: Node | null, stop: () => void): Generator<Node> {
     yield node;
     if (!functionTypes.has(node.type)) pending.push(...node.namedChildren.toReversed());
   }
+}
+
+// TanStack Query: mutate and mutateAsync run mutationFn; reset only clears the result, so it is allowed but sends nothing.
+const mutationCalls = ['mutate', 'mutateAsync'];
+const mutationMembers = [...mutationCalls, 'reset'];
+
+function returnedValues(fn: Node, stop: () => void): (Node | null)[] {
+  if (hasToken(fn, 'async') || fn.type.includes('generator') || hasToken(fn, '*')) return [];
+  const body = field(fn, 'body');
+  if (!body) return [];
+  if (body.type !== 'statement_block') return [unwrapped(body)];
+  return [...bodyNodes(body, stop)].filter(node => node.type === 'return_statement')
+    .map(node => firstCode(node) ? unwrapped(firstCode(node)!) : null);
+}
+
+function supportedHookBinding(info: FileFacts, declarator: Node, plain: boolean): boolean {
+  if (!declarator.parent || !hasToken(declarator.parent, 'const')) return false;
+  const pattern = field(declarator, 'name');
+  if (!pattern) return false;
+  const bindings = pattern.type === 'identifier' && plain ? [pattern] : pattern.type === 'object_pattern'
+    ? pattern.namedChildren.filter(node => node.type !== 'comment').map(node => {
+      if (node.type === 'shorthand_property_identifier_pattern') return node;
+      const key = field(node, 'key');
+      const value = field(node, 'value');
+      return node.type === 'pair_pattern' && key && ['property_identifier', 'string'].includes(key.type)
+        && !key.text.includes('\\') && value?.type === 'identifier' ? value : null;
+    }) : [];
+  if (!bindings.length || bindings.some(node => !node)) return false;
+  const variables = info.variables.filter(item => item.source && sameRange(item.source, declarator));
+  if (!bindings.every(node => variables.some(item => item.node && sameRange(item.node, node!) && item.role === 'const'
+    && !item.clash && item.scope.names.get(node!.text)?.length === 1 && !reassigned(info, node!.text, item.scope)))) return false;
+  if (pattern.type === 'object_pattern') return true;
+  const variable = variables.find(item => item.node && sameRange(item.node, pattern))!;
+  return info.references.filter(reference => reference.node.text === pattern.text && nearest(reference.scope, pattern.text)?.scope === variable.scope).every(({ node }) => {
+    const member = node.parent;
+    if (member?.type !== 'member_expression' || !field(member, 'object') || !sameRange(field(member, 'object')!, node)
+      || field(member, 'property')?.type !== 'property_identifier') return false;
+    // Writes can wrap the member or include it in a destructuring target.
+    for (let parent = member.parent; parent && !functionTypes.has(parent.type) && parent.type !== 'statement_block'; parent = parent.parent) {
+      const target = ['assignment_expression', 'augmented_assignment_expression', 'for_in_statement'].includes(parent.type) ? field(parent, 'left')
+        : parent.type === 'update_expression' || parent.type === 'unary_expression' && hasToken(parent, 'delete') ? field(parent, 'argument') : null;
+      if (target && target.startIndex <= member.startIndex && target.endIndex >= member.endIndex) return false;
+    }
+    const parent = member.parent;
+    if (parent && sameRange(unwrapped(parent), member)) return false;
+    if (parent?.type === 'new_expression' && field(parent, 'constructor') && sameRange(field(parent, 'constructor')!, member)) return false;
+    if (parent?.type !== 'call_expression' || !field(parent, 'function') || !sameRange(field(parent, 'function')!, member)) return true;
+    return mutationMembers.includes(field(member, 'property')!.text);
+  });
 }
 
 function displayLiteral(node: Node | null): string | null {
@@ -450,7 +499,8 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
   }
   const expanded = new Set<string>();
   const hookExpanded = new Set<string>();
-  const followHookUses = (callers: NonNullable<FunctionCalls['callers']>, destination: FlowNode, properties: Set<string> | null) => {
+  const followHookUses = (callers: NonNullable<FunctionCalls['callers']>, destination: FlowNode, properties: Set<string> | null,
+    confirmed: Set<string>, evidence: FileFacts[]) => {
     let uses = 0;
     for (const caller of callers) {
       const info = cache.parsed.get(caller.fileId);
@@ -458,6 +508,8 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
       if (!info || !call?.fn) continue;
       const declarator = call.node.parent;
       if (declarator?.type !== 'variable_declarator' || !field(declarator, 'value') || !sameRange(field(declarator, 'value')!, call.node)) continue;
+      const unsupported = [info, ...evidence].some(hasUnsupportedCertainty);
+      const supported = !('basis' in caller) && !unsupported && confirmed.size > 0 && supportedHookBinding(info, declarator, properties === null);
       const variables = info.variables.filter(item => item.source && sameRange(item.source, declarator) && item.node && !reassigned(info, item.node.text, item.scope));
       for (const variable of variables) for (const use of info.calls) {
         stop();
@@ -469,9 +521,17 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
         const key = variable.shape === 'plain' ? field(callee, 'property')?.text
           : binding?.type === 'pair_pattern' ? propertyName(field(binding, 'key')) : variable.node!.text;
         if (properties !== null && (!key || !properties.has(key))) continue;
+        if (properties === null && supported && (!key || !confirmed.has(key))) continue;
+        const sure = supported && !!key && confirmed.has(key);
         if (uses >= 3) { limit('훅 결과를 쓰는 곳은 훅마다 3개까지만 보여요.'); continue; }
         const parent = add('front', { ...routeSite(use.fn, info), name: functionName(use.fn) }, 0);
-        if (parent) { edge(parent, destination, 'hook', requestSite(use, info), properties === null ? [`훅이 돌려준 값 ${shortName(name.text)}를 써요`] : [`훅이 돌려준 ${key} 함수를 불러요`], false); queue.push(parent); uses++; }
+        if (!parent) continue;
+        const what = properties !== null ? `훅이 돌려준 ${key} 함수를 불러요`
+          : sure ? `훅이 돌려준 ${key}가 mutationFn을 불러요` : `훅이 돌려준 값 ${shortName(name.text)}를 써요`;
+        const reason = sure ? `코드에서 확인됨: ${what}` : what;
+        edge(parent, destination, 'hook', requestSite(use, info), [reason, ...(unsupported ? ['지원하지 않는 코드 모양이 있어 확정하지 않았어요'] : [])], sure);
+        queue.push(parent);
+        uses++;
       }
     }
   };
@@ -519,14 +579,19 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
         for (const { hook, properties: returned } of hooksOf(info)) {
           stop();
           const properties = new Set<string>();
-          for (const { name, local, declaration } of returned) {
-            if (declaration.kind === 'function' && info.file.id === facts.file.id && sameRange(declaration.fn, fn)) { properties.add(name); continue; }
-            if (declaration.kind !== 'import' || !importsThisFile(info, declaration, local, facts, found)) continue;
+          const isTarget = (declaration: Declaration | null, local: string): boolean => {
+            if (declaration?.kind === 'function') return info.file.id === facts.file.id && sameRange(declaration.fn, fn);
+            if (!declaration || !importsThisFile(info, declaration, local, facts, found) || declaration.kind !== 'import') return false;
             const exported = facts.exports.get(declaration.imported);
-            if (exported?.length !== 1 || exported[0].local && reassigned(facts, exported[0].local, facts.program)) continue;
-            properties.add(name);
-          }
+            return exported?.length === 1 && !(exported[0].local && reassigned(facts, exported[0].local, facts.program));
+          };
+          for (const { name, local, declaration } of returned) if (isTarget(declaration, local)) properties.add(name);
           if (!properties.size) continue;
+          const returns = returnedValues(hook, stop).map(simpleProperties);
+          const confirmed = new Set([...properties].filter(name => returns.length > 0 && returns.every(object => {
+            const value = object?.get(name);
+            return !!value && ['identifier', 'shorthand_property_identifier'].includes(value.type) && isTarget(declarationAt(info, value), value.text);
+          })));
           if (hooks >= 3) { limit('돌려주는 훅은 함수마다 3개까지만 봐요.'); break hookFiles; }
           hooks++;
           const target = { ...routeSite(hook, info), name: functionName(hook) };
@@ -538,13 +603,25 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
             if (hookCalls.limited || hookCalls.unexamined.length) limit('일부 파일은 끝까지 확인하지 못했어요.');
           }
           const callers = [...(hookCalls.callers ?? []), ...hookCalls.typedCallers].filter(caller => !caller.inTest);
-          followHookUses(callers, node, properties);
+          followHookUses(callers, node, properties, confirmed, [info, facts]);
         }
       }
     }
     if (needsHook) {
       hookExpanded.add(node.id);
-      followHookUses(callers, node, null);
+      const returns = returnedValues(fn, stop);
+      const call = returns.length === 1 && returns[0]?.type === 'call_expression' ? returns[0] : null;
+      const callee = field(call, 'function');
+      const declaration = callee?.type === 'identifier' ? declarationAt(facts, callee) : null;
+      const options = simpleProperties(firstCode(field(call, 'arguments')));
+      const mutation = options?.get('mutationFn');
+      const inside = flow.edges.filter(edge => edge.kind === 'inside' && edge.from === node.id);
+      const supported = ['function_declaration', 'function_expression', 'arrow_function'].includes(fn.type)
+        && declaration?.kind === 'import' && declaration.imported === 'useMutation'
+        && ['@tanstack/react-query', 'react-query'].includes(declaration.specifier ?? '')
+        && mutation && ['function_expression', 'arrow_function'].includes(mutation.type)
+        && inside.length > 0 && inside.every(edge => edge.site?.startUtf16 === mutation.startIndex && edge.site.endUtf16 === mutation.endIndex);
+      followHookUses(callers, node, null, new Set(supported ? mutationCalls : []), [facts]);
     }
 
     if (!already && /^[A-Z]/.test(node.name)) {

@@ -229,7 +229,7 @@ remote('/dogs', {method:'GET'}); local('/dogs', {method:'GET'});
 forwarding('/dogs', {baseURL:'/other'}); mixed('/dogs', {});`);
   const requests = (await find()).requests;
   expect(requests.map(request => [request.path, request.host, request.prefix, request.methods])).toEqual([
-    ['/dogs', 'elsewhere.test', 'known', null], ['/api/dogs', null, 'known', null],
+    ['/dogs', 'elsewhere.test', 'known', ['GET']], ['/api/dogs', null, 'known', ['GET']],
     ['/other/dogs', null, 'known', ['GET']], ['/dogs', null, 'unknown', ['GET']],
   ]);
 });
@@ -343,4 +343,49 @@ describe('request collection work', () => {
     await expect(findProjectRoutes(root, project.id, project.files, MAP_LIMITS, stop)).rejects.toThrow('주소 찾기를 취소했어요.');
     expect(performance.now() - cancelled).toBeLessThan(5000);
   }, 60000);
+});
+
+describe('fixed methods in request wrappers', () => {
+  it.each([
+    'const postJson = (path, body) => fetch(path, {method: "POST", body});',
+    'function postJson(path) { fetch(path, {method: "post"}); return fetch(path, {"method": "POST"}); }',
+    'import axios from "axios"; const postJson = path => axios.post(path);',
+    'import axios from "axios"; const client = axios.create({}); const postJson = path => client.post(path);',
+    'import axios from "axios"; const postJson = path => axios(path, {method: "POST"});',
+  ])('confirms a single method from direct senders: %s', async wrapper => {
+    await put('server.ts', "@Controller('dogs') class C { @Post() create() {} }");
+    await put('client.ts', `${wrapper} postJson('/dogs');`);
+    const result = await find();
+    expect(result.requests).toHaveLength(1);
+    expect(result.requests[0].methods).toEqual(['POST']);
+    expect(result.links).toEqual([{ requestIndex: 0, routeIndex: 0, sure: true, reasons: [] }]);
+  });
+  it.each([
+    '{method: "POST", ...rest}', '{method}', '{method: m}', '{method: "POST", [k]: "DELETE"}',
+    '{method: "POST", get cache() {return true;}}', '{method: "POST", method: "DELETE"}',
+    '{method: "POST", __proto__: proto}', '{method: "POST", cache() {}}', '{}',
+  ])('keeps the method unknown for unsupported options: %s', async options => {
+    await put('server.ts', "@Controller('dogs') class C { @Post() create() {} }");
+    await put('client.ts', `const send = path => fetch(path, ${options}); send('/dogs');`);
+    const result = await find();
+    expect(result.requests).toHaveLength(1);
+    expect(result.requests[0].methods).toBeNull();
+    expect(result.links[0]).toMatchObject({ sure: false, reasons: expect.arrayContaining(['방식 모름']) });
+  });
+  it.each([
+    'function send(path) { fetch(path, {method: "POST"}); return fetch(path, {method: "DELETE"}); }',
+    'function send(path) { fetch(path, {method: "POST"}); return other(path); } function other(path) { return fetch(path, {method: "POST"}); }',
+    'function other(path) { return fetch(path, {method: "POST"}); } function send(path) { fetch(path, {method: "POST"}); return other(path); }',
+    'function send(path) { return other(path); } function other(path) { return fetch(path, {method: "POST"}); }',
+    'function send(path) { other(path); return fetch(path, {method: "POST"}); }',
+    'function send(path) { arguments[0] = "/other"; return fetch(path, {method: "POST"}); }',
+    'var unrelated = 1; function send(path) { return fetch(path, {method: "POST"}); }',
+  ])('does not confirm conflicting, indirect or unusual wrappers: %s', async wrapper => {
+    await put('server.ts', "@Controller('dogs') class C { @Post() create() {} }");
+    await put('client.ts', `${wrapper} send('/dogs');`);
+    const result = await find();
+    expect(result.requests).toHaveLength(1);
+    expect(result.requests[0].methods).toBeNull();
+    expect(result.links[0].sure).toBe(false);
+  });
 });
