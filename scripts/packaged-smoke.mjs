@@ -245,6 +245,7 @@ try {
     ipcMain._invokeHandlers.set('learning:feature-flow', (...args) => { globalThis.packagedFlowCalls++; return original(...args); });
   }, screenFixture);
   await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+  await page.getByText('화면별로 보기', { exact: true }).click();
   const screen = page.getByRole('region', { name: '화면 /login', exact: true });
   await screen.waitFor();
   await page.screenshot({ path: path.join(root, 'test-results/packaged-screen-groups.png') });
