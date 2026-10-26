@@ -11,7 +11,7 @@ import { FileGuideCard } from './file-guide';
 import { FileExplanationCard, rememberFileExplanation, type FileExplanationEntry, type FileExplanationState } from './file-explanation';
 import { Flow } from './flow';
 import { ProjectMapView, type MapEntry } from './project-map';
-import { AFTER_FLOW_NOTE, STORE_FLOW_NOTE, FLOW_ORDER_NOTE, FeatureChooser, FeatureList, FlowLimits, FlowWalk, hasFlowCode, RoutesStatus, siteOf, useFeatureFlows } from './feature-flow';
+import { AFTER_FLOW_NOTE, STORE_FLOW_NOTE, FLOW_ORDER_NOTE, FeatureChooser, FeatureList, FlowLimits, FlowWalk, hasFlowCode, RoutesStatus, siteOf, useFeatureFlows, type FlowStart } from './feature-flow';
 import { codeNameOf } from '../core/analysis/flow-story';
 import { matchCallStep, matchFunction, matchImport } from './map-layout';
 import { CallsFacts, type CallFunction, type CallsState } from './calls';
@@ -751,10 +751,10 @@ function App() {
     features.setSite(nodeId, site);
     await readSiteRange(site, '흐름을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 주소를 다시 찾아 주세요.');
   }
-  async function followFeatureRoute(routeIndex: number) {
+  async function followFeatureRoute(routeIndex: number, start?: FlowStart) {
     if (currentBusy.current) return;
     setView('flow');
-    const node = await features.follow(routeIndex);
+    const node = await features.follow(routeIndex, start);
     if (currentView.current === 'flow' && !currentBusy.current) await showFlowNode(node);
   }
   // The same for a function to follow: it is chosen in the flow view, which then searches its own calls.
@@ -878,7 +878,7 @@ function App() {
             <FeatureChooser key={project.files[0]?.id ?? project.id} project={project} state={features}
               mode={mode} running={questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running'}
               checking={checking} connections={connections} onInspect={inspectConnections} onRunning={setFeatureGuideRunning}
-              revision={revision.current} locked={busy} onFollow={index => void followFeatureRoute(index)} />
+              revision={revision.current} locked={busy} onFollow={(index, start) => void followFeatureRoute(index, start)} />
             {view === 'overview' && <details key={overviewCard} className="card card--wide" aria-label="더 알아보기"
               // Once an overview was asked for, its progress, result or error stays in view (the prop never turns false again).
               open={features.routes?.routes.length === 0 || !!features.error || overviewAi !== null}>
@@ -929,8 +929,8 @@ function App() {
           {features.following && <p role="status">기능 흐름을 찾는 중… <button className="btn" onClick={features.cancelFollow}>기능 흐름 취소</button></p>}
           {!features.flow && !features.following && <>
             <p>한눈에 보기에서 기능을 고르거나, 아래 목록에서 골라 주세요</p>
-            {features.routes && <FeatureList search={features.search} setSearch={features.setSearch} groups={features.groups} routes={features.routes} selected={features.selected}
-              disabled={busy || features.stale} onFollow={index => void followFeatureRoute(index)} />}
+            {features.routes && <FeatureList {...features.groupingProps} search={features.search} setSearch={features.setSearch} groups={features.groups} routes={features.routes} selected={features.selected}
+              disabled={busy || features.stale} onFollow={(index, start) => void followFeatureRoute(index, start)} />}
           </>}
           {features.flow && features.routes && <FlowWalk flow={features.flow}
             title={flowTitle}

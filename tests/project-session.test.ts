@@ -16,7 +16,7 @@ const path = require('node:path');
 const delay = Number(process.env.MAP_DELAY);
 // Leaves a file in MARK_DIR (outside the project folder) when a worker replies after being asked to stop.
 const mark = name => fs.writeFileSync(path.join(process.env.MARK_DIR, name + '-' + Math.random().toString(36).slice(2)), '');
-const side = workerData.map ?? workerData.calls ?? workerData.routes ?? workerData.flow;
+const side = workerData.map ?? workerData.calls ?? workerData.routes ?? workerData.flow ?? workerData.flows;
 if (workerData.shapes) {
   // A shapes worker with a stand-in for the checker process: one that only waits until it is ended. It follows
   // side-stop.ts: whoever takes the number from the slot ends the process, and the reply comes after its exit.
@@ -62,7 +62,7 @@ if (workerData.shapes) {
   }, 5);
   parentPort.on('message', () => {});
 } else if (side) {
-  const job = workerData.routes ? 'routes' : workerData.flow ? 'flow' : workerData.map ? 'map' : 'calls';
+  const job = workerData.routes ? 'routes' : workerData.flow ? 'flow' : workerData.flows ? 'flows' : workerData.map ? 'map' : 'calls';
   mark(job + '-started');
   const stop = new Int32Array(side.stop);
   const started = Date.now();
@@ -77,6 +77,7 @@ if (workerData.shapes) {
     } else if (delay >= 0 && Date.now() - started >= delay) {
       clearInterval(poll);
       parentPort.postMessage({ id: 0, result: { ok: true, value: job === 'routes' ? { projectId: workerData.projectId, routesId: require('node:crypto').randomUUID(), routes: [{ method: 'GET', path: '/a', handler: { fileId: 'f1', name: 'read' } }], requests: [], links: [], prefix: null, limited: false, notes: [] }
+        : job === 'flows' ? [{ projectId: workerData.projectId, routesId: side.routes.routesId, routeIndex: 0, nodes: [], edges: [], limited: false, notes: [] }]
         : job === 'flow' ? { projectId: workerData.projectId, routesId: side.routes.routesId, routeIndex: side.routeIndex, nodes: [], edges: [], limited: false, notes: [] }
         : job === 'map'
         ? { projectId: workerData.projectId, files: [], edges: [], unresolved: [], external: [], limited: false, notes: [] }
@@ -487,33 +488,33 @@ describe('saved routes and feature flow sessions', () => {
     expect(second.routesId).not.toBe(first.routesId);
     await expect(session.featureFlow(first.routesId, 0, 3)).rejects.toMatchObject({ code: 'CHANGED' });
   });
-  it.each(['routes', 'flow'] as const)('cancels %s without blocking source reads', async job => {
+  it.each(['routes', 'flow', 'flows'] as const)('cancels %s without blocking source reads', async job => {
     process.env.MAP_DELAY = '0';
     const routes = await session.routes();
     process.env.MAP_DELAY = '-1';
-    const pending = job === 'routes' ? session.routes() : session.featureFlow(routes.routesId, 0);
+    const pending = job === 'routes' ? session.routes() : job === 'flows' ? session.featureFlows(routes.routesId) : session.featureFlow(routes.routesId, 0);
     const rejected = expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
     await expect(session.read('f1')).resolves.toMatchObject({ fileId: 'f1' });
-    if (job === 'routes') session.cancelRoutes(); else session.cancelFeatureFlow();
+    if (job === 'routes') session.cancelRoutes(); else if (job === 'flows') session.cancelFeatureFlows(); else session.cancelFeatureFlow();
     await rejected;
   });
-  it.each(['routes', 'flow'] as const)('rejects a project change during %s', async job => {
+  it.each(['routes', 'flow', 'flows'] as const)('rejects a project change during %s', async job => {
     process.env.MAP_DELAY = '0';
     const routes = await session.routes();
     process.env.MAP_DELAY = '250';
     const before = await markers(job + '-started');
-    const pending = job === 'routes' ? session.routes() : session.featureFlow(routes.routesId, 0);
+    const pending = job === 'routes' ? session.routes() : job === 'flows' ? session.featureFlows(routes.routesId) : session.featureFlow(routes.routesId, 0);
     const rejected = expect(pending).rejects.toMatchObject({ code: 'CHANGED' });
     await expect.poll(() => markers(job + '-started')).toBeGreaterThan(before);
     await writeFile(path.join(root, 'a.ts'), 'export const changed = 2;');
     await rejected;
     await expect(session.featureFlow(routes.routesId, 0)).rejects.toMatchObject({ code: 'CHANGED' });
   });
-  it.each(['routes', 'flow'] as const)('drops %s from a closed project and permits another session', async job => {
+  it.each(['routes', 'flow', 'flows'] as const)('drops %s from a closed project and permits another session', async job => {
     process.env.MAP_DELAY = '0';
     const routes = await session.routes();
     process.env.MAP_DELAY = '-1';
-    const pending = job === 'routes' ? session.routes() : session.featureFlow(routes.routesId, 0);
+    const pending = job === 'routes' ? session.routes() : job === 'flows' ? session.featureFlows(routes.routesId) : session.featureFlow(routes.routesId, 0);
     const rejected = expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
     await session.close();
     const next = new ProjectSession(randomUUID(), root, workerPath, () => undefined);
@@ -535,14 +536,14 @@ describe('saved routes and feature flow sessions', () => {
   });
 });
 
-it.each(['routes', 'flow'] as const)('drops a late successful %s result after cancellation', async job => {
+it.each(['routes', 'flow', 'flows'] as const)('drops a late successful %s result after cancellation', async job => {
   process.env.MAP_DELAY = '0';
   const routes = await session.routes();
   process.env.SIDE_IGNORE_STOP = '1';
   process.env.MAP_DELAY = '100';
-  const pending = job === 'routes' ? session.routes() : session.featureFlow(routes.routesId, 0);
+  const pending = job === 'routes' ? session.routes() : job === 'flows' ? session.featureFlows(routes.routesId) : session.featureFlow(routes.routesId, 0);
   const rejected = expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
-  if (job === 'routes') session.cancelRoutes(); else session.cancelFeatureFlow();
+  if (job === 'routes') session.cancelRoutes(); else if (job === 'flows') session.cancelFeatureFlows(); else session.cancelFeatureFlow();
   await rejected;
 });
 
@@ -590,5 +591,37 @@ describe('feature guide session freshness', () => {
     expect(events.some(event => event.kind === 'feature-guide-completed')).toBe(false);
     expect(() => session.captureFeatureGuide(routes.routesId, 3)).toThrow('기능 목록이 바뀌었어요');
     await workflow.close();
+  });
+});
+
+
+describe('screen grouping freshness and independent cancellation', () => {
+  it.each(['replace', 'cancel'] as const)('discards grouping after routes %s, even if its worker reports success', async action => {
+    process.env.MAP_DELAY = '0';
+    const routes = await session.routes(3);
+    process.env.SIDE_IGNORE_STOP = '1';
+    process.env.MAP_DELAY = '100';
+    const pending = session.featureFlows(routes.routesId, 3);
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
+    if (action === 'replace') await session.routes(3);
+    else session.cancelRoutes();
+    await rejected;
+  });
+  it('validates route IDs and revisions and permits a single flow alongside grouping', async () => {
+    process.env.MAP_DELAY = '0';
+    const routes = await session.routes(3);
+    await expect(session.featureFlows(routes.routesId, 4)).rejects.toMatchObject({ code: 'CHANGED' });
+    await expect(session.featureFlows(randomUUID(), 3)).rejects.toMatchObject({ code: 'CHANGED' });
+    await expect(session.featureFlows(routes.routesId, 3)).resolves.toMatchObject([{ routeIndex: 0 }]);
+    process.env.MAP_DELAY = '-1';
+    const pending = session.featureFlows(routes.routesId, 3);
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
+    process.env.MAP_DELAY = '0';
+    await expect(session.featureFlow(routes.routesId, 0, 3)).resolves.toMatchObject({ routeIndex: 0 });
+    session.cancelFeatureFlows();
+    await rejected;
+    process.env.MAP_DELAY = '-1';
+    await expect(session.featureFlows(routes.routesId, 3, 50)).rejects.toMatchObject({ code: 'LIMIT' });
+    await expect(session.read('f1')).resolves.toMatchObject({ fileId: 'f1' });
   });
 });

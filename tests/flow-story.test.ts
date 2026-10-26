@@ -215,6 +215,10 @@ it('follows the click path even when a deeper component only sets the hook up', 
     edge(remove.id, hook.id, { kind: 'hook', sure: false, reasons: ['훅 결과를 써요'] }),
     edge(hook.id, mutation.id), edge(mutation.id, request.id), edge(request.id, handler.id, { kind: 'route' }),
   ]);
+  const through = storyOf(real, page.id);
+  expect(through[0].nodes[0]).toBe(page);
+  expect(through[0].nodes).toContain(click);
+  expect(through[1]).toMatchObject({ inferred: true, reasons: ['훅 결과를 써요'] });
   const steps = storyOf(real);
   expect(steps[0].text).toBe('화면 /dogs에서 onClick 동작이 일어나요');
   expect(steps[1].text).toBe('removeDog → useDeleteDog → mutationFn 순서로 이어져요');
@@ -334,4 +338,48 @@ it.each([
   ['notify', null, '알림 보여 주기'], ['call', 'handleSuccess', '`handleSuccess` 부르기'],
 ] as const)('describes the response action %s', (action, target, text) => {
   expect(afterText({ action, target, when: 'success', site: site('front', 1) })).toBe(text);
+});
+
+
+it('makes each shared-request story start at its selected screen, without changing default stories', () => {
+  const a = node('a', 'front', 3, { screen: '/a' });
+  const b = node('b', 'front', 3, { screen: '/b' });
+  const graph = flow([a, b, mutation, request, handler], [edge(a.id, mutation.id), edge(b.id, mutation.id),
+    edge(mutation.id, request.id), edge(request.id, handler.id)]);
+  for (const start of [a, b]) {
+    const steps = storyOf(graph, start.id);
+    expect(steps[0].nodes[0]).toBe(start);
+    expect(steps.every(step => step.storyId === `${request.id}@${start.id}`)).toBe(true);
+    expect(steps.flatMap(step => step.others)).toContain(start === a ? b : a);
+  }
+  expect(storyOf(graph, null)).toEqual(storyOf(graph));
+  expect(storyOf(graph, 'missing')).toEqual([]);
+  expect(storyOf(graph, handler.id)).toEqual([]);
+  expect(storyOf(flow([a, request, handler]), a.id)).toEqual([]);
+  expect(storyOf(flow([a, handler]), a.id)).toEqual([]);
+});
+it('prefers the longer click path through a screen, preserving inferred connections', () => {
+  const list = node('list', 'front', 6);
+  const graph = { ...example, nodes: [...example.nodes, list], edges: [edge(screen.id, list.id), edge(list.id, hook.id),
+    edge(list.id, event.id), ...example.edges.filter(item => item.from !== screen.id)] };
+  const steps = storyOf(graph, screen.id);
+  expect(steps[0].nodes.map(item => item.id)).toEqual([screen.id, list.id, event.id]);
+  expect(steps[1]).toMatchObject({ inferred: true, reasons: ['훅 결과를 써요'] });
+});
+it.each(['self', 'mutual'] as const)('keeps the selected screen in the %s cyclic click path', kind => {
+  const second = node('second', 'front');
+  const graph = flow([screen, event, second, request], [edge(screen.id, event.id), edge(event.id, request.id),
+    ...(kind === 'self' ? [edge(event.id, event.id)] : [edge(event.id, second.id), edge(second.id, event.id)])]);
+  const steps = storyOf(graph, screen.id);
+  expect(steps[0].nodes).toEqual([screen, event]);
+  expect(steps.some(step => step.stopped)).toBe(true);
+});
+it('breaks shortest-path ties by sure edge count then edge order, excluding cyclic event detours', () => {
+  const a = node('a', 'front');
+  const b = node('b', 'front');
+  const graph = flow([screen, a, b, event, request], [edge(screen.id, a.id, { sure: false }), edge(screen.id, b.id),
+    edge(a.id, request.id), edge(b.id, request.id), edge(a.id, event.id), edge(event.id, a.id)]);
+  expect(storyOf(graph, screen.id).flatMap(step => step.nodes)).toEqual([screen, b, request]);
+  graph.edges[0].sure = true;
+  expect(storyOf(graph, screen.id).flatMap(step => step.nodes)).toEqual([screen, a, request]);
 });

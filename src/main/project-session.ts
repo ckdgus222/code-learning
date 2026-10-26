@@ -25,9 +25,10 @@ export async function workersStopped(): Promise<void> {
 }
 
 // Jobs that read the whole project in a worker of their own, so the session's worker keeps answering reads.
-type SideJob = 'routes' | 'flow' | 'map' | 'calls' | 'shapes' | 'history' | 'changes' | 'diff';
+type SideJob = 'routes' | 'flow' | 'flows' | 'map' | 'calls' | 'shapes' | 'history' | 'changes' | 'diff';
 const sideWords: Record<SideJob, { failed: string; ended: string; slow: string; changed: string }> = {
   routes: { failed: '주소를 찾지 못했어요.', ended: '주소 찾기가 끝났어요.', slow: '주소 찾기 시간이 초과됐어요.', changed: '주소를 찾는 동안 파일이 바뀌었어요.' },
+  flows: { failed: '화면별로 묶지 못했어요.', ended: '화면별로 묶기가 끝났어요.', slow: '화면별로 묶기 시간이 초과됐어요.', changed: '화면별로 묶는 동안 파일이 바뀌었어요.' },
   flow: { failed: '기능 흐름을 찾지 못했어요.', ended: '기능 흐름 찾기가 끝났어요.', slow: '기능 흐름 찾기 시간이 초과됐어요.', changed: '기능 흐름을 찾는 동안 파일이 바뀌었어요.' },
   map: { failed: '지도를 만들지 못했어요.', ended: '지도 작업이 끝나 버렸어요.', slow: '지도를 만드는 데 너무 오래 걸려 멈췄어요.',
     changed: '지도를 만드는 동안 파일이 바뀌었어요. 다시 만들어 주세요.' },
@@ -65,6 +66,7 @@ export class ProjectSession {
   private shapesRun = 0;
   private routesRun = 0;
   private flowRun = 0;
+  private flowsRun = 0;
   private lastRoutes?: { result: ProjectRoutes; observed: number; revision: number };
 
   onRoutesInvalidated?: () => void;
@@ -167,6 +169,18 @@ export class ProjectSession {
     return result;
   }
 
+  async featureFlows(routesId: string, revision = 0, timeoutMs = 60_000): Promise<FeatureFlow[]> {
+    if (this.closed || !this.project) throw new AppError('PROJECT_CLOSED', '프로젝트를 다시 열어 주세요.');
+    const saved = this.currentRoutes(routesId, revision);
+    this.cancelFeatureFlows();
+    const run = this.flowsRun;
+    const files = this.project.files;
+    const result = await this.runSide('flows', stop => ({ flows: { files, routes: saved.result, stop } }), timeoutMs) as FeatureFlow[];
+    if (run !== this.flowsRun || this.closed) throw new AppError('CANCELLED', '취소한 화면 묶음은 버렸어요.');
+    if (saved !== this.lastRoutes || saved.observed !== this.observedChanges) throw new AppError('CHANGED', '기능 목록을 다시 찾아 주세요.');
+    return result;
+  }
+
   private currentRoutes(routesId: string, revision: number) {
     const saved = this.lastRoutes;
     if (this.closed || !this.project || !saved || saved.result.routesId !== routesId || saved.revision !== revision || saved.observed !== this.observedChanges) {
@@ -183,7 +197,8 @@ export class ProjectSession {
 
   validateFeatureGuide(routesId: string, revision: number): void { this.currentRoutes(routesId, revision); }
 
-  cancelRoutes(): void { this.onRoutesInvalidated?.(); this.routesRun++; this.lastRoutes = undefined; this.cancelSide('routes'); this.cancelFeatureFlow(); }
+  cancelRoutes(): void { this.onRoutesInvalidated?.(); this.routesRun++; this.lastRoutes = undefined; this.cancelSide('routes'); this.cancelFeatureFlow(); this.cancelFeatureFlows(); }
+  cancelFeatureFlows(): void { this.flowsRun++; this.cancelSide('flows'); }
   cancelFeatureFlow(): void { this.flowRun++; this.cancelSide('flow'); }
 
   /** Draws the project map from the files listed when the folder was opened. */

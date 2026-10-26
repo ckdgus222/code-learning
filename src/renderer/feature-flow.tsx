@@ -1,12 +1,13 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Position, type Edge, type Node } from '@xyflow/react';
-import type { Evidence, SourceView, CallTarget, FeatureFlow, FlowEdge, FlowNode, ProjectRoutes, ProjectView, Request, Route, ValueSite } from '../shared/contracts';
+import type { Evidence, SourceView, CallTarget, FeatureFlow, FlowEdge, FlowNode, ProjectRoutes, ProjectView, Request, ValueSite } from '../shared/contracts';
 import { ARROW_MARKER, firstRows, MapCanvas, Omitted } from './project-map';
+import { screenGroups, type RouteRow } from './screen-groups';
 import { layoutFlow } from './flow-layout';
 import { isNextConfig, nextRouteOf } from '../core/analysis/next-routes';
 import type { ConnectionReport, FeatureGuide, FeatureGuideResult, LearningMode } from '../shared/ai';
 import { FeatureGuideCard } from './feature-guide';
-import { afterText, afterWhen, byWhen, codeNameOf, groupNameOf, stopText, storeText, storyOf, zoneOf, type StoryStep } from '../core/analysis/flow-story';
+import { afterText, afterWhen, byWhen, codeNameOf, groupNameOf, stopText, storeText, storyOf, routeLabel, zoneOf, type StoryStep } from '../core/analysis/flow-story';
 
 export const AFTER_FLOW_NOTE = '코드 모양(onSuccess, await 다음 줄, catch)으로 찾았어요. 실제로 실행되는 순서와 여부는 확인하지 않았어요.';
 export const STORE_FLOW_NOTE = 'Prisma 호출 모양으로 찾았어요. 함수 안에서는 코드에 적힌 순서이고, 조건에 따라 일부만 실행될 수 있어요.';
@@ -32,12 +33,13 @@ function NodeButtons({ node, locked, onCode, onFunction }: {
 }
 
 export interface Walk {
+  through: string | null;
   storyId: string | null;
   step: number;
   nodeId: string | null;
   site: ValueSite | null;
 }
-const firstWalk: Walk = { storyId: null, step: 0, nodeId: null, site: null };
+const firstWalk: Walk = { through: null, storyId: null, step: 0, nodeId: null, site: null };
 
 export function summaryKey(codeName: string, handler: FlowNode, request: FlowNode | null): string {
   return `${codeName}|${handler.relativePath}:${handler.range.startUtf16}|${request ? `${request.relativePath}:${request.range.startUtf16}` : 'server'}`;
@@ -62,13 +64,13 @@ export function hintSteps(steps: StoryStep[]): { takes: number | null; checks: n
 
 export type WalkSelection = ReturnType<typeof walkSelection>;
 export function walkSelection(flow: FeatureFlow | null, walk: Walk) {
-  const all = flow ? storyOf(flow) : [];
+  const all = flow ? storyOf(flow, walk.through) : [];
   const stories = [...new Set(all.map(step => step.storyId))];
   const storyId = walk.storyId ?? stories[0];
   const steps = all.filter(step => step.storyId === storyId);
   const step = steps[walk.step];
   const currentNode = step?.nodes.find(node => node.id === walk.nodeId) ?? step?.representative ?? null;
-  return { stories, storyId, steps, step, currentNode };
+  return { stories, storyId, steps, step, currentNode, all };
 }
 
 export function hasFlowCode(source: Pick<SourceView, 'fileId' | 'hash'> | null, evidence: Evidence | null,
@@ -143,7 +145,7 @@ export function FlowWalk({ flow, title, about, codeName, walk, selection, setSto
     {(about || codeName !== title) && <p>{about && `${about} · `}{codeName !== title && codeName}</p>}
     {!flow.nodes.some(node => node.side === 'request') && <p>프론트 시작점은 찾지 못했어요</p>}
     {stories.length > 1 && <div role="group" aria-label="요청 고르기">요청 고르기: {stories.map(id => {
-      const request = flow.nodes.find(node => node.id === id)!;
+      const request = selection.all.find(step => step.storyId === id && step.kind === 'request')!.representative;
       return <button key={id} className="btn btn--small" aria-pressed={storyId === id} disabled={disabled}
         onClick={() => setStory(id)}>{request.relativePath} {request.range.startLine}행 · {request.name}</button>;
     })}</div>}
@@ -410,8 +412,6 @@ export function FlowSteps({ flow, locked, onCode, onFunction, selectedNodeId = n
   </section>;
 }
 
-export const routeLabel = (route: Route) => `${route.method} ${route.path ?? '주소 모름'}`;
-
 type GuideFeature = { name: string; about: string; routes: number[]; ai: boolean; sure: number; inferred: number; haystack: string };
 /**
  * AI groups and unmentioned routes share one list; every feature still opens one existing route flow. Counts and
@@ -453,9 +453,14 @@ export function featureGroups(project: ProjectView, routes: ProjectRoutes, guide
   return groups;
 }
 
+export type FlowStart = { through: string; storyId: string };
+type GroupingState = { status: 'idle' } | { status: 'running' } | { status: 'failed'; message: string }
+  | { status: 'done'; routesId: string; revision: number; flows: FeatureFlow[] };
+
 export function useFeatureFlows(project: ProjectView | null, revision: number) {
   const [guideResult, setGuideResult] = useState<FeatureGuideResult | null>(null);
   const [entry, setEntry] = useState<{ result: ProjectRoutes; revision: number } | null>(null);
+  const [grouping, setGrouping] = useState<GroupingState>({ status: 'idle' });
   const [flow, setFlow] = useState<FeatureFlow | null>(null);
   const [walk, setWalk] = useState<Walk>(firstWalk);
   const [summaries, setSummaries] = useState<Map<string, [string, string, string]>>(() => new Map());
@@ -467,20 +472,52 @@ export function useFeatureFlows(project: ProjectView | null, revision: number) {
   const started = useRef(false);
   const routesRun = useRef(0);
   const flowRun = useRef(0);
+  const flowsRun = useRef(0);
   const currentRevision = useRef(revision);
   currentRevision.current = revision;
   const stale = !!entry && entry.revision !== revision;
+  const flows = !stale && grouping.status === 'done' && grouping.routesId === entry?.result.routesId
+    && grouping.revision === revision ? grouping.flows : null;
   const guide = !stale && guideResult?.routesId === entry?.result.routesId ? guideResult : null;
   useEffect(() => {
     started.current = false;
     setEntry(null); setGuideResult(null); setFlow(null); setWalk(firstWalk); setSelected(null);
     setSummaries(new Map());
     setFinding(false); setFollowing(false); setError(''); setSearch('');
+    resetGrouping();
     return () => {
-      routesRun.current++; flowRun.current++;
+      routesRun.current++; flowRun.current++; flowsRun.current++;
       if (project) void window.learning.cancelRoutes({ projectId: project.id });
     };
   }, [project]);
+  useEffect(() => {
+    resetGrouping(stale ? '파일이 바뀌었어요. 주소를 다시 찾아 주세요' : '');
+    if (stale) {
+      if (project) void window.learning.cancelFeatureFlows({ projectId: project.id });
+      return;
+    }
+    if (entry?.result.routes.length) void groupFlows();
+  }, [entry, revision]);
+  function resetGrouping(message = '') {
+    flowsRun.current++;
+    setGrouping(message ? { status: 'failed', message } : { status: 'idle' });
+  }
+  async function groupFlows() {
+    if (!project || !entry || stale || !entry.result.routes.length) return;
+    const run = ++flowsRun.current;
+    const atRevision = revision;
+    const routesId = entry.result.routesId;
+    setGrouping({ status: 'running' });
+    const result = await window.learning.featureFlows({ projectId: project.id, routesId });
+    if (run !== flowsRun.current) return;
+    if (atRevision !== currentRevision.current) { resetGrouping('파일이 바뀌었어요. 주소를 다시 찾아 주세요'); return; }
+    if (!result.ok) { resetGrouping(result.message); return; }
+    setGrouping({ status: 'done', routesId, revision: atRevision, flows: result.value });
+  }
+  function cancelGrouping() {
+    resetGrouping('화면별로 묶기를 취소했어요');
+    if (project) void window.learning.cancelFeatureFlows({ projectId: project.id });
+  }
   async function find() {
     if (!project) return;
     const run = ++routesRun.current;
@@ -499,11 +536,17 @@ export function useFeatureFlows(project: ProjectView | null, revision: number) {
     started.current = true;
     void find();
   }
-  async function follow(routeIndex: number) {
+  async function follow(routeIndex: number, start?: FlowStart) {
     if (!project || !entry || stale) return null;
     const run = ++flowRun.current;
     const atRevision = revision;
     setSelected(routeIndex); setFollowing(true); setError(''); setFlow(null); setWalk(firstWalk);
+    const cached = flows?.[routeIndex];
+    if (cached) {
+      const next = { ...firstWalk, ...start };
+      setFlow(cached); setWalk(next); setFollowing(false);
+      return walkSelection(cached, next).currentNode;
+    }
     const result = await window.learning.featureFlow({ projectId: project.id, routesId: entry.result.routesId, routeIndex });
     if (run !== flowRun.current) return null;
     setFollowing(false);
@@ -548,10 +591,12 @@ export function useFeatureFlows(project: ProjectView | null, revision: number) {
   // Only an AI-named feature has a name and sentence of its own; a route alone is shown by its code name.
   const selectedFeature = useMemo(() => flow ? groups.flatMap(group => group.features).find(feature => feature.ai && feature.routes.includes(flow.routeIndex)) : undefined,
     [flow, groups]);
-  return { routes, finding, stale, error, search, setSearch, guide, setGuideResult, groups, flow, following, selected, walk,
+  return { routes, finding, stale, error, groupingProps: { flows, guide: guide?.guide,
+    grouping: grouping.status === 'running', groupError: grouping.status === 'failed' ? grouping.message : '',
+    onRegroup: groupFlows, onCancelGrouping: cancelGrouping }, search, setSearch, guide, setGuideResult, groups, flow, following, selected, walk,
     selection, currentNode: selection.currentNode, selectedFeature, summary, setSummary,
     start, find, cancelFind, follow, cancelFollow, clearFlow,
-    setStory: (storyId: string) => changeWalk({ storyId, step: 0, nodeId: null, site: null }),
+    setStory: (storyId: string) => changeWalk({ through: walk.through, storyId, step: 0, nodeId: null, site: null }),
     setStep: (step: number) => changeWalk({ ...walk, step, nodeId: null, site: null }),
     setSite: (nodeId: string, site: ValueSite) => changeWalk({ ...walk, nodeId, site }),
     setNode: (nodeId: string) => changeWalk({ ...walk, nodeId, site: null }),
@@ -575,18 +620,17 @@ function LinkTag({ feature }: { feature: GuideFeature }) {
   return <span className={className} title={`프론트 요청 확실 ${feature.sure}곳 · 추정 ${feature.inferred}곳`}>{label}</span>;
 }
 
-export function FeatureList({ groups, routes, selected, disabled, onFollow, search, setSearch, children }: {
+export function FeatureList({ groups, routes, selected, disabled, onFollow, search, setSearch, children, flows, guide, grouping = false, groupError = '', onRegroup, onCancelGrouping }: {
   groups: ReturnType<typeof featureGroups>; routes: ProjectRoutes; selected: number | null;
-  disabled: boolean; onFollow(routeIndex: number): void; search: string; setSearch(value: string): void;
-  children?: React.ReactNode;
+  disabled: boolean; onFollow(routeIndex: number, start?: FlowStart): void; search: string; setSearch(value: string): void;
+  children?: React.ReactNode; flows: FeatureFlow[] | null; guide?: FeatureGuide; grouping?: boolean; groupError?: string;
+  onRegroup?(): void; onCancelGrouping?(): void;
 }) {
   const query = search.toLowerCase();
   const visible = groups.map(group => ({ ...group, features: group.features.filter(feature => feature.haystack.includes(query)) }))
     .filter(group => group.features.length);
-  return <section aria-label="기능 목록">
-    <h3>기능 고르기</h3>
-    {children}
-    <label>기능 검색 <input value={search} onChange={event => setSearch(event.target.value)} placeholder="기능 이름·주소·함수 이름" /></label>
+  const grouped = useMemo(() => flows ? screenGroups(routes, flows, guide) : null, [routes, flows, guide]);
+  const serverList = <>
     <p>기능 목록 · {groups.reduce((count, group) => count + group.features.length, 0)}개</p>
     {visible.map((group, groupIndex) => <section className="card" key={groupIndex}>
       <h4>{group.name}</h4>
@@ -609,11 +653,46 @@ export function FeatureList({ groups, routes, selected, disabled, onFollow, sear
       </li>)}</ul><Omitted count={group.features.length} />
     </section>)}
     {!visible.length && <p className="hint">{routes.routes.length ? '검색어와 맞는 기능이 없어요.' : '서버 코드(요청을 받는 곳)를 찾지 못했어요.'}</p>}
+  </>;
+  const unmatched = (rows: RouteRow[], title: string) => <details className="card"><summary>{title} {rows.length}개</summary>
+    <ul className="map-list">{rows.filter(row => row.haystack.includes(query)).map(row => <li key={row.routeIndex}>{routeLabel(routes.routes[row.routeIndex])}{' '}
+      {row.aiName && <span className="tag">AI 해석 · {row.aiName}</span>}{' '}
+      <button className="btn btn--small" disabled={disabled} onClick={() => onFollow(row.routeIndex)}>이 기능 따라가기</button>
+    </li>)}</ul>
+  </details>;
+  return <section aria-label="기능 목록">
+    <h3>기능 고르기</h3>
+    {grouping && <p role="status">화면별로 묶는 중… <button className="btn btn--small" onClick={onCancelGrouping}>취소</button></p>}
+    {groupError && <p role="alert">화면별로 묶지 못했어요: {groupError.replace(/[.。]$/, '')}. 서버 주소 기준으로 보여 줘요.{' '}
+      <button className="btn btn--small" disabled={disabled} onClick={onRegroup}>다시 묶기</button></p>}
+    <label>기능 검색 <input value={search} onChange={event => setSearch(event.target.value)} placeholder="화면·기능 이름·주소·함수 이름" /></label>
+    {grouped && <>
+      {flows?.some(flow => flow.limited) && <p className="notice">일부 기능은 분석 한도 때문에 흐름의 일부만 확인했어요.</p>}
+      {grouped.screens.map(group => ({ ...group, rows: group.rows.filter(row => row.haystack.includes(query)) }))
+        .filter(group => group.rows.length).map(group => <section className="card" aria-label={`화면 ${group.screen}`} key={group.screen}>
+          <h4>화면 {group.screen}</h4>
+          <ul className="map-list">{group.rows.map(row => <li key={row.routeIndex}>
+            <b>{row.title}</b> · {row.text} → {routeLabel(routes.routes[row.routeIndex])}{' '}
+            {row.elsewhere && <span className="tag">다른 화면에서도 써요</span>}{' '}
+            {row.inferred && <span className="tag tag--unknown" title={row.reasons.join(' · ')}>추정 연결</span>}{' '}
+            {row.aiName && <span className="tag">AI 해석 · {row.aiName}</span>}{' '}
+            <button className="btn btn--small" aria-pressed={selected === row.routeIndex} disabled={disabled}
+              onClick={() => onFollow(row.routeIndex, { through: row.through, storyId: row.storyId })}>이 기능 따라가기</button>
+          </li>)}</ul>
+        </section>)}
+      {unmatched(grouped.noScreen, '화면은 못 정했지만 요청 코드는 찾은 기능')}
+      {unmatched(grouped.unlinked, '화면과 연결을 찾지 못한 서버 기능')}
+    </>}
+    {/* Keep AI controls mounted while grouping finishes, so an in-flight guide is not cancelled. */}
+    <details className={grouped?.screens.length ? 'card' : undefined} open={!grouped?.screens.length}>
+      <summary hidden={!grouped?.screens.length}>{grouped?.screens.length ? '서버 주소 기준 목록 (AI 정리 포함)' : null}</summary>
+      {children}{serverList}
+    </details>
   </section>;
 }
 
 export function FeatureChooser({ project, state, revision, locked, onFollow, mode, running, checking, connections, onInspect, onRunning }: {
-  project: ProjectView; state: FeatureFlows; revision: number; locked: boolean; onFollow(routeIndex: number): void;
+  project: ProjectView; state: FeatureFlows; revision: number; locked: boolean; onFollow(routeIndex: number, start?: FlowStart): void;
   mode: LearningMode; running: boolean; checking: boolean; connections: ConnectionReport | null;
   onInspect(): Promise<string | null>; onRunning(value: boolean): void;
 }) {
@@ -633,7 +712,7 @@ export function FeatureChooser({ project, state, revision, locked, onFollow, mod
           <p className="hint">고른 기준: 요청을 보내는 코드와 확실히 이어진 곳이 가장 많은 기능</p>
           <button className="btn" disabled={disabled} onClick={() => onFollow(feature.routes[0])}>이 기능부터 따라가기</button>
         </section>}
-        <FeatureList search={state.search} setSearch={state.setSearch} groups={state.groups} routes={routes} selected={state.selected} disabled={disabled} onFollow={onFollow}>
+        <FeatureList {...state.groupingProps} search={state.search} setSearch={state.setSearch} groups={state.groups} routes={routes} selected={state.selected} disabled={disabled} onFollow={onFollow}>
           <FeatureGuideCard key={`${routes.routesId}:${revision}`} projectId={project.id} routesId={routes.routesId}
             result={guide} mode={mode} locked={disabled} running={running} checking={checking} connections={connections}
             onInspect={onInspect} onResult={setGuideResult} onRunning={onRunning} />

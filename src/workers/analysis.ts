@@ -9,20 +9,21 @@ import { buildOverview } from '../core/analysis/overview';
 import { buildProjectMap, MAP_LIMITS } from '../core/analysis/project-map';
 import { findFunctionCalls } from '../core/analysis/calls';
 import { findProjectRoutes } from '../core/analysis/routes';
-import { buildFeatureFlow } from '../core/analysis/feature-flow';
+import { buildFeatureFlow, buildFeatureFlows } from '../core/analysis/feature-flow';
 import { findValueShapes, type ShapesTarget, type TypeWatch } from '../core/analysis/shapes';
 import { gitJob, type GitJob } from '../core/project/git';
 
 export interface WorkerRequest { id: number; kind: 'scan' | 'read' | 'evidence'; target?: string }
-export interface WorkerResponse { id: number; result: Result<ProjectRoutes | FeatureFlow | ProjectView | SourceView | ProjectMap | FunctionCalls | { source: SourceView; evidence: Evidence }
+export interface WorkerResponse { id: number; result: Result<ProjectRoutes | FeatureFlow[] | FeatureFlow | ProjectView | SourceView | ProjectMap | FunctionCalls | { source: SourceView; evidence: Evidence }
   | { shapes: ValueShapes; watch: TypeWatch } | GitHistory | ProjectChanges | FileDiff> }
 
-const { root, projectId, map, calls, shapes, git, routes, flow, stop } = workerData as {
+const { root, projectId, map, calls, shapes, git, routes, flow, flows, stop } = workerData as {
   root: string; projectId: string; map?: { files: ProjectFile[]; starts: string[]; stop: SharedArrayBuffer };
   calls?: { files: ProjectFile[]; target: { fileId: string; fileHash: string; startUtf16: number; endUtf16: number }; stop: SharedArrayBuffer };
   shapes?: { files: ProjectFile[]; target: ShapesTarget; names: ShapeQuery[]; stop: SharedArrayBuffer };
   git?: { job: GitJob; stop: SharedArrayBuffer };
   routes?: { files: ProjectFile[]; stop: SharedArrayBuffer };
+  flows?: { files: ProjectFile[]; routes: ProjectRoutes; stop: SharedArrayBuffer };
   flow?: { files: ProjectFile[]; routes: ProjectRoutes; routeIndex: number; stop: SharedArrayBuffer };
   stop?: SharedArrayBuffer;
 };
@@ -123,6 +124,13 @@ if (routes) {
 if (flow) {
   const stop = new Int32Array(flow.stop);
   buildFeatureFlow(root, projectId, flow.files, flow.routes, flow.routeIndex, MAP_LIMITS, () => Atomics.load(stop, 0) === 1).then(
+    value => parentPort!.postMessage({ id: 0, result: { ok: true, value } } satisfies WorkerResponse),
+    error => parentPort!.postMessage({ id: 0, result: failure(error) } satisfies WorkerResponse));
+}
+
+if (flows) {
+  const stop = new Int32Array(flows.stop);
+  buildFeatureFlows(root, projectId, flows.files, flows.routes, MAP_LIMITS, () => Atomics.load(stop, 0) === 1).then(
     value => parentPort!.postMessage({ id: 0, result: { ok: true, value } } satisfies WorkerResponse),
     error => parentPort!.postMessage({ id: 0, result: failure(error) } satisfies WorkerResponse));
 }

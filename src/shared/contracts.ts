@@ -5,6 +5,7 @@ export const idSchema = z.string().uuid();
 export const sourceRequestSchema = z.object({ projectId: idSchema, fileId: idSchema }).strict();
 export const evidenceRequestSchema = z.object({ projectId: idSchema, evidenceId: idSchema }).strict();
 export const projectRequestSchema = z.object({ projectId: idSchema }).strict();
+export const featureFlowsRequestSchema = projectRequestSchema.extend({ routesId: idSchema }).strict();
 export const featureFlowRequestSchema = projectRequestSchema.extend({ routesId: idSchema, routeIndex: z.number().int().min(0) }).strict();
 /** A function as the analyzer listed it: its file, the hash the file had and the function's range. */
 export const callsRequestSchema = z.object({ projectId: idSchema, fileId: idSchema, fileHash: z.string().regex(/^[a-f0-9]{64}$/),
@@ -440,6 +441,8 @@ export interface LearningApi {
   cancel(): Promise<Result<null>>;
   routes(input: z.infer<typeof projectRequestSchema>): Promise<Result<ProjectRoutes>>;
   cancelRoutes(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
+  featureFlows(input: z.infer<typeof featureFlowsRequestSchema>): Promise<Result<FeatureFlow[]>>;
+  cancelFeatureFlows(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
   featureFlow(input: z.infer<typeof featureFlowRequestSchema>): Promise<Result<FeatureFlow>>;
   cancelFeatureFlow(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
   projectMap(input: z.infer<typeof projectRequestSchema>): Promise<Result<ProjectMap>>;
@@ -464,7 +467,7 @@ export interface LearningApi {
 
 export const channels = {
   open: 'learning:open', read: 'learning:read', evidence: 'learning:evidence',
-  cancel: 'learning:cancel', event: 'learning:project-event', routes: 'learning:routes', cancelRoutes: 'learning:cancel-routes', featureFlow: 'learning:feature-flow', cancelFeatureFlow: 'learning:cancel-feature-flow', map: 'learning:map', cancelMap: 'learning:cancel-map',
+  cancel: 'learning:cancel', event: 'learning:project-event', routes: 'learning:routes', cancelRoutes: 'learning:cancel-routes', featureFlows: 'learning:feature-flows', cancelFeatureFlows: 'learning:cancel-feature-flows', featureFlow: 'learning:feature-flow', cancelFeatureFlow: 'learning:cancel-feature-flow', map: 'learning:map', cancelMap: 'learning:cancel-map',
   calls: 'learning:calls', cancelCalls: 'learning:cancel-calls', shapes: 'learning:shapes', cancelShapes: 'learning:cancel-shapes',
   history: 'learning:history', changes: 'learning:changes', diff: 'learning:diff', cancelChanges: 'learning:cancel-changes',
   connections: 'learning:connections', explain: 'learning:explain', overview: 'learning:overview',
