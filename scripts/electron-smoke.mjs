@@ -1373,6 +1373,27 @@ try {
       await story.getByText('화면 /other에서 입력 양식을 보내면 시작해요', { exact: true }).waitFor();
       assert.equal(await app.evaluate(() => globalThis.screenFlowCalls), 0);
       await page.screenshot({ path: path.join(artifacts, 'screen-group-story.png') });
+      await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+      const fileSearch = page.getByRole('searchbox', { name: '파일명 검색', exact: true });
+      await fileSearch.fill('web/lib/auth.ts');
+      await page.getByRole('button', { name: 'web/lib/auth.ts', exact: true }).click();
+      const uses = page.getByRole('region', { name: '이 파일이 나오는 기능', exact: true });
+      await uses.getByRole('heading', { name: /이 파일이 나오는 기능/ }).waitFor();
+      const use = uses.getByRole('listitem').filter({ hasText: '화면 /other · POST /api/auth/login' });
+      // The login form's handler sits in the second step of this fixture's story.
+      const stepLabel = '2단계 프론트 처리';
+      await until(async () => (await use.innerText()).includes(stepLabel));
+      await page.screenshot({ path: path.join(artifacts, 'file-uses.png') });
+      await use.getByRole('button', { name: '이 단계로', exact: true }).click();
+      await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
+      assert.equal(await page.getByRole('button', { name: '흐름 따라가기', exact: true }).getAttribute('aria-current'), 'page');
+      assert.equal(await story.getByRole('button', { name: stepLabel, exact: true }).getAttribute('aria-current'), 'step');
+      const range = story.getByTestId('evidence-range');
+      assert.match(await range.innerText(), /web\/lib\/auth.ts/);
+      const loginSource = files['web/lib/auth.ts'];
+      assert.equal(await range.getAttribute('data-utf16'), `${loginSource.indexOf('async function')},${loginSource.length}`);
+      assert.equal(await app.evaluate(() => globalThis.screenFlowCalls), 0);
+      await fileSearch.fill('');
     } finally {
       await app.evaluate(({ ipcMain }) => {
         globalThis.releaseScreenBatch?.();
