@@ -307,7 +307,76 @@ it.each([
   ["<button onClick={() => send()}>모두 {busy ? '삭제' : '저장'}</button>", 'button', ['모두']],
 ])('reads only visible control text: %s', async (jsx, tag, texts) => {
   const flow = await frontFixture(`function send() { return fetch('/x'); } function Page() { return ${jsx}; }`);
-  expect(flow.nodes.find(node => node.event)?.control).toEqual({ tag, texts });
+  expect(flow.nodes.find(node => node.event)?.control).toEqual({ tag, texts, ...(tag === 'form' ? { submits: ['보내기'] } : {}) });
+});
+
+it.each([
+  ['<h1> 산책   일기 </h1>', '산책 일기'],
+  ['<h1>산책 {/* 설명 */} 일기</h1>', '산책 일기'],
+  ['<h1>{post.title}</h1>', null],
+  ['<h1>산책 {post.title}</h1>', null],
+  ['<h1>하나</h1><h1>둘</h1>', null],
+  ['<h1>같은 제목</h1><h1>같은 제목</h1>', '같은 제목'],
+  ['<Title>산책 일기</Title>', null],
+  ['<p>제목 없음</p>', null],
+  ['{items.map(() => <h1>콜백 제목</h1>)}', null],
+])('reads fixed headings only within the page function: %s', async (jsx, title) => {
+  await put('next.config.ts', 'export default {}');
+  await put('server.ts', "@Controller('x') class C { @Get() get() {} }");
+  await put('app/diaries/page.tsx', `export default function Page() { fetch('/x'); return <>${jsx}</>; }`);
+  const { flow } = await analyze();
+  const screen = flow.nodes.find(node => node.screen === '/diaries')!;
+  expect(screen).toBeDefined();
+  if (title === null) { expect(screen.screenTitle).toBeNull(); return; }
+  expect(screen.screenTitle).toMatchObject({ text: title, site: { fileId: screen.fileId, startLine: 1 } });
+  expect(screen.screenTitle?.site.text).toContain('<h1>');
+});
+
+it('does not name a page from another component sharing its request or from a nested function', async () => {
+  await put('next.config.ts', 'export default {}');
+  await put('server.ts', "@Controller('x') class C { @Get() get() {} }");
+  await put('app/login/page.tsx', `function send() { fetch('/x'); }
+    function Dashboard() { send(); return <h1>대시보드</h1>; }
+    export default function Login() { function Nested() { return <h1>중첩 제목</h1>; } send(); return <form />; }`);
+  const { flow } = await analyze();
+  expect(flow.nodes.find(node => node.screen === '/login')?.screenTitle).toBeNull();
+});
+
+it('compares full headings before clipping and retains the first location for repeated text', async () => {
+  await put('next.config.ts', 'export default {}');
+  await put('server.ts', "@Controller('x') class C { @Get() get() {} }");
+  const long = '가'.repeat(45);
+  await put('app/page.tsx', `export default function Page() { fetch('/x'); return <>\n<h1>${long}</h1>\n<h1>${long}</h1></>; }`);
+  expect((await analyze()).flow.nodes.find(node => node.screen === '/')?.screenTitle)
+    .toMatchObject({ text: `${'가'.repeat(40)}…`, site: { startLine: 2 } });
+  await put('app/page.tsx', `export default function Page() { fetch('/x'); return <><h1>${long}1</h1><h1>${long}2</h1></>; }`);
+  expect((await analyze()).flow.nodes.find(node => node.screen === '/')?.screenTitle).toBeNull();
+});
+
+it.each([
+  ['<button type="submit">로그인</button>', ['로그인']],
+  ['<button>로그인</button>', ['로그인']],
+  ['<button type="button">취소</button><button>로그인</button>', ['로그인']],
+  ['<button type="button">취소</button>', []],
+  ['<button type={kind}>보내기</button>', []],
+  ['<button>하나</button><button type="submit">둘</button>', []],
+  ['<input type="submit" value="가입" />', ['가입']],
+  ['<button>{pending ? "로그인 중…" : "로그인"}<ArrowRight size={24} /></button>', ['로그인 중…', '로그인']],
+  ['<form><button>안쪽</button></form><button>바깥</button>', ['바깥']],
+  ['<form><button>안쪽</button></form>', []],
+  ['<Button type="submit">로그인</Button>', []],
+  ['<button>{pending ? "로그인" : "로그인"}</button>', ['로그인']],
+  [`<button>${'가'.repeat(40)}</button>`, [`${'가'.repeat(30)}…`]],
+  ['<button>{a ? "첫째" : b ? "둘째" : c ? "셋째" : "넷째"}</button>', ['첫째', '둘째', '셋째']],
+])('reads one native submit control and preserves form story text: %s', async (jsx, submits) => {
+  const flow = await frontFixture(`function Page() { return <form onSubmit={() => fetch('/x')}>${jsx}</form>; }`);
+  expect(flow.nodes.find(node => node.event)?.control).toEqual({ tag: 'form', texts: [], submits });
+  expect(storyOf(flow)[0].text).toContain('입력 양식을 보내면');
+});
+
+it('keeps the existing click text rule for a conditional followed by an icon', async () => {
+  const flow = await frontFixture(`function Page() { return <button onClick={() => fetch('/x')}>{pending ? "로그인 중…" : "로그인"}<ArrowRight size={24} /></button>; }`);
+  expect(flow.nodes.find(node => node.event)?.control).toEqual({ tag: 'button', texts: [] });
 });
 
 it('bounds control text and removes duplicate branches', async () => {

@@ -221,6 +221,11 @@ async function openServerFeatures() {
   const details = list.locator('details').filter({ has: page.locator('summary', { hasText: /^서버 주소 기준 목록 \(AI 정리 포함\)$/ }) });
   if (await details.count() && !await details.evaluate(element => element.open)) await details.locator(':scope > summary').click();
 }
+async function openScreenFeatures() {
+  const details = page.locator('details').filter({ has: page.locator('summary', { hasText: /^화면별로 보기$/ }) });
+  await details.waitFor();
+  if (!await details.evaluate(element => element.open)) await details.locator(':scope > summary').click();
+}
 // Keep a question about another function ready while the flow displays the server handler.
 async function openLoginFlowQuestion() {
   await dialogTo(loginFlowFixture);
@@ -233,6 +238,7 @@ async function openLoginFlowQuestion() {
   const question = page.getByRole('textbox', { name: '선택한 코드에 질문' });
   await question.fill('기존 질문 유지');
   await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+  await openScreenFeatures();
   await page.getByRole('region', { name: '화면 /login', exact: true }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
   const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
   await story.getByRole('button', { name: '4단계 서버 받는 곳', exact: true }).click();
@@ -980,7 +986,19 @@ try {
     for (const text of [/화면 1개/, /요청 1개/, /확실히 이어짐 1개 · 추정 0개/, /api 폴더/, /web 폴더/]) assert.match(picture, text);
     const recommendation = page.getByRole('region', { name: '처음 따라갈 기능', exact: true });
     await recommendation.getByText('지우기 · /api/dogs/:id', { exact: true }).waitFor();
+    await recommendation.getByText('‘삭제’ 버튼 · 지우기', { exact: true }).waitFor();
+    await recommendation.getByText('버튼 문구', { exact: true }).waitFor();
+    await recommendation.getByText('화면 /dogs · web/components/DogList.tsx onClick 함수 (1행)', { exact: true }).waitFor();
     await recommendation.getByRole('button', { name: '이 기능부터 따라가기', exact: true }).click();
+    await page.getByRole('region', { name: '기능 따라가기', exact: true }).getByText('1 / 7 · 화면', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: '흐름 따라가기', exact: true }).getAttribute('aria-current'), 'page');
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    const index = page.getByRole('region', { name: '기능 목차', exact: true });
+    await index.waitFor();
+    const indexGroup = index.locator('details').first();
+    assert.equal(await indexGroup.evaluate(element => element.open), false);
+    await indexGroup.locator(':scope > summary').click();
+    await indexGroup.getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
     await page.getByRole('region', { name: '기능 따라가기', exact: true }).getByText('1 / 7 · 화면', { exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: '흐름 따라가기', exact: true }).getAttribute('aria-current'), 'page');
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
@@ -1272,6 +1290,7 @@ try {
     await dialogTo(loginFlowFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '로그인 흐름 프로젝트', exact: true }).waitFor();
+    await openScreenFeatures();
     await page.getByRole('region', { name: '화면 /login', exact: true }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
     const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
     await story.getByText('화면 /login에서 입력 양식을 보내면 시작해요', { exact: true }).waitFor();
@@ -1349,6 +1368,7 @@ try {
     await dialogTo(loginFlowFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '로그인 흐름 프로젝트', exact: true }).waitFor();
+    await openScreenFeatures();
     await page.getByRole('region', { name: '화면 /login', exact: true }).waitFor();
     await openTreeFile('web/app/login/page.tsx');
     await guide.getByText('성공하면 화면 /로 이동하기 · 모양으로 판단 (6행)', { exact: true }).waitFor();
@@ -1373,6 +1393,7 @@ try {
       await dialogTo(loginFlowFixture);
       await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
       await page.getByRole('heading', { name: '로그인 흐름 프로젝트', exact: true }).waitFor();
+      await openScreenFeatures();
       await page.getByRole('region', { name: '화면 /login', exact: true }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
       const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
       await story.getByTestId('flow-code').waitFor();
@@ -1428,9 +1449,10 @@ try {
       await list.getByRole('button', { name: '다시 묶기', exact: true }).waitFor();
       await app.evaluate(() => globalThis.releaseScreenBatch());
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-      assert.equal(await list.getByRole('region', { name: '화면 /other', exact: true }).count(), 0);
+      assert.equal(await list.getByRole('region', { name: '화면 /other', exact: true, includeHidden: true }).count(), 0);
       await list.getByText('만들기·보내기 · /api/auth/login', { exact: true }).waitFor();
       await list.getByRole('button', { name: '다시 묶기', exact: true }).click();
+      await openScreenFeatures();
       const other = list.getByRole('region', { name: '화면 /other', exact: true });
       await other.waitFor();
       await list.getByRole('region', { name: '화면 /login', exact: true }).waitFor();

@@ -218,7 +218,7 @@ function visibleBranches(value: Node | null): string[] {
   return text === null ? [] : [text];
 }
 
-function controlTexts(tag: Node, stop: () => void): string[] {
+function controlTexts(tag: Node, stop: () => void, submit = false): string[] {
   if (field(tag, 'name')?.text === 'form') return [];
   const attributes = tag.namedChildren.filter(child => child.type === 'jsx_attribute');
   const stringAttribute = (key: string) => literal(attributes.find(attr => firstCode(attr)?.text === key)?.namedChildren[1] ?? null);
@@ -229,6 +229,7 @@ function controlTexts(tag: Node, stop: () => void): string[] {
     return value === null ? [] : [value];
   }
   const children = tag.parent!.namedChildren.filter(child => !['jsx_opening_element', 'jsx_closing_element', 'comment'].includes(child.type)
+    && !(submit && child.type === 'jsx_self_closing_element')
     && !(child.type === 'jsx_text' && !child.text.trim()));
   const expression = children.length === 1 && children[0].type === 'jsx_expression' ? firstCode(children[0]) : null;
   const value = expression && unwrapped(expression);
@@ -251,7 +252,41 @@ function controlOf(fn: Node, resolvesName: (name: Node) => boolean, stop: () => 
   const event = attribute && firstCode(attribute)?.text;
   if (!tag || !event || !/^on[A-Z]/.test(event) || !['jsx_opening_element', 'jsx_self_closing_element'].includes(tag.type)) return null;
   const texts = controlTexts(tag, stop);
-  return { event, control: { tag: field(tag, 'name')?.text ?? '', texts: [...new Set(texts.map(text => clip(text, 30)))].slice(0, 3) } };
+  const control: FlowControl = { tag: field(tag, 'name')?.text ?? '', texts: [...new Set(texts.map(text => clip(text, 30)))].slice(0, 3) };
+  if (control.tag !== 'form') return { event, control };
+  const buttons: Node[] = [];
+  const pending = tag.type === 'jsx_opening_element' ? [...tag.parent!.namedChildren].reverse() : [];
+  while (pending.length) {
+    stop();
+    const node = pending.pop()!;
+    const opening = node.type === 'jsx_element' ? field(node, 'open_tag') : node.type === 'jsx_self_closing_element' ? node : null;
+    const name = opening && field(opening, 'name')?.text;
+    if (name === 'form') continue;
+    if (opening && ['button', 'input'].includes(name ?? '')) {
+      const type = opening.namedChildren.find(child => child.type === 'jsx_attribute' && firstCode(child)?.text === 'type');
+      if (literal(type?.namedChildren[1] ?? null) === 'submit' || name === 'button' && !type) buttons.push(opening);
+    }
+    if (!['jsx_opening_element', 'jsx_self_closing_element'].includes(node.type)) pending.push(...node.namedChildren.toReversed());
+  }
+  const submits = buttons.length === 1 ? controlTexts(buttons[0], stop, true) : [];
+  control.submits = [...new Set(submits.map(text => clip(text, 30)))].slice(0, 3);
+  return { event, control };
+}
+
+function screenTitleOf(fn: Node, facts: FileFacts, stop: () => void): FlowNode['screenTitle'] {
+  const titles = new Map<string, ValueSite>();
+  for (const node of bodyNodes(field(fn, 'body'), stop)) {
+    if (node.type !== 'jsx_element' || field(field(node, 'open_tag'), 'name')?.text !== 'h1') continue;
+    const children = node.namedChildren.filter(child => !['jsx_opening_element', 'jsx_closing_element', 'comment'].includes(child.type)
+      && !(child.type === 'jsx_expression' && child.namedChildren.every(part => part.type === 'comment'))
+      && !(child.type === 'jsx_text' && !child.text.trim()));
+    if (!children.every(child => child.type === 'jsx_text')) continue;
+    const text = children.map(child => child.text).join('').replace(/\s+/g, ' ').trim();
+    if (text && !titles.has(text)) titles.set(text, routeSite(node, facts));
+  }
+  if (titles.size !== 1) return null;
+  const [text, site] = [...titles][0];
+  return { text: clip(text, 40), site };
 }
 
 function askOf(fn: Node, facts: FileFacts): FlowAsk[] {
@@ -545,7 +580,9 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
     if (!already && node.event === null) Object.assign(node, controlOf(fn, name => resolvesToFn(facts, name, fn), stop));
     const next = nextRouteOf(node.relativePath, files.map(file => file.relativePath));
     if (next?.kind === 'page' && facts.exports.get('default')?.some(item => item.fn && sameRange(item.fn, fn))) {
-      node.screen = formatNextPath(next.segments); continue;
+      node.screen = formatNextPath(next.segments);
+      node.screenTitle = screenTitleOf(fn, facts, stop);
+      continue;
     }
     const allCallers = [...(found.callers ?? []), ...found.typedCallers].filter(site => !site.inTest);
     if (allCallers.length > 50) limit('함수마다 부르는 곳은 50개까지만 따라가요.');

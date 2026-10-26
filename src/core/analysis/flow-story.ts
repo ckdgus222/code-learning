@@ -1,6 +1,6 @@
 import type { FeatureFlow, FlowEdge, FlowAfter, FlowAsk, FlowNode, FlowStop, FlowStore, Route } from '../../shared/contracts';
 
-const methodNames: Record<Route['method'], string> = {
+export const methodNames: Record<Route['method'], string> = {
   GET: '보기', POST: '만들기·보내기', PUT: '바꾸기', PATCH: '고치기', DELETE: '지우기', ALL: '받기',
 };
 

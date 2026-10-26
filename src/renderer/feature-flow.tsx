@@ -3,6 +3,7 @@ import { Position, type Edge, type Node } from '@xyflow/react';
 import type { Evidence, SourceView, CallTarget, FeatureFlow, FlowEdge, FlowNode, ProjectRoutes, ProjectView, Request, ValueSite } from '../shared/contracts';
 import { ARROW_MARKER, firstRows, MapCanvas, Omitted } from './project-map';
 import { screenGroups, type RouteRow } from './screen-groups';
+import { featureIndex, type IndexFeature, type IndexGroup } from './feature-index';
 import { layoutFlow } from './flow-layout';
 import { isNextConfig, nextRouteOf } from '../core/analysis/next-routes';
 import type { ConnectionReport, FeatureGuide, FeatureGuideResult, LearningMode } from '../shared/ai';
@@ -621,16 +622,32 @@ function LinkTag({ feature }: { feature: GuideFeature }) {
   return <span className={className} title={`프론트 요청 확실 ${feature.sure}곳 · 추정 ${feature.inferred}곳`}>{label}</span>;
 }
 
-export function FeatureList({ groups, routes, selected, disabled, onFollow, search, setSearch, children, flows, guide, grouping = false, groupError = '', onRegroup, onCancelGrouping }: {
+function IndexTags({ feature }: { feature: IndexFeature }) {
+  return <>
+    <span className="tag" title={feature.source}>{feature.basis === 'button' ? '버튼 문구' : feature.basis === 'screen-title' ? '화면 제목' : '주소 이름'}</span>{' '}
+    {feature.inferred && <span className="tag tag--unknown" title={feature.reasons.join(' · ')}>추정 연결</span>}
+  </>;
+}
+
+export function FeatureList({ groups, routes, selected, disabled, onFollow, search, setSearch, children, flows, guide, index, grouping = false, groupError = '', onRegroup, onCancelGrouping }: {
   groups: ReturnType<typeof featureGroups>; routes: ProjectRoutes; selected: number | null;
   disabled: boolean; onFollow(routeIndex: number, start?: FlowStart): void; search: string; setSearch(value: string): void;
   children?: React.ReactNode; flows: FeatureFlow[] | null; guide?: FeatureGuide; grouping?: boolean; groupError?: string;
+  index?: IndexGroup[] | null;
   onRegroup?(): void; onCancelGrouping?(): void;
 }) {
   const query = search.toLowerCase();
   const visible = groups.map(group => ({ ...group, features: group.features.filter(feature => feature.haystack.includes(query)) }))
     .filter(group => group.features.length);
   const grouped = useMemo(() => flows ? screenGroups(routes, flows, guide) : null, [routes, flows, guide]);
+  const contents = useMemo(() => {
+    if (index !== undefined) return index;
+    if (!flows) return null;
+    const paths = new Map(flows.flatMap(flow => flow.nodes.map(node => [node.fileId, node.relativePath] as const)));
+    return featureIndex(routes, flows, fileId => paths.get(fileId) ?? '', guide);
+  }, [index, routes, flows, guide]);
+  const visibleContents = contents?.map(group => ({ ...group, features: group.features.filter(feature => feature.haystack.includes(query)) }))
+    .filter(group => group.features.length);
   const serverList = <>
     <p>기능 목록 · {groups.reduce((count, group) => count + group.features.length, 0)}개</p>
     {visible.map((group, groupIndex) => <section className="card" key={groupIndex}>
@@ -669,6 +686,24 @@ export function FeatureList({ groups, routes, selected, disabled, onFollow, sear
     <label>기능 검색 <input value={search} onChange={event => setSearch(event.target.value)} placeholder="화면·기능 이름·주소·함수 이름" /></label>
     {grouped && <>
       {flows?.some(flow => flow.limited) && <p className="notice">일부 기능은 분석 한도 때문에 흐름의 일부만 확인했어요.</p>}
+      {contents && <section aria-label="기능 목차">
+        <h4>기능 목차 · 묶음 {contents.length}개 · 서버 기능 {contents.reduce((count, group) => count + group.features.length, 0)}개</h4>
+        <p className="hint">서버 코드에서 찾은 기능만 보여요. 앱의 모든 기능이라고 단정하지는 않아요.</p>
+        {visibleContents?.map(group => <details className="card" key={group.key} open={!!query}>
+          <summary>{group.title?.text ?? group.key}{group.title ? ` · ${group.key}` : ''} · 기능 {group.features.length}개 — {group.features.slice(0, 3).map(feature => feature.name).join(', ')}{group.features.length > 3 ? ', …' : ''}</summary>
+          {group.title && <p className="hint">묶음 이름: 주소 이름이 같은 화면 {group.title.screen}의 제목 · {group.title.relativePath} {group.title.site.startLine}행 · 추정</p>}
+          <ul className="map-list">{group.features.map(feature => <li key={feature.routeIndex}>
+            <b>{feature.name}</b>{' '}<IndexTags feature={feature} />{' '}
+            {feature.aiName && <span className="tag">AI 해석 · {feature.aiName}</span>}{' '}
+            <button className="btn btn--small" aria-pressed={selected === feature.routeIndex} disabled={disabled}
+              onClick={() => onFollow(feature.routeIndex, feature.start ?? undefined)}>이 기능 따라가기</button>
+            <p className="hint">{feature.source} · {routeLabel(routes.routes[feature.routeIndex])} · {feature.linked === 'screen'
+              ? `쓰는 화면 ${feature.screens.slice(0, 3).join(', ')}${feature.screens.length > 3 ? ` 외 ${feature.screens.length - 3}개` : ''}`
+              : feature.linked === 'request-only' ? '화면은 못 정했지만 요청 코드는 찾았어요' : '화면과 연결을 찾지 못했어요'}</p>
+          </li>)}</ul>
+        </details>)}
+      </section>}
+      <details open={!!query}><summary>화면별로 보기</summary>
       {grouped.screens.map(group => ({ ...group, rows: group.rows.filter(row => row.haystack.includes(query)) }))
         .filter(group => group.rows.length).map(group => <section className="card" aria-label={`화면 ${group.screen}`} key={group.screen}>
           <h4>화면 {group.screen}</h4>
@@ -683,6 +718,7 @@ export function FeatureList({ groups, routes, selected, disabled, onFollow, sear
         </section>)}
       {unmatched(grouped.noScreen, '화면은 못 정했지만 요청 코드는 찾은 기능')}
       {unmatched(grouped.unlinked, '화면과 연결을 찾지 못한 서버 기능')}
+      </details>
     </>}
     {/* Keep AI controls mounted while grouping finishes, so an in-flight guide is not cancelled. */}
     <details className={grouped?.screens.length ? 'card' : undefined} open={!grouped?.screens.length}>
@@ -700,6 +736,12 @@ export function FeatureChooser({ project, state, revision, locked, onFollow, mod
   const { routes, stale, guide, setGuideResult } = state;
   const feature = recommendedFeature(state.groups);
   const disabled = locked || stale;
+  const index = useMemo(() => {
+    if (!routes || !state.groupingProps.flows) return null;
+    const paths = new Map(project.files.map(file => [file.id, file.relativePath]));
+    return featureIndex(routes, state.groupingProps.flows, fileId => paths.get(fileId) ?? '', guide?.guide);
+  }, [project.files, routes, state.groupingProps.flows, guide]);
+  const indexed = index?.flatMap(group => group.features).find(item => item.routeIndex === feature?.routes[0]);
   return <div className="card--wide">
     <RoutesStatus state={state} />
     {routes && <>
@@ -707,13 +749,17 @@ export function FeatureChooser({ project, state, revision, locked, onFollow, mod
       {routes.routes.length === 0 ? <p className="notice">서버 코드(요청을 받는 곳)를 찾지 못해서 기능별로 따라갈 수 없어요. 아래 ‘어디부터 읽을까요?’에서 시작 파일을 골라 읽어 보세요.</p> : <>
         {feature && <section className="card" aria-label="처음 따라갈 기능">
           <h3>처음이라면 이 기능부터 따라가 보세요</h3>
-          <b>{feature.name}</b>
+          <b>{indexed?.name ?? feature.name}</b>
+          {indexed && <>{' '}<IndexTags feature={indexed} />
+            <p className="hint">{indexed.source}</p>
+            <p className="hint">{feature.name}</p>
+          </>}
           {feature.about && <p className="hint">{feature.about}</p>}
           <p>이 기능에 요청을 보내는 코드 {feature.sure}곳을 확실히 찾았어요. 요청을 보내는 쪽부터 서버까지 따라가 볼 수 있어요.</p>
           <p className="hint">고른 기준: 요청을 보내는 코드와 확실히 이어진 곳이 가장 많은 기능</p>
-          <button className="btn" disabled={disabled} onClick={() => onFollow(feature.routes[0])}>이 기능부터 따라가기</button>
+          <button className="btn" disabled={disabled} onClick={() => onFollow(feature.routes[0], indexed?.start ?? undefined)}>이 기능부터 따라가기</button>
         </section>}
-        <FeatureList {...state.groupingProps} search={state.search} setSearch={state.setSearch} groups={state.groups} routes={routes} selected={state.selected} disabled={disabled} onFollow={onFollow}>
+        <FeatureList {...state.groupingProps} index={index} search={state.search} setSearch={state.setSearch} groups={state.groups} routes={routes} selected={state.selected} disabled={disabled} onFollow={onFollow}>
           <FeatureGuideCard key={`${routes.routesId}:${revision}`} projectId={project.id} routesId={routes.routesId}
             result={guide} mode={mode} locked={disabled} running={running} checking={checking} connections={connections}
             onInspect={onInspect} onResult={setGuideResult} onRunning={onRunning} />

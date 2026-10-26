@@ -286,7 +286,7 @@ export interface FlowStore {
   site: ValueSite;
 }
 /** The element whose event starts the flow, read from JSX. */
-export interface FlowControl { tag: string; texts: string[] }
+export interface FlowControl { tag: string; texts: string[]; submits?: string[] }
 /** A first-statement confirmation that returns without a value on cancellation. */
 export interface FlowAsk { message: string | null; site: ValueSite }
 /** What front code does once the response arrives, by code shape only. */
@@ -311,6 +311,7 @@ export interface FlowNode {
   after: FlowAfter[];
   afterOmitted: number;
   screen: string | null;
+  screenTitle?: { text: string; site: ValueSite } | null;
   outside: string[];
   outsideOmitted: number;
   stops: FlowStop[];

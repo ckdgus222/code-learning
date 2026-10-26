@@ -6,6 +6,7 @@ import { FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommende
 import type { Evidence, FeatureFlow, FlowNode, ProjectRoutes, ProjectView } from '../src/shared/contracts';
 import { storyOf } from '../src/core/analysis/flow-story';
 import type { FeatureGuide } from '../src/shared/ai';
+import * as indexes from '../src/renderer/feature-index';
 
 vi.mock('react', async importOriginal => {
   const actual = await importOriginal<typeof import('react')>();
@@ -762,6 +763,130 @@ it.each(['grouping', 'failure', 'unavailable'] as const)('keeps the server list 
   expect(html).not.toContain('서버 주소 기준 목록 (AI 정리 포함)');
   if (state === 'grouping') { expect(html).toContain('화면별로 묶는 중…'); expect(html).toContain('>취소</button>'); }
   if (state === 'failure') { expect(html).toContain('서버 주소 기준으로 보여 줘요.'); expect(html).toContain('>다시 묶기</button>'); }
+});
+
+const indexRoutes: ProjectRoutes = { ...routes, routes: Array.from({ length: 5 }, (_, index) => ({
+  method: 'DELETE', path: index === 4 ? '/api/auth' : `/api/dogs/${index}`, framework: 'express', prefix: 'known',
+  basis: { text: '', range: { ...nodes[0].range, fileId: 'server', fileHash: 'h', text: '' } },
+  handler: { ...nodes[0].range, fileId: 'server', fileHash: 'h', name: `remove${index}` },
+})) };
+const indexFlows: FeatureFlow[] = indexRoutes.routes.map((_, routeIndex) => ({ ...flow, routeIndex,
+  nodes: nodes.map(node => ({ ...node,
+    screen: node.screen ? routeIndex === 4 ? '/auth' : '/dogs' : null,
+    screenTitle: node.screen && routeIndex === 0 ? { text: '내 반려견', site: {
+      ...node.range, fileId: node.fileId, fileHash: node.fileHash, text: '<h1>내 반려견</h1>',
+    } } : null,
+    control: node.event && routeIndex === 1 ? { tag: 'button', texts: ['삭제'] } : null,
+  })),
+}));
+const indexProps: Parameters<typeof FeatureList>[0] = { routes: indexRoutes, groups: featureGroups(project, indexRoutes),
+  flows: indexFlows, search: '', selected: 0, disabled: false, setSearch() {}, onFollow() {} };
+
+it('places the folded index before screen and server lists, with three previews and naming evidence', () => {
+  const html = renderToStaticMarkup(React.createElement(FeatureList, indexProps));
+  const index = html.slice(html.indexOf('<section aria-label="기능 목차">'), html.indexOf('<details><summary>화면별로 보기'));
+  expect(index).toContain('기능 목차 · 묶음 2개 · 서버 기능 5개');
+  expect(index).toContain('서버 코드에서 찾은 기능만 보여요. 앱의 모든 기능이라고 단정하지는 않아요.');
+  expect(index).toContain('<summary>내 반려견 · dogs · 기능 4개 — ‘내 반려견’ 화면 · 지우기, ‘삭제’ 버튼 · 지우기, 지우기 · /api/dogs/2, …</summary>');
+  expect(index).toContain('묶음 이름: 주소 이름이 같은 화면 /dogs의 제목 · src/example.ts 1행 · 추정');
+  for (const text of ['버튼 문구', '화면 제목', '주소 이름']) expect(index).toContain(`>${text}</span>`);
+  expect(index).toContain('title="화면 /dogs · src/example.ts 1행">화면 제목</span>');
+  expect(index).toContain('화면 /dogs · src/example.ts onClick 함수 · DELETE /api/dogs/1 · 쓰는 화면 /dogs');
+  expect(index).toContain('title="훅이 돌려준 값 remove를 써요 · 방식 모름">추정 연결</span>');
+  expect(index).not.toContain('<details class="card" open');
+  expect(html.indexOf('기능 목차')).toBeLessThan(html.indexOf('화면별로 보기'));
+  expect(html.indexOf('화면별로 보기')).toBeLessThan(html.indexOf('서버 주소 기준 목록 (AI 정리 포함)'));
+  expect(index).toContain('aria-pressed="true"');
+});
+
+it.each([
+  ['삭제', 1, '‘삭제’ 버튼'], ['AUTH', 1, 'auth · 기능 1개'], ['내 반려견', 4, 'dogs · 기능 4개'],
+  ['remove2', 1, '/api/dogs/2'], ['없는 기능', 0, ''],
+])('filters index features and groups and opens matching groups for %s', (search, count, text) => {
+  const html = renderToStaticMarkup(React.createElement(FeatureList, { ...indexProps, search }));
+  const index = html.slice(html.indexOf('<section aria-label="기능 목차">'), html.indexOf('<details open=""><summary>화면별로 보기'));
+  expect(index.match(/>이 기능 따라가기<\/button>/g) ?? []).toHaveLength(count);
+  expect(index).toContain(text);
+  expect(index).not.toContain('<details class="card"><summary>');
+  if (count > 0) expect(index).toContain('<details class="card" open=""><summary>');
+  if (search !== 'AUTH') expect(index).not.toContain('<summary>auth');
+});
+
+it('shows unmatched index labels and AI names, limits screen hints and disables all index actions', () => {
+  const extraScreens = Array.from({ length: 4 }, (_, i) => ({ ...nodes[3], id: `screen${i}`, screen: `/other${i}` }));
+  const flows = [
+    { ...flow, nodes: [...nodes, ...extraScreens], edges: [...flow.edges, ...extraScreens.map(node => ({ ...flow.edges[0], from: node.id }))] },
+    { ...flow, routeIndex: 1, nodes: nodes.filter(node => node.screen === null), edges: flow.edges.slice(1) },
+    { ...flow, routeIndex: 2, nodes: [nodes[0]], edges: [] },
+  ];
+  const guide: FeatureGuide = { summary: '', unknowns: [], groups: [{ name: 'AI', about: '', features: [{ name: '이름 해석', about: '', routes: [1] }] }] };
+  const html = renderToStaticMarkup(React.createElement(FeatureList, { ...indexProps, flows, guide, disabled: true }));
+  const index = html.slice(html.indexOf('<section aria-label="기능 목차">'), html.indexOf('<details><summary>화면별로 보기'));
+  expect(index).toContain('쓰는 화면 /dogs, /other0, /other1 외 2개');
+  expect(index).toContain('화면은 못 정했지만 요청 코드는 찾았어요');
+  expect(index).toContain('화면과 연결을 찾지 못했어요');
+  expect(index).toContain('AI 해석 · 이름 해석');
+  expect(index.match(/<button[^>]*disabled=""/g)).toHaveLength(3);
+  const missing = renderToStaticMarkup(React.createElement(FeatureList, { ...indexProps, flows: null }));
+  expect(missing).not.toContain('aria-label="기능 목차"');
+  expect(missing).not.toContain('화면별로 보기');
+});
+
+it('recommends the indexed name and evidence and follows the same named screen, computing the index once', () => {
+  const secondScreen = { ...nodes[3], id: 'z', screen: '/z', screenTitle: { text: '제목 있는 화면', site: {
+    ...nodes[3].range, fileId: 'page', fileHash: 'h', text: '<h1>제목 있는 화면</h1>',
+  } } };
+  const graph = { ...flow, nodes: [...nodes, secondScreen], edges: [...flow.edges, { ...flow.edges[0], from: 'z' }] };
+  const onFollow = vi.fn();
+  const index = vi.spyOn(indexes, 'featureIndex');
+  let follow: (() => void) | undefined;
+  function Probe() {
+    const tree = FeatureChooser({ ...chooserProps, onFollow, state: { ...chooserProps.state, routes: indexRoutes,
+      groups: featureGroups(project, indexRoutes), groupingProps: { ...chooserProps.state.groupingProps, flows: [graph] } } });
+    const pending: React.ReactNode[] = [tree];
+    while (pending.length) {
+      const item = pending.pop();
+      if (!React.isValidElement<{ children?: React.ReactNode; onClick?: () => void }>(item)) continue;
+      if (item.type === 'button' && item.props.children === '이 기능부터 따라가기') follow = item.props.onClick;
+      pending.push(...React.Children.toArray(item.props.children));
+    }
+    return tree;
+  }
+  try {
+    const html = renderToStaticMarkup(React.createElement(Probe));
+    const card = html.slice(html.indexOf('aria-label="처음 따라갈 기능"'), html.indexOf('aria-label="기능 목록"'));
+    expect(card).toContain('<b>‘제목 있는 화면’ 화면 · 지우기</b>');
+    expect(card).toContain('title="화면 /z · web/app/dogs/page.tsx 1행">화면 제목</span>');
+    expect(card).toContain('<p class="hint">화면 /z · web/app/dogs/page.tsx 1행</p>');
+    expect(card).toContain('<p class="hint">지우기 · /api/dogs/0</p>');
+    expect(card).toContain('title="훅이 돌려준 값 remove를 써요 · 방식 모름">추정 연결</span>');
+    expect(index).toHaveBeenCalledTimes(1);
+    expect(follow).toBeTypeOf('function');
+    follow!();
+    expect(onFollow).toHaveBeenCalledExactlyOnceWith(0, { through: 'z', storyId: 'request@z' });
+  } finally { index.mockRestore(); }
+});
+
+it('follows the index row with its chosen start and defaults only for unlinked features', () => {
+  const onFollow = vi.fn();
+  const starts: (() => void)[] = [];
+  function Probe() {
+    const tree = FeatureList({ ...indexProps, onFollow, flows: [indexFlows[0], { ...indexFlows[1], nodes: [nodes[0]], edges: [] }] });
+    const pending: React.ReactNode[] = [tree];
+    while (pending.length) {
+      const item = pending.shift();
+      if (!React.isValidElement<{ children?: React.ReactNode; onClick?: () => void; 'aria-label'?: string }>(item)) continue;
+      if (item.type === 'button' && item.props.children === '이 기능 따라가기') starts.push(item.props.onClick!);
+      if (item.type === 'details' && item.props.children && renderToStaticMarkup(item).includes('화면별로 보기')) continue;
+      if (item.type === 'details' && renderToStaticMarkup(item).includes('서버 주소 기준 목록')) continue;
+      pending.push(...React.Children.toArray(item.props.children));
+    }
+    return tree;
+  }
+  renderToStaticMarkup(React.createElement(Probe));
+  expect(starts).toHaveLength(2);
+  starts.forEach(start => start());
+  expect(onFollow.mock.calls).toEqual([[0, { through: 'screen', storyId: 'request@screen' }], [1, undefined]]);
 });
 it('names two through stories from their request steps and preserves the screen when changing stories', () => {
   const second = { ...nodes[1], id: 'request2', name: 'second request', relativePath: 'second.ts' };
