@@ -9,7 +9,7 @@ import { ancestorFolderPaths, buildFileTree, filterFileTree, type TreeFolder } f
 import { AiPanel } from './ai-panel';
 import { FileGuideCard } from './file-guide';
 import { fileUses } from './screen-groups';
-import { functionDoes, importersOf } from './guide-facts';
+import { aiFunctionSummaries, functionDoes, importersOf } from './guide-facts';
 import { FileExplanationCard, rememberFileExplanation, type FileExplanationEntry, type FileExplanationState } from './file-explanation';
 import { Flow } from './flow';
 import { ProjectMapView, type MapEntry } from './project-map';
@@ -1084,6 +1084,7 @@ function App() {
             <p><b>{symbol.name}</b> 함수는 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요. 왼쪽에서 구문을 골라 한 부분씩 볼 수 있어요.</p>
           </section> : <p className="hint">함수나 구문을 고르면 그 부분을 여기서 짚어 줘요.</p>)}
           {view === 'code' && source?.guide && <FileGuideCard key={`${source.fileId}:${source.hash}`} guide={source.guide} analysis={source.analysis} busy={busy} stale={stale}
+            ai={aiFunctionSummaries(fileExplanation?.result ?? null, fileExplanationStale, source.analysis.symbols)}
             importers={{ state: mapping ? 'running' : projectMap ? 'ready' : 'none',
               stale: projectMap !== null && projectMap.revision !== revision.current, result: importers }}
             onBuildMap={() => void buildMap()} onCancelMap={() => void cancelMap()} onShowImport={item => void showImport(item)}

@@ -1,7 +1,23 @@
 import type { CodeSymbol, FeatureFlow, MapImport, ProjectMap, ProjectRoutes } from '../shared/contracts';
+import type { FileExplanationResult } from '../shared/ai';
 import { afterText, afterWhen, routeLabel } from '../core/analysis/flow-story';
 
 export interface Importer { fromFileId: string; relativePath: string; item: MapImport }
+
+export function aiFunctionSummaries(result: FileExplanationResult | null, stale: boolean, symbols: CodeSymbol[]):
+  { state: 'none' | 'stale' | 'ready'; bySymbol: Map<string, string> } {
+  const bySymbol = new Map<string, string>();
+  if (!result) return { state: 'none', bySymbol };
+  if (stale) return { state: 'stale', bySymbol };
+  for (const symbol of symbols) {
+    const chunk = result.chunks.find(item => item.functionRange?.startUtf16 === symbol.evidence.startUtf16 &&
+      item.functionRange.endUtf16 === symbol.evidence.endUtf16);
+    if (!chunk) continue;
+    const summary = result.explanation.chunks.find(item => item.chunkId === chunk.id)?.summary;
+    if (summary) bySymbol.set(symbol.id, summary);
+  }
+  return { state: 'ready', bySymbol };
+}
 
 export function importersOf(fileId: string, relativePath: string, map: ProjectMap):
   { files: Importer[]; ambiguous: Importer[]; unread: { relativePath: string; reason: string }[]; limitedMap: boolean } {

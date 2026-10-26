@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { analyzeSource } from '../src/core/analysis/syntax';
-import { functionDoes, importersOf } from '../src/renderer/guide-facts';
+import { aiFunctionSummaries, functionDoes, importersOf } from '../src/renderer/guide-facts';
 import type { FeatureFlow, FlowNode, MapImport, ProjectMap, ProjectRoutes, Request } from '../src/shared/contracts';
+import type { FileExplanationResult } from '../src/shared/ai';
 
 const site = { fileId: 'f', fileHash: 'h', startUtf16: 10, endUtf16: 15, startLine: 2, endLine: 2, text: 'send()' };
 const imported: MapImport = { ...site, fromFileId: 'a', specifier: './target' };
@@ -59,6 +60,43 @@ const front: FlowNode = { id: 'front', side: 'front', depth: 0, fileId: 'f', fil
   range: symbols[1].evidence, event: null, control: null, asks: [], screen: null, outside: [], outsideOmitted: 0, stops: [], stopsOmitted: 0,
   stores: [], storesOmitted: 0, after: [{ when: 'success', action: 'navigate', target: '/', site }], afterOmitted: 0 };
 const flow: FeatureFlow = { projectId: 'p', routesId: 'r', routeIndex: 0, nodes: [front], edges: [], limited: false, notes: [] };
+
+describe('aiFunctionSummaries', () => {
+  const chunk = { id: 'chunk', kind: 'function' as const, name: symbols[1].name,
+    range: symbols[1].evidence, functionRange: { startUtf16: symbols[1].evidence.startUtf16, endUtf16: symbols[1].evidence.endUtf16 } };
+  const result: FileExplanationResult = { jobId: 'job', projectId: 'p', relativePath: 'front.ts', range: site,
+    chunks: [chunk], explanation: { summary: '파일 설명', chunks: [{ chunkId: chunk.id, summary: '함수 설명' }], unknowns: [] },
+    mode: 'codex', review: 'AI 대조 없음', models: [], limitations: [] };
+
+  it.each([false, true])('returns none without a result even when stale is %s', stale => {
+    expect(aiFunctionSummaries(null, stale, symbols)).toEqual({ state: 'none', bySymbol: new Map() });
+  });
+  it('drops every summary when the result is stale', () => {
+    expect(aiFunctionSummaries(result, true, symbols)).toEqual({ state: 'stale', bySymbol: new Map() });
+  });
+  it('matches an exact range, not a shared name or a containing function', () => {
+    expect(symbols[1].name).toBe(symbols[3].name);
+    expect(aiFunctionSummaries(result, false, symbols)).toEqual({ state: 'ready',
+      bySymbol: new Map([[symbols[1].id, '함수 설명']]) });
+  });
+  it.each(['startUtf16', 'endUtf16'] as const)('requires the same %s', boundary => {
+    const changed = { ...chunk, functionRange: { ...chunk.functionRange, [boundary]: chunk.functionRange[boundary] + 1 } };
+    expect(aiFunctionSummaries({ ...result, chunks: [changed] }, false, symbols))
+      .toEqual({ state: 'ready', bySymbol: new Map() });
+  });
+  it('ignores chunks without a function range even when their source range matches', () => {
+    expect(aiFunctionSummaries({ ...result, chunks: [{ ...chunk, functionRange: null }] }, false, symbols).bySymbol.size).toBe(0);
+  });
+  it('omits missing summaries and joins available summaries by chunk ID', () => {
+    const other = { ...chunk, id: 'other', range: symbols[3].evidence, functionRange: symbols[3].evidence };
+    const partial = { ...result, chunks: [chunk, other], explanation: { ...result.explanation,
+      chunks: [{ chunkId: other.id, summary: '다른 함수 설명' }, { chunkId: 'unknown', summary: '잇지 못한 설명' }] } };
+    expect(aiFunctionSummaries(partial, false, symbols).bySymbol).toEqual(new Map([[symbols[3].id, '다른 함수 설명']]));
+  });
+  it('does not attach a summary when no function chunk exists', () => {
+    expect(aiFunctionSummaries({ ...result, chunks: [] }, false, symbols)).toEqual({ state: 'ready', bySymbol: new Map() });
+  });
+});
 
 describe('functionDoes', () => {
   it('matches both ends of each function range, including callbacks, instead of names or containment', () => {

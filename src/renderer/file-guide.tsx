@@ -1,7 +1,7 @@
 import React, { useLayoutEffect, useRef, useState } from 'react';
 import { STRUCTURE_NOTE, type Analysis, type CallSite, type CodeSymbol, type FileGuide, type GuideRange, type MapImport, type ProjectRoutes } from '../shared/contracts';
 import { routeLabel, stopText, storeText } from '../core/analysis/flow-story';
-import type { functionDoes, Importer, importersOf } from './guide-facts';
+import type { aiFunctionSummaries, functionDoes, Importer, importersOf } from './guide-facts';
 import type { CallsState } from './calls';
 import type { FileUse } from './screen-groups';
 import { ComplexityTags } from './complexity';
@@ -17,7 +17,7 @@ const FIRST_FUNCTIONS = 8;
 const FIRST_ROWS = 12;
 
 export function FileGuideCard({ guide, analysis, busy, stale, uses, onUse, onShow, onSelect, onOpenFile, focus = null,
-  importers, onBuildMap, onCancelMap, onShowImport, does, doesState, callers, onFindCallers, onCancelCallers, onShowCallSite, pathOf }: {
+  importers, onBuildMap, onCancelMap, onShowImport, does, doesState, ai, callers, onFindCallers, onCancelCallers, onShowCallSite, pathOf }: {
   guide: FileGuide; analysis: Analysis; busy: boolean; stale: boolean;
   uses: { state: 'none' | 'running' | 'ready'; uses: FileUse[]; changed: boolean; routes: ProjectRoutes | null };
   onUse(use: FileUse): void;
@@ -27,6 +27,7 @@ export function FileGuideCard({ guide, analysis, busy, stale, uses, onUse, onSho
   importers: { state: 'none' | 'running' | 'ready'; stale: boolean; result: ReturnType<typeof importersOf> | null };
   onBuildMap(): void; onCancelMap(): void; onShowImport(item: MapImport): void;
   does: ReturnType<typeof functionDoes>;
+  ai: ReturnType<typeof aiFunctionSummaries>;
   doesState: { routes: 'none' | 'stale' | 'ready'; flows: boolean };
   callers: { symbolId: string; state: CallsState; stale: boolean } | null;
   onFindCallers(symbol: CodeSymbol): void; onCancelCallers(): void; onShowCallSite(site: CallSite): void; pathOf(fileId: string): string;
@@ -143,11 +144,14 @@ export function FileGuideCard({ guide, analysis, busy, stale, uses, onUse, onSho
       <ul className="map-list">{notes.slice(0, FIRST_ROWS).map(note => <li key={note}>{note}</li>)}</ul>
       {notes.length > FIRST_ROWS && <p className="hint">외 {notes.length - FIRST_ROWS}개</p>}
     </details>}
+    {analysis.language !== 'text' && ai.state === 'none' && <p className="hint">아래 ‘AI로 이 파일 설명 만들기’를 쓰면, AI가 요약한 함수 카드에 AI 해석을 보여 줘요.</p>}
+    {analysis.language !== 'text' && ai.state === 'stale' && <p className="hint">파일이 바뀌어 AI 요약을 숨겼어요. 다시 만들어 주세요.</p>}
     <h4>이 파일의 함수 {analysis.symbols.length}개</h4>
     <p className="hint">종류 표시는 코드 모양으로 판단했어요. 실제로 요청이 이어지는지는 흐름 따라가기에서 확인해요.</p>
     <ol className="file-guide__functions">{(expanded ? analysis.symbols : analysis.symbols.slice(0, FIRST_FUNCTIONS)).map(symbol => {
       const fact = facts.get(symbol.id);
       const actions = does.bySymbol.get(symbol.id);
+      const aiSummary = ai.bySymbol.get(symbol.id);
       const hasActions = !!(actions?.requests.length || actions?.after.length || actions?.afterPartly || fact?.stops.length || fact?.stores.length);
       const caller = callers?.symbolId === symbol.id ? callers : null;
       const found = caller?.state.status === 'done' ? caller.state.result : null;
@@ -175,7 +179,12 @@ export function FileGuideCard({ guide, analysis, busy, stale, uses, onUse, onSho
           {!!fact?.stopsOmitted && <p className="hint">오류 외 {fact.stopsOmitted}개</p>}
           {!!fact?.storesOmitted && <p className="hint">저장소 호출 외 {fact.storesOmitted}개</p>}
         </>}
-        {!fact?.tags.length && !fact?.calls.length && !fact?.hooks.length && !hasActions && <p className="hint">코드에서 찾은 할 일이 없어요. AI에게 물어볼 수 있어요.</p>}
+        {!fact?.tags.length && !fact?.calls.length && !fact?.hooks.length && !hasActions && <p className="hint">{aiSummary
+          ? '코드에서 찾은 할 일이 없어요.' : '코드에서 찾은 할 일이 없어요. AI에게 물어볼 수 있어요.'}</p>}
+        {aiSummary && <>
+          <h5>AI 요약</h5>
+          <p><span className="tag tag--unknown">AI 해석</span> {aiSummary}</p>
+        </>}
         <h5>부르는 곳</h5>
         {!caller && <button className="btn btn--small" disabled={locked} onClick={() => onFindCallers(symbol)}>부르는 곳 찾기</button>}
         {caller?.state.status === 'finding' && <>
