@@ -6,10 +6,11 @@ import type { CallSite, FunctionCalls, MapImport, ProjectRoutes } from '../src/s
 import { FileGuideCard } from '../src/renderer/file-guide';
 import { describeFile } from '../src/core/analysis/file-guide';
 import { analyzeSource } from '../src/core/analysis/syntax';
+import { functionDoes } from '../src/renderer/guide-facts';
 
 const emptyFacts = {
-  importers: { state: 'ready' as const, stale: false, result: { files: [], ambiguous: [], partly: false } },
-  does: { bySymbol: new Map(), changed: false, partly: { routes: false, flows: false } },
+  importers: { state: 'ready' as const, stale: false, result: { files: [], ambiguous: [], unread: [], limitedMap: false } },
+  does: { bySymbol: new Map(), changed: false, notes: { routes: [], flows: [] } },
   doesState: { routes: 'none' as const, flows: false }, callers: null,
   onBuildMap() {}, onCancelMap() {}, onShowImport() {}, onFindCallers() {}, onCancelCallers() {}, onShowCallSite() {}, pathOf: (id: string) => id,
 };
@@ -192,7 +193,7 @@ describe('file guide importers, actions and callers', () => {
   it('shows confirmed files separately from ambiguity, caps each list and keeps stale results', () => {
     const html = render({ importers: { state: 'ready', stale: true, result: {
       files: Array.from({ length: 14 }, (_, i) => ({ ...importer, fromFileId: `${i}`, relativePath: `web/${i}.ts` })),
-      ambiguous: Array.from({ length: 13 }, (_, i) => ({ ...importer, item: { ...item, startUtf16: i } })), partly: true,
+      ambiguous: Array.from({ length: 13 }, (_, i) => ({ ...importer, item: { ...item, startUtf16: i } })), unread: [{ relativePath: 'broken.ts', reason: '구문 오류' }], limitedMap: false,
     } } });
     expect(html).toContain('이 파일을 가져다 쓰는 파일 14개');
     expect(html).toContain('web/0.ts · 2행');
@@ -201,12 +202,13 @@ describe('file guide importers, actions and callers', () => {
     expect(html.match(/ 열기<\/button>/g)).toHaveLength(24);
     expect(html).toContain('외 2개');
     expect(html).toContain('외 1개');
-    expect(html).toContain('일부 파일을 끝까지 보지 못해 더 있을 수 있어요.');
+    expect(html).toContain('끝까지 못 본 파일 1개');
+    expect(html).toContain('이 파일을 가져다 쓰는 파일이 더 있을 수 있어요.');
     expect(html).toContain('지도를 만든 뒤 프로젝트가 바뀌었어요. 아래 목록은 그 전 코드 기준이에요.');
   });
   it.each([true, false])('locks map only for busy, but navigation and call searches for stale (busy=%s)', busy => {
     const html = render({ busy, stale: true, importers: { state: 'ready', stale: true,
-      result: { files: [importer], ambiguous: [], partly: false } } });
+      result: { files: [importer], ambiguous: [], unread: [], limitedMap: false } } });
     expect(button(html, '다시 찾기').includes('disabled')).toBe(busy);
     expect(button(html, 'x.ts 열기')).toContain('disabled');
     expect(button(html, '부르는 곳 찾기')).toContain('disabled');
@@ -222,7 +224,7 @@ describe('file guide importers, actions and callers', () => {
     expect(button(html, '찾기 취소')).not.toContain('disabled');
   });
   it('renders requests, after, errors and stores in order with exact text, links and omitted warnings', () => {
-    const html = render({ doesState: { routes: 'ready', flows: true }, does: { changed: false, partly: { routes: false, flows: false },
+    const html = render({ doesState: { routes: 'ready', flows: true }, does: { changed: false, notes: { routes: [], flows: [] },
       bySymbol: new Map([[symbolId, { requests: [
         { line: 24, text: 'POST /api/auth/login 요청을 보내요', links: [
           { text: '서버 POST /api/auth/login', inferred: false, reasons: [] },
@@ -256,13 +258,68 @@ describe('file guide importers, actions and callers', () => {
     if (doesState.routes === 'stale') expect(html).not.toContain('기능 흐름을 만들면');
   });
   it('shows changed hashes and analysis limits above functions even without omitted after actions', () => {
-    const html = render({ does: { ...emptyFacts.does, changed: true, partly: { routes: true, flows: true } } });
+    const html = render({ does: { ...emptyFacts.does, changed: true, notes: { routes: ['구문 오류 파일이 있어요.'], flows: ['여러 곳을 부르는 함수는 확인하지 않았어요.'] } } });
     for (const message of ['파일이 바뀌어 보내는 요청과 요청 뒤 할 일을 다시 찾아야 해요.',
-      '서버 주소 찾기가 한도에 닿아 일부 파일은 보지 않았어요. 보내는 요청이 더 있을 수 있어요.',
-      '일부 기능 흐름은 끝까지 확인하지 못해 요청 뒤 할 일이 더 있을 수 있어요.']) {
+      '일부만 확인했어요 · 이유 2개', '보내는 요청과 요청 뒤 할 일이 더 있을 수 있어요.',
+      '서버 주소 찾기: 구문 오류 파일이 있어요.', '기능 흐름: 여러 곳을 부르는 함수는 확인하지 않았어요.']) {
       expect(html.indexOf(message)).toBeGreaterThan(-1);
       expect(html.indexOf(message)).toBeLessThan(html.indexOf('이 파일의 함수'));
     }
+  });
+  it('keeps both reason disclosures closed and renders paths and reasons as plain text', () => {
+    const html = render({ importers: { state: 'ready', stale: false, result: { files: [], ambiguous: [],
+      unread: [{ relativePath: 'src/<broken>.ts', reason: '<script>구문 오류</script>' }], limitedMap: true } },
+    does: { ...emptyFacts.does, notes: { routes: ['주소 이유'], flows: ['흐름 이유'] } } });
+    expect(html.match(/<details[^>]*><summary class="hint">/g)).toEqual([
+      '<details><summary class="hint">', '<details><summary class="hint">',
+    ]);
+    expect(html).toContain('끝까지 못 본 파일 1개</summary>');
+    expect(html).toContain('일부만 확인했어요 · 이유 2개</summary>');
+    expect(html).toContain('src/&lt;broken&gt;.ts · &lt;script&gt;구문 오류&lt;/script&gt;');
+    expect(html).toContain('<li>서버 주소 찾기: 주소 이유</li><li>기능 흐름: 흐름 이유</li>');
+    expect(html).toContain('지도 읽기 한도에 닿아 읽지 않은 파일도 있어요.</p></details>');
+    expect(html).not.toContain('한도에 닿아 일부 파일은 보지 않았어요');
+  });
+  it.each([1, 12, 14])('caps each disclosure at twelve rows for %s reasons', count => {
+    const unread = Array.from({ length: count }, (_, i) => ({ relativePath: `src/broken${i}.ts`, reason: `구문 오류 ${i}` }));
+    const reasons = Array.from({ length: count }, (_, i) => `이유 ${i}`);
+    const html = render({ importers: { state: 'ready', stale: false,
+      result: { files: [], ambiguous: [], unread, limitedMap: false } },
+    does: { ...emptyFacts.does, notes: { routes: reasons.slice(0, 6), flows: reasons.slice(6) } } });
+    const disclosures = [...html.matchAll(/<details><summary class="hint">[\s\S]*?<\/details>/g)].map(match => match[0]);
+    expect(disclosures).toHaveLength(2);
+    expect(disclosures[0]).toContain(`끝까지 못 본 파일 ${count}개</summary>`);
+    expect(disclosures[1]).toContain(`일부만 확인했어요 · 이유 ${count}개</summary>`);
+    for (const disclosure of disclosures) {
+      expect(disclosure.match(/<li>/g)).toHaveLength(Math.min(count, 12));
+      if (count > 12) expect(disclosure).toContain(`외 ${count - 12}개`);
+      if (count <= 12) expect(disclosure).not.toContain('외 ');
+    }
+    expect(disclosures[0]).toContain(`src/broken${Math.min(count, 12) - 1}.ts · 구문 오류 ${Math.min(count, 12) - 1}`);
+    expect(disclosures[0]).not.toContain('src/broken12.ts');
+    expect(disclosures[0]).not.toContain('지도 읽기 한도');
+    expect(disclosures[1]).not.toContain('기능 흐름: 이유 12');
+  });
+  it('shows a map limit summary with no unread files and hides disclosures without limits', () => {
+    const html = render({ importers: { state: 'ready', stale: false,
+      result: { files: [], ambiguous: [], unread: [], limitedMap: true } } });
+    expect(html).toContain('<details><summary class="hint">지도 읽기 한도에 닿음</summary>');
+    expect(html).toContain('이 파일을 가져다 쓰는 파일이 더 있을 수 있어요.');
+    expect(html).toContain('지도 읽기 한도에 닿아 읽지 않은 파일도 있어요.');
+    expect(html).not.toContain('끝까지 못 본 파일 0개');
+    expect(html).not.toContain('일부만 확인했어요');
+    const unlimited = render();
+    expect(unlimited).not.toContain('<summary class="hint">');
+    expect(unlimited).not.toContain('한도에 닿아 일부 파일은 보지 않았어요');
+  });
+  it.each(['routes', 'flows'] as const)('shows the fallback disclosure for limited %s with empty notes', kind => {
+    const routes: ProjectRoutes = { projectId: 'p', routesId: 'r', routes: [], requests: [], links: [], prefix: null, limited: true, notes: [] };
+    const does = functionDoes('f', 'h', analysis.symbols, kind === 'routes' ? routes : null,
+      kind === 'flows' ? [{ projectId: 'p', routesId: 'r', routeIndex: 0, nodes: [], edges: [], limited: true, notes: [] }] : null);
+    const html = render({ does });
+    expect(html).toContain('<details><summary class="hint">일부만 확인했어요 · 이유 1개</summary>');
+    expect(html).toContain(kind === 'routes' ? '서버 주소 찾기: 서버 주소 찾기를 끝까지 하지 못했어요.'
+      : '기능 흐름: 기능 흐름 일부를 끝까지 확인하지 못했어요.');
   });
   it('shows failures and locks retry, while another card keeps its own search button', () => {
     const html = render({ stale: true, callers: { symbolId, stale: false, state: { status: 'failed', message: '찾기 실패' } } });

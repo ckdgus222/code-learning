@@ -50,6 +50,10 @@ export function FileGuideCard({ guide, analysis, busy, stale, uses, onUse, onSho
   const basis = guide.role.basis;
   const facts = new Map(guide.functions.map(item => [item.symbolId, item]));
   const otherChunks = guide.chunks.filter(item => !item.chunk.functionRange);
+  const notes = [
+    ...does.notes.routes.map(note => `서버 주소 찾기: ${note}`),
+    ...does.notes.flows.map(note => `기능 흐름: ${note}`),
+  ];
   const importerRow = ({ fromFileId, relativePath, item }: Importer) => <li key={`${fromFileId}:${item.startUtf16}`}>
     <button className="btn btn--small" disabled={locked} onClick={() => onShowImport(item)}>{relativePath.split('/').at(-1)} 열기</button>{' '}
     {relativePath} · {item.startLine}행
@@ -100,7 +104,16 @@ export function FileGuideCard({ guide, analysis, busy, stale, uses, onUse, onSho
           <ul className="map-list">{importers.result.ambiguous.slice(0, FIRST_ROWS).map(importerRow)}</ul>
           {importers.result.ambiguous.length > FIRST_ROWS && <p className="hint">외 {importers.result.ambiguous.length - FIRST_ROWS}개</p>}
         </>}
-        {importers.result.partly && <p className="hint">일부 파일을 끝까지 보지 못해 더 있을 수 있어요.</p>}
+        {(importers.result.unread.length > 0 || importers.result.limitedMap) && <details>
+          <summary className="hint">{importers.result.unread.length > 0
+            ? `끝까지 못 본 파일 ${importers.result.unread.length}개` : '지도 읽기 한도에 닿음'}</summary>
+          <p>이 파일을 가져다 쓰는 파일이 더 있을 수 있어요.</p>
+          <ul className="map-list">{importers.result.unread.slice(0, FIRST_ROWS).map(file => <li key={file.relativePath}>
+            {file.relativePath} · {file.reason}
+          </li>)}</ul>
+          {importers.result.unread.length > FIRST_ROWS && <p className="hint">외 {importers.result.unread.length - FIRST_ROWS}개</p>}
+          {importers.result.limitedMap && <p className="hint">지도 읽기 한도에 닿아 읽지 않은 파일도 있어요.</p>}
+        </details>}
       </>}
       <p className="hint">경로 별칭(@/…)이나 실행할 때 정하는 가져오기는 따라가지 않아서 더 있을 수 있어요.</p>
     </section>
@@ -124,8 +137,12 @@ export function FileGuideCard({ guide, analysis, busy, stale, uses, onUse, onSho
     {doesState.routes === 'stale' && <p className="hint">프로젝트가 바뀌어 서버 주소를 다시 찾아야 해요.</p>}
     {doesState.routes === 'ready' && !doesState.flows && <p className="hint">기능 흐름을 만들면 요청 뒤 할 일도 여기 보여요.</p>}
     {does.changed && <p className="hint">파일이 바뀌어 보내는 요청과 요청 뒤 할 일을 다시 찾아야 해요.</p>}
-    {does.partly.routes && <p className="hint">서버 주소 찾기가 한도에 닿아 일부 파일은 보지 않았어요. 보내는 요청이 더 있을 수 있어요.</p>}
-    {does.partly.flows && <p className="hint">일부 기능 흐름은 끝까지 확인하지 못해 요청 뒤 할 일이 더 있을 수 있어요.</p>}
+    {notes.length > 0 && <details>
+      <summary className="hint">일부만 확인했어요 · 이유 {notes.length}개</summary>
+      <p>보내는 요청과 요청 뒤 할 일이 더 있을 수 있어요.</p>
+      <ul className="map-list">{notes.slice(0, FIRST_ROWS).map(note => <li key={note}>{note}</li>)}</ul>
+      {notes.length > FIRST_ROWS && <p className="hint">외 {notes.length - FIRST_ROWS}개</p>}
+    </details>}
     <h4>이 파일의 함수 {analysis.symbols.length}개</h4>
     <p className="hint">종류 표시는 코드 모양으로 판단했어요. 실제로 요청이 이어지는지는 흐름 따라가기에서 확인해요.</p>
     <ol className="file-guide__functions">{(expanded ? analysis.symbols : analysis.symbols.slice(0, FIRST_FUNCTIONS)).map(symbol => {

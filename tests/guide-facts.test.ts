@@ -17,7 +17,8 @@ describe('importersOf', () => {
       { ...imported, fromFileId: 'target', toFileId: 'a' },
     ] });
     expect(result.files.map(file => [file.relativePath, file.item.startLine])).toEqual([['a.ts', 2], ['b.ts', 2]]);
-    expect(result.partly).toBe(false);
+    expect(result.unread).toEqual([]);
+    expect(result.limitedMap).toBe(false);
   });
   it('separates ambiguous candidates by full relative path and does not call them confirmed', () => {
     const result = importersOf('target', 'target.ts', { ...map, unresolved: [
@@ -30,11 +31,21 @@ describe('importersOf', () => {
     expect(result.ambiguous[0].item).toMatchObject({ reason: 'ambiguous', startLine: 2 });
   });
   it.each(['partial', 'failed', 'skipped'] as const)('marks %s code files as partly checked', checked => {
-    expect(importersOf('target', 'target.ts', { ...map, files: [{ ...map.files[0], checked }] }).partly).toBe(true);
+    expect(importersOf('target', 'target.ts', { ...map, files: [{ ...map.files[0], checked }] })).toMatchObject({
+      unread: [{ relativePath: 'target.ts', reason: '끝까지 보지 못했어요' }], limitedMap: false,
+    });
   });
   it('keeps non-code files out of the partial warning, but reports the map limit', () => {
-    expect(importersOf('target', 'target.ts', { ...map, files: [{ ...map.files[0], checked: 'not-code' }] }).partly).toBe(false);
-    expect(importersOf('target', 'target.ts', { ...map, limited: true }).partly).toBe(true);
+    expect(importersOf('target', 'target.ts', { ...map, files: [{ ...map.files[0], checked: 'not-code' }] }))
+      .toMatchObject({ unread: [], limitedMap: false });
+    expect(importersOf('target', 'target.ts', { ...map, limited: true })).toMatchObject({ unread: [], limitedMap: true });
+  });
+  it('keeps every unread path and reason in path order without clipping the result', () => {
+    const unread = Array.from({ length: 14 }, (_, i) => ({ ...map.files[0], id: `${i}`,
+      relativePath: `src/file${String(i).padStart(2, '0')}.ts`, checked: 'partial' as const, reason: `구문 오류 ${i}` }));
+    const result = importersOf('target', 'target.ts', { ...map, files: [...unread.toReversed(), ...map.files] });
+    expect(result.unread).toEqual(unread.map(file => ({ relativePath: file.relativePath, reason: file.reason })));
+    expect(result.limitedMap).toBe(false);
   });
 });
 
@@ -100,12 +111,48 @@ describe('functionDoes', () => {
       { ...front, range: { ...front.range, startUtf16: front.range.startUtf16 + 1 } },
     ] }]);
     expect([...result.bySymbol.values()].every(value => !value.after.length && !value.afterPartly)).toBe(true);
-    expect(result.partly).toEqual({ routes: true, flows: true });
+    expect(result.notes).toEqual({ routes: ['서버 주소 찾기를 끝까지 하지 못했어요.'], flows: ['기능 흐름 일부를 끝까지 확인하지 못했어요.'] });
   });
   it('returns empty facts when routes and flows have not been found', () => {
     const result = functionDoes('f', 'h', symbols, null, null);
     expect([...result.bySymbol.values()]).toEqual(symbols.map(() => ({ requests: [], after: [], afterPartly: false })));
     expect(result.changed).toBe(false);
-    expect(result.partly).toEqual({ routes: false, flows: false });
+    expect(result.notes).toEqual({ routes: [], flows: [] });
+  });
+  it('keeps limited flow notes for the sixth request file even when only five files have nodes', () => {
+    const requests = Array.from({ length: 6 }, (_, i) => request(1, { fileId: `file${i}` }));
+    const nodes = requests.slice(0, 5).map(item => ({ ...front, id: item.fileId, fileId: item.fileId }));
+    const result = functionDoes('file5', 'h', symbols, { ...routes, requests }, [
+      { ...flow, nodes, limited: true, notes: ['같은 주소의 요청 일부를 생략했어요.'] },
+    ]);
+    expect(result.bySymbol.get(symbols[1].id)?.requests).toHaveLength(1);
+    expect(result.bySymbol.get(symbols[1].id)?.after).toEqual([]);
+    expect(result.notes).toEqual({ routes: [], flows: ['같은 주소의 요청 일부를 생략했어요.'] });
+  });
+  it('deduplicates notes in first-seen order and excludes route notes from limited flow notes', () => {
+    const result = functionDoes('f', 'h', symbols, { ...routes, limited: true, notes: ['주소 이유 2', '공통 이유', '주소 이유 2', '주소 이유 1'] }, [
+      { ...flow, limited: true, notes: ['흐름 이유 2', '공통 이유', '흐름 이유 2'] },
+      { ...flow, notes: ['제한 없는 흐름의 이유'] },
+      { ...flow, limited: true, notes: ['흐름 이유 1', '흐름 이유 2'] },
+    ]);
+    expect(result.notes).toEqual({ routes: ['주소 이유 2', '공통 이유', '주소 이유 1'], flows: ['흐름 이유 2', '흐름 이유 1'] });
+  });
+  it('ignores notes without limits and does not suppress flow notes matching unlimited route notes', () => {
+    expect(functionDoes('f', 'h', symbols, { ...routes, notes: ['공통 이유'] }, [
+      { ...flow, notes: ['제한 없는 흐름의 이유'] },
+    ]).notes).toEqual({ routes: [], flows: [] });
+    expect(functionDoes('f', 'h', symbols, { ...routes, notes: ['공통 이유'] }, [
+      { ...flow, limited: true, notes: ['공통 이유'] },
+    ]).notes).toEqual({ routes: [], flows: ['공통 이유'] });
+  });
+  it('adds each fallback only for empty limited notes and preserves its first-seen position', () => {
+    expect(functionDoes('f', 'h', symbols, { ...routes, limited: true }, null).notes)
+      .toEqual({ routes: ['서버 주소 찾기를 끝까지 하지 못했어요.'], flows: [] });
+    expect(functionDoes('f', 'h', symbols, null, [
+      { ...flow, limited: true, notes: ['앞 이유'] },
+      { ...flow, limited: true },
+      { ...flow, limited: true, notes: ['뒤 이유'] },
+      { ...flow, limited: true },
+    ]).notes).toEqual({ routes: [], flows: ['앞 이유', '기능 흐름 일부를 끝까지 확인하지 못했어요.', '뒤 이유'] });
   });
 });
