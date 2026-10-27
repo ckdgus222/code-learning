@@ -3,7 +3,7 @@ import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Dim
   type NodeTypes } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { ChangeKind, FileChange, MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectChanges, ProjectMap, ProjectView } from '../shared/contracts';
-import { boxName, closeArea, expandableIds, folderArrows, folderName, linkedArrows, visibleGraph, type MapArrow, type MapBox } from './map-layout';
+import { boxName, boxPlace, closeArea, expandableIds, folderArrows, folderName, linkedArrows, visibleGraph, type MapArrow, type MapBox } from './map-layout';
 import { COMPLEXITY_NOTE, ComplexityTags } from './complexity';
 import { ChangeList, kindLabels } from './changes';
 
@@ -134,10 +134,22 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
       className: `map-arrow map-arrow--${strong ? 'strong' : 'faint'}${arrow.back ? ' map-arrow--back' : ''}`,
       markerEnd: ARROW_MARKER, selected: selected?.id === arrow.id };
   });
-  const namesOf = (arrows: MapArrow[], other: (arrow: MapArrow) => string) => arrows
-    .map(arrow => ({ name: boxName(placeOf.get(other(arrow))!), count: arrow.items.length }))
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map(item => `${item.name}${item.count > 1 ? `(import ${item.count}개)` : ''}`).join(', ');
+  const connectionGroups = new Map<string, MapBox[]>();
+  for (const box of firstRows(graph.boxes)) {
+    const { area } = boxPlace(box);
+    if (!connectionGroups.has(area)) connectionGroups.set(area, []);
+    connectionGroups.get(area)!.push(box);
+  }
+  const areas = [...connectionGroups.keys()].sort((a, b) =>
+    (b ? b.split('/').length : 0) - (a ? a.split('/').length : 0) || a.localeCompare(b));
+  const namesOf = (arrows: MapArrow[], other: (arrow: MapArrow) => string, area: string) => arrows
+    .map(arrow => {
+      const neighbour = boxPlace(placeOf.get(other(arrow))!);
+      const details = [];
+      if (neighbour.area !== area) details.push(neighbour.area ? `${neighbour.area} 안` : '최상위');
+      if (arrow.items.length > 1) details.push(`import ${arrow.items.length}개`);
+      return `${neighbour.short}${details.length ? `(${details.join(', ')})` : ''}`;
+    }).sort((a, b) => a.localeCompare(b)).join(', ');
   const showButton = (item: MapImport) => <button className="btn btn--small" disabled={locked} onClick={() => onShowImport(item)}>코드 보기</button>;
   const externals = [...map.external.reduce((groups, item) => groups.set(item.specifier ?? '', (groups.get(item.specifier ?? '') ?? 0) + 1),
     new Map<string, number>())];
@@ -175,17 +187,20 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
     <section className="card" aria-label="상자별 연결">
       <h3>상자별 연결 · 상자 {graph.boxes.length}개</h3>
       <p className="hint">지금 지도에 보이는 상자끼리의 import예요. 펼치거나 접으면 함께 바뀌어요.</p>
-      <ul className="map-list map-connections">{firstRows(graph.boxes).map(box => {
-        const uses = graph.arrows.filter(arrow => arrow.source === box.id);
-        const usedBy = graph.arrows.filter(arrow => arrow.target === box.id);
-        return <li key={box.id}>
-          <button className="btn btn--small" aria-pressed={focused === box.id}
-            onClick={() => setFocus(focused === box.id ? null : { id: box.id, opened })}>{boxName(box)}</button>
-          {uses.length > 0 && <span className="map-connections__line"><b>가져다 씀 {uses.length}곳:</b> {namesOf(uses, arrow => arrow.target)}</span>}
-          {usedBy.length > 0 && <span className="map-connections__line"><b>이 상자를 가져다 씀 {usedBy.length}곳:</b> {namesOf(usedBy, arrow => arrow.source)}</span>}
-          {uses.length + usedBy.length === 0 && <span className="map-connections__line">지금 보이는 다른 상자와 이어진 import가 없어요.</span>}
-        </li>;
-      })}</ul>
+      {areas.map(area => <React.Fragment key={area}>
+        <h4>{folderName(area)} 안 · 상자 {connectionGroups.get(area)!.length}개</h4>
+        <ul className="map-list map-connections">{connectionGroups.get(area)!.map(box => {
+          const uses = graph.arrows.filter(arrow => arrow.source === box.id);
+          const usedBy = graph.arrows.filter(arrow => arrow.target === box.id);
+          return <li key={box.id}>
+            <button className="btn btn--small" aria-label={boxName(box)} aria-pressed={focused === box.id}
+              onClick={() => setFocus(focused === box.id ? null : { id: box.id, opened })}>{boxPlace(box).short}</button>
+            {uses.length > 0 && <span className="map-connections__line"><b>가져다 씀 {uses.length}곳:</b> {namesOf(uses, arrow => arrow.target, area)}</span>}
+            {usedBy.length > 0 && <span className="map-connections__line"><b>이 상자를 가져다 씀 {usedBy.length}곳:</b> {namesOf(usedBy, arrow => arrow.source, area)}</span>}
+            {uses.length + usedBy.length === 0 && <span className="map-connections__line">지금 보이는 다른 상자와 이어진 import가 없어요.</span>}
+          </li>;
+        })}</ul>
+      </React.Fragment>)}
       <Omitted count={graph.boxes.length} />
     </section>
     <section className="card" aria-label="변경 목록">

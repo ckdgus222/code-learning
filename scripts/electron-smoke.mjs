@@ -1780,9 +1780,9 @@ try {
     assert.equal(await strong.count(), 0);
     assert.equal(await canvas.locator('.map-box--dim, .map-box--focus').count(), 0);
 
-    assert.equal(await list.getByRole('heading').innerText(), '상자별 연결 · 상자 6개');
+    assert.equal(await list.getByRole('heading', { level: 3 }).innerText(), '상자별 연결 · 상자 6개');
     const appRow = list.locator('li').filter({ has: page.getByRole('button', { name: 'web/app', exact: true }) });
-    assert.match(await appRow.innerText(), /가져다 씀 1곳: web\/lib/);
+    assert.match(await appRow.innerText(), /가져다 씀 1곳: lib\//);
     const libButton = list.getByRole('button', { name: 'web/lib', exact: true });
     await libButton.click();
     await focus.waitFor();
