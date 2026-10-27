@@ -30,13 +30,22 @@ it.each([
   expect(featureIndex({ ...routes, routes: [{ ...route, framework, path }] }, [flow], pathOf)[0].key).toBe(key);
 });
 
-it('prefers a screen title over an earlier screen button, retaining that row and its inference', () => {
-  const indexed = featureIndex(routes, [flow], pathOf)[0].features[0];
-  expect(indexed).toMatchObject({ routeIndex: 0, name: '‘목록’ 화면 · 지우기', basis: 'screen-title',
+it('prefers a screen title over an earlier screen button for a view, retaining that row and its inference', () => {
+  const viewRoutes = { ...routes, routes: [{ ...route, method: 'GET' as const }] };
+  const indexed = featureIndex(viewRoutes, [flow], pathOf)[0].features[0];
+  expect(indexed).toMatchObject({ routeIndex: 0, name: '‘목록’ 화면 · 보기', basis: 'screen-title',
     screens: ['/a', '/b'], start: { through: 'b', storyId: 'req@b' }, linked: 'screen', inferred: true,
     reasons: ['주소 추정'], source: '화면 /b · web/page.tsx 5행' });
-  const selected = screenGroups(routes, [flow]).screens.find(group => group.screen === '/b')!.rows[0];
+  const selected = screenGroups(viewRoutes, [flow]).screens.find(group => group.screen === '/b')!.rows[0];
   expect([indexed.inferred, indexed.reasons]).toEqual([selected.inferred, selected.reasons]);
+});
+
+it.each(['POST', 'PUT', 'PATCH', 'DELETE', 'ALL'] as const)('prefers button text over a screen title for a %s action', method => {
+  const indexed = featureIndex({ ...routes, routes: [{ ...route, method }] }, [flow], pathOf)[0].features[0];
+  expect(indexed).toMatchObject({ basis: 'button', start: { through: 'a', storyId: 'req@a' }, source: '화면 /a · event.tsx event' });
+  expect(indexed.name.startsWith('‘삭제 중…’ 또는 ‘삭제’ 버튼 · ')).toBe(true);
+  const plain = { ...flow, nodes: flow.nodes.map(node => ({ ...node, control: null })) };
+  expect(featureIndex({ ...routes, routes: [{ ...route, method }] }, [plain], pathOf)[0].features[0].basis).toBe('screen-title');
 });
 
 it('uses the first button row in screen order, then the address and first row when text is absent', () => {
@@ -120,7 +129,7 @@ it('deduplicates features and screens, sorts keys and route indexes and includes
   expect(index[1].features.map(feature => feature.routeIndex)).toEqual([0, 2]);
   expect(index[1].features[0].screens).toEqual(['/a', '/b']);
   expect(index[1].features[0].aiName).toBe('기록 지우기');
-  for (const word of ['목록', 'delete', '/api/diaries/:id', 'controller.remove', '/a', '/b', '기록 지우기', 'diaries']) {
+  for (const word of ['삭제', 'delete', '/api/diaries/:id', 'controller.remove', '/a', '/b', '기록 지우기', 'diaries']) {
     expect(index[1].features[0].haystack).toContain(word);
   }
 });
