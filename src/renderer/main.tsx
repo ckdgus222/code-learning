@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { FlowNode, CallSite, ValueSite, CodeSide, CodeSymbol, Evidence, FileChange, FunctionCalls, GitHistory, MapFunction, MapImport, ProjectView, SourceView,
   StartCandidate } from '../shared/contracts';
-import { useSelection, type View } from './selection';
+import { showsFiles, useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
 import { Icon } from './icons';
 import { ancestorFolderPaths, buildFileTree, filterFileTree, type TreeFolder } from './file-tree';
@@ -817,15 +817,21 @@ function App() {
   const flowTitle = features.selectedFeature?.name ?? features.groupingProps.index?.flatMap(group => group.features).find(feature => feature.routeIndex === features.flow?.routeIndex)?.name ?? flowCodeName;
   const intro = project?.overview.intro;
   const scope = [project?.name, source?.relativePath, symbol?.name, step?.title].filter(Boolean);
+  const filesVisible = showsFiles(view);
 
   const viewButton = (item: typeof views[number]) => <button key={item.id} className={`views__item${item.more ? ' views__item--more' : ''}`}
     aria-current={(view === 'function' ? 'code' : view) === item.id ? 'page' : undefined}
     onClick={() => setView(item.id)}><Icon name={item.id} /><span>{item.label}</span></button>;
-  return <div className={`app${project ? '' : ' app--empty'}${panelOpen ? '' : ' app--panel-closed'}`}>
+  return <div className={`app${project ? '' : ' app--empty'}${project && filesVisible ? ' app--files' : ''}${panelOpen ? '' : ' app--panel-closed'}`}>
     <header className="topbar">
       <h1 className="brand">Code Learning</h1>
+      {project && <div className="topbar__project">
+        <span aria-hidden="true">/</span>
+        <h2>{project.name}</h2>
+        <span className="badge">읽기 전용</span>
+      </div>}
       {project && <nav aria-label="현재 학습 위치" className="crumbs">
-        {scope.map((part, index) => <span key={index} className="crumb">{part}</span>)}
+        {scope.slice(1).map((part, index) => <span key={index} className="crumb">{part}</span>)}
       </nav>}
       <div className="topbar__actions">
         {busy && <span role="status" className="busy"><span className="spinner" aria-hidden="true" />처리 중…</span>}
@@ -835,6 +841,12 @@ function App() {
         <button className="btn btn--ghost" onClick={cancel} disabled={!project && !busy}>프로젝트 닫기</button>
       </div>
     </header>
+
+    {project && <nav aria-label="보기" className="views">
+      {views.filter(item => !item.more).map(viewButton)}
+      <p className="views__more">더 보기</p>
+      {views.filter(item => item.more).map(viewButton)}
+    </nav>}
 
     {(error || notice || (project && (watchError || stale))) && <div className="notices">
       {error && <p role="alert" className="notice">{error}</p>}
@@ -848,7 +860,7 @@ function App() {
       <p className="welcome__lead">폴더 하나를 고르면 어떤 파일이 있는지 보여주고, 함수 안의 조건·반환 같은 부분을 실제 코드 위치와 함께 짚어 줘요.</p>
       <ol className="welcome__steps">
         <li><b>폴더 열기</b><span>위의 ‘프로젝트 폴더 열기’를 눌러요.</span></li>
-        <li><b>파일과 함수 고르기</b><span>왼쪽 목록에서 읽을 파일을 골라요.</span></li>
+        <li><b>파일과 함수 고르기</b><span>‘코드 읽기’에서 읽을 파일을 골라요.</span></li>
         <li><b>코드 위치 확인</b><span>구문을 누르면 해당 줄이 강조돼요.</span></li>
       </ol>
       <ul className="welcome__promises">
@@ -856,16 +868,7 @@ function App() {
         <li>AI에는 오른쪽 AI 칸에서 동의한 질문만 보내요. 알려진 한계는 README에 있어요.</li>
       </ul>
     </main> : <>
-      <nav aria-label="보기" className="views">
-        {views.filter(item => !item.more).map(viewButton)}
-        <p className="views__more">더 보기</p>
-        {views.filter(item => item.more).map(viewButton)}
-      </nav>
-      <aside className="sidebar" aria-label="보기와 파일">
-        <div className="sidebar__project">
-          <span className="eyebrow">프로젝트</span>
-          <h2>{project.name}</h2>
-        </div>
+      {filesVisible && <aside className="sidebar" aria-label="보기와 파일">
         <section aria-label="파일 목록" className="files">
           <h3 className="eyebrow">파일 {project.files.length}개</h3>
           <input className="search" type="search" aria-label="파일명 검색" placeholder="파일명 검색"
@@ -880,7 +883,7 @@ function App() {
             onFile={fileId => { if (view !== 'function') setView('code'); void readFile(fileId, true); }} />
           {visibleFileTree.children.length === 0 && <p className="hint">검색과 일치하는 파일이 없어요.</p>}
         </section>
-      </aside>
+      </aside>}
 
       <main className="center">
         <TopicBar topic={topic} places={places.length} canStartHere={(view === 'function' || view === 'code') && !!source && !!symbol}
@@ -921,7 +924,7 @@ function App() {
                   </button>
                   <span className="hint">{candidateReasons[item.reason]}</span>
                 </li>)}</ul>
-                : <p>시작점 후보를 찾지 못했어요. 왼쪽 목록에서 궁금한 파일을 골라 <b>코드 읽기</b>로 시작해 보세요.</p>}
+                : <p>시작점 후보를 찾지 못했어요. <b>코드 읽기</b>에서 궁금한 파일을 골라 시작해 보세요.</p>}
               <p className="hint"><span className="tag tag--unknown">학습 시작점 후보</span>TS/JS 파일 {project.overview.checkedFiles}개를 살펴봤어요{project.overview.limited && '(전체 중 일부)'}. 코드 구조로 고른 후보이고, 실제 실행 시작점인지는 확인하지 않았어요.</p>
               {project.overview.notes.map(note => <p key={note} className="hint">{note}</p>)}
             </section>

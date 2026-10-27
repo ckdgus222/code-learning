@@ -320,11 +320,14 @@ async function dialogTo(folder) {
 // Reopening the same folder resets the tree only when the scan finishes, so a folder opened before then closes again.
 // File buttons stay disabled while the scan runs, so a visible, enabled file is one from the new tree.
 async function openTreeFile(relativePath) {
+  // The file tree shows only in code reading, and a finishing scan returns to the overview, so the tab is checked on every pass.
+  const codeTab = page.getByRole('button', { name: '코드 읽기', exact: true });
   const file = page.getByRole('button', { name: relativePath, exact: true });
   const folders = relativePath.split('/').slice(0, -1).map((_, index, parts) => parts.slice(0, index + 1).join('/'));
   const deadline = Date.now() + 8000;
   while (!(await file.isVisible() && await file.isEnabled())) {
     if (Date.now() > deadline) throw new Error(`Timed out showing ${relativePath} in the file tree`);
+    if (await codeTab.getAttribute('aria-current') !== 'page') await codeTab.click({ timeout: 1000 }).catch(() => {});
     for (const folder of folders) {
       const button = page.getByRole('button', { name: `폴더 ${folder}`, exact: true });
       // The tree can be redrawn between these calls, so a vanished button is tried again on the next pass.
@@ -424,6 +427,9 @@ try {
     });
     assert.equal(await page.getByRole('contentinfo', { name: '작업 상태' }).count(), 0);
     await page.getByText('원본 파일을 수정하지 않아요.', { exact: true }).waitFor();
+    await page.getByText('‘코드 읽기’에서 읽을 파일을 골라요.', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('navigation', { name: '보기', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('region', { name: '파일 목록', exact: true }).count(), 0);
     assert.equal(await page.locator('.topbar').getByText('AI는 동의한 질문만').count(), 0);
   });
   await dialogTo(fixture);
@@ -438,13 +444,60 @@ try {
     assert.equal(await menu.locator('p.views__more').getAttribute('aria-hidden'), null);
     assert.deepEqual(await menu.locator('.views__item--more').allTextContents(), ['프로젝트 지도', '달라진 내용']);
     for (const button of await menu.locator('.views__item--more').all()) assert.equal(await button.isVisible(), true);
-    assert.equal(await page.getByRole('button', { name: '.env', exact: true }).count(), 0);
-    assert.equal(await page.getByRole('button', { name: 'auth.json', exact: true }).count(), 0);
+    const tabTops = await menu.getByRole('button').evaluateAll(buttons => buttons.map(button => button.getBoundingClientRect().top));
+    assert.ok(tabTops.every(top => Math.abs(top - tabTops[0]) < 0.5));
+    assert.ok(tabTops[0] >= await page.locator('.topbar').evaluate(element => element.getBoundingClientRect().bottom));
+    assert.equal(await page.locator('.topbar .badge').innerText(), '읽기 전용');
     assert.equal(await page.getByRole('button', { name: '한눈에 보기', exact: true }).getAttribute('aria-current'), 'page');
+    const files = page.getByRole('region', { name: '파일 목록', exact: true });
+    assert.equal(await files.count(), 0);
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+    await files.waitFor();
+    await files.getByRole('button', { name: 'order.ts', exact: true }).waitFor();
+    assert.equal(await files.getByRole('button', { name: '.env', exact: true }).count(), 0);
+    assert.equal(await files.getByRole('button', { name: 'auth.json', exact: true }).count(), 0);
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
     await page.getByRole('button', { name: '주문', exact: true }).waitFor();
     assert.equal(await page.locator('.code-step-marker').count(), 0);
     assert.equal(await page.getByRole('button', { name: '코드 읽기', exact: true }).getAttribute('aria-current'), 'page');
+    assert.equal(await page.getByRole('navigation', { name: '현재 학습 위치', exact: true }).innerText(), 'order.ts');
+  });
+  await check('Top navigation fits narrow windows with and without files and the AI panel', async () => {
+    for (const width of [760, 1000]) {
+      await until(async () => {
+        await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
+        return await page.evaluate(expected => window.outerWidth === expected, width);
+      });
+      for (const [name, panelOpen] of [['한눈에 보기', false], ['한눈에 보기', true], ['코드 읽기', false], ['코드 읽기', true]]) {
+        await page.getByRole('button', { name, exact: true }).click();
+        await page.getByRole('button', { name: panelOpen ? '설명 패널 펼치기' : '패널 접기', exact: true }).click();
+        assert.equal(await page.locator('.panel').isVisible(), panelOpen);
+        assert.equal(await page.getByRole('region', { name: '파일 목록', exact: true }).count(), name === '코드 읽기' ? 1 : 0);
+        const heading = page.locator('.topbar').getByRole('heading', { name: '한글 프로젝트', exact: true });
+        assert.equal(await heading.isVisible(), true);
+        assert.equal(await page.locator('.topbar .badge').isVisible(), true);
+        const problems = await page.evaluate(() => {
+          const problems = [];
+          if (document.documentElement.scrollWidth > document.documentElement.clientWidth) problems.push('page overflows horizontally');
+          for (const element of document.querySelectorAll('.topbar h2, .topbar .badge')) {
+            const rect = element.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0 || rect.left < 0 || rect.right > innerWidth || rect.top < 0 || rect.bottom > innerHeight) problems.push(`hidden: ${element.textContent}`);
+          }
+          const tabs = document.querySelector('.views');
+          const buttons = [...tabs.querySelectorAll('button')];
+          const top = buttons[0].getBoundingClientRect().top;
+          if (buttons.some(button => Math.abs(button.getBoundingClientRect().top - top) > 0.5)) problems.push('tabs wrap');
+          if (tabs.getBoundingClientRect().top < document.querySelector('.topbar').getBoundingClientRect().bottom) problems.push('tabs overlap top bar');
+          if (getComputedStyle(tabs).overflowX !== 'auto') problems.push('tabs cannot scroll');
+          return problems;
+        });
+        assert.deepEqual(problems, [], `${width}px, ${name}, panel ${panelOpen}`);
+      }
+    }
+    await until(async () => {
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
+      return await page.evaluate(() => window.outerWidth === 1280);
+    });
   });
   await check('Function → branch → exact original code range (CRLF/emoji/BOM)', async () => {
     await page.getByRole('button', { name: '주문', exact: true }).click();
@@ -755,10 +808,11 @@ try {
   });
   await check('Switching views preserves the selected function, step and evidence', async () => {
     const evidence = await page.getByTestId('evidence-range').innerText();
-    for (const name of ['한눈에 보기', '흐름 따라가기', '달라진 내용']) {
+    for (const name of ['한눈에 보기', '흐름 따라가기', '프로젝트 지도', '달라진 내용']) {
       await page.getByRole('button', { name, exact: true }).click();
       await page.getByRole('heading', { name, exact: true }).waitFor();
       assert.equal(await page.getByRole('button', { name, exact: true }).getAttribute('aria-current'), 'page');
+      assert.equal(await page.getByRole('region', { name: '파일 목록', exact: true }).count(), 0);
     }
     await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
     assert.equal(await page.getByRole('button', { name: '주문', exact: true }).getAttribute('aria-pressed'), 'true');
@@ -767,6 +821,8 @@ try {
   });
   await check('Flow view walks one function step by step, marks unknown links and returns to the same code', async () => {
     await openFunctionFlow();
+    assert.equal(await page.getByRole('region', { name: '파일 목록', exact: true }).isVisible(), true);
+    assert.equal(await page.getByRole('button', { name: '코드 읽기', exact: true }).getAttribute('aria-current'), 'page');
     // The step chosen in code reading is the current flow step.
     const card = page.getByRole('article', { name: '현재 단계' });
     await card.getByRole('heading', { name: '조건 확인', exact: true }).waitFor();
@@ -955,6 +1011,7 @@ try {
     await dialogTo(treeFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '폴더 트리 프로젝트', exact: true }).waitFor();
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
     const files = page.getByRole('region', { name: '파일 목록', exact: true });
     const api = files.getByRole('button', { name: '폴더 api', exact: true });
     const src = files.getByRole('button', { name: '폴더 api/src', exact: true });
@@ -970,6 +1027,10 @@ try {
     const controlled = await api.getAttribute('aria-controls');
     assert.equal(await page.locator(`[id="${controlled}"]`).isVisible(), true);
     assert.equal(await src.getAttribute('aria-expanded'), 'false');
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+    assert.equal(await api.getAttribute('aria-expanded'), 'true');
+    assert.equal(await src.getAttribute('aria-expanded'), 'false');
     await src.click();
     assert.equal(await main.isVisible(), true);
     assert.equal(await main.innerText(), 'main.ts');
@@ -977,6 +1038,10 @@ try {
     await api.click();
     // Searching opens only matching ancestors and does not change the saved disclosure state.
     await search.fill('HELPER');
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    assert.equal(await files.count(), 0);
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+    assert.equal(await search.inputValue(), 'HELPER');
     assert.equal(await helper.isVisible(), true);
     assert.equal(await main.isVisible(), false);
     assert.equal(await files.getByRole('button', { name: /^폴더 / }).count(), 0);
@@ -1013,6 +1078,8 @@ try {
     assert.equal(await src.getAttribute('aria-expanded'), 'true');
     // Reopening even the same project clears the disclosure state.
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await until(async () => await page.getByRole('button', { name: '한눈에 보기', exact: true }).getAttribute('aria-current') === 'page');
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('.files button[aria-label="폴더 api"]')?.getAttribute('aria-expanded') === 'false');
     assert.equal(await main.isVisible(), false);
   });
@@ -1637,6 +1704,7 @@ try {
       const loginSource = files['web/lib/auth.ts'];
       assert.equal(await range.getAttribute('data-utf16'), `${loginSource.indexOf('async function')},${loginSource.length}`);
       assert.equal(await app.evaluate(() => globalThis.screenFlowCalls), 0);
+      await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
       await fileSearch.fill('');
     } finally {
       await app.evaluate(({ ipcMain }) => {
@@ -1965,6 +2033,10 @@ try {
     await until(async () => await boxes.count() === 5);
     await boxes.filter({ hasText: 'save.ts' }).click();
     await page.getByRole('heading', { name: 'store/save.ts', exact: true }).waitFor();
+    const files = page.getByRole('region', { name: '파일 목록', exact: true });
+    await files.getByRole('button', { name: 'store/save.ts', exact: true }).waitFor();
+    assert.equal(await files.getByRole('button', { name: 'store/save.ts', exact: true }).getAttribute('aria-current'), 'true');
+    assert.equal(await files.getByRole('button', { name: '폴더 store', exact: true }).getAttribute('aria-expanded'), 'true');
     // An import's evidence opens the importing file with that import highlighted.
     await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
     await page.getByText('연결 목록 · 6개', { exact: true }).click();
@@ -2034,6 +2106,7 @@ try {
     });
     await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).click();
     await page.getByText('지도를 만드는 중…', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
     if (await page.getByRole('button', { name: '폴더 shared', exact: true }).getAttribute('aria-expanded') === 'false') {
       await page.getByRole('button', { name: '폴더 shared', exact: true }).click();
     }
@@ -2095,6 +2168,7 @@ try {
     await importButton.click({ force: true });
     await app.evaluate(() => globalThis.testMapReleaseDialog());
     await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
     assert.equal(await page.getByRole('button', { name: 'order.ts', exact: true }).isVisible(), true);
   });
   await check('Cancelling while files are parsed leaves the app running, and the next open works', async () => {
@@ -2110,6 +2184,7 @@ try {
       await dialogTo(bigMapFixture);
       await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
       await page.getByRole('heading', { name: '큰 지도 프로젝트', exact: true }).waitFor();
+      await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
       await page.getByRole('button', { name: `폴더 part${round}`, exact: true }).click();
       await page.getByRole('button', { name: `part${round}/file${round}.ts`, exact: true }).click();
       await page.getByRole('button', { name: '프로젝트 닫기' }).click();
@@ -2271,6 +2346,7 @@ try {
     // Restore renderer/main agreement after direct IPC fixture setup.
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
     await page.getByRole('button', { name: '주문', exact: true }).click();
     await openAiSection('질문하기');
@@ -3145,9 +3221,15 @@ try {
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
     await app.evaluate(() => globalThis.testReadRelease());
     await settle();
+    // The file tree is only in code reading. Opening that tab records the same place in code reading, so going back
+    // passes through it before reaching the function view.
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
     await page.getByRole('button', { name: 'settings.ts', exact: true }).click();
     await page.getByRole('heading', { name: 'settings.ts', exact: true }).waitFor();
     await settle();
+    await back.click();
+    await settle();
+    assert.equal(await page.getByRole('button', { name: '코드 읽기', exact: true }).getAttribute('aria-current'), 'page');
     await back.click();
     await until(async () => await notifySteps.getByRole('button', { name: '호출 표현식', exact: true }).getAttribute('aria-current') === 'step');
     // A wake from sleep while going back or to the start is read: nothing is marked or chosen from before.
@@ -3659,7 +3741,7 @@ try {
     await dialogTo(fileExplanationFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '파일 설명 프로젝트', exact: true }).waitFor();
-    await page.getByRole('button', { name: 'README.md', exact: true }).click();
+    await openTreeFile('README.md');
     assert.equal(await page.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).count(), 0);
     await page.getByRole('button', { name: 'chunks.ts', exact: true }).click();
     const card = page.locator('.panel').getByRole('region', { name: '이 파일 설명', exact: true });
@@ -3873,7 +3955,7 @@ try {
     assert.equal(await card.getByRole('button', { name: '코드 보기', exact: true }).first().isDisabled(), true);
     assert.equal(await page.getByTestId('evidence-range').count(), 0);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
-    await page.getByRole('button', { name: 'chunks.ts', exact: true }).click();
+    await openTreeFile('chunks.ts');
     assert.equal(await card.getByTestId('file-summary').count(), 0);
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();

@@ -2,6 +2,10 @@ import { create } from 'zustand';
 
 export type View = 'overview' | 'map' | 'flow' | 'code' | 'changes' | 'function';
 
+export function showsFiles(view: View): boolean {
+  return view === 'code' || view === 'function';
+}
+
 interface Selection {
   view: View;
   symbolId: string | null;
