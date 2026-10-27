@@ -2,8 +2,9 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it, vi } from 'vitest';
 import * as ReactHooks from 'react';
-import { FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowLimits, FlowSteps, FlowWalk, hasFlowCode, hintSteps, stepQuestion, summaryKey, RoutesStatus, useFeatureFlows, walkSelection } from '../src/renderer/feature-flow';
-import type { Evidence, FeatureFlow, FlowNode, ProjectRoutes, ProjectView } from '../src/shared/contracts';
+import { edgeLabel, pickNode, evidenceView, FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowLimits, FlowSteps, FlowWalk, hasFlowCode, hintSteps, stepQuestion, summaryKey, RoutesStatus, useFeatureFlows, walkSelection } from '../src/renderer/feature-flow';
+import type { FlowEdge, SourceView, Evidence, FeatureFlow, FlowNode, ProjectRoutes, ProjectView } from '../src/shared/contracts';
+import { Snippet } from '../src/renderer/flow';
 import { storyOf } from '../src/core/analysis/flow-story';
 import type { FeatureGuide } from '../src/shared/ai';
 import * as indexes from '../src/renderer/feature-index';
@@ -64,7 +65,7 @@ it('highlights the selected node in each request group without marking other ste
 
 const walkProps = {
   title: '삭제', codeName: '지우기 · /dogs', walk: { through: null, storyId: null, step: 0, nodeId: null, site: null },
-  summary: ['', '', ''] as [string, string, string], setSummary() {},
+  summary: ['', '', ''] as [string, string, string], setSummary() {}, async readCode() { return null; },
   locked: false, stale: false, setStory() {}, setStep() {}, setNode() {}, onSite() {}, onCode() {}, onFunction() {}, onChoose() {}, onAsk() {},
 };
 // In the app the hook works the selection out; here it is worked out the same way from the props.
@@ -213,7 +214,7 @@ it('reports missing frontend and cycles, escapes names, and disables every story
   expect(html).toContain('서로 부르는 함수가 있어 여기서 멈췄어요');
   expect(html).toContain('&lt;script&gt;');
   expect(html).not.toContain('<script>');
-  expect(html.match(/<button[^>]*>/g)!.every(button => button.includes('disabled=""'))).toBe(true);
+  expect(html.match(/<button[^>]*>/g)!.filter(button => !button.includes('react-flow__controls-button')).every(button => button.includes('disabled=""'))).toBe(true);
 });
 it('chooses between requests and folds other callers into the same story', () => {
   const changed = { ...flow, nodes: [...nodes, { ...nodes[1], id: 'request-2' }, { ...nodes[2], id: 'other', name: 'otherCaller', depth: 0 }],
@@ -1073,4 +1074,97 @@ it('keeps the original text for request rows without a branch', () => {
   const html = renderToStaticMarkup(React.createElement(FlowLimits, { project, routes: { ...routes, requests: [request], links: [] },
     flow, locked: false, onCode() {} }));
   expect(html).toContain('<code>fetch(&quot;/dogs&quot;)</code>');
+});
+
+
+it.each([
+  ['calls', 'remove 부름'], ['typed', 'remove 부름'], ['event', '화면 이벤트'], ['placed', '화면에 놓음'],
+  ['inside', '안쪽 함수'], ['hook', '훅 값'], ['route', '요청 보냄'],
+] as const)('labels %s edges with their meaning and optional source line', (kind, label) => {
+  const edge: FlowEdge = { ...flow.edges[0], kind, site: { ...nodes[0].range, fileId: 'f', fileHash: 'h', text: 'remove', startLine: 12 } };
+  expect(edgeLabel(edge)).toBe(`${label} · 12행`);
+  expect(edgeLabel({ ...edge, site: null })).toBe(kind === 'calls' || kind === 'typed' ? '부름' : label);
+});
+
+it.each(['calls', 'typed'] as const)('truncates %s names only beyond 20 UTF-16 characters', kind => {
+  const edge: FlowEdge = { ...flow.edges[0], kind, site: { ...nodes[0].range, fileId: 'f', fileHash: 'h', text: 'a'.repeat(20) } };
+  expect(edgeLabel(edge)).toBe(`${'a'.repeat(20)} 부름 · 1행`);
+  expect(edgeLabel({ ...edge, site: { ...edge.site!, text: 'a'.repeat(21) } })).toBe(`${'a'.repeat(20)}… 부름 · 1행`);
+});
+
+it('opens the diagram, evidence strip and steps from the start', () => {
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow }));
+  expect(html).toContain('<details class="card" open=""><summary>전체 그림과 단계 보기</summary>');
+  expect(html).toContain('aria-label="기능 흐름 지도"');
+  expect(html).toContain('aria-label="선택한 연결의 근거"');
+  expect(html).toContain('지도에서 상자를 누르면 그 코드가 여기 보여요.');
+  expect(html).toContain('aria-label="기능 흐름 단계"');
+});
+
+it('keeps the current box during a read or a lane click', () => {
+  expect(pickNode(null, 'a', false)).toBe('a');
+  expect(pickNode('a', 'b', false)).toBe('b');
+  expect(pickNode('a', 'b', true)).toBe('a');
+  expect(pickNode(null, 'b', true)).toBeNull();
+  for (const side of ['front', 'request', 'back']) expect(pickNode('a', `lane:${side}`, false)).toBe('a');
+});
+
+const evidenceSource: SourceView = { projectId: 'p', fileId: 'f', relativePath: 'src/example.ts', hash: 'h',
+  text: 'const result = remove();', analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] }, guide: null };
+const pickedEvidence = { nodeId: nodes[0].id, result: { ok: true as const, value: evidenceSource } };
+
+it('shows only the matching node result with the original file hash', () => {
+  expect(evidenceView(null, null, false)).toEqual({ kind: 'empty', message: '지도에서 상자를 누르면 그 코드가 여기 보여요.' });
+  expect(evidenceView(nodes[0], null, false)).toEqual({ kind: 'loading', message: '코드를 읽는 중…' });
+  expect(evidenceView(nodes[0], pickedEvidence, false)).toEqual({ kind: 'code', source: evidenceSource });
+  expect(evidenceView(nodes[0], { ...pickedEvidence, nodeId: nodes[1].id }, false))
+    .toEqual({ kind: 'loading', message: '코드를 읽는 중…' });
+  expect(evidenceView(nodes[0], { ...pickedEvidence, result: { ok: true, value: { ...evidenceSource, hash: 'changed' } } }, false))
+    .toEqual({ kind: 'changed', message: '흐름을 찾은 뒤 이 파일이 바뀌어 코드를 보여 주지 않았어요. 주소를 다시 찾아 주세요.' });
+});
+
+it('hides cached and late-arriving code whenever the flow is stale', () => {
+  for (const picked of [null, pickedEvidence, { ...pickedEvidence, nodeId: nodes[1].id }]) {
+    expect(evidenceView(nodes[0], picked, true)).toEqual({ kind: 'stale',
+      message: '다시 확인 필요: 파일이 바뀌었거나 잠자기에서 돌아왔어요. 주소를 다시 찾아 주세요.' });
+  }
+});
+
+it('reports the read failure message without code', () => {
+  expect(evidenceView(nodes[0], { nodeId: nodes[0].id, result: { ok: false, code: 'IO', message: '읽기 실패' } }, false))
+    .toEqual({ kind: 'error', message: '읽기 실패' });
+});
+
+
+it.each([false, true])('renders the selected code and connections with locked=%s', locked => {
+  const text = Array.from({ length: 14 }, (_, index) => `line${index + 1}`).join('\n');
+  const selected = { ...nodes[0], range: { startUtf16: 0, endUtf16: text.length, startLine: 1, endLine: 14 } };
+  const source = { ...evidenceSource, text };
+  const useState = vi.mocked(ReactHooks.useState)
+    .mockImplementationOnce(() => [true, vi.fn()])
+    .mockImplementationOnce(() => [selected.id, vi.fn()])
+    .mockImplementationOnce(() => [{ nodeId: selected.id, result: { ok: true, value: source } }, vi.fn()]);
+  try {
+    const html = renderToStaticMarkup(walkOf({ ...walkProps, locked, flow: { ...flow, nodes: [selected, ...nodes.slice(1)] } }));
+    const strip = html.slice(html.indexOf('<section aria-label="선택한 연결의 근거"'), html.indexOf('<section class="card" aria-label="기능 흐름 단계"'));
+    expect(strip).toContain('선택한 연결의 근거 · src/example.ts');
+    expect(strip).toContain('서버 쪽 · Controller.remove · 1–14줄');
+    expect(strip.match(/class="snippet__line"/g)).toHaveLength(12);
+    expect(strip).toContain('이어지는 2줄은 ‘코드 보기’에서 볼 수 있어요.');
+    expect(strip).not.toContain('line13');
+    expect(strip).toContain('DELETE /dogs/${id} → 이 상자');
+    expect(strip).toContain('요청을 보내요 · 주소 글자로 이었어요');
+    expect(strip.match(/<button[^>]*>/g)).toHaveLength(2);
+    expect(strip.match(/<button[^>]*>/g)!.every(button => button.includes('disabled=""') === locked)).toBe(true);
+  } finally { useState.mockRestore(); }
+});
+
+it('uses the original snippet button name by default and respects UTF-16 ranges', () => {
+  const text = `😀 before\n${Array.from({ length: 13 }, (_, index) => `line${index}`).join('\n')}\nafter`;
+  const html = renderToStaticMarkup(React.createElement(Snippet, { source: { ...evidenceSource, text },
+    evidence: { startUtf16: text.indexOf('line0'), endUtf16: text.indexOf('\nafter'), startLine: 2, endLine: 14 } }));
+  expect(html).toContain('이어지는 1줄은 ‘코드 크게 보기’에서 볼 수 있어요.');
+  expect(html).toContain('aria-hidden="true">2</span>line0');
+  expect(html).not.toContain('before');
+  expect(html).not.toContain('after');
 });

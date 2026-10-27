@@ -407,6 +407,10 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .map-canvas .react-flow__node.feature-box--front { background: var(--accent-soft); border-color: var(--accent); }
 .map-canvas .react-flow__node.feature-box--back { background: var(--ok-soft); border-color: var(--ok); }
 .map-canvas .react-flow__node.feature-box--request { background: var(--surface); border-color: var(--accent); }
+.map-canvas .react-flow__node.flow-lane { background: var(--side); border-right: 1px solid var(--line); pointer-events: none; }
+.flow-lane h4 { margin: 20px; color: var(--muted); font-size: 14px; font-weight: 700; }
+.flow-lane p { margin: 40px 20px; color: var(--muted); font-size: 13px; text-align: center; }
+.flow-evidence { border-top: 2px solid var(--accent); padding: 16px 0; overflow-wrap: anywhere; }
 .feature-box__file, .feature-box__name, .feature-box .tag { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .feature-box__file { color: var(--muted); font-size: 11px; }
 .map-canvas .feature-arrow--typed .react-flow__edge-path { stroke-dasharray: 3 4; }
