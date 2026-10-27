@@ -121,6 +121,7 @@ try {
   await page.screenshot({ path: path.join(root, 'test-results/packaged-value-shapes.png') });
   // The project map's library and its stylesheet are in the bundle and work under the packaged CSP.
   await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+  await page.getByRole('group', { name: '지도 종류', exact: true }).getByRole('button', { name: '파일 연결', exact: true }).click();
   // The map starts in the design view (folders); the file view draws the file-to-file arrow checked below.
   await page.getByRole('button', { name: '설계 보기', exact: true, pressed: true }).waitFor({ timeout: 30_000 });
   await page.getByRole('button', { name: '파일 보기', exact: true }).click();

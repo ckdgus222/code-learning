@@ -271,8 +271,7 @@ export function ProjectMapView({ project, entry, stale, mapping, locked, changes
   locked: boolean;
   onBuild(): void; onCancel(): void; onOpenFile(fileId: string): void; onShowImport(item: MapImport): void; onShowFunction(item: MapFunction): void;
 }) {
-  return <div className="page map-page">
-    <h2 className="page__title">프로젝트 지도</h2>
+  return <>
     <p className="hint">화살표는 ‘가져다 씀(import)’이에요. 실행 순서가 아니에요. 설계 보기는 폴더끼리, 파일 보기는 파일끼리 보여 줘요.</p>
     {/* The map only covers the files listed when the folder was opened, so a cut-short scan is said here too. */}
     {project.warnings.length > 0 && <p className="notice"><b>폴더를 열 때:</b> {project.warnings.join(' ')}</p>}
@@ -286,5 +285,5 @@ export function ProjectMapView({ project, entry, stale, mapping, locked, changes
     {entry && <MapBody key={entry.build} map={entry.map} changes={changes} locked={locked} onOpenFile={onOpenFile} onShowImport={onShowImport}
       onShowFunction={onShowFunction} onShowChange={onShowChange} />}
     <p className="hint">지도는 TS/JS 파일의 import만 봐요. 새 파일은 폴더를 다시 열어야 지도에 들어와요.</p>
-  </div>;
+  </>;
 }

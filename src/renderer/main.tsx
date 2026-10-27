@@ -13,7 +13,7 @@ import { aiFunctionSummaries, functionDoes, importersOf } from './guide-facts';
 import { FileExplanationCard, rememberFileExplanation, type FileExplanationEntry, type FileExplanationState } from './file-explanation';
 import { Flow } from './flow';
 import { ProjectMapView, type MapEntry } from './project-map';
-import { AFTER_FLOW_NOTE, STORE_FLOW_NOTE, FLOW_ORDER_NOTE, FeatureChooser, FeatureList, FlowLimits, FlowWalk, hasFlowCode, RoutesStatus, siteOf, useFeatureFlows, type FlowStart } from './feature-flow';
+import { AFTER_FLOW_NOTE, STORE_FLOW_NOTE, FLOW_ORDER_NOTE, FeatureChooser, FeatureList, FlowLimits, FlowPicture, FlowWalk, hasFlowCode, RoutesStatus, siteOf, useFeatureFlows, type FlowStart } from './feature-flow';
 import { codeNameOf } from '../core/analysis/flow-story';
 import { matchCallStep, matchFunction, matchImport } from './map-layout';
 import { CallsFacts, type CallFunction, type CallsState } from './calls';
@@ -116,6 +116,7 @@ function App() {
   const [, setRevisionShown] = useState(0);
   // The map is drawn by its own worker, so it has its own request counter: reads may go on meanwhile.
   const [projectMap, setProjectMap] = useState<MapEntry | null>(null);
+  const [mapTab, setMapTab] = useState<'feature' | 'file'>('feature');
   const [mapping, setMapping] = useState(false);
   const mapRequest = useRef(0);
   // The call search for the function chosen in the flow view (plan v2.3 F), kept per function and file hash.
@@ -146,8 +147,8 @@ function App() {
   currentView.current = view;
   currentBusy.current = busy;
   useEffect(() => {
-    if (view === 'overview') features.start();
-  }, [project, view]);
+    if (view === 'overview' || (view === 'map' && mapTab === 'feature')) features.start();
+  }, [project, view, mapTab]);
   const symbol = source?.analysis.symbols.find(item => item.id === symbolId);
   const step = symbol?.steps.find(item => item.id === stepId);
   const fileExplanation = fileExplanations.find(entry => entry.result.range.fileId === source?.fileId) ?? null;
@@ -256,8 +257,8 @@ function App() {
   }, [view, project]);
   // The map is drawn the first time it is looked at after a folder opens.
   useEffect(() => {
-    if (view === 'map' && project && !projectMap && !mapping) void buildMap();
-  }, [view, project]);
+    if (view === 'map' && mapTab === 'file' && project && !projectMap && !mapping) void buildMap();
+  }, [view, project, mapTab]);
 
   async function openProject() {
     const current = ++request.current;
@@ -784,6 +785,10 @@ function App() {
     const node = await features.follow(routeIndex, start);
     if (currentView.current === 'flow' && !currentBusy.current) await showFlowNode(node);
   }
+  async function followFeatureInMap(routeIndex: number, start?: FlowStart) {
+    if (currentBusy.current) return;
+    await features.follow(routeIndex, start);
+  }
   // The same for a function to follow: it is chosen in the flow view, which then searches its own calls.
   async function showCallFunction(target: CallFunction) {
     if (busy) return;
@@ -981,13 +986,43 @@ function App() {
           </FlowWalk>}
           <FlowLimits project={project} routes={features.routes} flow={features.flow} locked={busy} onCode={site => void showValueSite(site)} />
         </div>}
-        {view === 'map' && <ProjectMapView project={project} entry={projectMap}
-          stale={projectMap !== null && projectMap.revision !== revision.current} mapping={mapping}
-          changes={changes?.state.status === 'done' ? { result: changes.state.value, stale: changes.revision !== revision.current } : null}
-          onShowChange={change => void openChange(change)}
-          onBuild={() => void buildMap()} onCancel={() => void cancelMap()}
-          locked={busy} onOpenFile={fileId => { if (busy) return; setView('code'); void readFile(fileId); }}
-          onShowImport={item => void showImport(item)} onShowFunction={item => void showFunction(item)} />}
+        {view === 'map' && <div className="page map-page">
+          <div className="map-heading">
+            <h2 className="page__title">프로젝트 지도</h2>
+            <div className="map-tabs" role="group" aria-label="지도 종류">
+              <button aria-pressed={mapTab === 'feature'} onClick={() => setMapTab('feature')}>기능별 연결</button>
+              <button aria-pressed={mapTab === 'file'} onClick={() => setMapTab('file')}>파일 연결</button>
+            </div>
+          </div>
+          {mapTab === 'feature' && <>
+            <RoutesStatus state={features} retryDisabled={busy || features.stale}
+              retry={features.selected !== null ? () => void followFeatureInMap(features.selected!) : undefined} />
+            {features.following && <p role="status">기능 흐름을 찾는 중… <button className="btn" onClick={features.cancelFollow}>기능 흐름 취소</button></p>}
+            {!features.flow && !features.following && <>
+              <p>기능을 고르면 화면 → 요청 → 서버 연결을 세 칸 지도로 보여 줘요.</p>
+              {features.routes && <FeatureList {...features.groupingProps} search={features.search} setSearch={features.setSearch} groups={features.groups} routes={features.routes} selected={features.selected}
+                disabled={busy || features.stale} onFollow={(index, start) => void followFeatureInMap(index, start)} />}
+            </>}
+            {features.flow && <>
+              <div className="map-actions">
+                <h3>{flowTitle}</h3>
+                <button className="btn" disabled={busy} onClick={features.clearFlow}>다른 기능 고르기</button>
+                <button className="btn" onClick={() => setView('flow')}>흐름 따라가기에서 단계별로 보기</button>
+              </div>
+              <FlowPicture key={`${features.flow.routesId}:${features.flow.routeIndex}`} flow={features.flow}
+                locked={busy} stale={features.stale} readCode={readFlowCode}
+                onCode={site => void showValueSite(site)} onFunction={target => void showCallFunction(target)} />
+            </>}
+            <FlowLimits project={project} routes={features.routes} flow={features.flow} locked={busy} onCode={site => void showValueSite(site)} />
+          </>}
+          {mapTab === 'file' && <ProjectMapView project={project} entry={projectMap}
+            stale={projectMap !== null && projectMap.revision !== revision.current} mapping={mapping}
+            changes={changes?.state.status === 'done' ? { result: changes.state.value, stale: changes.revision !== revision.current } : null}
+            onShowChange={change => void openChange(change)}
+            onBuild={() => void buildMap()} onCancel={() => void cancelMap()}
+            locked={busy} onOpenFile={fileId => { if (busy) return; setView('code'); void readFile(fileId); }}
+            onShowImport={item => void showImport(item)} onShowFunction={item => void showFunction(item)} />}
+        </div>}
 
         {view === 'function' && functionExplanation && <p className="function-explanation" data-testid="function-chunk-summary">{functionExplanation}</p>}
         {view === 'function' && <Flow source={source} symbol={symbol} step={step} evidence={evidence} locked={busy || stale}

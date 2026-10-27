@@ -228,6 +228,10 @@ async function openFunctionFlow() {
   if (await page.locator('.symbols__item[aria-pressed="true"]').count() === 0) await page.locator('.symbols__item').first().click();
   await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
 }
+async function openFileMap() {
+  await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+  await page.getByRole('group', { name: '지도 종류', exact: true }).getByRole('button', { name: '파일 연결', exact: true }).click();
+}
 // Wait for grouping before locating a legacy code-name or AI feature button.
 async function openServerFeatures() {
   const list = page.getByRole('region', { name: '기능 목록', exact: true });
@@ -1791,11 +1795,119 @@ try {
     await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
     await writeFile(changedFile, featureFlowFiles['web/lib/dogs.ts']);
   });
+  await check('Project map tabs: retry in place, share the flow and build the file map only on demand', async () => {
+    await app.evaluate(({ ipcMain }) => {
+      const handlers = ipcMain._invokeHandlers;
+      globalThis.mapTabOriginals = new Map(['learning:map', 'learning:read', 'learning:routes', 'learning:feature-flows', 'learning:feature-flow']
+        .map(channel => [channel, handlers.get(channel)]));
+      globalThis.mapTabCalls = { map: 0, read: 0, flow: 0 };
+      for (const name of ['map', 'read']) {
+        handlers.set(`learning:${name}`, (...args) => {
+          globalThis.mapTabCalls[name]++;
+          return globalThis.mapTabOriginals.get(`learning:${name}`)(...args);
+        });
+      }
+      // Simulate a partial route result to check that its warning survives list and flow views.
+      handlers.set('learning:routes', async (...args) => {
+        const result = await globalThis.mapTabOriginals.get('learning:routes')(...args);
+        if (!result.ok) return result;
+        return { ...result, value: { ...result.value, limited: true,
+          notes: [...result.value.notes, 'unreadable.ts: 파일을 읽지 못했어요.'] } };
+      });
+      // Fail grouping before opening the project so following cannot reuse a stored flow.
+      handlers.set('learning:feature-flows', async () => {
+        handlers.set('learning:feature-flows', globalThis.mapTabOriginals.get('learning:feature-flows'));
+        return { ok: false, code: 'LIMIT', message: '시험용 화면 묶기 한도' };
+      });
+      handlers.set('learning:feature-flow', (...args) => {
+        globalThis.mapTabCalls.flow++;
+        if (globalThis.mapTabCalls.flow === 1) return { ok: false, code: 'IO', message: '시험용 지도 흐름 찾기 실패' };
+        return globalThis.mapTabOriginals.get('learning:feature-flow')(...args);
+      });
+    });
+    try {
+      await dialogTo(featureFlowFixture);
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      await page.getByRole('heading', { name: '기능 흐름 프로젝트', exact: true }).waitFor();
+      await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+      const mapPage = page.locator('.map-page');
+      const tabs = mapPage.getByRole('group', { name: '지도 종류', exact: true });
+      assert.equal(await tabs.getByRole('button', { name: '기능별 연결', exact: true }).getAttribute('aria-pressed'), 'true');
+      assert.equal(await tabs.getByRole('button', { name: '파일 연결', exact: true }).getAttribute('aria-pressed'), 'false');
+      await openServerFeatures();
+      await mapPage.getByRole('button', { name: '다시 묶기', exact: true }).waitFor();
+      assert.equal(await mapPage.getByText('지도를 만드는 중…', { exact: true }).count(), 0);
+      assert.equal(await app.evaluate(() => globalThis.mapTabCalls.map), 0);
+      await mapPage.getByText('이 흐름을 찾은 방법과 한계', { exact: true }).click();
+      await mapPage.getByText('unreadable.ts: 파일을 읽지 못했어요.', { exact: true }).waitFor();
+      const route = mapPage.getByRole('region', { name: '기능 목록', exact: true })
+        .getByRole('button', { name: '이 기능 따라가기', exact: true });
+      await route.click();
+      await mapPage.getByRole('alert').getByText('시험용 지도 흐름 찾기 실패', { exact: true }).waitFor();
+      await mapPage.getByRole('button', { name: '다시 시도', exact: true }).click();
+      const diagram = mapPage.getByTestId('feature-flow-canvas');
+      await diagram.waitFor();
+      assert.equal(await page.getByRole('button', { name: '프로젝트 지도', exact: true }).getAttribute('aria-current'), 'page');
+      assert.deepEqual(await app.evaluate(() => globalThis.mapTabCalls), { map: 0, read: 0, flow: 2 });
+      assert.deepEqual(await diagram.locator('.flow-lane h4').allTextContents(), ['화면 쪽', '요청', '서버 쪽']);
+      const title = await mapPage.locator('.map-actions h3').innerText();
+      assert.match(title, /\/api\/dogs\/:id/);
+      const limits = mapPage.locator('details').filter({ has: page.locator('summary', { hasText: /^이 흐름을 찾은 방법과 한계$/ }) });
+      if (!await limits.evaluate(element => element.open)) await limits.locator(':scope > summary').click();
+      await limits.getByText('unreadable.ts: 파일을 읽지 못했어요.', { exact: true }).waitFor();
+      await limits.locator(':scope > summary').click();
+      const evidenceStrip = mapPage.getByRole('region', { name: '선택한 연결의 근거', exact: true });
+      await evidenceStrip.getByText('지도에서 상자를 누르면 그 코드가 여기 보여요.', { exact: true }).waitFor();
+      await diagram.getByRole('group', { name: 'api/service.ts · DogsService.remove', exact: true }).click();
+      await evidenceStrip.getByRole('heading', { name: '선택한 연결의 근거 · api/service.ts', exact: true }).waitFor();
+      await until(async () => (await evidenceStrip.getByTestId('flow-snippet').innerText()).includes('this.prisma.dog.delete'));
+      await eachTheme(async mode => {
+        await diagram.locator(`.react-flow.${mode}`).waitFor();
+        await mapPage.getByRole('heading', { name: '프로젝트 지도', exact: true }).scrollIntoViewIfNeeded();
+        await page.screenshot({ path: path.join(artifacts, `${mode}-map-feature.png`), fullPage: true });
+      });
+      await mapPage.getByRole('button', { name: '흐름 따라가기에서 단계별로 보기', exact: true }).click();
+      const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
+      await story.getByRole('heading', { name: title, exact: true }).waitFor();
+      await story.getByRole('button', { name: '이 단계 코드 보기', exact: true }).waitFor();
+      await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+      await mapPage.locator('.map-actions').getByRole('heading', { name: title, exact: true }).waitFor();
+      await diagram.waitFor();
+      await mapPage.getByRole('button', { name: '다른 기능 고르기', exact: true }).click();
+      await route.waitFor();
+      assert.equal(await diagram.count(), 0);
+      await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+      await page.getByRole('region', { name: '기능 목록', exact: true }).waitFor();
+      assert.equal(await story.count(), 0);
+      await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+      assert.equal(await app.evaluate(() => globalThis.mapTabCalls.map), 0);
+      await tabs.getByRole('button', { name: '파일 연결', exact: true }).click();
+      await mapPage.getByRole('button', { name: '지도 다시 만들기', exact: true }).waitFor();
+      await mapPage.getByTestId('map-canvas').waitFor();
+      assert.equal(await app.evaluate(() => globalThis.mapTabCalls.map), 1);
+      await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+      await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+      assert.equal(await tabs.getByRole('button', { name: '파일 연결', exact: true }).getAttribute('aria-pressed'), 'true');
+      assert.equal(await tabs.getByRole('button', { name: '기능별 연결', exact: true }).getAttribute('aria-pressed'), 'false');
+      assert.equal(await app.evaluate(() => globalThis.mapTabCalls.map), 1);
+      await dialogTo(second);
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      await page.getByRole('heading', { name: '다른 프로젝트', exact: true }).waitFor();
+      await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+      assert.equal(await tabs.getByRole('button', { name: '파일 연결', exact: true }).getAttribute('aria-pressed'), 'true');
+      await mapPage.getByRole('button', { name: '지도 다시 만들기', exact: true }).waitFor();
+      assert.equal(await app.evaluate(() => globalThis.mapTabCalls.map), 2);
+    } finally {
+      await app.evaluate(({ ipcMain }) => {
+        for (const [channel, handler] of globalThis.mapTabOriginals) ipcMain._invokeHandlers.set(channel, handler);
+      });
+    }
+  });
   await check('Project map areas: open one level, fold descendants and switch views', async () => {
     await dialogTo(areaMapFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '영역 지도 프로젝트', exact: true }).waitFor();
-    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await openFileMap();
     const boxes = page.getByTestId('map-canvas').locator('.react-flow__node');
     const chips = page.getByRole('group', { name: '펼친 곳', exact: true });
     await until(async () => await boxes.count() === 3);
@@ -1837,7 +1949,7 @@ try {
     await dialogTo(areaMapFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '영역 지도 프로젝트', exact: true }).waitFor();
-    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await openFileMap();
     const canvas = page.getByTestId('map-canvas');
     const boxes = canvas.locator('.react-flow__node');
     const arrows = canvas.locator('.react-flow__edge');
@@ -1927,7 +2039,7 @@ try {
     await dialogTo(areaMapFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '영역 지도 프로젝트', exact: true }).waitFor();
-    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await openFileMap();
     const canvas = page.getByTestId('map-canvas');
     const boxes = canvas.locator('.react-flow__node');
     const arrows = canvas.locator('.react-flow__edge');
@@ -2004,7 +2116,7 @@ try {
     await dialogTo(mapFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '지도 프로젝트', exact: true }).waitFor();
-    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await openFileMap();
     assert.equal(await page.getByRole('tablist', { name: '프로젝트 지도 보기' }).count(), 0);
     const boxes = page.locator('.react-flow__node');
     // Small projects also start with folded folders; the deep file was never listed.
@@ -2038,14 +2150,14 @@ try {
     assert.equal(await files.getByRole('button', { name: 'store/save.ts', exact: true }).getAttribute('aria-current'), 'true');
     assert.equal(await files.getByRole('button', { name: '폴더 store', exact: true }).getAttribute('aria-expanded'), 'true');
     // An import's evidence opens the importing file with that import highlighted.
-    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await openFileMap();
     await page.getByText('연결 목록 · 6개', { exact: true }).click();
     const loadLine = page.locator('.map-list li').filter({ hasText: 'store/load.ts 1행 → ui/view.ts' });
     await loadLine.getByRole('button', { name: '코드 보기', exact: true }).click();
     await page.getByRole('heading', { name: 'store/load.ts', exact: true }).waitFor();
     assert.match(await page.getByTestId('evidence-range').innerText(), /store\/load\.ts · 1–1줄/);
     // A wake from sleep while that file is read (sent as the read request leaves for the worker): no highlight.
-    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await openFileMap();
     await app.evaluate(({ powerMonitor }) => {
       const { Worker } = process.getBuiltinModule('node:worker_threads');
       const original = Worker.prototype.postMessage;
@@ -2061,17 +2173,17 @@ try {
     await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).waitFor();
     assert.equal(await page.getByTestId('evidence-range').count(), 0);
     // A fresh map, so the next change is the only thing marking it.
-    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await openFileMap();
     await rebuildFreshMap();
     // A change after the map was drawn: the map asks for a re-check and the old position is not highlighted.
-    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await openFileMap();
     await writeFile(path.join(mapFixture, 'store/load.ts'), "\n" + mapFiles['store/load.ts']);
     await page.getByText('지도를 만든 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요.', { exact: false }).waitFor();
     await page.getByText('연결 목록 · 6개', { exact: true }).click();
     await loadLine.getByRole('button', { name: '코드 보기', exact: true }).click();
     await page.getByText('지도를 만든 뒤 이 파일이 바뀌어 import 위치를 강조하지 않았어요.', { exact: false }).waitFor();
     assert.equal(await page.getByTestId('evidence-range').count(), 0);
-    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await openFileMap();
     await rebuildFreshMap();
     // Two more changes with a fresh map between them and no file read: the screen's other change states are
     // already set by then, and the map must still be marked each time.
@@ -2112,7 +2224,7 @@ try {
     }
     await page.getByRole('button', { name: 'shared/format.ts', exact: true }).click();
     await page.getByRole('heading', { name: 'shared/format.ts', exact: true }).waitFor();
-    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await openFileMap();
     await page.getByRole('button', { name: '지도 만들기 취소', exact: true }).click();
     await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).waitFor();
     // A map still being drawn when the folder is opened again is dropped; reopening shows new files.
@@ -2121,11 +2233,11 @@ try {
     await writeFile(path.join(mapFixture, 'ui/extra.ts'), "import { view } from './view';\nexport const extra = 1;\n");
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await app.evaluate(() => { process.getBuiltinModule('node:worker_threads').Worker.prototype.once = globalThis.testOriginalOnce; });
-    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await openFileMap();
     // Reopening the folder returns to the overview when its scan ends.
     const allTab = page.getByRole('button', { name: '프로젝트 지도', exact: true });
     await until(async () => {
-      if (await allTab.getAttribute('aria-current') !== 'page') await allTab.click();
+      if (await allTab.getAttribute('aria-current') !== 'page') await openFileMap();
       // The map can be redrawn between these calls, so a vanished button is tried again on the next pass.
       const fileView = page.getByRole('button', { name: '파일 보기', exact: true });
       if (await fileView.getAttribute('aria-pressed', { timeout: 200 }).catch(() => null) === 'false') await fileView.click({ timeout: 1000 }).catch(() => {});
@@ -2136,7 +2248,7 @@ try {
     await dialogTo(bigMapFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '큰 지도 프로젝트', exact: true }).waitFor();
-    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await openFileMap();
     await page.getByText('지도를 만드는 중…', { exact: true }).waitFor();
     await page.getByRole('button', { name: '지도 만들기 취소', exact: true }).click();
     await page.getByRole('button', { name: '지도 만들기', exact: true }).waitFor();
@@ -2991,7 +3103,7 @@ try {
     assert.equal(await answers.count(), 3);
     assert.equal(await page.getByTestId('question-scope').innerText(), scope);
     // So is opening a file from the map.
-    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await openFileMap();
     await page.getByRole('button', { name: '파일 보기', exact: true }).click();
     await page.locator('.react-flow__node').filter({ hasText: 'dup.ts' }).click();
     await page.getByRole('heading', { name: 'dup.ts', exact: true }).waitFor();
@@ -3265,7 +3377,7 @@ try {
     await dialogTo(hardFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '어려운 코드 프로젝트', exact: true }).waitFor();
-    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await openFileMap();
     const list = page.getByRole('region', { name: '어려운 코드 살펴볼 곳' });
     await list.getByText('어려운 코드 살펴볼 곳 · 1개', { exact: true }).waitFor();
     assert.deepEqual(await list.locator('li').allInnerTexts(), ['src/work.ts 3행 long 긴 함수 · 61줄코드 보기']);
@@ -3300,7 +3412,7 @@ try {
     assert.deepEqual([named.ok, named.value.evidence.startLine, named.value.evidence.endLine], [true, 3, 66]);
     // After a change the map's entry no longer fits the file, so nothing is chosen.
     await writeFile(path.join(hardFixture, 'src/work.ts'), `// changed\n${hardSource}`);
-    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await openFileMap();
     await page.getByText('지도를 만든 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요.', { exact: false }).waitFor();
     await list.getByRole('button', { name: '코드 보기', exact: true }).click();
     await page.getByText('지도를 만든 뒤 이 파일이 바뀌어 함수를 고르지 않았어요. 지도를 다시 만들어 주세요.', { exact: true }).waitFor();
@@ -3474,7 +3586,7 @@ try {
     await until(async () => (await page.getByTestId('evidence-range').innerText()).includes('2–2줄'));
     assert.equal(await page.getByRole('alert').count(), 0);
     // The map marks the boxes of files now and lists every change, the deleted one too.
-    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    await openFileMap();
     const box = name => page.locator('.react-flow__node').filter({ hasText: name });
     await page.getByRole('button', { name: '파일 보기', exact: true }).click();
     await box('edit.ts').getByText('수정', { exact: true }).waitFor({ timeout: 30_000 });

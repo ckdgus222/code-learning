@@ -442,7 +442,7 @@ function FlowEvidence({ flow, node, picked, locked, stale, onCode, onFunction }:
   </section>;
 }
 
-function FlowPicture({ flow, locked, stale, readCode, onCode, onFunction }: {
+export function FlowPicture({ flow, locked, stale, readCode, onCode, onFunction }: {
   flow: FeatureFlow; locked: boolean; stale: boolean; readCode(fileId: string): Promise<Result<SourceView> | null>;
   onCode(site: ValueSite): void; onFunction(target: CallTarget): void;
 }) {

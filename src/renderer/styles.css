@@ -381,6 +381,12 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 
 /* Project map: the page is wider than reading pages, and React Flow needs a box with a height. */
 .map-page { max-width: none; display: grid; gap: 12px; align-content: start; }
+.map-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.map-heading .page__title { margin: 0; }
+.map-tabs { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+.map-tabs button { border: 0; padding: 8px 12px; background: var(--surface); color: var(--ink); }
+.map-tabs button + button { border-left: 1px solid var(--line); }
+.map-tabs button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
 .map-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .map-canvas { height: 60vh; min-height: 360px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
 .map-canvas .react-flow__node.map-box { width: 200px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--raised); color: var(--ink); text-align: left; font-size: 13px; }

@@ -44,6 +44,15 @@ function drawnEdges(): Edge[] {
 }
 afterEach(() => vi.clearAllMocks());
 
+it('renders file map contents without a page wrapper or title', () => {
+  const html = render();
+  expect(html).not.toContain('<h2');
+  expect(html).not.toContain('class="page');
+  expect(html).toContain('지도 다시 만들기');
+  expect(html).toContain('data-testid="map-canvas"');
+  expect(html).toContain('지도는 TS/JS 파일의 import만 봐요.');
+});
+
 it.each([undefined, 0, 1080])('sets canvas height and lets wheel events scroll the page only with height=%s', height => {
   const html = renderToStaticMarkup(React.createElement(MapCanvas, { testId: 'height-map', height, nodes: [], edges: [], onNodeClick() {} }));
   const props = vi.mocked(ReactFlow).mock.calls.at(-1)![0];
