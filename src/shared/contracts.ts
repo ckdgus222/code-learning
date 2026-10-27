@@ -255,6 +255,7 @@ export interface Route {
   segments?: import('../core/analysis/next-routes').NextSegment[];
 }
 export interface Request extends CallSite {
+  branch?: 'consequence' | 'alternative';
   path: string;
   host: string | null;
   prefix: 'known' | 'unknown';

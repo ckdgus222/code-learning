@@ -389,3 +389,121 @@ describe('fixed methods in request wrappers', () => {
     expect(result.links[0].sure).toBe(false);
   });
 });
+
+describe('conditional request addresses', () => {
+  it('pairs forwarded methods with const conditions and preserves the shared call site', async () => {
+    await put('request.ts', 'export function apiRequest<T>(path, init) { return fetch(path, init); }');
+    await put('client.ts', `import {apiRequest} from './request';
+export function useSaveDiary(id) {
+  const isNew = id === undefined;
+  return apiRequest<Diary>(isNew ? "/api/diaries" : \`/api/diaries/\${id}\`, {
+    method: isNew ? "POST" : "PATCH", body,
+  });
+}`);
+    await put('server.ts', "@Controller('api/diaries') class C { @Post() create() {} @Patch(':id') update() {} }");
+    const result = await find();
+    expect(result.requests.map(({ path, methods, branch, host, prefix }) => ({ path, methods, branch, host, prefix }))).toEqual([
+      { path: '/api/diaries', methods: ['POST'], branch: 'consequence', host: null, prefix: 'known' },
+      { path: '/api/diaries/*', methods: ['PATCH'], branch: 'alternative', host: null, prefix: 'known' },
+    ]);
+    const sites = result.requests.map(({ path, methods, branch, ...site }) => site);
+    expect(sites[0]).toEqual(sites[1]);
+    expect(result.links).toEqual([
+      { requestIndex: 0, routeIndex: 0, sure: true, reasons: [] },
+      { requestIndex: 1, routeIndex: 1, sure: true, reasons: [] },
+    ]);
+  });
+
+  it.each([
+    ['const isNew = true;', 'isNew', 'isNew', '', true],
+    ['', 'isNew', 'isNew', '', true],
+    ['const isNew = () => true;', 'isNew', 'isNew', '', true],
+    ['function isNew() {}', 'isNew', 'isNew', '', false],
+    ['let isNew = () => true;', 'isNew', 'isNew', '', false],
+    ['const isNew = true;', '((isNew))', '(isNew)', '', true],
+    ['const isNew = true; const other = false;', 'isNew', 'other', '', false],
+    ['let isNew = true;', 'isNew', 'isNew', 'isNew = false;', false],
+    ['let isNew = true;', 'isNew', 'isNew', '', false],
+    ['', 'isNew', 'isNew', 'isNew = false;', false],
+    ['const isNew = true;', 'isNew', 'isNew', 'function mutate() { isNew = false; }', false],
+    ['const isNew = true;', 'a.b', 'a.b', '', false],
+    ['const isNew = true;', 'f()', 'f()', '', false],
+    ['const isNew = true; var unrelated = 0;', 'isNew', 'isNew', '', false],
+    ['const isNew = true; const isNew = false;', 'isNew', 'isNew', '', false],
+    ['const other = true;', 'missing', 'missing', '', false],
+  ])('pairs only stable supported declarations: %s / %s / %s / %s', async (setup, urlCondition, methodCondition, after, paired) => {
+    await put('client.ts', `function send(${setup ? '' : 'isNew'}) {
+      ${setup}
+      fetch((${urlCondition} ? ('/a') : ('/b')), { method: ${methodCondition} ? 'POST' : 'PUT' });
+      ${after}
+    }`);
+    await put('server.ts', "@Controller() class C { @Post('a') create() {} @Put('b') update() {} }");
+    const result = await find();
+    expect(result.requests.map(request => request.methods)).toEqual(paired ? [['POST'], ['PUT']] : [['POST', 'PUT'], ['POST', 'PUT']]);
+    expect(result.links).toEqual([
+      { requestIndex: 0, routeIndex: 0, sure: paired, reasons: paired ? [] : ['방식 후보 둘'] },
+      { requestIndex: 1, routeIndex: 1, sure: paired, reasons: paired ? [] : ['방식 후보 둘'] },
+    ]);
+  });
+
+  it('uses the nearest declaration when an inner let shadows an outer const', async () => {
+    await put('client.ts', `const isNew = true; function send() { let isNew = false;
+      fetch(isNew ? '/a' : '/b', {method: isNew ? 'POST' : 'PUT'}); }`);
+    expect((await find()).requests.map(request => request.methods)).toEqual([['POST', 'PUT'], ['POST', 'PUT']]);
+  });
+
+  it.each([
+    ["fetch(isNew ? '/a' : '/b', {method: 'POST'})", ['POST']],
+    ["fetch(isNew ? '/a' : '/b')", ['GET']],
+    ["fetch(isNew ? '/a' : '/b', options)", null],
+    ["fetch(isNew ? '/a' : '/b', {method: isNew ? 'POST' : unknown})", null],
+    ["axios(isNew ? '/a' : '/b')", null],
+    ["axios.post(isNew ? '/a' : '/b', body, {method: isNew ? 'GET' : 'PUT'})", ['POST']],
+    ["postJson(isNew ? '/a' : '/b', {method: isNew ? 'GET' : 'PUT'})", ['POST']],
+  ])('preserves literal, default, unknown and fixed methods: %s', async (call, methods) => {
+    await put('client.ts', `import axios from 'axios'; const isNew = true;
+      function postJson(path, body) { return fetch(path, {method: 'POST', body}); } ${call};`);
+    expect((await find()).requests.map(request => request.methods)).toEqual([methods, methods]);
+  });
+
+  it.each([
+    "isNew ? '/a' : url", "isNew ? url : '/b'", "isNew ? '/a' : other ? '/b' : '/c'",
+    "isNew ? '/a' : '/b\\n'", "isNew ? '/a b' : '/b'", "isNew ? 'relative' : '/b'",
+    "isNew && '/a'", "isNew || '/a'", 'url',
+  ])('does not record partial or unsupported addresses: %s', async address => {
+    await put('client.ts', `fetch(${address});`);
+    expect((await find()).requests).toEqual([]);
+  });
+
+  it('applies base URLs, hosts, template segments and query removal to each branch', async () => {
+    await put('client.ts', `import axios from 'axios'; const isNew = true;
+      axios(isNew ? '/diaries' : \`/diaries/\${id}?view=full#top\`, {baseURL: 'https://api.example.com/api', method: isNew ? 'POST' : 'PATCH'});
+      axios(isNew ? 'https://other.example.com/a' : '/b', {baseURL: '/api', method: 'POST'});
+      fetch(isNew ? \`\${base}/a\` : '/b');`);
+    expect((await find()).requests.map(({ path, host, prefix }) => ({ path, host, prefix }))).toEqual([
+      { path: '/api/diaries', host: 'api.example.com', prefix: 'known' },
+      { path: '/api/diaries/*', host: 'api.example.com', prefix: 'known' },
+      { path: '/a', host: 'other.example.com', prefix: 'known' },
+      { path: '/api/b', host: null, prefix: 'known' },
+      { path: '/a', host: null, prefix: 'unknown' },
+      { path: '/b', host: null, prefix: 'known' },
+    ]);
+  });
+
+  it('counts each branch against the request limit', async () => {
+    await put('client.ts', `${Array.from({ length: 999 }, () => "fetch('/existing');").join('\n')}
+      fetch(isNew ? '/a' : '/b');`);
+    const result = await find();
+    expect(result.requests).toHaveLength(1000);
+    expect(result.requests.at(-1)).toMatchObject({ path: '/a', branch: 'consequence' });
+    expect(result.limited).toBe(true);
+    expect(result.notes).toContainEqual(expect.stringContaining('요청 1000개'));
+  });
+
+  it.each(['/' + 'a'.repeat(300), '/' + Array(31).fill('a').join('/')])('bounds each branch path: %s', async address => {
+    await put('client.ts', `fetch(isNew ? '/a' : '${address}');`);
+    const result = await find();
+    expect(result.requests.map(request => request.path)).toEqual(['/a']);
+    expect(result.limited).toBe(true);
+  });
+});

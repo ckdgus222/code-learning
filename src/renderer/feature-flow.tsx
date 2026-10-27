@@ -790,9 +790,10 @@ export function FlowLimits({ project, routes, flow, locked, onCode }: {
 }) {
   const pathById = useMemo(() => new Map(project.files.map(file => [file.id, file.relativePath])), [project.files]);
   const pathOf = (fileId: string) => pathById.get(fileId) ?? '';
-  const requestList = (items: Request[], title: string) => items.length > 0 && <details className="card"><summary>{title} {items.length}개</summary>
-    <ul className="map-list">{firstRows(items).map(request => <li key={`${request.fileId}:${request.startUtf16}`}>
-      <code>{request.text}</code> · <span className="path">{pathOf(request.fileId)} {request.startLine}행</span>{' '}
+  const requests = routes?.requests.map((request, index) => ({ request, index })) ?? [];
+  const requestList = (items: { request: Request; index: number }[], title: string) => items.length > 0 && <details className="card"><summary>{title} {items.length}개</summary>
+    <ul className="map-list">{firstRows(items).map(({ request, index }) => <li key={index}>
+      <code>{request.branch ? `${request.methods?.join(' / ') ?? '방식 모름'} ${request.host ? `//${request.host}` : ''}${request.path}` : request.text}</code> · <span className="path">{pathOf(request.fileId)} {request.startLine}행</span>{' '}
       <button className="btn btn--small" disabled={locked} onClick={() => onCode(request)}>코드 보기</button>
     </li>)}</ul><Omitted count={items.length} />
   </details>;
@@ -805,8 +806,8 @@ export function FlowLimits({ project, routes, flow, locked, onCode }: {
       {[...new Set([...(routes?.notes ?? []), ...(flow?.notes ?? [])])].map(note => <p key={note} className="hint">{note}</p>)}
     </section>
     {routes && <>
-      {requestList(routes.requests.filter((request, index) => !request.host && !routes.links.some(link => link.requestIndex === index)), '이을 주소를 못 찾은 요청')}
-      {requestList(routes.requests.filter(request => request.host !== null), '다른 서버 주소 요청')}
+      {requestList(requests.filter(({ request, index }) => !request.host && !routes.links.some(link => link.requestIndex === index)), '이을 주소를 못 찾은 요청')}
+      {requestList(requests.filter(({ request }) => request.host !== null), '다른 서버 주소 요청')}
     </>}
   </details>;
 }

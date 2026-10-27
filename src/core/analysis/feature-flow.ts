@@ -466,14 +466,17 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
     return node;
   };
   const edge = (from: FlowNode, to: FlowNode, kind: FlowEdge['kind'], site: ValueSite | null, reasons: string[] = [], sure = true) => {
+    const prior = flow.edges.find(item => item.from === from.id && item.to === to.id && item.kind === kind && item.site?.startUtf16 === site?.startUtf16);
+    if (prior) {
+      if (kind === 'route') { prior.reasons = [...new Set([...prior.reasons, ...reasons])]; prior.sure = prior.sure && sure; }
+      return;
+    }
     // Thousands of calls between the same functions would each be an arrow; the flow shows a bounded number.
     if (flow.edges.length >= 200) { limit('화살표는 200개까지만 보여요.'); return; }
-    if (!flow.edges.some(item => item.from === from.id && item.to === to.id && item.kind === kind && item.site?.startUtf16 === site?.startUtf16)) {
-      // Only the place and its line: a call carries names and arguments the flow does not show.
-      const place: ValueSite | null = site && { fileId: site.fileId, fileHash: site.fileHash, startUtf16: site.startUtf16,
-        endUtf16: site.endUtf16, startLine: site.startLine, endLine: site.endLine, text: site.text };
-      flow.edges.push({ from: from.id, to: to.id, kind, sure, reasons, site: place });
-    }
+    // Only the place and its line: a call carries names and arguments the flow does not show.
+    const place: ValueSite | null = site && { fileId: site.fileId, fileHash: site.fileHash, startUtf16: site.startUtf16,
+      endUtf16: site.endUtf16, startLine: site.startLine, endLine: site.endLine, text: site.text };
+    flow.edges.push({ from: from.id, to: to.id, kind, sure, reasons, site: place });
   };
   const inspect = async (node: FlowNode) => {
     stop();
@@ -522,9 +525,17 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
   if (links.length > 5) limit('프론트 요청은 확실한 연결부터 5개까지만 보여요.');
   const queue: FlowNode[] = [];
   const viaInside = new Set<string>();
+  const requestNames = new Map<string, { consequence?: string; alternative?: string }>();
   for (const link of links.slice(0, 5)) {
     const request = routes.requests[link.requestIndex];
-    const node = add('request', { ...request, name: `${request.methods?.join(' / ') ?? '방식 모름'} ${request.args?.[0]?.text.slice(1, -1) ?? request.path}` }, 0)!;
+    const name = `${request.methods?.join(' / ') ?? '방식 모름'} ${request.branch ? request.path : request.args?.[0]?.text.slice(1, -1) ?? request.path}`;
+    const node = add('request', { ...request, name }, 0)!;
+    if (request.branch) {
+      const names = requestNames.get(node.id) ?? {};
+      names[request.branch] = name;
+      requestNames.set(node.id, names);
+      node.name = shortName([names.consequence, names.alternative].filter(Boolean).join(' · '));
+    }
     node.range.endLine = request.endLine;
     edge(node, back, 'route', request, link.reasons, link.sure);
     if (request.inFunction) {

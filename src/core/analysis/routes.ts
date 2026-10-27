@@ -37,6 +37,10 @@ export const isTestFile = (name: string) => /(^|\/)__tests__\//.test(name) || /\
 const children = (node: Node | null | undefined) => node?.namedChildren.filter(child => child.type !== 'comment') ?? [];
 const argsOf = (node: Node) => children(node.childForFieldName('arguments'));
 const field = (node: Node | null | undefined, name: string) => node?.childForFieldName(name) ?? null;
+function withoutParentheses(node: Node | null | undefined): Node | null {
+  while (node?.type === 'parenthesized_expression') node = children(node)[0];
+  return node ?? null;
+}
 export const literal = (node: Node | null | undefined): string | null => node && (node.type === 'string' || node.type === 'template_string')
   && !node.text.includes('\\') && !node.namedChildren.some(child => child.type === 'template_substitution') ? node.text.slice(1, -1) : null;
 const keyOf = (node: Node): string | null => {
@@ -46,6 +50,26 @@ const keyOf = (node: Node): string | null => {
 };
 const property = (node: Node | null) => node?.type === 'member_expression' ? field(node, 'property')?.text : null;
 const joinPath = (...parts: string[]) => '/' + parts.flatMap(part => part.split('/').filter(Boolean)).join('/');
+function requestAddress(node: Node | null, configured: { base: string; unknown: boolean }):
+  { path: string | null; host: string | null; prefix: Request['prefix'] } | null {
+  const url = withoutParentheses(node);
+  if (!url || !['string', 'template_string'].includes(url.type) || url.text.includes('\\')) return null;
+  let raw = url.text.slice(1, -1);
+  if (url.type === 'template_string') for (const substitution of children(url).filter(node => node.type === 'template_substitution').toReversed()) {
+    const start = substitution.startIndex - url.startIndex - 1;
+    raw = raw.slice(0, start) + '*' + raw.slice(substitution.endIndex - url.startIndex - 1);
+  }
+  if (/\s/.test(raw) || !/^(?:\/|https?:\/\/|\*\/)/.test(raw)) return null;
+  let host: string | null = null;
+  const unknown = configured.unknown || raw.startsWith('*');
+  if (raw.startsWith('*')) raw = raw.slice(1);
+  // An explicit URL overrides axios's base URL. A remote base still marks relative requests as remote.
+  const full = /^(?:https?:)?\/\//.test(raw) ? raw : configured.base ? configured.base.replace(/\/$/, '') + '/' + raw.replace(/^\//, '') : raw;
+  const remote = full.match(/^(?:https?:)?\/\/([^/]+)(.*)$/);
+  if (remote) { host = remote[1]; raw = remote[2] || '/'; } else raw = full;
+  const path = bounded(joinPath(raw.split(/[?#]/)[0].split('/').map(segment => segment.includes('*') ? '*' : segment).join('/')));
+  return { path, host, prefix: unknown ? 'unknown' : 'known' };
+}
 export const routeSite = (node: Node, facts: FileFacts): ValueSite => ({ fileId: facts.file.id, fileHash: facts.hash,
   startUtf16: node.startIndex, endUtf16: node.endIndex, ...lineRange(node), text: firstLine(node) });
 export function requestSite(call: CallFact, facts: FileFacts): CallSite {
@@ -102,6 +126,17 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
   const declaration = (info: FileFacts, scope: Scope, name: string) => {
     const found = nearest(scope, name);
     return info.complete && !info.unclear && found?.declared.length === 1 && !reassigned(info, name, found.scope) ? found.declared[0] : null;
+  };
+  // The URL and method choose their branches by one condition only when it is the same unchanging name:
+  // a const or parameter (a const function value is declared as a function without VariableInfo).
+  const sameStableCondition = (info: FileFacts, scope: Scope, url: Node | null, method: Node) => {
+    const urlCondition = url?.type === 'ternary_expression' ? withoutParentheses(field(url, 'condition')) : null;
+    const methodCondition = withoutParentheses(field(method, 'condition'));
+    if (urlCondition?.type !== 'identifier' || methodCondition?.type !== 'identifier' || urlCondition.text !== methodCondition.text) return false;
+    const declared = declaration(info, scope, urlCondition.text);
+    const stable = declared?.kind === 'variable' && ['const', 'parameter'].includes(declared.info?.role ?? '')
+      || declared?.kind === 'function' && !declared.info && declared.fn.parent?.type === 'variable_declarator';
+    return stable && !hasUnsupportedCertainty(info);
   };
   const imported = (info: FileFacts, scope: Scope, name: string, pkg: string, exported: string) => {
     const item = declaration(info, scope, name);
@@ -401,41 +436,37 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
     const sender = senderOf(info, call);
     if (!sender) continue;
     const args = argsOf(call.node);
-    const url = args[0];
-    if (!url || !['string', 'template_string'].includes(url.type) || url.text.includes('\\')) continue;
-    let raw = url.text.slice(1, -1);
-    if (url.type === 'template_string') for (const substitution of children(url).filter(node => node.type === 'template_substitution').toReversed()) {
-      const start = substitution.startIndex - url.startIndex - 1;
-      raw = raw.slice(0, start) + '*' + raw.slice(substitution.endIndex - url.startIndex - 1);
-    }
-    if (/\s/.test(raw) || !/^(?:\/|https?:\/\/|\*\/)/.test(raw)) continue;
+    const url = withoutParentheses(args[0]);
     const configIndex = sender.axios && !sender.wrapped && ['POST', 'PUT', 'PATCH'].includes(sender.method ?? '') ? 2 : 1;
     const config = args[configIndex];
     const configured = sender.axios && sender.forwards ? withConfig(sender, config) : sender;
-    let host: string | null = null;
-    const unknown = configured.unknown || raw.startsWith('*');
-    if (raw.startsWith('*')) raw = raw.slice(1);
-    // An explicit URL overrides axios's base URL. A remote base still marks relative requests as remote.
-    const full = /^(?:https?:)?\/\//.test(raw) ? raw : configured.base ? configured.base.replace(/\/$/, '') + '/' + raw.replace(/^\//, '') : raw;
-    const remote = full.match(/^(?:https?:)?\/\/([^/]+)(.*)$/);
-    if (remote) { host = remote[1]; raw = remote[2] || '/'; } else raw = full;
-    const path = bounded(joinPath(raw.split(/[?#]/)[0].split('/').map(segment => segment.includes('*') ? '*' : segment).join('/')));
-    if (path === null) { omitted = true; continue; }
-    let requestMethods: string[] | null = !sender.forwards && sender.fixedMethod ? [sender.fixedMethod] : null;
-    if (sender.forwards) {
-      if (sender.method) requestMethods = [sender.method];
-      else if (!config || config.type === 'object' && !children(config).some(node => keyOf(node) === null)) {
-        const entries = children(config).filter(node => keyOf(node) === 'method');
-        const method = entries.length === 1 ? field(entries[0], 'value') : null;
-        if (!entries.length && !sender.axios) requestMethods = ['GET'];
-        else if (literal(method) !== null) requestMethods = [literal(method)!.toUpperCase()];
-        else if (method?.type === 'ternary_expression') {
-          const values = [literal(field(method, 'consequence')), literal(field(method, 'alternative'))];
-          if (values.every(value => value !== null)) requestMethods = [...new Set(values.map(value => value!.toUpperCase()))];
-        }
-      }
+    const branches: (Request['branch'])[] = url?.type === 'ternary_expression' ? ['consequence', 'alternative'] : [undefined];
+    const addresses = branches.map(branch => requestAddress(branch ? field(url, branch) : url, configured));
+    if (addresses.some(address => address === null)) continue;
+    let branchMethods: string[] | null = null;
+    const readsOptions = sender.forwards && !sender.method
+      && (!config || config.type === 'object' && !children(config).some(node => keyOf(node) === null));
+    const entries = readsOptions ? children(config).filter(node => keyOf(node) === 'method') : [];
+    const method = entries.length === 1 ? field(entries[0], 'value') : null;
+    const methodText = literal(method);
+    let requestMethods: string[] | null = null;
+    if (!sender.forwards) requestMethods = sender.fixedMethod ? [sender.fixedMethod] : null;
+    else if (sender.method) requestMethods = [sender.method];
+    else if (readsOptions && !entries.length && !sender.axios) requestMethods = ['GET'];
+    else if (methodText !== null) requestMethods = [methodText.toUpperCase()];
+    const values = method?.type === 'ternary_expression' ? [literal(field(method, 'consequence')), literal(field(method, 'alternative'))] : [];
+    if (values.length && values.every(value => value !== null)) {
+      const upper = values.map(value => value!.toUpperCase());
+      requestMethods = [...new Set(upper)];
+      if (sameStableCondition(info, call.scope, url, method!)) branchMethods = upper;
     }
-    if (room(result.requests, ROUTE_LIMITS.requests)) result.requests.push({ ...requestSite(call, info), path, host, prefix: unknown ? 'unknown' : 'known', methods: requestMethods });
+    for (const [index, address] of addresses.entries()) {
+      if (!address || address.path === null) { omitted = true; continue; }
+      if (!room(result.requests, ROUTE_LIMITS.requests)) break;
+      const branch = branches[index];
+      result.requests.push({ ...requestSite(call, info), ...address, path: address.path,
+        ...(branch ? { branch } : {}), methods: branchMethods ? [branchMethods[index]] : requestMethods });
+    }
   }
   if (wrapperSearchCut) { result.limited = true; result.notes.push('감싼 요청 함수가 너무 많아 일부만 찾았어요.'); }
   result.links = linkRoutes(result.routes, result.requests, shouldStop);
