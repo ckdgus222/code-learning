@@ -1121,7 +1121,7 @@ it('labels adjacent and cross-lane arrows but leaves skipped rows, upward arrows
   expect(drawn.map(edge => edge.label)).toEqual(['remove() 부름 · 12행', undefined, undefined, undefined,
     '부름 · 12행', '부름 · 12행', '부름']);
   expect(drawn.map(edge => edge.type)).toEqual(['straight', 'smoothstep', 'smoothstep', 'smoothstep',
-    'straight', 'straight', 'smoothstep']);
+    'smoothstep', 'straight', 'smoothstep']);
   expect(drawn.map(edge => [edge.source, edge.target])).toEqual(input.edges.map(edge => [edge.from, edge.to]));
   const steps = renderToStaticMarkup(React.createElement(FlowSteps, { flow: input, locked: false, onCode() {}, onFunction() {} }));
   expect(steps).toContain('remove()를 불러요 (12행)');

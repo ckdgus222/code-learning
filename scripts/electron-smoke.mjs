@@ -1359,13 +1359,14 @@ try {
     const mutationNode = diagram.getByRole('group', { name: 'web/lib/dogs.ts · mutationFn', exact: true });
     const requestNode = diagram.locator('.react-flow__node.feature-box--request');
     assert.equal(await requestNode.count(), 1);
-    const mutationBox = await mutationNode.boundingBox();
+    const screenBox = await screenNode.boundingBox();
     const requestBox = await requestNode.boundingBox();
-    assert.ok(mutationBox && requestBox);
-    assert.ok(Math.abs(mutationBox.y - requestBox.y) <= 2, 'The request must share its caller’s row');
-    // This fixture has no tagged box on a cross-lane row; static rendering also checks tagged handles.
-    const sourceHandle = await mutationNode.locator('.react-flow__handle[data-handleid="out-right"]').boundingBox();
-    const targetHandle = await requestNode.locator('.react-flow__handle[data-handleid="in-left"]').boundingBox();
+    assert.ok(screenBox && requestBox);
+    assert.ok(Math.abs(screenBox.y - requestBox.y) <= 2, 'The request must start at the same top coordinate as DogsPage');
+    // The request and handler are untagged; static rendering also checks tagged handles.
+    const handlerNode = diagram.getByRole('group', { name: 'api/controller.ts · DogsController.remove', exact: true });
+    const sourceHandle = await requestNode.locator('.react-flow__handle[data-handleid="out-right"]').boundingBox();
+    const targetHandle = await handlerNode.locator('.react-flow__handle[data-handleid="in-left"]').boundingBox();
     assert.ok(sourceHandle && targetHandle);
     assert.ok(Math.abs(sourceHandle.y + sourceHandle.height / 2 - targetHandle.y - targetHandle.height / 2) <= 1,
       'Side handles on the same row must have the same vertical center');
@@ -1373,10 +1374,17 @@ try {
     const requestId = await requestNode.getAttribute('data-id');
     const requestPath = await diagram.getByRole('group', { name: `Edge from ${mutationId} to ${requestId}`, exact: true })
       .locator('.react-flow__edge-path').getAttribute('d');
-    assert.match(requestPath, /^M[-\d.,\s]+L[-\d.,\s]+$/);
-    const pathCoordinates = requestPath.match(/-?\d+(?:\.\d+)?/g).map(Number);
-    assert.equal(pathCoordinates.length, 4);
-    assert.ok(Math.abs(pathCoordinates[1] - pathCoordinates[3]) < 0.01, 'The caller-to-request path must be horizontal');
+    assert.ok(requestPath);
+    assert.ok(requestPath.match(/[A-Za-z]/g).every(command => ['M', 'L', 'Q'].includes(command)));
+    const pathCommands = [...requestPath.matchAll(/([MLQ])([^MLQ]*)/g)];
+    assert.ok(pathCommands.length > 2, 'The caller-to-request path must bend between rows');
+    let previous = [];
+    for (const [, command, coordinates] of pathCommands) {
+      const values = coordinates.match(/-?\d+(?:\.\d+)?/g).map(Number);
+      if (command === 'L') assert.ok(Math.abs(values[0] - previous[0]) < 0.01 || Math.abs(values[1] - previous[1]) < 0.01,
+        'Every straight segment of the caller-to-request path must be horizontal or vertical');
+      previous = values.slice(-2);
+    }
     const labelOverlaps = await diagram.evaluate(element => {
       const boxes = [...element.querySelectorAll('.react-flow__node.feature-box')].map(box => ({
         name: box.getAttribute('aria-label'), rect: box.getBoundingClientRect(),
@@ -1389,6 +1397,16 @@ try {
       });
     });
     assert.deepEqual(labelOverlaps, [], 'Arrow labels must not overlap any feature box');
+    const labelPairOverlaps = await diagram.evaluate(element => {
+      const labels = [...element.querySelectorAll('.react-flow__edge-textwrapper')].map(label => ({
+        text: label.textContent, rect: label.getBoundingClientRect(),
+      }));
+      return labels.flatMap((label, index) => labels.slice(index + 1)
+        .filter(other => label.rect.left < other.rect.right && label.rect.right > other.rect.left
+          && label.rect.top < other.rect.bottom && label.rect.bottom > other.rect.top)
+        .map(other => ({ first: label.text, second: other.text })));
+    });
+    assert.deepEqual(labelPairOverlaps, [], 'Arrow labels must not overlap each other in the feature flow fixture');
     await screenNode.hover();
     const center = page.locator('.center');
     const scrollBeforeWheel = await center.evaluate(element => element.scrollTop);

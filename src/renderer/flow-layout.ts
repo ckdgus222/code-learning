@@ -19,19 +19,9 @@ export function layoutFlow(flow: FeatureFlow): { boxes: FlowBox[]; lanes: FlowLa
   const ranks = [...new Set(ordered.map(rank))];
   const sides = ['front', 'request', 'back'] as const;
   const counts = sides.map(side => ordered.filter(node => node.side === side).length);
-  // A request sits level with the screen box that sends it and the server lane starts there, so those arrows run straight across.
-  const frontRows = new Map(ordered.filter(node => node.side === 'front').map((node, index) => [node.id, index]));
-  let previousRequestRow = -1;
-  const requestRows = ordered.filter(node => node.side === 'request').map(node => {
-    const desiredRow = Math.max(0, ...flow.edges.filter(edge => edge.to === node.id)
-      .map(edge => frontRows.get(edge.from) ?? 0));
-    const row = Math.max(desiredRow, previousRequestRow + 1);
-    previousRequestRow = row;
-    return row;
-  });
-  const rows = { front: 0, request: 0, back: requestRows[0] ?? 0 };
+  const rows = { front: 0, request: 0, back: 0 };
   const boxes = ordered.map(node => {
-    const row = node.side === 'request' ? requestRows[rows.request++] : rows[node.side]++;
+    const row = rows[node.side]++;
     return { node, step: ranks.indexOf(rank(node)), row,
       x: sides.indexOf(node.side) * LANE_WIDTH + BOX_LEFT, y: LANE_HEADER + row * ROW_HEIGHT };
   });
