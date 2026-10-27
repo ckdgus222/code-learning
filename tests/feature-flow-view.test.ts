@@ -238,6 +238,21 @@ it('shows the selected function and disables next on the last step', () => {
   const stale = renderToStaticMarkup(walkOf({ ...walkProps, flow, stale: true }));
   expect(stale).toMatch(/disabled="">다음 ▶/);
 });
+it.each([false, true])('shows the selected function location only while the story is current (stale=%s)', stale => {
+  for (const nodeId of ['screen', 'event']) {
+    const node = nodes.find(node => node.id === nodeId)!;
+    const html = renderToStaticMarkup(walkOf({ ...walkProps, flow, stale,
+      walk: { ...walkProps.walk, storyId: 'request', nodeId } }));
+    expect(html).toContain('data-testid="story-step"');
+    expect(html.includes('data-testid="story-function-location"')).toBe(!stale);
+    const location = `${node.name} · ${node.relativePath} ${node.range.startLine}–${node.range.endLine}행`;
+    expect(html.includes(location)).toBe(!stale);
+  }
+});
+it('omits the function location when the story has no current node', () => {
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: { ...flow, nodes: [], edges: [] } }));
+  expect(html).not.toContain('data-testid="story-function-location"');
+});
 it('shows a failure with an enabled retry and escapes the message', () => {
   const state = { finding: false, error: '<failed>', stale: false, find() {}, cancelFind() {} } as unknown as Parameters<typeof RoutesStatus>[0]['state'];
   const html = renderToStaticMarkup(React.createElement(RoutesStatus, { state, retry() {} }));

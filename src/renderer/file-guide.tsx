@@ -16,8 +16,9 @@ const FIRST_FUNCTIONS = 8;
 // Rows of a 'where it is used' list before '외 n개'.
 const FIRST_ROWS = 12;
 
-export function FileGuideCard({ guide, analysis, busy, stale, uses, onUse, onShow, onSelect, onOpenFile, focus = null,
+export function FileGuideCard({ open, onToggle, guide, analysis, busy, stale, uses, onUse, onShow, onSelect, onOpenFile, focus = null,
   importers, onBuildMap, onCancelMap, onShowImport, does, doesState, ai, callers, onFindCallers, onCancelCallers, onShowCallSite, pathOf }: {
+  open: boolean; onToggle(open: boolean): void;
   guide: FileGuide; analysis: Analysis; busy: boolean; stale: boolean;
   uses: { state: 'none' | 'stale' | 'running' | 'ready'; uses: FileUse[]; changed: boolean; routes: ProjectRoutes | null };
   onUse(use: FileUse): void;
@@ -36,17 +37,16 @@ export function FileGuideCard({ guide, analysis, busy, stale, uses, onUse, onSho
   const [otherExpanded, setOtherExpanded] = useState(false);
   const card = useRef<HTMLDetailsElement>(null);
   useLayoutEffect(() => {
-    if (!focus || !card.current) return;
+    if (!open || !focus || !card.current) return;
     const index = analysis.symbols.findIndex(symbol => symbol.id === focus.symbolId);
     if (index < 0) return;
-    card.current.open = true;
     if (index >= FIRST_FUNCTIONS) setExpanded(true);
     // After the expanded list is drawn.
     const frame = requestAnimationFrame(() => {
-      card.current?.querySelector(`[data-symbol-id="${CSS.escape(focus.symbolId)}"]`)?.scrollIntoView({ block: 'nearest' });
+      card.current?.querySelector(`[data-symbol-id="${CSS.escape(focus.symbolId)}"]`)?.scrollIntoView({ block: 'start' });
     });
     return () => cancelAnimationFrame(frame);
-  }, [focus]);
+  }, [focus, open]);
   const locked = busy || stale;
   const basis = guide.role.basis;
   const facts = new Map(guide.functions.map(item => [item.symbolId, item]));
@@ -59,7 +59,9 @@ export function FileGuideCard({ guide, analysis, busy, stale, uses, onUse, onSho
     <button className="btn btn--small" disabled={locked} onClick={() => onShowImport(item)}>{relativePath.split('/').at(-1)} 열기</button>{' '}
     {relativePath} · {item.startLine}행
   </li>;
-  return <details ref={card} open className="card file-guide" aria-label="이 파일은">
+  return <details ref={card} open={open} onToggle={event => {
+    if (event.currentTarget.open !== open) onToggle(event.currentTarget.open);
+  }} className="card file-guide" aria-label="이 파일은">
     <summary>이 파일은</summary>
     <p><span className="badge">{guide.role.label}</span> <span className="badge">코드 모양으로 추정</span></p>
     <p>{guide.role.about}</p>
@@ -122,7 +124,7 @@ export function FileGuideCard({ guide, analysis, busy, stale, uses, onUse, onSho
     {basis.range && <button className="btn btn--chip" disabled={locked} onClick={() => onShow(basis.range!)}>
       근거: {basis.text} ({basis.range.startLine}행)
     </button>}
-    <p className="hint">코드 모양으로 짐작했어요. 자세한 문장 설명은 아래 AI 설명에서 만들 수 있어요.</p>
+    <p className="hint">코드 모양으로 짐작했어요. 자세한 문장 설명은 AI 칸의 ‘AI로 이 파일 설명 만들기’에서 만들 수 있어요.</p>
     {guide.notes.map(note => <p key={note} className="hint">{note}</p>)}
     {guide.limitations.map(message => <p key={message} className="notice notice--warn">{message}</p>)}
     <h4>가져다 쓰는 파일 {guide.imports.length + guide.importsOmitted}개</h4>
@@ -145,7 +147,7 @@ export function FileGuideCard({ guide, analysis, busy, stale, uses, onUse, onSho
       <ul className="map-list">{notes.slice(0, FIRST_ROWS).map(note => <li key={note}>{note}</li>)}</ul>
       {notes.length > FIRST_ROWS && <p className="hint">외 {notes.length - FIRST_ROWS}개</p>}
     </details>}
-    {analysis.language !== 'text' && ai.state === 'none' && <p className="hint">아래 ‘AI로 이 파일 설명 만들기’를 쓰면, AI가 요약한 함수 카드에 AI 해석을 보여 줘요.</p>}
+    {analysis.language !== 'text' && ai.state === 'none' && <p className="hint">AI 칸의 ‘AI로 이 파일 설명 만들기’를 쓰면, AI가 요약한 함수 카드에 AI 해석을 보여 줘요.</p>}
     {analysis.language !== 'text' && ai.state === 'stale' && <p className="hint">파일이 바뀌어 AI 요약을 숨겼어요. 다시 만들어 주세요.</p>}
     <h4>이 파일의 함수 {analysis.symbols.length}개</h4>
     <p className="hint">종류 표시는 코드 모양으로 판단했어요. 실제로 요청이 이어지는지는 흐름 따라가기에서 확인해요.</p>
