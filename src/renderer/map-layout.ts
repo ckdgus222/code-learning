@@ -14,6 +14,16 @@ export interface MapBox {
 /** `back` when the arrow runs right to left, against the column order: the folders may use each other. */
 export interface MapArrow { id: string; source: string; target: string; back: boolean; items: ProjectMap['edges'] }
 
+/** The arrows touching one box, and the boxes at their other ends. */
+export function linkedArrows(arrows: MapArrow[], id: string):
+  { arrows: MapArrow[]; linked: Set<string>; uses: number; usedBy: number } {
+  const touching = arrows.filter(arrow => arrow.source === id || arrow.target === id);
+  const linked = new Set(touching.map(arrow => arrow.source === id ? arrow.target : arrow.source));
+  return { arrows: touching, linked,
+    uses: touching.filter(arrow => arrow.source === id).length,
+    usedBy: touching.filter(arrow => arrow.target === id).length };
+}
+
 const COLUMN_WIDTH = 320;
 // Room between stacked boxes for an arrow inside one folder.
 const ROW_HEIGHT = 112;

@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps, type NodeTypes } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { ChangeKind, FileChange, MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectChanges, ProjectMap, ProjectView } from '../shared/contracts';
-import { closeArea, expandableIds, folderArrows, folderName, visibleGraph, type MapArrow, type MapBox } from './map-layout';
+import { closeArea, expandableIds, folderArrows, folderName, linkedArrows, visibleGraph, type MapArrow, type MapBox } from './map-layout';
 import { COMPLEXITY_NOTE, ComplexityTags } from './complexity';
 import { ChangeList, kindLabels } from './changes';
 
@@ -25,9 +25,9 @@ export interface MapEntry { map: ProjectMap; revision: number; build: number }
 
 /** A comparison with a commit shown on the map (plan v2.3 C-2), and whether files changed after it. */
 export interface MapChanges { result: ProjectChanges; stale: boolean }
-interface BoxData { box: MapBox; change: ChangeKind | null; changed: number }
+interface BoxData { box: MapBox; change: ChangeKind | null; changed: number; focused: boolean; onFocus(): void }
 
-function BoxLabel({ box, change, changed }: BoxData) {
+function BoxLabel({ box, change, changed }: Pick<BoxData, 'box' | 'change' | 'changed'>) {
   const status = box.file && box.file.checked !== 'full' ? checkedLabels[box.file.checked] : null;
   return <span className="map-box__label">
     <b>{box.label}</b>
@@ -48,6 +48,8 @@ function MapNode({ data }: NodeProps<Node<BoxData & Record<string, unknown>>>) {
     <Handle type="target" id="in-top" position={Position.Top} />
     <Handle type="target" id="in-bottom" position={Position.Bottom} />
     <BoxLabel box={data.box} change={data.change} changed={data.changed} />
+    <button className="btn btn--small nodrag" aria-pressed={data.focused} aria-label={`${data.box.label} 이어진 것만 보기`}
+      onClick={event => { event.stopPropagation(); data.onFocus(); }}>이어진 것만</button>
     <Handle type="source" id="out-right" position={Position.Right} />
     <Handle type="source" id="out-bottom" position={Position.Bottom} />
     <Handle type="source" id="out-top" position={Position.Top} />
@@ -85,7 +87,10 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
   const paths = useMemo(() => new Map(map.files.map(file => [file.id, file.relativePath])), [map]);
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
   const [selected, setSelected] = useState<MapArrow | null>(null);
+  const [focus, setFocus] = useState<{ id: string; opened: ReadonlySet<string> } | null>(null);
   const graph = useMemo(() => visibleGraph(map, opened, expandable), [map, opened, expandable]);
+  const focused = focus && focus.opened === opened && graph.boxes.some(box => box.id === focus.id) ? focus.id : null;
+  const connections = focused ? linkedArrows(graph.arrows, focused) : null;
   // The folder-to-folder arrows are the design at a glance, so they are also listed as text.
   const design = useMemo(() => folderArrows(map), [map]);
   const pathOf = (id: string) => paths.get(id) ?? '(목록에 없는 파일)';
@@ -95,8 +100,10 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
   const changedIn = (box: MapBox) => map.files.filter(file => changeOf.has(file.id)
     && (file.folder === box.folder || (box.id.startsWith('folder:') && file.folder.startsWith(`${box.folder}/`)))).length;
   const nodes: Node[] = graph.boxes.map(box => ({ id: box.id, type: 'box', position: { x: box.x, y: box.y },
-    data: { box, change: box.file ? changeOf.get(box.file.id) ?? null : null, changed: box.kind === 'folder' ? changedIn(box) : 0 },
-    className: `map-box map-box--${box.kind}`, draggable: false, connectable: false }));
+    data: { box, change: box.file ? changeOf.get(box.file.id) ?? null : null, changed: box.kind === 'folder' ? changedIn(box) : 0,
+      focused: focused === box.id, onFocus: () => setFocus(focused === box.id ? null : { id: box.id, opened }) },
+    className: `map-box map-box--${box.kind}${focused === box.id ? ' map-box--focus' : connections && !connections.linked.has(box.id) ? ' map-box--dim' : ''}`,
+    draggable: false, connectable: false }));
   const placeOf = new Map(graph.boxes.map(box => [box.id, box]));
   const handlesFor = (arrow: MapArrow) => {
     const from = placeOf.get(arrow.source)!;
@@ -104,7 +111,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
     if (from.x !== to.x) return { sourceHandle: 'out-right', targetHandle: 'in-left' };
     return to.y > from.y ? { sourceHandle: 'out-bottom', targetHandle: 'in-top' } : { sourceHandle: 'out-top', targetHandle: 'in-bottom' };
   };
-  const edges: Edge[] = graph.arrows.map(arrow => ({ id: arrow.id, source: arrow.source, target: arrow.target, ...handlesFor(arrow),
+  const edges: Edge[] = (connections?.arrows ?? graph.arrows).map(arrow => ({ id: arrow.id, source: arrow.source, target: arrow.target, ...handlesFor(arrow),
     label: arrow.items.length > 1 ? `import ${arrow.items.length}개` : undefined, className: arrow.back ? 'map-arrow map-arrow--back' : 'map-arrow',
     markerEnd: ARROW_MARKER, selected: selected?.id === arrow.id }));
   const showButton = (item: MapImport) => <button className="btn btn--small" disabled={locked} onClick={() => onShowImport(item)}>코드 보기</button>;
@@ -117,7 +124,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
     <div className="map-actions" role="group" aria-label="지도 보기">
       <button className="btn btn--small" aria-pressed={opened.size === 0} onClick={() => setOpened(new Set())}>설계 보기</button>
       <button className="btn btn--small" aria-pressed={graph.boxes.every(box => box.kind === 'file')} onClick={() => setOpened(new Set(expandable))}>파일 보기</button>
-      <span className="hint">상자를 누르면 그 안을 한 단계 펼쳐요. 위 ‘접기’로 다시 접어요. 파일 상자를 누르면 코드를 열어요. 점선은 오른쪽에서 왼쪽으로 거꾸로 가는 연결이라, 서로 가져다 쓰는 곳일 수 있어요.</span>
+      <span className="hint">상자를 누르면 그 안을 한 단계 펼쳐요. 위 ‘접기’로 다시 접어요. 파일 상자를 누르면 코드를 열어요. 점선은 오른쪽에서 왼쪽으로 거꾸로 가는 연결이라, 서로 가져다 쓰는 곳일 수 있어요. ‘이어진 것만’을 누르면 그 상자와 이어진 화살표만 남아요. 펼치거나 접으면 다시 모두 보여요.</span>
     </div>
     {openChips.length > 0 && <div className="map-actions" role="group" aria-label="펼친 곳">
       <span className="hint">펼친 곳</span>
@@ -125,6 +132,12 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
         onClick={() => setOpened(current => closeArea(current, id))}>
         {folderName(id.slice(id.indexOf(':') + 1))}{id.startsWith('files:') ? ' 바로 아래 파일' : ''} 접기
       </button>)}
+    </div>}
+    {connections && <div className="map-actions" role="group" aria-label="이어진 것만 보는 중">
+      <span className="hint">‘{graph.boxes.find(box => box.id === focused)!.label}’과 이어진 것만 보는 중 · {connections.arrows.length
+        ? `가져다 씀 ${connections.uses}곳 · 이 상자를 가져다 씀 ${connections.usedBy}곳`
+        : '지금 보이는 다른 상자와 이어진 import가 없어요.'}</span>
+      <button className="btn btn--small" onClick={() => setFocus(null)}>모두 보기</button>
     </div>}
     {/* Remounting on every fold refits the view to the boxes now shown. */}
     <MapCanvas testId="map-canvas" canvasKey={[...opened].sort().join('|')} nodes={nodes} edges={edges} nodeTypes={nodeTypes}

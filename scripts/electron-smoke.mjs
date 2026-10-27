@@ -95,7 +95,7 @@ const areaMapFixture = path.join(temporary, '영역 지도 프로젝트');
 const areaMapFiles = {
   'web/app/page.ts': "import { value } from '../lib/value';\nexport const page = value;\n",
   'web/lib/value.ts': 'export const value = 1;\n',
-  'web/e2e/check.ts': 'export const check = 1;\n',
+  'web/e2e/check.ts': "import { value } from '../lib/value';\nexport const check = value;\n",
   'web/index.ts': 'export const index = 1;\n',
   'api/src/main.ts': 'export const main = 1;\n',
   // The map lists only code files (and files code imports), so the root file is code.
@@ -1633,6 +1633,96 @@ try {
     await chips.getByRole('button', { name: '(최상위 폴더) 바로 아래 파일 접기', exact: true }).click();
     await boxes.filter({ hasText: '(최상위 폴더) 바로 아래 파일 · 1개' }).waitFor();
     assert.equal(await chips.count(), 0);
+    await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
+    await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+  });
+  await check('Project map focus: linked arrows, file buttons and clearing on area or view changes', async () => {
+    await dialogTo(areaMapFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '영역 지도 프로젝트', exact: true }).waitFor();
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    const canvas = page.getByTestId('map-canvas');
+    const boxes = canvas.locator('.react-flow__node');
+    const arrows = canvas.locator('.react-flow__edge');
+    const chips = page.getByRole('group', { name: '펼친 곳', exact: true });
+    const focus = page.getByRole('group', { name: '이어진 것만 보는 중', exact: true });
+    const appBox = boxes.filter({ hasText: 'web/app · 파일 1개' });
+    const appFocus = appBox.getByRole('button', { name: 'web/app · 파일 1개 이어진 것만 보기', exact: true });
+    const libFocus = canvas.getByRole('button', { name: 'web/lib · 파일 1개 이어진 것만 보기', exact: true });
+    const directFocus = canvas.getByRole('button', { name: 'web 바로 아래 파일 · 1개 이어진 것만 보기', exact: true });
+    await until(async () => await boxes.count() === 3);
+    await boxes.filter({ hasText: 'web · 파일 4개' }).locator('.map-box__label').click();
+    await until(async () => await boxes.count() === 6 && await arrows.count() === 2);
+
+    await appFocus.click();
+    await until(async () => await arrows.count() === 1);
+    assert.equal(await boxes.count(), 6);
+    assert.deepEqual(await chips.getByRole('button').allTextContents(), ['web 접기']);
+    assert.match(await focus.innerText(), /가져다 씀 1곳 · 이 상자를 가져다 씀 0곳/);
+    assert.equal(await appFocus.getAttribute('aria-pressed'), 'true');
+    assert.match(await appBox.getAttribute('class'), /\bmap-box--focus\b/);
+    assert.match(await boxes.filter({ hasText: 'web/e2e · 파일 1개' }).getAttribute('class'), /\bmap-box--dim\b/);
+    assert.doesNotMatch(await boxes.filter({ hasText: 'web/lib · 파일 1개' }).getAttribute('class'), /\bmap-box--dim\b/);
+
+    await libFocus.click();
+    await until(async () => await arrows.count() === 2);
+    assert.match(await focus.innerText(), /가져다 씀 0곳 · 이 상자를 가져다 씀 2곳/);
+    assert.equal(await appFocus.getAttribute('aria-pressed'), 'false');
+    assert.equal(await libFocus.getAttribute('aria-pressed'), 'true');
+    await directFocus.click();
+    await until(async () => await arrows.count() === 0);
+    assert.match(await focus.innerText(), /지금 보이는 다른 상자와 이어진 import가 없어요\./);
+    assert.equal(await boxes.count(), 6);
+    await directFocus.click();
+    await focus.waitFor({ state: 'detached' });
+    await until(async () => await arrows.count() === 2);
+    assert.equal(await directFocus.getAttribute('aria-pressed'), 'false');
+    await appFocus.click();
+    await focus.getByRole('button', { name: '모두 보기', exact: true }).click();
+    await focus.waitFor({ state: 'detached' });
+    await until(async () => await arrows.count() === 2);
+    assert.equal(await canvas.locator('button[aria-pressed="true"]').count(), 0);
+    assert.equal(await canvas.locator('.map-box--dim, .map-box--focus').count(), 0);
+
+    await appBox.locator('.map-box__label').click();
+    const fileBox = boxes.filter({ hasText: 'page.ts' });
+    await fileBox.getByRole('button', { name: 'page.ts 이어진 것만 보기', exact: true }).click();
+    await until(async () => await arrows.count() === 1);
+    assert.equal(await canvas.isVisible(), true);
+    assert.equal(await page.getByRole('heading', { name: 'web/app/page.ts', exact: true }).count(), 0);
+    assert.match(await focus.innerText(), /‘page.ts’과 이어진 것만 보는 중 · 가져다 씀 1곳 · 이 상자를 가져다 씀 0곳/);
+    assert.deepEqual(await chips.getByRole('button').allTextContents(), ['web 접기', 'web/app 접기']);
+    assert.equal(await arrows.getAttribute('data-id'), `${await fileBox.getAttribute('data-id')}->folder:web/lib`);
+    // Opening another area clears focus even though page.ts remains visible.
+    await boxes.filter({ hasText: 'web/e2e · 파일 1개' }).locator('.map-box__label').click();
+    await focus.waitFor({ state: 'detached' });
+    await boxes.filter({ hasText: 'check.ts' }).waitFor();
+    await until(async () => await arrows.count() === 2);
+    await fileBox.getByRole('button', { name: 'page.ts 이어진 것만 보기', exact: true }).click();
+    await focus.waitFor();
+    await chips.getByRole('button', { name: 'web 접기', exact: true }).click();
+    await focus.waitFor({ state: 'detached' });
+    await until(async () => await boxes.count() === 3 && await arrows.count() === 0);
+    await boxes.filter({ hasText: 'web · 파일 4개' }).locator('.map-box__label').click();
+    await until(async () => await boxes.count() === 6 && await arrows.count() === 2);
+    assert.equal(await focus.count(), 0);
+    await appFocus.click();
+    await focus.waitFor();
+    await chips.getByRole('button', { name: 'web 접기', exact: true }).click();
+    await focus.waitFor({ state: 'detached' });
+    await boxes.filter({ hasText: 'web · 파일 4개' }).locator('.map-box__label').click();
+    await until(async () => await boxes.count() === 6 && await arrows.count() === 2);
+    assert.equal(await focus.count(), 0);
+    assert.equal(await appFocus.getAttribute('aria-pressed'), 'false');
+    await appFocus.click();
+    await page.getByRole('button', { name: '파일 보기', exact: true }).click();
+    await focus.waitFor({ state: 'detached' });
+    await until(async () => await arrows.count() === 2);
+    await canvas.getByRole('button', { name: 'page.ts 이어진 것만 보기', exact: true }).click();
+    await focus.waitFor();
+    await page.getByRole('button', { name: '설계 보기', exact: true }).click();
+    await focus.waitFor({ state: 'detached' });
+    await until(async () => await boxes.count() === 3 && await arrows.count() === 0);
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
   });
