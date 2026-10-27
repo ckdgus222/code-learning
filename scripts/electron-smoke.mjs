@@ -294,6 +294,26 @@ async function rebuildFreshMap() {
     } catch (error) { if (attempt === 3) throw error; }
   }
 }
+// Wait for the media query and CSS together; React Flow updates are checked at the canvas.
+async function setTheme(mode) {
+  await app.evaluate(({ nativeTheme }, mode) => { nativeTheme.themeSource = mode; }, mode);
+  const background = mode === 'light' ? 'rgb(247, 250, 253)' : 'rgb(20, 22, 26)';
+  await page.waitForFunction(({ mode, background }) =>
+    matchMedia(`(prefers-color-scheme: ${mode})`).matches
+      && getComputedStyle(document.documentElement).backgroundColor === background, { mode, background });
+  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme), 'light dark');
+}
+// Checks run in dark then light; the app goes back to following macOS afterwards, even when a check fails.
+async function eachTheme(check) {
+  try {
+    for (const mode of ['dark', 'light']) {
+      await setTheme(mode);
+      await check(mode);
+    }
+  } finally {
+    await app.evaluate(({ nativeTheme }) => { nativeTheme.themeSource = 'system'; });
+  }
+}
 async function dialogTo(folder) {
   await app.evaluate(({ dialog }, folder) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] }); }, folder);
 }
@@ -338,8 +358,9 @@ const caret = () => page.evaluate(() => {
 });
 const at = (line, column) => ({ line, column });
 async function launch() {
+  // Playwright pretends the system is light unless told not to; null lets nativeTheme reach the page as on a real Mac.
   app = await electron.launch({ executablePath: require('electron'), args: [bootstrap], cwd: root,
-    chromiumSandbox: true, timeout: 30_000 });
+    chromiumSandbox: true, timeout: 30_000, colorScheme: null });
   page = await app.firstWindow();
   page.on('pageerror', error => failures.push(error.message));
   await page.getByRole('heading', { name: 'Code Learning', exact: true }).waitFor();
@@ -397,12 +418,13 @@ try {
     assert.equal(await page.evaluate(() => typeof window.require), 'undefined');
     assert.ok((await readFile(path.join(profile, 'learning.sqlite'))).length > 0);
   });
-  await check('Dark welcome keeps the read-only promise without a status bar', async () => {
-    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme), 'dark');
+  await check('System themes keep the read-only promise without a status bar', async () => {
+    await eachTheme(async mode => {
+      await page.screenshot({ path: path.join(artifacts, `${mode}-welcome.png`) });
+    });
     assert.equal(await page.getByRole('contentinfo', { name: '작업 상태' }).count(), 0);
     await page.getByText('원본 파일을 수정하지 않아요.', { exact: true }).waitFor();
     assert.equal(await page.locator('.topbar').getByText('AI는 동의한 질문만').count(), 0);
-    await page.screenshot({ path: path.join(artifacts, 'dark-welcome.png') });
   });
   await dialogTo(fixture);
   await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
@@ -435,8 +457,13 @@ try {
     assert.equal(selected, 'if (수량 < 1) {\r\n\t\treturn "실패 📦";\r\n\t}');
     assert.equal(await page.locator('.cm-line').allTextContents().then(lines => lines.join('\n')), source.slice(0, -2) + '\r\n');
     await page.locator('.cm-selectionBackground').first().waitFor();
-    assert.equal(await page.locator('.cm-selectionBackground').first().evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(51, 44, 28)');
-    assert.equal(await page.locator('.cm-editor').evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(31, 34, 40)');
+    await eachTheme(async mode => {
+      assert.equal(await page.locator('.cm-selectionBackground').first().evaluate(element => getComputedStyle(element).backgroundColor),
+        mode === 'dark' ? 'rgb(51, 44, 28)' : 'rgb(220, 235, 255)');
+      assert.equal(await page.locator('.cm-editor').evaluate(element => getComputedStyle(element).backgroundColor),
+        mode === 'dark' ? 'rgb(31, 34, 40)' : 'rgb(255, 255, 255)');
+      await page.screenshot({ path: path.join(artifacts, `${mode}-code-reader.png`) });
+    });
     await page.screenshot({ path: path.join(artifacts, 'local-code-flow.png') });
   });
   await check('Step gutter matches the outline, selects evidence and locks while busy', async () => {
@@ -448,9 +475,12 @@ try {
     assert.deepEqual(await markers.evaluateAll(elements => elements.map(element => element.tabIndex)), [-1, -1, -1]);
     assert.ok(await page.locator('.cm-step-gutter').evaluate(element =>
       element.getBoundingClientRect().right <= document.querySelector('.cm-lineNumbers').getBoundingClientRect().left));
-    assert.deepEqual(await markers.nth(0).evaluate(element => [getComputedStyle(element).backgroundColor, getComputedStyle(element).color]),
-      ['rgb(240, 180, 76)', 'rgb(26, 19, 0)']);
-    assert.equal(await markers.nth(1).evaluate(element => getComputedStyle(element).backgroundColor), 'rgb(35, 39, 46)');
+    await eachTheme(async mode => {
+      assert.deepEqual(await markers.nth(0).evaluate(element => [getComputedStyle(element).backgroundColor, getComputedStyle(element).color]),
+        mode === 'dark' ? ['rgb(240, 180, 76)', 'rgb(26, 19, 0)'] : ['rgb(40, 94, 172)', 'rgb(255, 255, 255)']);
+      assert.equal(await markers.nth(1).evaluate(element => getComputedStyle(element).backgroundColor),
+        mode === 'dark' ? 'rgb(35, 39, 46)' : 'rgb(239, 245, 252)');
+    });
     await markers.nth(1).click();
     await until(async () => /order.ts · 3–3줄/.test(await page.getByTestId('evidence-range').innerText()));
     assert.equal(await page.locator('.steps__item').nth(1).getAttribute('aria-pressed'), 'true');
@@ -811,6 +841,9 @@ try {
     assert.equal(await page.evaluate(() => globalThis.attacked), undefined);
     // loop.ts changed in the flow check and files were read again since; the overview still asks for a re-check.
     await page.locator('.overview-stale').getByText('다시 확인 필요:', { exact: false }).waitFor();
+    await eachTheme(async mode => {
+      await page.screenshot({ path: path.join(artifacts, `${mode}-overview.png`) });
+    });
     await page.screenshot({ path: path.join(artifacts, 'local-overview.png') });
     const starts = page.getByRole('region', { name: '어디부터 읽을까요?' });
     const noServer = page.getByText('서버 코드(요청을 받는 곳)를 찾지 못해서 기능별로 따라갈 수 없어요.', { exact: false });
@@ -1234,7 +1267,11 @@ try {
     // A straight arrow between boxes in one row has no height, which the visibility check counts as hidden.
     await diagram.locator('.feature-arrow--typed .react-flow__edge-path').waitFor({ state: 'attached' });
     await diagram.locator('.feature-arrow--inferred .react-flow__edge-path').waitFor({ state: 'attached' });
-    assert.equal(await diagram.locator('.react-flow.dark').count(), 1);
+    await eachTheme(async mode => {
+      await diagram.locator(`.react-flow.${mode}`).waitFor();
+      assert.equal(await diagram.locator(`.react-flow.${mode}`).count(), 1);
+      await page.screenshot({ path: path.join(artifacts, `${mode}-flow-map.png`) });
+    });
     assert.equal(await diagram.locator('.react-flow__node.draggable').count(), 0);
     assert.equal(await screenNode.locator('small').getAttribute('title'), 'web/app/dogs/page.tsx');
     assert.equal(await screenNode.getByText('화면 주소 /dogs', { exact: true }).count(), 1);

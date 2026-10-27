@@ -42,14 +42,26 @@ async function openFunctionFlow(page) {
 try {
   app = await electron.launch({
     executablePath: path.join(root, 'out/Code Learning-darwin-arm64/Code Learning.app/Contents/MacOS/Code Learning'),
-    args: [`--user-data-dir=${profile}`], chromiumSandbox: true, timeout: 30_000,
+    // Playwright pretends the system is light unless told not to; null lets nativeTheme reach the page as on a real Mac.
+    args: [`--user-data-dir=${profile}`], chromiumSandbox: true, timeout: 30_000, colorScheme: null,
   });
   const state = await app.evaluate(({ app }) => ({ packaged: app.isPackaged, appPath: app.getAppPath(), userData: app.getPath('userData'), versions: process.versions }));
   assert.equal(state.packaged, true);
   assert.equal(state.userData, profile, 'Packaged test must use isolated userData');
   const page = await app.firstWindow();
   await page.getByRole('heading', { name: 'Code Learning', exact: true }).waitFor();
-  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme), 'dark');
+  try {
+    for (const mode of ['light', 'dark']) {
+      await app.evaluate(({ nativeTheme }, mode) => { nativeTheme.themeSource = mode; }, mode);
+      const background = mode === 'light' ? 'rgb(247, 250, 253)' : 'rgb(20, 22, 26)';
+      await page.waitForFunction(({ mode, background }) =>
+        matchMedia(`(prefers-color-scheme: ${mode})`).matches
+          && getComputedStyle(document.documentElement).backgroundColor === background, { mode, background });
+      assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme), 'light dark');
+    }
+  } finally {
+    await app.evaluate(({ nativeTheme }) => { nativeTheme.themeSource = 'system'; });
+  }
   assert.equal(await page.locator('.files h3').count(), 0);
   await app.evaluate(({ dialog }, project) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [project] }); }, project);
   await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
@@ -253,7 +265,7 @@ try {
   await page.getByRole('region', { name: '기능 따라가기', exact: true }).getByText('화면 /login에서 입력 양식을 보내면 시작해요', { exact: true }).waitFor();
   assert.equal(await app.evaluate(() => globalThis.packagedFlowCalls), 0);
   await app.close(); app = undefined;
-  const report = { passed: true, checks: ['screen groups and cached flow selection without flow IPC', 'dark theme, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', 'changes from git inside its sandbox', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel'], state };
+  const report = { passed: true, checks: ['screen groups and cached flow selection without flow IPC', 'system light and dark themes, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', 'changes from git inside its sandbox', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel'], state };
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

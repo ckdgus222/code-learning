@@ -52,6 +52,7 @@ it.each([undefined, 0, 1080])('sets canvas height and lets wheel events scroll t
   expect(props.zoomOnScroll).toBe(height === undefined);
   expect(props.preventScrolling).toBe(height === undefined);
   expect(props.fitViewOptions?.maxZoom).toBe(1);
+  expect(props.colorMode).toBe('system');
 });
 
 it('keeps the project map at its CSS height with wheel zoom enabled', () => {
