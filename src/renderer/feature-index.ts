@@ -55,8 +55,12 @@ export function featureIndex(routes: ProjectRoutes, flows: FeatureFlow[], pathOf
     }
     const rows = grouped.screens.flatMap(group => group.rows.filter(row => row.routeIndex === routeIndex)
       .map(row => ({ ...row, screen: group.screen, first: storyOf(flow, row.through)[0] })));
-    const titled = rows.find(row => row.first?.nodes[0]?.screenTitle);
-    const button = titled ? undefined : rows.find(row => buttonName(row.first?.representative));
+    // User decision: a view is named by its screen title first, an action by its button text first,
+    // so actions on one screen do not all share the screen's name.
+    const titledRow = rows.find(row => row.first?.nodes[0]?.screenTitle);
+    const buttonRow = rows.find(row => buttonName(row.first?.representative));
+    const titled = route.method !== 'GET' && buttonRow ? undefined : titledRow;
+    const button = titled ? undefined : buttonRow;
     const chosen = titled ?? button ?? rows[0];
     const requestOnly = grouped.noScreen.find(row => row.routeIndex === routeIndex);
     const fallback = !chosen && requestOnly ? storyOf(flow) : [];
