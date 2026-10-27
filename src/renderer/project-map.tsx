@@ -76,7 +76,7 @@ export function MapCanvas({ testId, canvasKey, height, nodes, edges, nodeTypes, 
     if (resized.length) setSizes(current => new Map([...current, ...resized]));
   };
   return <div className="map-canvas" data-testid={testId} style={height === undefined ? undefined : { height }}>
-    <ReactFlow colorMode="dark" key={canvasKey} nodes={measured} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange}
+    <ReactFlow colorMode="system" key={canvasKey} nodes={measured} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange}
       // Only boxes in view are drawn, so the fit may zoom out far enough to show a whole opened folder.
       fitView fitViewOptions={FIT} minZoom={0.1} onlyRenderVisibleElements
       // A canvas sized to its content has nothing to scroll inside, so the wheel scrolls the page instead of zooming.
