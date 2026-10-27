@@ -3840,7 +3840,7 @@ try {
     const guide = await openFileGuide();
     assert.equal(await page.locator('.center .file-guide').count(), 1);
     assert.equal(await page.locator('.panel .file-guide, .center .file-explanation, .reader__cards').count(), 0);
-    assert.deepEqual(await page.locator('.reader').evaluate(reader => [...reader.children].map(child => child.className)), ['reader__head', 'reader__body']);
+    assert.deepEqual(await page.locator('.reader').evaluate(reader => [...reader.children].map(child => child.className)), ['reader__head', 'file-guide-fold', 'reader__body']);
     await guide.getByText('NestJS 컨트롤러', { exact: true }).waitFor();
     assert.match(await guide.innerText(), /POST \/auth\/login[\s\S]*앱 공통 앞 경로는 빼고 봤어요/);
     await guide.getByRole('button', { name: '이 함수 고르기', exact: true }).click();

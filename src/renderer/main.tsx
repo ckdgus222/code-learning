@@ -1046,32 +1046,6 @@ function App() {
           onRetryHistory={() => void loadHistory()} onCompare={commit => void compare(commit)} onRefresh={refreshChanges} onCancel={() => void cancelCompare()}
           onOpen={change => void openChange(change)} onOpenCode={fileId => { if (busy) return; setView('code'); void readFile(fileId); }} />}
 
-        {view === 'code' && source && <section aria-label="이 파일 안내" className="file-guide-fold">
-          {step && evidence ? <section className="fact">
-            <span className="tag tag--ok">코드에서 확인됨</span>
-            <p><b>{symbol?.name}</b> 함수 안의 <b>{step.title}</b> 부분이에요. 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요.</p>
-          </section> : symbol && evidence ? <section className="fact">
-            <span className="tag tag--ok">코드에서 확인됨</span>
-            <p><b>{symbol.name}</b> 함수는 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요. 왼쪽에서 구문을 골라 한 부분씩 볼 수 있어요.</p>
-          </section> : null}
-          {source.guide && <FileGuideCard key={`${source.fileId}:${source.hash}`} guide={source.guide} analysis={source.analysis} busy={busy} stale={stale}
-            open={fileGuideOpen} onToggle={setFileGuideOpen}
-            ai={aiFunctionSummaries(fileExplanation?.result ?? null, fileExplanationStale, source.analysis.symbols)}
-            importers={{ state: mapping ? 'running' : projectMap ? 'ready' : 'none',
-              stale: projectMap !== null && projectMap.revision !== revision.current, result: importers }}
-            onBuildMap={() => void buildMap()} onCancelMap={() => void cancelMap()} onShowImport={item => void showImport(item)}
-            does={does} doesState={{ routes: features.stale ? 'stale' : features.routes ? 'ready' : 'none', flows: features.groupingProps.flows !== null }}
-            callers={calls && guideCaller(calls)}
-            onFindCallers={item => void findCalls(source, item)}
-            onCancelCallers={() => void cancelCalls()} onShowCallSite={site => void showCallSite(site)} pathOf={pathOf}
-            uses={{ ...uses, routes: features.routes ?? null,
-              state: features.stale ? 'stale' : features.groupingProps.grouping ? 'running' : features.groupingProps.flows ? 'ready' : 'none' }}
-            onUse={use => void followFeatureRoute(use.routeIndex, { through: use.through, storyId: use.storyId, step: use.step, nodeId: use.nodeId })}
-            focus={functionFocus?.fileId === source.fileId && functionFocus.hash === source.hash ? functionFocus : null}
-            onOpenFile={fileId => { if (busy || stale) return; void readFile(fileId); }}
-            onShow={showFileGuideRange} onSelect={selectGuideFunction} />}
-        </section>}
-
         {view === 'code' && (!source ? <div className="page page--empty">
           <h2 className="page__title">코드 읽기</h2>
           <p>파일을 선택하면 원문과 확인한 함수 구조를 읽을 수 있습니다.</p>
@@ -1093,6 +1067,31 @@ function App() {
             </div>
             {stale && <p className="hint">파일이 바뀌어 설명 줄을 숨겼어요. 파일 다시 읽기를 눌러 주세요.</p>}
           </div>
+          <section aria-label="이 파일 안내" className="file-guide-fold">
+            {step && evidence ? <section className="fact">
+              <span className="tag tag--ok">코드에서 확인됨</span>
+              <p><b>{symbol?.name}</b> 함수 안의 <b>{step.title}</b> 부분이에요. 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요.</p>
+            </section> : symbol && evidence ? <section className="fact">
+              <span className="tag tag--ok">코드에서 확인됨</span>
+              <p><b>{symbol.name}</b> 함수는 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요. 왼쪽에서 구문을 골라 한 부분씩 볼 수 있어요.</p>
+            </section> : null}
+            {source.guide && <FileGuideCard key={`${source.fileId}:${source.hash}`} guide={source.guide} analysis={source.analysis} busy={busy} stale={stale}
+              open={fileGuideOpen} onToggle={setFileGuideOpen}
+              ai={aiFunctionSummaries(fileExplanation?.result ?? null, fileExplanationStale, source.analysis.symbols)}
+              importers={{ state: mapping ? 'running' : projectMap ? 'ready' : 'none',
+                stale: projectMap !== null && projectMap.revision !== revision.current, result: importers }}
+              onBuildMap={() => void buildMap()} onCancelMap={() => void cancelMap()} onShowImport={item => void showImport(item)}
+              does={does} doesState={{ routes: features.stale ? 'stale' : features.routes ? 'ready' : 'none', flows: features.groupingProps.flows !== null }}
+              callers={calls && guideCaller(calls)}
+              onFindCallers={item => void findCalls(source, item)}
+              onCancelCallers={() => void cancelCalls()} onShowCallSite={site => void showCallSite(site)} pathOf={pathOf}
+              uses={{ ...uses, routes: features.routes ?? null,
+                state: features.stale ? 'stale' : features.groupingProps.grouping ? 'running' : features.groupingProps.flows ? 'ready' : 'none' }}
+              onUse={use => void followFeatureRoute(use.routeIndex, { through: use.through, storyId: use.storyId, step: use.step, nodeId: use.nodeId })}
+              focus={functionFocus?.fileId === source.fileId && functionFocus.hash === source.hash ? functionFocus : null}
+              onOpenFile={fileId => { if (busy || stale) return; void readFile(fileId); }}
+              onShow={showFileGuideRange} onSelect={selectGuideFunction} />}
+          </section>
           {functionExplanation && <p className="function-explanation" data-testid="function-chunk-summary">{functionExplanation}</p>}
           <div className="reader__body">
             <section aria-label="구문과 코드" className="outline">
