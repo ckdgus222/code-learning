@@ -802,7 +802,7 @@ function App() {
   const flowStep = features.selection.step;
   const flowNode = features.currentNode;
   const flowCodeName = features.flow && features.routes ? codeNameOf(features.routes.routes[features.flow.routeIndex]) : '';
-  const flowTitle = features.selectedFeature?.name ?? flowCodeName;
+  const flowTitle = features.selectedFeature?.name ?? features.groupingProps.index?.flatMap(group => group.features).find(feature => feature.routeIndex === features.flow?.routeIndex)?.name ?? flowCodeName;
   const intro = project?.overview.intro;
   const scope = [project?.name, source?.relativePath, symbol?.name, step?.title].filter(Boolean);
 
