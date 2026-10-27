@@ -13,7 +13,7 @@ import { aiFunctionSummaries, functionDoes, importersOf } from './guide-facts';
 import { FileExplanationCard, rememberFileExplanation, type FileExplanationEntry, type FileExplanationState } from './file-explanation';
 import { Flow } from './flow';
 import { ProjectMapView, type MapEntry } from './project-map';
-import { AFTER_FLOW_NOTE, STORE_FLOW_NOTE, FLOW_ORDER_NOTE, FeatureChooser, FeatureList, FlowLimits, FlowPicture, FlowWalk, hasFlowCode, RoutesStatus, siteOf, useFeatureFlows, type FlowStart } from './feature-flow';
+import { FeatureChooser, FeatureList, FlowLimits, FlowPicture, FlowWalk, hasFlowCode, RoutesStatus, siteOf, useFeatureFlows, type FlowStart } from './feature-flow';
 import { codeNameOf } from '../core/analysis/flow-story';
 import { matchCallStep, matchFunction, matchImport } from './map-layout';
 import { CallsFacts, type CallFunction, type CallsState } from './calls';
@@ -83,6 +83,7 @@ function App() {
   const [search, setSearch] = useState('');
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [panelOpen, setPanelOpen] = useState(true);
+  const [fileGuideOpen, setFileGuideOpen] = useState(false);
   const [draft, setDraft] = useState<{ text: string; id: number; topic?: { name: string; evidenceId: string } } | null>(null);
   // The AI installation check, shared by the question panel and the overview card.
   const [connections, setConnections] = useState<ConnectionReport | null>(null);
@@ -816,8 +817,6 @@ function App() {
   const pathOf = (fileId: string) => project?.files.find(file => file.id === fileId)?.relativePath ?? '(목록에 없는 파일)';
   const fileTree = useMemo(() => buildFileTree(project?.files ?? []), [project?.files]);
   const visibleFileTree = useMemo(() => filterFileTree(fileTree, search), [fileTree, search]);
-  const flowStep = features.selection.step;
-  const flowNode = features.currentNode;
   const flowCodeName = features.flow && features.routes ? codeNameOf(features.routes.routes[features.flow.routeIndex]) : '';
   const flowTitle = features.selectedFeature?.name ?? features.groupingProps.index?.flatMap(group => group.features).find(feature => feature.routeIndex === features.flow?.routeIndex)?.name ?? flowCodeName;
   const intro = project?.overview.intro;
@@ -1047,6 +1046,32 @@ function App() {
           onRetryHistory={() => void loadHistory()} onCompare={commit => void compare(commit)} onRefresh={refreshChanges} onCancel={() => void cancelCompare()}
           onOpen={change => void openChange(change)} onOpenCode={fileId => { if (busy) return; setView('code'); void readFile(fileId); }} />}
 
+        {view === 'code' && source && <section aria-label="이 파일 안내" className="file-guide-fold">
+          {step && evidence ? <section className="fact">
+            <span className="tag tag--ok">코드에서 확인됨</span>
+            <p><b>{symbol?.name}</b> 함수 안의 <b>{step.title}</b> 부분이에요. 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요.</p>
+          </section> : symbol && evidence ? <section className="fact">
+            <span className="tag tag--ok">코드에서 확인됨</span>
+            <p><b>{symbol.name}</b> 함수는 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요. 왼쪽에서 구문을 골라 한 부분씩 볼 수 있어요.</p>
+          </section> : null}
+          {source.guide && <FileGuideCard key={`${source.fileId}:${source.hash}`} guide={source.guide} analysis={source.analysis} busy={busy} stale={stale}
+            open={fileGuideOpen} onToggle={setFileGuideOpen}
+            ai={aiFunctionSummaries(fileExplanation?.result ?? null, fileExplanationStale, source.analysis.symbols)}
+            importers={{ state: mapping ? 'running' : projectMap ? 'ready' : 'none',
+              stale: projectMap !== null && projectMap.revision !== revision.current, result: importers }}
+            onBuildMap={() => void buildMap()} onCancelMap={() => void cancelMap()} onShowImport={item => void showImport(item)}
+            does={does} doesState={{ routes: features.stale ? 'stale' : features.routes ? 'ready' : 'none', flows: features.groupingProps.flows !== null }}
+            callers={calls && guideCaller(calls)}
+            onFindCallers={item => void findCalls(source, item)}
+            onCancelCallers={() => void cancelCalls()} onShowCallSite={site => void showCallSite(site)} pathOf={pathOf}
+            uses={{ ...uses, routes: features.routes ?? null,
+              state: features.stale ? 'stale' : features.groupingProps.grouping ? 'running' : features.groupingProps.flows ? 'ready' : 'none' }}
+            onUse={use => void followFeatureRoute(use.routeIndex, { through: use.through, storyId: use.storyId, step: use.step, nodeId: use.nodeId })}
+            focus={functionFocus?.fileId === source.fileId && functionFocus.hash === source.hash ? functionFocus : null}
+            onOpenFile={fileId => { if (busy || stale) return; void readFile(fileId); }}
+            onShow={showFileGuideRange} onSelect={selectGuideFunction} />}
+        </section>}
+
         {view === 'code' && (!source ? <div className="page page--empty">
           <h2 className="page__title">코드 읽기</h2>
           <p>파일을 선택하면 원문과 확인한 함수 구조를 읽을 수 있습니다.</p>
@@ -1097,8 +1122,8 @@ function App() {
               <Reader ref={reader} source={source} evidence={evidence} codeSize={codeSize} wrap={wrap}
                 bands={bands && !stale} onFunction={async id => {
                   if (busy || stale) return;
-                  setPanelOpen(true);
                   if (!await selectGuideFunction(id)) return;
+                  setFileGuideOpen(true);
                   setFunctionFocus({ fileId: source.fileId, hash: source.hash, symbolId: id });
                 }}
                 symbolId={symbolId} stepId={stepId} locked={busy || stale}
@@ -1108,47 +1133,10 @@ function App() {
         </div>)}
       </main>
 
-      <aside className="panel" aria-label="설명과 질문" hidden={!panelOpen}>
+      <aside className="panel" aria-label="AI 질문" hidden={!panelOpen}>
         <div className="panel__head">
-          <button className="btn btn--ghost btn--icon" aria-label="패널 접기" title="패널 접기" onClick={() => setPanelOpen(false)}><Icon name="collapse" /></button>
+          <button className="btn btn--ghost btn--icon" aria-label="AI 칸 접기" title="AI 칸 접기" onClick={() => setPanelOpen(false)}><Icon name="collapse" /></button>
         </div>
-        <p className="scope"><span className="eyebrow">현재 범위</span>{scope.join(' › ')}</p>
-        <section className="panel__body" aria-label="설명">
-          {view === 'flow' && features.stale && <p className="notice notice--warn">다시 확인 필요: 파일이 바뀌었거나 잠자기에서 돌아왔어요. 주소를 다시 찾아 주세요.</p>}
-          {view === 'flow' && !features.stale && flowStep && flowNode && <article className="fact" data-testid="flow-step-explanation">
-            <p>{flowTitle} › {features.walk.step + 1}단계 {flowStep.label}</p>
-            <h3>{flowStep.title}</h3>
-            <p>{flowStep.text}</p>
-            <p>{flowNode.name} · {flowNode.relativePath} {flowNode.range.startLine}–{flowNode.range.endLine}행</p>
-            {flowStep.inferred && <p><span className="tag tag--unknown">추정</span> {flowStep.reasons.join(' · ')}</p>}
-            {flowStep.typed && <p><span className="tag tag--doc">타입으로 찾음</span></p>}
-            {flowStep.afterGroups.groups.length > 0 && <p className="hint">{AFTER_FLOW_NOTE}</p>}
-            {flowStep.storeGroups.groups.length > 0 && <p className="hint">{STORE_FLOW_NOTE}</p>}
-            {(flowStep.afterGroups.groups.length > 1 || flowStep.storeGroups.groups.length > 1) && <p className="hint">{FLOW_ORDER_NOTE}</p>}
-          </article>}
-          {view !== 'flow' && (step && evidence ? <section className="fact">
-            <span className="tag tag--ok">코드에서 확인됨</span>
-            <p><b>{symbol?.name}</b> 함수 안의 <b>{step.title}</b> 부분이에요. 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요.</p>
-          </section> : symbol && evidence ? <section className="fact">
-            <span className="tag tag--ok">코드에서 확인됨</span>
-            <p><b>{symbol.name}</b> 함수는 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요. 왼쪽에서 구문을 골라 한 부분씩 볼 수 있어요.</p>
-          </section> : <p className="hint">함수나 구문을 고르면 그 부분을 여기서 짚어 줘요.</p>)}
-          {view === 'code' && source?.guide && <FileGuideCard key={`${source.fileId}:${source.hash}`} guide={source.guide} analysis={source.analysis} busy={busy} stale={stale}
-            ai={aiFunctionSummaries(fileExplanation?.result ?? null, fileExplanationStale, source.analysis.symbols)}
-            importers={{ state: mapping ? 'running' : projectMap ? 'ready' : 'none',
-              stale: projectMap !== null && projectMap.revision !== revision.current, result: importers }}
-            onBuildMap={() => void buildMap()} onCancelMap={() => void cancelMap()} onShowImport={item => void showImport(item)}
-            does={does} doesState={{ routes: features.stale ? 'stale' : features.routes ? 'ready' : 'none', flows: features.groupingProps.flows !== null }}
-            callers={calls && guideCaller(calls)}
-            onFindCallers={item => void findCalls(source, item)}
-            onCancelCallers={() => void cancelCalls()} onShowCallSite={site => void showCallSite(site)} pathOf={pathOf}
-            uses={{ ...uses, routes: features.routes ?? null,
-              state: features.stale ? 'stale' : features.groupingProps.grouping ? 'running' : features.groupingProps.flows ? 'ready' : 'none' }}
-            onUse={use => void followFeatureRoute(use.routeIndex, { through: use.through, storyId: use.storyId, step: use.step, nodeId: use.nodeId })}
-            focus={functionFocus?.fileId === source.fileId && functionFocus.hash === source.hash ? functionFocus : null}
-            onOpenFile={fileId => { if (busy || stale) return; void readFile(fileId); }}
-            onShow={showFileGuideRange} onSelect={selectGuideFunction} />}
-        </section>
         <AiPanel key={project.id} projectId={project.id} evidence={questionEvidence} stale={stale} draft={draft}
           connections={connections} checking={checking} otherRunning={overviewAi?.status === 'running' || fileExplanationRunning || featureGuideRunning} onInspect={inspectConnections}
           mode={mode} onMode={setMode} onRunning={setQuestionRunning}
@@ -1169,7 +1157,7 @@ function App() {
             onShow={range => void showFileExplanationRange(range)} />
         </details>}
       </aside>
-      {!panelOpen && <button className="panel-reopen btn btn--small" onClick={() => setPanelOpen(true)}>설명 패널 펼치기</button>}
+      {!panelOpen && <button className="panel-reopen btn btn--small" onClick={() => setPanelOpen(true)}>AI 칸 펼치기</button>}
     </>}
   </div>;
 }

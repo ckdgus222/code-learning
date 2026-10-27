@@ -9,6 +9,7 @@ import { analyzeSource } from '../src/core/analysis/syntax';
 import { functionDoes } from '../src/renderer/guide-facts';
 
 const emptyFacts = {
+  open: true, onToggle() {},
   ai: { state: 'ready' as const, bySymbol: new Map<string, string>() },
   importers: { state: 'ready' as const, stale: false, result: { files: [], ambiguous: [], unread: [], limitedMap: false } },
   does: { bySymbol: new Map(), changed: false, notes: { routes: [], flows: [] } },
@@ -24,6 +25,15 @@ const analysis = analyzeSource(text, 'guide.ts', { projectId: 'p', fileId: 'f', 
 const guide = describeFile(text, 'guide.ts', 'f', 'h', analysis, [{ id: 'imported-a', relativePath: 'a.ts', size: 0 }]);
 
 describe('file guide card', () => {
+  it.each([false, true])('renders the disclosure with open=%s', open => {
+    const html = renderToStaticMarkup(React.createElement(FileGuideCard, { ...emptyFacts, open,
+      uses: emptyUses, onUse() {}, guide, analysis, onOpenFile() {}, busy: false, stale: false, onShow() {}, onSelect() {} }));
+    const disclosure = html.match(/^<details[^>]*>/)![0];
+    expect(disclosure.includes('open=""')).toBe(open);
+    expect(disclosure).toContain('aria-label="이 파일은"');
+    expect(html).toContain('자세한 문장 설명은 AI 칸의 ‘AI로 이 파일 설명 만들기’에서 만들 수 있어요.');
+  });
+
   it('shows eight function cards, imports and limitations before the collapsed other code', () => {
     const html = renderToStaticMarkup(React.createElement(FileGuideCard, { ...emptyFacts, uses: emptyUses, onUse() {}, guide, analysis, onOpenFile() {}, busy: false, stale: false, onShow() {}, onSelect() {} }));
     expect(html).toContain('<details open=""');
@@ -130,7 +140,7 @@ describe('file guide AI function summaries', () => {
     ...emptyFacts, guide, analysis, uses: emptyUses, busy: false, stale: false,
     onUse() {}, onShow() {}, onSelect() {}, onOpenFile() {}, ...props,
   }));
-  const noneNotice = '아래 ‘AI로 이 파일 설명 만들기’를 쓰면, AI가 요약한 함수 카드에 AI 해석을 보여 줘요.';
+  const noneNotice = 'AI 칸의 ‘AI로 이 파일 설명 만들기’를 쓰면, AI가 요약한 함수 카드에 AI 해석을 보여 줘요.';
   const staleNotice = '파일이 바뀌어 AI 요약을 숨겼어요. 다시 만들어 주세요.';
 
   it('shows the AI heading, interpretation tag and text only on a summarized function', () => {

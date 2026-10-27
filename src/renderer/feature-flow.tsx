@@ -183,6 +183,7 @@ export function FlowWalk({ flow, title, about, codeName, walk, selection, setSto
       <article className="card" data-testid="story-step" data-kind={step.kind}>
         <p>{walk.step + 1} / {steps.length} · {step.label}</p>
         <h3 ref={stepHeading} tabIndex={-1}>{step.title}</h3><p>{step.text}</p>
+        {!stale && <p data-testid="story-function-location">{currentNode.name} · {currentNode.relativePath} {currentNode.range.startLine}–{currentNode.range.endLine}행</p>}
         {otherCount > 0 && <section aria-label="다른 경우">
           <h4>다른 경우 {otherCount}개</h4>
           <SiteList items={[...step.stops.items.map(stop => ({ nodeId: stop.nodeId, site: stop.site, text: stopText(stop),
