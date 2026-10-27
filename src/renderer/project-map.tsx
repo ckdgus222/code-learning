@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps, type NodeTypes } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { ChangeKind, FileChange, MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectChanges, ProjectMap, ProjectView } from '../shared/contracts';
-import { folderName, visibleGraph, type MapArrow, type MapBox } from './map-layout';
+import { closeArea, expandableIds, folderArrows, folderName, visibleGraph, type MapArrow, type MapBox } from './map-layout';
 import { COMPLEXITY_NOTE, ComplexityTags } from './complexity';
 import { ChangeList, kindLabels } from './changes';
 
@@ -66,7 +66,7 @@ export function MapCanvas({ testId, canvasKey, nodes, edges, nodeTypes, onNodeCl
 }) {
   return <div className="map-canvas" data-testid={testId}>
     <ReactFlow colorMode="dark" key={canvasKey} nodes={nodes} edges={edges} nodeTypes={nodeTypes}
-      // Only boxes in view are drawn, so the fit may zoom out far enough to show a whole expanded folder.
+      // Only boxes in view are drawn, so the fit may zoom out far enough to show a whole opened folder.
       fitView fitViewOptions={FIT} minZoom={0.1} onlyRenderVisibleElements
       nodesDraggable={false} nodesConnectable={false}
       onNodeClick={(_event, node) => onNodeClick(node.id)}
@@ -81,20 +81,21 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
   map: ProjectMap; changes: MapChanges | null; locked: boolean; onOpenFile(fileId: string): void; onShowImport(item: MapImport): void;
   onShowFunction(item: MapFunction): void; onShowChange(change: FileChange): void;
 }) {
-  const folders = useMemo(() => [...new Set(map.files.map(file => file.folder))], [map]);
+  const expandable = useMemo(() => expandableIds(map), [map]);
   const paths = useMemo(() => new Map(map.files.map(file => [file.id, file.relativePath])), [map]);
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
   const [selected, setSelected] = useState<MapArrow | null>(null);
-  const graph = useMemo(() => visibleGraph(map, expanded), [map, expanded]);
+  const graph = useMemo(() => visibleGraph(map, opened, expandable), [map, opened, expandable]);
   // The folder-to-folder arrows are the design at a glance, so they are also listed as text.
-  const design = useMemo(() => visibleGraph(map, new Set()).arrows, [map]);
+  const design = useMemo(() => folderArrows(map), [map]);
   const pathOf = (id: string) => paths.get(id) ?? '(목록에 없는 파일)';
   // A file now has a box; a deleted file and a rename's old path have none and are only in the list below.
   const changeOf = useMemo(() => new Map((changes?.result.changes ?? []).flatMap(change => change.fileId ? [[change.fileId, change.kind] as const] : [])),
     [changes]);
-  const changedIn = (folder: string) => map.files.filter(file => file.folder === folder && changeOf.has(file.id)).length;
+  const changedIn = (box: MapBox) => map.files.filter(file => changeOf.has(file.id)
+    && (file.folder === box.folder || (box.id.startsWith('folder:') && file.folder.startsWith(`${box.folder}/`)))).length;
   const nodes: Node[] = graph.boxes.map(box => ({ id: box.id, type: 'box', position: { x: box.x, y: box.y },
-    data: { box, change: box.file ? changeOf.get(box.file.id) ?? null : null, changed: box.kind === 'folder' ? changedIn(box.folder) : 0 },
+    data: { box, change: box.file ? changeOf.get(box.file.id) ?? null : null, changed: box.kind === 'folder' ? changedIn(box) : 0 },
     className: `map-box map-box--${box.kind}`, draggable: false, connectable: false }));
   const placeOf = new Map(graph.boxes.map(box => [box.id, box]));
   const handlesFor = (arrow: MapArrow) => {
@@ -106,27 +107,30 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
   const edges: Edge[] = graph.arrows.map(arrow => ({ id: arrow.id, source: arrow.source, target: arrow.target, ...handlesFor(arrow),
     label: arrow.items.length > 1 ? `import ${arrow.items.length}개` : undefined, className: arrow.back ? 'map-arrow map-arrow--back' : 'map-arrow',
     markerEnd: ARROW_MARKER, selected: selected?.id === arrow.id }));
-  const toggle = (folder: string) => setExpanded(current => {
-    const next = new Set(current);
-    if (next.has(folder)) next.delete(folder); else next.add(folder);
-    return next;
-  });
   const showButton = (item: MapImport) => <button className="btn btn--small" disabled={locked} onClick={() => onShowImport(item)}>코드 보기</button>;
   const externals = [...map.external.reduce((groups, item) => groups.set(item.specifier ?? '', (groups.get(item.specifier ?? '') ?? 0) + 1),
     new Map<string, number>())];
+  const openChips = [...opened].filter(id => expandable.has(id));
   const unexamined = map.files.filter(file => file.checked === 'partial' || file.checked === 'failed' || file.checked === 'skipped');
 
   return <>
     <div className="map-actions" role="group" aria-label="지도 보기">
-      <button className="btn btn--small" aria-pressed={expanded.size === 0} onClick={() => setExpanded(new Set())}>설계 보기</button>
-      <button className="btn btn--small" aria-pressed={expanded.size === folders.length} onClick={() => setExpanded(new Set(folders))}>파일 보기</button>
-      <span className="hint">폴더 상자를 누르면 펼치거나 접어요. 파일 상자를 누르면 코드를 열어요. 점선은 오른쪽에서 왼쪽으로 거꾸로 가는 연결이라, 서로 가져다 쓰는 곳일 수 있어요.</span>
+      <button className="btn btn--small" aria-pressed={opened.size === 0} onClick={() => setOpened(new Set())}>설계 보기</button>
+      <button className="btn btn--small" aria-pressed={graph.boxes.every(box => box.kind === 'file')} onClick={() => setOpened(new Set(expandable))}>파일 보기</button>
+      <span className="hint">상자를 누르면 그 안을 한 단계 펼쳐요. 위 ‘접기’로 다시 접어요. 파일 상자를 누르면 코드를 열어요. 점선은 오른쪽에서 왼쪽으로 거꾸로 가는 연결이라, 서로 가져다 쓰는 곳일 수 있어요.</span>
     </div>
+    {openChips.length > 0 && <div className="map-actions" role="group" aria-label="펼친 곳">
+      <span className="hint">펼친 곳</span>
+      {openChips.map(id => <button key={id} className="btn btn--small"
+        onClick={() => setOpened(current => closeArea(current, id))}>
+        {folderName(id.slice(id.indexOf(':') + 1))}{id.startsWith('files:') ? ' 바로 아래 파일' : ''} 접기
+      </button>)}
+    </div>}
     {/* Remounting on every fold refits the view to the boxes now shown. */}
-    <MapCanvas testId="map-canvas" canvasKey={[...expanded].sort().join('|')} nodes={nodes} edges={edges} nodeTypes={nodeTypes}
+    <MapCanvas testId="map-canvas" canvasKey={[...opened].sort().join('|')} nodes={nodes} edges={edges} nodeTypes={nodeTypes}
       onNodeClick={id => {
         const box = graph.boxes.find(item => item.id === id);
-        if (box?.kind === 'folder') toggle(box.folder);
+        if (box?.kind === 'folder') setOpened(current => new Set([...current, box.id]));
         else if (box?.file) onOpenFile(box.file.id);
       }}
       onEdgeClick={id => setSelected(graph.arrows.find(item => item.id === id) ?? null)} />
