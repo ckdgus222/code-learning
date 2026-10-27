@@ -4,6 +4,8 @@ import { codeNameOf, groupNameOf, methodNames, routeLabel, storyOf } from '../co
 import type { FlowStart } from './feature-flow';
 import { screenGroups } from './screen-groups';
 
+const clip = (text: string, limit: number): string => text.length > limit ? `${text.slice(0, limit)}…` : text;
+
 export interface IndexFeature {
   routeIndex: number;
   name: string;
@@ -49,7 +51,7 @@ export function featureIndex(routes: ProjectRoutes, flows: FeatureFlow[], pathOf
     let group = groups.get(key);
     if (!group) {
       const screen = flows.flatMap(flow => flow.nodes).find(node => node.side === 'front' && node.screen === `/${key}`);
-      group = { key, title: screen?.screenTitle ? { ...screen.screenTitle, screen: screen.screen!,
+      group = { key, title: screen?.screenTitle ? { ...screen.screenTitle, text: clip(screen.screenTitle.text, 40), screen: screen.screen!,
         relativePath: pathOf(screen.screenTitle.site.fileId) } : null, features: [] };
       groups.set(key, group);
     }
@@ -57,7 +59,8 @@ export function featureIndex(routes: ProjectRoutes, flows: FeatureFlow[], pathOf
       .map(row => ({ ...row, screen: group.screen, first: storyOf(flow, row.through)[0] })));
     // User decision: a view is named by its screen title first, an action by its button text first,
     // so actions on one screen do not all share the screen's name.
-    const titledRow = rows.find(row => row.first?.nodes[0]?.screenTitle);
+    const title = rows[0]?.first?.nodes[0]?.screenTitle;
+    const titledRow = title && rows.every(row => row.first?.nodes[0]?.screenTitle?.text === title.text) ? rows[0] : undefined;
     const buttonRow = rows.find(row => buttonName(row.first?.representative));
     const titled = route.method !== 'GET' && buttonRow ? undefined : titledRow;
     const button = titled ? undefined : buttonRow;
@@ -69,7 +72,7 @@ export function featureIndex(routes: ProjectRoutes, flows: FeatureFlow[], pathOf
     const screenTitle = titled?.first.nodes[0].screenTitle;
     const controlName = !titled && (button || !chosen) ? buttonName(first?.representative) : null;
     const basis: IndexFeature['basis'] = screenTitle ? 'screen-title' : controlName ? 'button' : 'address';
-    const name = screenTitle ? `‘${screenTitle.text}’ 화면 · ${methodNames[route.method]}`
+    const name = screenTitle ? `‘${clip(screenTitle.text, 40)}’ 화면 · ${methodNames[route.method]}`
       : controlName ? `${controlName} · ${methodNames[route.method]}` : codeNameOf(route);
     const source = screenTitle ? `화면 ${chosen!.screen} · ${pathOf(screenTitle.site.fileId)} ${screenTitle.site.startLine}행`
       : controlName ? `${chosen ? `화면 ${chosen.screen} · ` : ''}${first!.representative.relativePath} ${first!.representative.name}`

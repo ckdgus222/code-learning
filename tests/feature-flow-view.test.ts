@@ -836,7 +836,9 @@ it('recommends the indexed name and evidence and follows the same named screen, 
   const secondScreen = { ...nodes[3], id: 'z', screen: '/z', screenTitle: { text: '제목 있는 화면', site: {
     ...nodes[3].range, fileId: 'page', fileHash: 'h', text: '<h1>제목 있는 화면</h1>',
   } } };
-  const graph = { ...flow, nodes: [...nodes, secondScreen], edges: [...flow.edges, { ...flow.edges[0], from: 'z' }] };
+  const namedEvent = { ...nodes[2], id: 'z-event', control: { tag: 'button', texts: ['지우기'] } };
+  const graph = { ...flow, nodes: [...nodes, secondScreen, namedEvent], edges: [...flow.edges,
+    { ...flow.edges[0], from: 'z', to: 'z-event' }, { ...flow.edges[1], from: 'z-event' }] };
   const onFollow = vi.fn();
   const index = vi.spyOn(indexes, 'featureIndex');
   let follow: (() => void) | undefined;
@@ -855,9 +857,9 @@ it('recommends the indexed name and evidence and follows the same named screen, 
   try {
     const html = renderToStaticMarkup(React.createElement(Probe));
     const card = html.slice(html.indexOf('aria-label="처음 따라갈 기능"'), html.indexOf('aria-label="기능 목록"'));
-    expect(card).toContain('<b>‘제목 있는 화면’ 화면 · 지우기</b>');
-    expect(card).toContain('title="화면 /z · web/app/dogs/page.tsx 1행">화면 제목</span>');
-    expect(card).toContain('<p class="hint">화면 /z · web/app/dogs/page.tsx 1행</p>');
+    expect(card).toContain('<b>‘지우기’ 버튼 · 지우기</b>');
+    expect(card).toContain('title="화면 /z · src/example.ts onClick 함수">버튼 문구</span>');
+    expect(card).toContain('<p class="hint">화면 /z · src/example.ts onClick 함수</p>');
     expect(card).toContain('<p class="hint">지우기 · /api/dogs/0</p>');
     expect(card).toContain('title="훅이 돌려준 값 remove를 써요 · 방식 모름">추정 연결</span>');
     expect(index).toHaveBeenCalledTimes(1);

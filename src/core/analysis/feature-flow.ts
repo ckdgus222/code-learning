@@ -246,19 +246,36 @@ function controlTexts(tag: Node, stop: () => void, submit = false): string[] {
   return [parts.join('').replace(/\s+/g, ' ').trim()].filter(Boolean);
 }
 
-function controlOf(fn: Node, resolvesName: (name: Node) => boolean, stop: () => void): { event: string; control: FlowControl } | null {
-  const attribute = attributeFor(fn, resolvesName, stop);
+function controlOf(fn: Node, declarationOf: (name: Node) => Declaration | null, stop: () => void): { event: string; control: FlowControl } | null {
+  const attribute = attributeFor(fn, name => {
+    const declaration = declarationOf(name);
+    return declaration?.kind === 'function' && sameRange(declaration.fn, fn);
+  }, stop);
   const tag = attribute?.parent;
   const event = attribute && firstCode(attribute)?.text;
   if (!tag || !event || !/^on[A-Z]/.test(event) || !['jsx_opening_element', 'jsx_self_closing_element'].includes(tag.type)) return null;
   const texts = controlTexts(tag, stop);
   const control: FlowControl = { tag: field(tag, 'name')?.text ?? '', texts: [...new Set(texts.map(text => clip(text, 30)))].slice(0, 3) };
   if (control.tag !== 'form') return { event, control };
+  const owner = enclosing(tag);
   const buttons: Node[] = [];
-  const pending = tag.type === 'jsx_opening_element' ? [...tag.parent!.namedChildren].reverse() : [];
+  const pending = tag.type === 'jsx_opening_element'
+    ? tag.parent!.namedChildren.toReversed().map(node => ({ node, path: [] as number[] })) : [];
   while (pending.length) {
     stop();
-    const node = pending.pop()!;
+    const { node, path } = pending.pop()!;
+    const expression = node.type === 'jsx_expression' ? firstCode(node) : null;
+    const identifier = expression && unwrapped(expression);
+    if (identifier?.type === 'identifier') {
+      const declaration = declarationOf(identifier);
+      const variable = declaration?.kind === 'variable' ? declaration.info : null;
+      if (!owner || variable?.role !== 'const' || !variable.owner || !sameRange(variable.owner, owner)
+        || !variable.node || !variable.value || path.includes(variable.node.startIndex)) continue;
+      const value = unwrapped(variable.value);
+      if (!['jsx_element', 'jsx_self_closing_element', 'jsx_fragment'].includes(value.type)) continue;
+      pending.push({ node: value, path: [...path, variable.node.startIndex] });
+      continue;
+    }
     const opening = node.type === 'jsx_element' ? field(node, 'open_tag') : node.type === 'jsx_self_closing_element' ? node : null;
     const name = opening && field(opening, 'name')?.text;
     if (name === 'form') continue;
@@ -266,7 +283,9 @@ function controlOf(fn: Node, resolvesName: (name: Node) => boolean, stop: () => 
       const type = opening.namedChildren.find(child => child.type === 'jsx_attribute' && firstCode(child)?.text === 'type');
       if (literal(type?.namedChildren[1] ?? null) === 'submit' || name === 'button' && !type) buttons.push(opening);
     }
-    if (!['jsx_opening_element', 'jsx_self_closing_element'].includes(node.type)) pending.push(...node.namedChildren.toReversed());
+    if (!['jsx_opening_element', 'jsx_self_closing_element'].includes(node.type)) {
+      pending.push(...node.namedChildren.toReversed().map(node => ({ node, path })));
+    }
   }
   const submits = buttons.length === 1 ? controlTexts(buttons[0], stop, true) : [];
   control.submits = [...new Set(submits.map(text => clip(text, 30)))].slice(0, 3);
@@ -286,7 +305,7 @@ function screenTitleOf(fn: Node, facts: FileFacts, stop: () => void): FlowNode['
   }
   if (titles.size !== 1) return null;
   const [text, site] = [...titles][0];
-  return { text: clip(text, 40), site };
+  return { text, site };
 }
 
 function askOf(fn: Node, facts: FileFacts): FlowAsk[] {
@@ -588,7 +607,7 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
     const already = expanded.has(node.id);
     expanded.add(node.id);
     const { found, facts, fn } = await inspect(node);
-    if (!already && node.event === null) Object.assign(node, controlOf(fn, name => resolvesToFn(facts, name, fn), stop));
+    if (!already && node.event === null) Object.assign(node, controlOf(fn, name => declarationAt(facts, name), stop));
     const next = nextRouteOf(node.relativePath, files.map(file => file.relativePath));
     if (next?.kind === 'page' && facts.exports.get('default')?.some(item => item.fn && sameRange(item.fn, fn))) {
       node.screen = formatNextPath(next.segments);
@@ -606,7 +625,7 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
         if (!expanded.has(parent.id)) {
           const info = cache.parsed.get(parent.fileId)!;
           const fn = info.functions.find(fn => fn.startIndex === parent.range.startUtf16 && fn.endIndex === parent.range.endUtf16)!;
-          Object.assign(parent, controlOf(fn, name => resolvesToFn(info, name, fn), stop));
+          Object.assign(parent, controlOf(fn, name => declarationAt(info, name), stop));
         }
         edge(parent, node, 'basis' in caller ? 'typed' : parent.event !== null ? 'event' : 'calls', caller);
         queue.push(parent);
