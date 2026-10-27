@@ -90,6 +90,21 @@ for (const [name, text] of Object.entries(mapFiles)) {
   await mkdir(path.dirname(path.join(mapFixture, name)), { recursive: true });
   await writeFile(path.join(mapFixture, name), text);
 }
+// Nested areas have their own fixture so the existing map counts stay unchanged.
+const areaMapFixture = path.join(temporary, '영역 지도 프로젝트');
+const areaMapFiles = {
+  'web/app/page.ts': "import { value } from '../lib/value';\nexport const page = value;\n",
+  'web/lib/value.ts': 'export const value = 1;\n',
+  'web/e2e/check.ts': 'export const check = 1;\n',
+  'web/index.ts': 'export const index = 1;\n',
+  'api/src/main.ts': 'export const main = 1;\n',
+  // The map lists only code files (and files code imports), so the root file is code.
+  'root.ts': 'export const root = 1;\n',
+};
+for (const [name, text] of Object.entries(areaMapFiles)) {
+  await mkdir(path.dirname(path.join(areaMapFixture, name)), { recursive: true });
+  await writeFile(path.join(areaMapFixture, name), text);
+}
 // 65 code files of about 100 KB in five folders: more than 60, so the map starts folded, and slow enough
 // to parse that a cancel lands while Tree-sitter is working.
 const bigMapFixture = path.join(temporary, '큰 지도 프로젝트');
@@ -1578,6 +1593,48 @@ try {
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
     await writeFile(changedFile, featureFlowFiles['web/lib/dogs.ts']);
+  });
+  await check('Project map areas: open one level, fold descendants and switch views', async () => {
+    await dialogTo(areaMapFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '영역 지도 프로젝트', exact: true }).waitFor();
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    const boxes = page.getByTestId('map-canvas').locator('.react-flow__node');
+    const chips = page.getByRole('group', { name: '펼친 곳', exact: true });
+    await until(async () => await boxes.count() === 3);
+    assert.equal(await chips.count(), 0);
+    await boxes.filter({ hasText: 'web · 파일 4개' }).click();
+    await until(async () => await boxes.count() === 6);
+    await boxes.filter({ hasText: 'web/app · 파일 1개' }).waitFor();
+    await boxes.filter({ hasText: 'web/lib · 파일 1개' }).waitFor();
+    await boxes.filter({ hasText: 'web/e2e · 파일 1개' }).waitFor();
+    await boxes.filter({ hasText: 'web 바로 아래 파일 · 1개' }).waitFor();
+    assert.deepEqual(await chips.getByRole('button').allTextContents(), ['web 접기']);
+    await boxes.filter({ hasText: 'web/app · 파일 1개' }).click();
+    await boxes.filter({ hasText: 'page.ts' }).waitFor();
+    await boxes.filter({ hasText: 'web 바로 아래 파일 · 1개' }).click();
+    await boxes.filter({ hasText: 'index.ts' }).waitFor();
+    assert.deepEqual(await chips.getByRole('button').allTextContents(), ['web 접기', 'web/app 접기', 'web 바로 아래 파일 접기']);
+    await chips.getByRole('button', { name: 'web 접기', exact: true }).click();
+    await until(async () => await boxes.count() === 3);
+    assert.equal(await chips.count(), 0);
+    // Reopening a parent must leave both its child area and its direct-file group closed.
+    await boxes.filter({ hasText: 'web · 파일 4개' }).click();
+    await boxes.filter({ hasText: 'web/app · 파일 1개' }).waitFor();
+    await boxes.filter({ hasText: 'web 바로 아래 파일 · 1개' }).waitFor();
+    await page.getByRole('button', { name: '파일 보기', exact: true }).click();
+    await until(async () => await boxes.locator('.map-box__label > b').allTextContents().then(labels =>
+      labels.length === 6 && labels.every(label => !label.includes('파일'))));
+    assert.equal(await page.getByRole('button', { name: '파일 보기', exact: true }).getAttribute('aria-pressed'), 'true');
+    await page.getByRole('button', { name: '설계 보기', exact: true }).click();
+    await until(async () => await boxes.count() === 3);
+    await boxes.filter({ hasText: '(최상위 폴더) 바로 아래 파일 · 1개' }).click();
+    await boxes.filter({ hasText: 'root.ts' }).waitFor();
+    await chips.getByRole('button', { name: '(최상위 폴더) 바로 아래 파일 접기', exact: true }).click();
+    await boxes.filter({ hasText: '(최상위 폴더) 바로 아래 파일 · 1개' }).waitFor();
+    assert.equal(await chips.count(), 0);
+    await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
+    await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
   });
   await check('Project map: file and design views, evidence, freshness, reopening and cancelled or stale maps', async () => {
     await dialogTo(mapFixture);
