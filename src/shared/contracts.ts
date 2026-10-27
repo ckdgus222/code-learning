@@ -312,6 +312,7 @@ export interface FlowNode {
   after: FlowAfter[];
   afterOmitted: number;
   screen: string | null;
+  /** Full fixed heading text; display names may shorten it after comparing screens. */
   screenTitle?: { text: string; site: ValueSite } | null;
   outside: string[];
   outsideOmitted: number;

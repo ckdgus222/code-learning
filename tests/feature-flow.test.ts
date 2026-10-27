@@ -342,13 +342,13 @@ it('does not name a page from another component sharing its request or from a ne
   expect(flow.nodes.find(node => node.screen === '/login')?.screenTitle).toBeNull();
 });
 
-it('compares full headings before clipping and retains the first location for repeated text', async () => {
+it('preserves full headings and retains the first location for repeated text', async () => {
   await put('next.config.ts', 'export default {}');
   await put('server.ts', "@Controller('x') class C { @Get() get() {} }");
   const long = '가'.repeat(45);
   await put('app/page.tsx', `export default function Page() { fetch('/x'); return <>\n<h1>${long}</h1>\n<h1>${long}</h1></>; }`);
   expect((await analyze()).flow.nodes.find(node => node.screen === '/')?.screenTitle)
-    .toMatchObject({ text: `${'가'.repeat(40)}…`, site: { startLine: 2 } });
+    .toMatchObject({ text: long, site: { startLine: 2 } });
   await put('app/page.tsx', `export default function Page() { fetch('/x'); return <><h1>${long}1</h1><h1>${long}2</h1></>; }`);
   expect((await analyze()).flow.nodes.find(node => node.screen === '/')?.screenTitle).toBeNull();
 });
@@ -372,6 +372,48 @@ it.each([
   const flow = await frontFixture(`function Page() { return <form onSubmit={() => fetch('/x')}>${jsx}</form>; }`);
   expect(flow.nodes.find(node => node.event)?.control).toEqual({ tag: 'form', texts: [], submits });
   expect(storyOf(flow)[0].text).toContain('입력 양식을 보내면');
+});
+
+it.each([
+  ['const actions = (<div><button>{busy ? "저장 중…" : "저장하기"}</button></div>);', '{actions}', ['저장 중…', '저장하기']],
+  ['const actions = (<button>저장하기</button>);', '{((actions))}', ['저장하기']],
+  ['const actions = <input type="submit" value="저장하기" />;', '{actions}', ['저장하기']],
+  ['const actions = <><button>저장하기</button></>;', '{actions}', ['저장하기']],
+  ['let actions = <button>저장하기</button>;', '{actions}', []],
+  ['const actions = <button>저장하기</button>; actions = <button>바뀜</button>;', '{actions}', []],
+  ['const actions = "저장하기";', '{actions}', []],
+  ['const button = <button>저장하기</button>; const actions = button;', '{actions}', []],
+  ['const actions = <button>저장하기</button>;', '{actions}<button>직접 보내기</button>', []],
+  ['const button = <button>저장하기</button>; const actions = <div>{button}</div>;', '{actions}', ['저장하기']],
+  ['const actions = <div>{other}</div>; const other = <div>{actions}</div>;', '{actions}', []],
+  ['const actions = <button>저장하기</button>;', '{actions}{actions}', []],
+  ['const actions = <form><button>안쪽</button></form>;', '{actions}<button>바깥</button>', ['바깥']],
+  ['const actions = <div><form><button>안쪽</button></form></div>;', '{actions}', []],
+])('follows only stable local JSX variables and counts each placement: %s %s', async (declarations, jsx, submits) => {
+  const flow = await frontFixture(`function Page() { ${declarations} return <form onSubmit={() => fetch('/x')}>${jsx}</form>; }`);
+  expect(flow.limited).toBe(false);
+  expect(flow.nodes.find(node => node.event)?.control).toEqual({ tag: 'form', texts: [], submits });
+  expect(storyOf(flow)[0].text).toContain('입력 양식을 보내면');
+});
+
+it.each([
+  'const actions = <button>바깥</button>; function Page() { return <form onSubmit={() => fetch("/x")}>{actions}</form>; }',
+  'function Outer() { const actions = <button>바깥</button>; function Page() { return <form onSubmit={() => fetch("/x")}>{actions}</form>; } return <Page />; }',
+  'function Page() { const actions = <button>바깥</button>; { let actions = <button>안쪽</button>; return <form onSubmit={() => fetch("/x")}>{actions}</form>; } }',
+  'function Page() { const actions = <button>하나</button>; const actions = <button>둘</button>; return <form onSubmit={() => fetch("/x")}>{actions}</form>; }',
+])('does not follow an outer, shadowed mutable or ambiguous declaration: %s', async code => {
+  const flow = await frontFixture(code);
+  expect(flow.nodes.find(node => node.event)?.control).toEqual({ tag: 'form', texts: [], submits: [] });
+});
+
+it('resolves JSX variables in their own scope with a named submit handler', async () => {
+  const flow = await frontFixture(`function Page() {
+    const button = <button>저장하기</button>;
+    const actions = <div>{button}</div>;
+    const submit = () => fetch('/x');
+    { const button = <button>다른 버튼</button>; return <form onSubmit={submit}>{actions}</form>; }
+  }`);
+  expect(flow.nodes.find(node => node.event)?.control).toEqual({ tag: 'form', texts: [], submits: ['저장하기'] });
 });
 
 it('keeps the existing click text rule for a conditional followed by an icon', async () => {

@@ -14,7 +14,7 @@ const route: Route = { method: 'DELETE', path: '/api/diaries/:id', framework: 'n
 const routes: ProjectRoutes = { projectId: 'p', routesId: 'r', prefix: null, routes: [route], requests: [], links: [], limited: false, notes: [] };
 const flow: FeatureFlow = { projectId: 'p', routesId: 'r', routeIndex: 0, limited: false, notes: [], nodes: [
   node('b', 'front', { screen: '/b', screenTitle: { text: '목록', site } }),
-  node('a', 'front', { screen: '/a' }),
+  node('a', 'front', { screen: '/a', screenTitle: { text: '목록', site } }),
   node('event', 'front', { event: 'onClick', control: { tag: 'button', texts: ['삭제 중…', '삭제'] } }),
   node('req', 'request'), node('back', 'back'),
 ], edges: [['a', 'event'], ['b', 'event'], ['event', 'req'], ['req', 'back']].map(([from, to]) => ({
@@ -30,14 +30,45 @@ it.each([
   expect(featureIndex({ ...routes, routes: [{ ...route, framework, path }] }, [flow], pathOf)[0].key).toBe(key);
 });
 
-it('prefers a screen title over an earlier screen button for a view, retaining that row and its inference', () => {
+it('prefers a shared screen title over button text for a view, retaining the first row and its inference', () => {
   const viewRoutes = { ...routes, routes: [{ ...route, method: 'GET' as const }] };
   const indexed = featureIndex(viewRoutes, [flow], pathOf)[0].features[0];
   expect(indexed).toMatchObject({ routeIndex: 0, name: '‘목록’ 화면 · 보기', basis: 'screen-title',
-    screens: ['/a', '/b'], start: { through: 'b', storyId: 'req@b' }, linked: 'screen', inferred: true,
-    reasons: ['주소 추정'], source: '화면 /b · web/page.tsx 5행' });
-  const selected = screenGroups(viewRoutes, [flow]).screens.find(group => group.screen === '/b')!.rows[0];
+    screens: ['/a', '/b'], start: { through: 'a', storyId: 'req@a' }, linked: 'screen', inferred: true,
+    reasons: ['주소 추정'], source: '화면 /a · web/page.tsx 5행' });
+  const selected = screenGroups(viewRoutes, [flow]).screens.find(group => group.screen === '/a')!.rows[0];
   expect([indexed.inferred, indexed.reasons]).toEqual([selected.inferred, selected.reasons]);
+});
+
+it.each([
+  ['다른 제목', '목록'], [null, '목록'], ['목록', null],
+  [`${'가'.repeat(40)}하나`, `${'가'.repeat(40)}둘`],
+])('requires every screen to have the same full title: %s / %s', (firstTitle, secondTitle) => {
+  const viewRoutes = { ...routes, routes: [{ ...route, method: 'GET' as const }] };
+  const graph = { ...flow, nodes: flow.nodes.map(node => {
+    if (!node.screen) return node;
+    const text = node.id === 'a' ? firstTitle : secondTitle;
+    return { ...node, screenTitle: text === null ? null : { text, site } };
+  }) };
+  expect(featureIndex(viewRoutes, [graph], pathOf)[0].features[0]).toMatchObject({
+    name: '‘삭제 중…’ 또는 ‘삭제’ 버튼 · 보기', basis: 'button', start: { through: 'a', storyId: 'req@a' },
+  });
+  const plain = { ...graph, nodes: graph.nodes.map(node => ({ ...node, control: null })) };
+  expect(featureIndex(viewRoutes, [plain], pathOf)[0].features[0]).toMatchObject({
+    name: '보기 · /api/diaries/:id', basis: 'address', start: { through: 'a', storyId: 'req@a' },
+  });
+});
+
+it.each([40, 41, 80])('clips %s-character titles only in feature and group names for a single screen', length => {
+  const text = '가'.repeat(length);
+  const graph = { ...flow, nodes: flow.nodes.filter(node => node.id !== 'b').map(node => node.id === 'a'
+    ? { ...node, screen: '/diaries', screenTitle: { text, site } } : node), edges: flow.edges.filter(edge => edge.from !== 'b') };
+  const group = featureIndex({ ...routes, routes: [{ ...route, method: 'GET' as const }] }, [graph], pathOf)[0];
+  const displayed = length > 40 ? `${'가'.repeat(40)}…` : text;
+  expect(group.title).toEqual({ text: displayed, screen: '/diaries', relativePath: 'web/page.tsx', site });
+  expect(group.features[0]).toMatchObject({ name: `‘${displayed}’ 화면 · 보기`, basis: 'screen-title',
+    start: { through: 'a', storyId: 'req@a' } });
+  expect(graph.nodes.find(node => node.id === 'a')?.screenTitle?.text).toBe(text);
 });
 
 it.each(['POST', 'PUT', 'PATCH', 'DELETE', 'ALL'] as const)('prefers button text over a screen title for a %s action', method => {
