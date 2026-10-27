@@ -65,6 +65,7 @@ try {
   assert.equal(await page.locator('.files h3').count(), 0);
   await app.evaluate(({ dialog }, project) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [project] }); }, project);
   await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+  await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
   await page.getByRole('button', { name: 'sample.ts', exact: true }).click();
   await page.getByRole('button', { name: 'packaged', exact: true }).click();
   await page.getByRole('button', { name: '조건 확인', exact: true }).click();
@@ -179,6 +180,7 @@ try {
   await app.evaluate(({ dialog }, folder) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] }); }, treeFixture);
   await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
   await page.getByRole('heading', { name: '폴더 트리 프로젝트', exact: true }).waitFor();
+  await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
   const files = page.getByRole('region', { name: '파일 목록', exact: true });
   const api = files.getByRole('button', { name: '폴더 api', exact: true });
   const src = files.getByRole('button', { name: '폴더 api/src', exact: true });
@@ -237,6 +239,8 @@ try {
   assert.equal(await src.getAttribute('aria-expanded'), 'true');
   // Reopening even the same project clears the disclosure state.
   await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('.views__item[aria-current="page"]')?.textContent === '한눈에 보기');
+  await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('.files button[aria-label="폴더 api"]')?.getAttribute('aria-expanded') === 'false');
   assert.equal(await main.isVisible(), false);
   // Screen-based feature selection uses the precomputed flow in the packaged renderer too.
