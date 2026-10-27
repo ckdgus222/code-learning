@@ -1726,6 +1726,83 @@ try {
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
   });
+  await check('Project map hover: faint arrows, computed emphasis, stale hover and connection-list focus', async () => {
+    await dialogTo(areaMapFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '영역 지도 프로젝트', exact: true }).waitFor();
+    await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
+    const canvas = page.getByTestId('map-canvas');
+    const boxes = canvas.locator('.react-flow__node');
+    const arrows = canvas.locator('.react-flow__edge');
+    const strong = canvas.locator('.map-arrow--strong');
+    const faint = canvas.locator('.map-arrow--faint');
+    const chips = page.getByRole('group', { name: '펼친 곳', exact: true });
+    const focus = page.getByRole('group', { name: '이어진 것만 보는 중', exact: true });
+    const list = page.getByRole('region', { name: '상자별 연결', exact: true });
+    const heading = page.getByRole('heading', { name: '프로젝트 지도', exact: true });
+    const appBox = boxes.filter({ hasText: 'web/app · 파일 1개' });
+    const e2eBox = boxes.filter({ hasText: 'web/e2e · 파일 1개' });
+    await until(async () => await boxes.count() === 3);
+    await boxes.filter({ hasText: 'web · 파일 4개' }).locator('.map-box__label').click();
+    await heading.hover();
+    await until(async () => await boxes.count() === 6 && await faint.count() === 2);
+    assert.equal(await strong.count(), 0);
+    assert.equal(await canvas.locator('.map-box--dim, .map-box--focus').count(), 0);
+
+    await appBox.hover();
+    await until(async () => await strong.count() === 1 && await faint.count() === 1);
+    assert.equal(await arrows.count(), 2);
+    assert.equal(await strong.getAttribute('data-id'), 'folder:web/app->folder:web/lib');
+    assert.equal(await faint.getAttribute('data-id'), 'folder:web/e2e->folder:web/lib');
+    assert.match(await e2eBox.getAttribute('class'), /\bmap-box--dim\b/);
+    assert.doesNotMatch(await appBox.getAttribute('class'), /\bmap-box--(?:dim|focus)\b/);
+    assert.doesNotMatch(await boxes.filter({ hasText: 'web/lib · 파일 1개' }).getAttribute('class'), /\bmap-box--dim\b/);
+    assert.equal(await strong.locator('.react-flow__edge-path').evaluate(path => getComputedStyle(path).strokeWidth), '2.4px');
+    assert.equal(await faint.locator('.react-flow__edge-path').evaluate(path => getComputedStyle(path).opacity), '0.25');
+    await heading.hover();
+    await until(async () => await strong.count() === 0 && await faint.count() === 2);
+    assert.equal(await canvas.locator('.map-box--dim, .map-box--focus').count(), 0);
+
+    // Opening the hovered area removes its id; bringing it back must not revive that hover.
+    await e2eBox.hover();
+    await until(async () => await strong.count() === 1);
+    assert.equal(await strong.getAttribute('data-id'), 'folder:web/e2e->folder:web/lib');
+    await e2eBox.locator('.map-box__label').click();
+    await boxes.filter({ hasText: 'check.ts' }).waitFor();
+    await e2eBox.waitFor({ state: 'detached' });
+    await heading.hover();
+    await until(async () => await faint.count() === 2 && await strong.count() === 0);
+    await chips.getByRole('button', { name: 'web 접기', exact: true }).click();
+    await until(async () => await boxes.count() === 3 && await arrows.count() === 0);
+    await boxes.filter({ hasText: 'web · 파일 4개' }).locator('.map-box__label').click();
+    await heading.hover();
+    await until(async () => await boxes.count() === 6 && await faint.count() === 2);
+    assert.equal(await strong.count(), 0);
+    assert.equal(await canvas.locator('.map-box--dim, .map-box--focus').count(), 0);
+
+    assert.equal(await list.getByRole('heading').innerText(), '상자별 연결 · 상자 6개');
+    const appRow = list.locator('li').filter({ has: page.getByRole('button', { name: 'web/app', exact: true }) });
+    assert.match(await appRow.innerText(), /가져다 씀 1곳: web\/lib/);
+    const libButton = list.getByRole('button', { name: 'web/lib', exact: true });
+    await libButton.click();
+    await focus.waitFor();
+    // The list may scroll the canvas out of view; bring it back before counting rendered arrows.
+    await heading.hover();
+    await until(async () => await arrows.count() === 2 && await strong.count() === 2);
+    assert.match(await focus.innerText(), /가져다 씀 0곳 · 이 상자를 가져다 씀 2곳/);
+    assert.equal(await libButton.getAttribute('aria-pressed'), 'true');
+    assert.equal(await canvas.getByRole('button', { name: 'web/lib · 파일 1개 이어진 것만 보기', exact: true })
+      .getAttribute('aria-pressed'), 'true');
+    assert.equal(await list.locator('li').count(), 6);
+    await libButton.click();
+    await focus.waitFor({ state: 'detached' });
+    await heading.hover();
+    await until(async () => await faint.count() === 2 && await strong.count() === 0);
+    assert.equal(await libButton.getAttribute('aria-pressed'), 'false');
+    assert.equal(await canvas.locator('.map-box--dim, .map-box--focus').count(), 0);
+    await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
+    await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+  });
   await check('Project map: file and design views, evidence, freshness, reopening and cancelled or stale maps', async () => {
     await dialogTo(mapFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
@@ -1884,8 +1961,9 @@ try {
     await until(() => app.evaluate(() => globalThis.testMapDialogWaiting === true));
     await boxes.filter({ hasText: 'file0.ts' }).click();
     // The list's button is disabled meanwhile; a forced click must still change nothing.
-    assert.equal(await page.locator('.map-list button').first().isDisabled(), true);
-    await page.locator('.map-list button').first().click({ force: true });
+    const importButton = page.locator('details').filter({ hasText: '연결 목록 · 65개' }).locator('.map-list button').first();
+    assert.equal(await importButton.isDisabled(), true);
+    await importButton.click({ force: true });
     await app.evaluate(() => globalThis.testMapReleaseDialog());
     await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: 'order.ts', exact: true }).isVisible(), true);

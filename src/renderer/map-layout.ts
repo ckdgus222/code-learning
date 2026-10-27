@@ -29,6 +29,13 @@ const COLUMN_WIDTH = 320;
 const ROW_HEIGHT = 112;
 export const folderName = (folder: string) => folder || '(최상위 폴더)';
 
+/** Names in connection lists keep full paths to distinguish files with the same basename. */
+export function boxName(box: MapBox): string {
+  if (box.file) return box.file.relativePath;
+  if (box.id.startsWith('files:')) return `${folderName(box.folder)} 바로 아래 파일`;
+  return folderName(box.folder);
+}
+
 /** `a/b/c` → `a`, `a/b`, `a/b/c`; the root folder `''` has none. */
 const ancestorsOf = (folder: string) => folder ? folder.split('/').map((_part, index, parts) => parts.slice(0, index + 1).join('/')) : [];
 
