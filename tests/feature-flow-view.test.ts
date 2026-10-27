@@ -1,8 +1,9 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { ReactFlow, ReactFlowProvider } from '@xyflow/react';
 import { expect, it, vi } from 'vitest';
 import * as ReactHooks from 'react';
-import { edgeLabel, pickNode, evidenceView, FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowLimits, FlowSteps, FlowWalk, hasFlowCode, hintSteps, stepQuestion, summaryKey, RoutesStatus, useFeatureFlows, walkSelection } from '../src/renderer/feature-flow';
+import { edgeLabel, FlowBoxNode, FlowDiagram, SIDE_HANDLE_TOP, pickNode, evidenceView, FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowLimits, FlowSteps, FlowWalk, hasFlowCode, hintSteps, stepQuestion, summaryKey, RoutesStatus, useFeatureFlows, walkSelection } from '../src/renderer/feature-flow';
 import type { FlowEdge, SourceView, Evidence, FeatureFlow, FlowNode, ProjectRoutes, ProjectView } from '../src/shared/contracts';
 import { Snippet } from '../src/renderer/flow';
 import { storyOf } from '../src/core/analysis/flow-story';
@@ -12,6 +13,10 @@ import * as indexes from '../src/renderer/feature-index';
 vi.mock('react', async importOriginal => {
   const actual = await importOriginal<typeof import('react')>();
   return { ...actual, useState: vi.fn(actual.useState) };
+});
+vi.mock('@xyflow/react', async importOriginal => {
+  const actual = await importOriginal<typeof import('@xyflow/react')>();
+  return { ...actual, ReactFlow: vi.fn((props: React.ComponentProps<typeof actual.ReactFlow>) => React.createElement(actual.ReactFlow, props)) };
 });
 
 const nodes: FlowNode[] = [
@@ -1091,6 +1096,70 @@ it.each(['calls', 'typed'] as const)('truncates %s names only beyond 20 UTF-16 c
   expect(edgeLabel(edge)).toBe(`${'a'.repeat(20)} 부름 · 1행`);
   expect(edgeLabel({ ...edge, site: { ...edge.site!, text: 'a'.repeat(21) } })).toBe(`${'a'.repeat(20)}… 부름 · 1행`);
 });
+
+it.each(['calls', 'typed', 'event', 'placed', 'inside', 'hook', 'route'] as const)(
+  'omits only the call name from short %s labels', kind => {
+    const edge: FlowEdge = { ...flow.edges[0], kind,
+      site: { ...nodes[0].range, fileId: 'f', fileHash: 'h', text: 'remove()', startLine: 12 } };
+    expect(edgeLabel(edge, { name: false })).toBe(kind === 'calls' || kind === 'typed' ? '부름 · 12행' : edgeLabel(edge));
+    expect(edgeLabel(edge, { name: true })).toBe(edgeLabel(edge));
+    expect(edgeLabel(edge, {})).toBe(edgeLabel(edge));
+    expect(edgeLabel({ ...edge, site: null }, { name: false })).toBe(edgeLabel({ ...edge, site: null }));
+  },
+);
+
+it('labels adjacent and cross-lane arrows but leaves skipped rows, upward arrows and self-calls unlabelled', () => {
+  vi.mocked(ReactFlow).mockImplementationOnce(() => React.createElement(React.Fragment));
+  const input: FeatureFlow = { ...flow, nodes: [...nodes, { ...nodes[2], id: 'last', depth: 0 }], edges: [
+    ...[['screen', 'event'], ['screen', 'last'], ['last', 'screen'], ['event', 'event'],
+      ['last', 'request'], ['request', 'back']].map(([from, to]): FlowEdge => ({ from, to, kind: 'calls',
+      sure: true, reasons: [], site: { ...nodes[0].range, fileId: 'f', fileHash: 'h', text: 'remove()', startLine: 12 } })),
+    { ...flow.edges[0], from: 'event', to: 'back', kind: 'typed' },
+  ] };
+  renderToStaticMarkup(React.createElement(FlowDiagram, { flow: input, selectedNodeId: null, onSelect() {} }));
+  const drawn = vi.mocked(ReactFlow).mock.calls.at(-1)![0].edges!;
+  expect(drawn.map(edge => edge.label)).toEqual(['remove() 부름 · 12행', undefined, undefined, undefined,
+    '부름 · 12행', '부름 · 12행', '부름']);
+  expect(drawn.map(edge => edge.type)).toEqual(['straight', 'smoothstep', 'smoothstep', 'smoothstep',
+    'straight', 'straight', 'smoothstep']);
+  expect(drawn.map(edge => [edge.source, edge.target])).toEqual(input.edges.map(edge => [edge.from, edge.to]));
+  const steps = renderToStaticMarkup(React.createElement(FlowSteps, { flow: input, locked: false, onCode() {}, onFunction() {} }));
+  expect(steps).toContain('remove()를 불러요 (12행)');
+});
+
+it('keeps all side handles at the same fixed height with and without event and screen tags', () => {
+  expect(SIDE_HANDLE_TOP).toBe(24);
+  for (const tagged of [false, true]) {
+    const node = { ...nodes[2], event: tagged ? 'onClick' : null, screen: tagged ? '/dogs' : null };
+    const html = renderToStaticMarkup(React.createElement(ReactFlowProvider, null,
+      React.createElement(FlowBoxNode, { id: node.id, data: { node }, type: 'flowBox', selected: false, dragging: false,
+        draggable: false, selectable: true, deletable: false, isConnectable: false, zIndex: 0, positionAbsoluteX: 0, positionAbsoluteY: 0 })));
+    expect(html.includes('화면 이벤트 onClick')).toBe(tagged);
+    expect(html.includes('화면 주소 /dogs')).toBe(tagged);
+    const handles = [...html.matchAll(/<div[^>]*data-handleid="([^"]+)"[^>]*>/g)];
+    expect(handles.map(([, id]) => id)).toEqual(['in-left', 'in-top', 'in-right', 'out-right', 'out-bottom']);
+    for (const [tag, id] of handles) {
+      if (id === 'in-top' || id === 'out-bottom') {
+        expect(tag).not.toContain('style=');
+        continue;
+      }
+      expect(tag).toContain(`style="top:${SIDE_HANDLE_TOP}px"`);
+    }
+  }
+});
+
+it.each([[0, 240], [8, 1010], [12, 1450], [13, 1560], [14, 1600], [30, 1600]])(
+  'sizes the diagram for %i rows with a 1600px cap', (count, height) => {
+    vi.mocked(ReactFlow).mockImplementationOnce(() => React.createElement(React.Fragment));
+    const input = { ...flow, edges: [], nodes: Array.from({ length: count }, (_, i) => ({ ...nodes[2], id: `node${i}` })) };
+    const html = renderToStaticMarkup(React.createElement(FlowDiagram, { flow: input, selectedNodeId: null, onSelect() {} }));
+    expect(html).toContain(`data-testid="feature-flow-canvas" style="height:${height}px"`);
+    const props = vi.mocked(ReactFlow).mock.calls.at(-1)![0];
+    expect(props.zoomOnScroll).toBe(false);
+    expect(props.preventScrolling).toBe(false);
+    expect(props.fitViewOptions?.maxZoom).toBe(1);
+  },
+);
 
 it('opens the diagram, evidence strip and steps from the start', () => {
   const html = renderToStaticMarkup(walkOf({ ...walkProps, flow }));

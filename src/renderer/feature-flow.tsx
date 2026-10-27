@@ -327,19 +327,22 @@ function FoldedDetails({ summary, children }: { summary: string; children: React
   </details>;
 }
 
-function FlowBoxNode({ data }: NodeProps<Node<{ node: FlowNode }>>) {
+// Tags make some boxes taller; side handles at a fixed height keep an arrow between boxes in one row level.
+export const SIDE_HANDLE_TOP = 24;
+
+export function FlowBoxNode({ data }: NodeProps<Node<{ node: FlowNode }>>) {
   const { node } = data;
   return <>
-    <Handle type="target" id="in-left" position={Position.Left} />
+    <Handle type="target" id="in-left" position={Position.Left} style={{ top: SIDE_HANDLE_TOP }} />
     <Handle type="target" id="in-top" position={Position.Top} />
-    <Handle type="target" id="in-right" position={Position.Right} />
+    <Handle type="target" id="in-right" position={Position.Right} style={{ top: SIDE_HANDLE_TOP }} />
     <span className="map-box__label">
       <small className="feature-box__file" title={node.relativePath}>{node.relativePath.split('/').at(-1)}</small>
       <b className="feature-box__name" title={node.name}>{node.name}</b>
       {node.event && <span className="tag tag--doc">화면 이벤트 {node.event}</span>}
       {node.screen !== null && <span className="tag tag--doc" title={`화면 주소 ${node.screen}`}>화면 주소 {node.screen}</span>}
     </span>
-    <Handle type="source" id="out-right" position={Position.Right} />
+    <Handle type="source" id="out-right" position={Position.Right} style={{ top: SIDE_HANDLE_TOP }} />
     <Handle type="source" id="out-bottom" position={Position.Bottom} />
   </>;
 }
@@ -349,15 +352,15 @@ function FlowLaneNode({ data }: NodeProps<Node<{ lane: FlowLane }>>) {
 }
 const flowNodeTypes = { flowBox: FlowBoxNode, flowLane: FlowLaneNode };
 
-export function edgeLabel(edge: FlowEdge): string {
-  const text = edge.site?.text;
+export function edgeLabel(edge: FlowEdge, options: { name?: boolean } = {}): string {
+  const text = options.name === false ? undefined : edge.site?.text;
   const name = text === undefined ? '' : `${text.length > 20 ? `${text.slice(0, 20)}…` : text} `;
   const labels = { calls: `${name}부름`, typed: `${name}부름`, event: '화면 이벤트', placed: '화면에 놓음',
     inside: '안쪽 함수', hook: '훅 값', route: '요청 보냄' };
   return labels[edge.kind] + (edge.site ? ` · ${edge.site.startLine}행` : '');
 }
 
-function FlowDiagram({ flow, selectedNodeId, onSelect }: {
+export function FlowDiagram({ flow, selectedNodeId, onSelect }: {
   flow: FeatureFlow; selectedNodeId: string | null; onSelect(id: string): void;
 }) {
   const { boxes, lanes } = useMemo(() => layoutFlow(flow), [flow]);
@@ -373,16 +376,25 @@ function FlowDiagram({ flow, selectedNodeId, onSelect }: {
   ], [boxes, lanes, selectedNodeId]);
   const edges = useMemo((): Edge[] => {
     const byId = new Map(boxes.map(box => [box.node.id, box]));
-    return flow.edges.map((edge, index) => ({
-      id: `flow-edge:${index}`, source: edge.from, target: edge.to,
-      ...edgeRoute(byId.get(edge.from)!, byId.get(edge.to)!), label: edgeLabel(edge),
-      className: `map-arrow${!edge.sure ? ' feature-arrow--inferred' : edge.kind === 'typed' ? ' feature-arrow--typed' : ''}`,
-      markerEnd: ARROW_MARKER,
-    }));
+    return flow.edges.map((edge, index) => {
+      const from = byId.get(edge.from)!;
+      const to = byId.get(edge.to)!;
+      const route = edgeRoute(from, to);
+      // Arrows looping outside a lane get no text, and arrows between lanes drop the call name: the 120px gap
+      // cannot hold it. The evidence strip and step list below still say both.
+      const label = route.targetHandle === 'in-right' || edge.from === edge.to
+        ? undefined : edgeLabel(edge, { name: from.node.side === to.node.side });
+      return {
+        id: `flow-edge:${index}`, source: edge.from, target: edge.to, ...route, label,
+        className: `map-arrow${!edge.sure ? ' feature-arrow--inferred' : edge.kind === 'typed' ? ' feature-arrow--typed' : ''}`,
+        markerEnd: ARROW_MARKER,
+      };
+    });
   }, [flow, boxes]);
   return <section aria-label="기능 흐름 지도">
     <p className="hint">왼쪽 화면 쪽 → 가운데 요청 → 오른쪽 서버 쪽 · 점선은 추정·타입으로 찾음 · 상자를 누르면 아래에 코드가 보여요</p>
-    <MapCanvas testId="feature-flow-canvas" nodes={nodes} edges={edges} nodeTypes={flowNodeTypes} onNodeClick={onSelect} />
+    <MapCanvas testId="feature-flow-canvas" height={Math.min(lanes[0].height + 40, 1600)}
+      nodes={nodes} edges={edges} nodeTypes={flowNodeTypes} onNodeClick={onSelect} />
   </section>;
 }
 

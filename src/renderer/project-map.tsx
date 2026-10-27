@@ -63,8 +63,8 @@ export const ARROW_MARKER = { type: MarkerType.ArrowClosed, width: 18, height: 1
 const FIT = { maxZoom: 1, minZoom: 0.1 };
 
 /** The read-only dark canvas both maps draw on: boxes cannot be dragged or connected. */
-export function MapCanvas({ testId, canvasKey, nodes, edges, nodeTypes, onNodeClick, onNodeHover, onEdgeClick }: {
-  testId: string; canvasKey?: string; nodes: Node[]; edges: Edge[]; nodeTypes?: NodeTypes;
+export function MapCanvas({ testId, canvasKey, height, nodes, edges, nodeTypes, onNodeClick, onNodeHover, onEdgeClick }: {
+  testId: string; canvasKey?: string; height?: number; nodes: Node[]; edges: Edge[]; nodeTypes?: NodeTypes;
   onNodeClick(id: string): void; onNodeHover?(id: string | null): void; onEdgeClick?(id: string): void;
 }) {
   // Nodes are rebuilt on every render. Without their measured size, React Flow hides and re-measures
@@ -75,10 +75,12 @@ export function MapCanvas({ testId, canvasKey, nodes, edges, nodeTypes, onNodeCl
     const resized = changes.flatMap(change => change.type === 'dimensions' && change.dimensions ? [[change.id, change.dimensions] as const] : []);
     if (resized.length) setSizes(current => new Map([...current, ...resized]));
   };
-  return <div className="map-canvas" data-testid={testId}>
+  return <div className="map-canvas" data-testid={testId} style={height === undefined ? undefined : { height }}>
     <ReactFlow colorMode="dark" key={canvasKey} nodes={measured} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange}
       // Only boxes in view are drawn, so the fit may zoom out far enough to show a whole opened folder.
       fitView fitViewOptions={FIT} minZoom={0.1} onlyRenderVisibleElements
+      // A canvas sized to its content has nothing to scroll inside, so the wheel scrolls the page instead of zooming.
+      zoomOnScroll={height === undefined} preventScrolling={height === undefined}
       nodesDraggable={false} nodesConnectable={false}
       onNodeClick={(_event, node) => onNodeClick(node.id)}
       onNodeMouseEnter={onNodeHover && ((_event, node) => onNodeHover(node.id))}

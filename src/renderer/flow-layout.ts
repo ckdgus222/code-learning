@@ -19,22 +19,34 @@ export function layoutFlow(flow: FeatureFlow): { boxes: FlowBox[]; lanes: FlowLa
   const ranks = [...new Set(ordered.map(rank))];
   const sides = ['front', 'request', 'back'] as const;
   const counts = sides.map(side => ordered.filter(node => node.side === side).length);
-  const height = LANE_HEADER + Math.max(1, ...counts) * ROW_HEIGHT + 20;
-  const lanes = sides.map((side, index) => ({
-    side, title: LANE_TITLES[side], x: index * LANE_WIDTH, width: LANE_WIDTH, height, empty: counts[index] === 0,
-  }));
-  const rows = { front: 0, request: 0, back: 0 };
+  // A request sits level with the screen box that sends it and the server lane starts there, so those arrows run straight across.
+  const frontRows = new Map(ordered.filter(node => node.side === 'front').map((node, index) => [node.id, index]));
+  let previousRequestRow = -1;
+  const requestRows = ordered.filter(node => node.side === 'request').map(node => {
+    const desiredRow = Math.max(0, ...flow.edges.filter(edge => edge.to === node.id)
+      .map(edge => frontRows.get(edge.from) ?? 0));
+    const row = Math.max(desiredRow, previousRequestRow + 1);
+    previousRequestRow = row;
+    return row;
+  });
+  const rows = { front: 0, request: 0, back: requestRows[0] ?? 0 };
   const boxes = ordered.map(node => {
-    const row = rows[node.side]++;
+    const row = node.side === 'request' ? requestRows[rows.request++] : rows[node.side]++;
     return { node, step: ranks.indexOf(rank(node)), row,
       x: sides.indexOf(node.side) * LANE_WIDTH + BOX_LEFT, y: LANE_HEADER + row * ROW_HEIGHT };
   });
+  const height = LANE_HEADER + (Math.max(0, ...boxes.map(box => box.row)) + 1) * ROW_HEIGHT + 20;
+  const lanes = sides.map((side, index) => ({
+    side, title: LANE_TITLES[side], x: index * LANE_WIDTH, width: LANE_WIDTH, height, empty: counts[index] === 0,
+  }));
   return { boxes, lanes };
 }
 
 export function edgeRoute(fromBox: FlowBox, toBox: FlowBox): { sourceHandle: string; targetHandle: string; type?: string } {
   if (fromBox.node.id === toBox.node.id) return { sourceHandle: 'out-right', targetHandle: 'in-top', type: 'smoothstep' };
-  if (fromBox.node.side !== toBox.node.side) return { sourceHandle: 'out-right', targetHandle: 'in-left' };
+  if (fromBox.node.side !== toBox.node.side) return {
+    sourceHandle: 'out-right', targetHandle: 'in-left', type: fromBox.row === toBox.row ? 'straight' : 'smoothstep',
+  };
   if (toBox.row === fromBox.row + 1) return { sourceHandle: 'out-bottom', targetHandle: 'in-top', type: 'straight' };
   return { sourceHandle: 'out-right', targetHandle: 'in-right', type: 'smoothstep' };
 }

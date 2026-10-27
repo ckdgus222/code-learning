@@ -92,7 +92,8 @@ function checkRoutes(input: FeatureFlow) {
       continue;
     }
     if (from.node.side !== to.node.side) {
-      expect(route).toEqual({ sourceHandle: 'out-right', targetHandle: 'in-left' });
+      expect(route).toEqual({ sourceHandle: 'out-right', targetHandle: 'in-left',
+        type: from.row === to.row ? 'straight' : 'smoothstep' });
       continue;
     }
     expect(route).toEqual(to.row === from.row + 1
@@ -116,4 +117,66 @@ it.each(['self', 'upward'] as const)('keeps %s smoothstep paths from collapsing 
   const ys = numbers.filter((_, index) => index % 2 === 1);
   expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThan(0);
   expect(Math.max(...ys) - Math.min(...ys)).toBeGreaterThan(0);
+});
+
+it('aligns the DogList request and server with the last of eight frontend boxes', () => {
+  const front = ['DogsPage', 'DogList', 'map callback', 'onClick', 'removeDog', 'useDeleteDog', 'options', 'mutationFn']
+    .map((id, index) => node(id, 'front', 8 - index));
+  const input = flow([...front, node('request', 'request', 0), node('handler', 'back', 0), node('service', 'back', 1)],
+    edges([['mutationFn', 'request'], ['request', 'handler'], ['handler', 'service']]));
+  const { boxes, lanes } = layoutFlow(input);
+  expect(boxes.map(box => box.row)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 7, 7, 8]);
+  expect(boxes.slice(7, 10).map(box => box.y)).toEqual([840, 840, 840]);
+  expect(lanes.map(lane => lane.height)).toEqual([1080, 1080, 1080]);
+  expect(edgeRoute(boxes[7], boxes[8])).toEqual({ sourceHandle: 'out-right', targetHandle: 'in-left', type: 'straight' });
+  expect(edgeRoute(boxes[8], boxes[9])).toEqual({ sourceHandle: 'out-right', targetHandle: 'in-left', type: 'straight' });
+});
+
+it('separates requests sharing a caller and bends the second connection to their shared server', () => {
+  const input = flow([node('screen', 'front', 2), node('caller', 'front', 1), node('first', 'request', 0),
+    node('second', 'request', 0), node('handler', 'back', 0)],
+  edges([['caller', 'first'], ['caller', 'second'], ['first', 'handler'], ['second', 'handler']]));
+  const { boxes } = layoutFlow(input);
+  expect(boxes.map(box => box.row)).toEqual([0, 1, 1, 2, 1]);
+  const from = boxes[3];
+  const to = boxes[4];
+  expect(edgeRoute(from, to)).toEqual({ sourceHandle: 'out-right', targetHandle: 'in-left', type: 'smoothstep' });
+  const [path] = getSmoothStepPath({ sourceX: from.x + 200, sourceY: from.y + 24, sourcePosition: Position.Right,
+    targetX: to.x, targetY: to.y + 24, targetPosition: Position.Left });
+  expect(path.match(/[A-Za-z]/g)!.every(command => ['M', 'L', 'Q'].includes(command))).toBe(true);
+  const commands = [...path.matchAll(/([MLQ])([^MLQ]*)/g)];
+  expect(commands.length).toBeGreaterThan(2);
+  let previous = [from.x + 200, from.y + 24];
+  for (const [, command, coordinates] of commands) {
+    const values = coordinates.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+    // Rounded corners have two perpendicular tangents; every straight segment follows an axis.
+    expect(values[0] === previous[0] || values[1] === previous[1], path).toBe(true);
+    if (command === 'Q') expect(values[0] === values[2] || values[1] === values[3], path).toBe(true);
+    previous = values.slice(-2);
+  }
+  expect(previous).toEqual([to.x, to.y + 24]);
+});
+
+it('uses the lowest frontend caller, ignoring incoming connections from other lanes', () => {
+  const input = flow([node('top', 'front', 4), node('middle', 'front', 3), node('low', 'front', 2),
+    node('request', 'request', 0), ...Array.from({ length: 5 }, (_, i) => node(`back${i}`, 'back', i))],
+  edges([['low', 'request'], ['top', 'request'], ['middle', 'request'], ['back4', 'request']]));
+  expect(layoutFlow(input).boxes.find(box => box.node.id === 'request')!.row).toBe(2);
+});
+
+it.each(['none', 'back', 'request'] as const)('starts an uncalled request at row zero with incoming=%s', incoming => {
+  const input = flow([node('request', 'request', 0), node('other', 'request', 0),
+    node('handler', 'back', 0), node('service', 'back', 1)],
+  incoming === 'none' ? [] : edges([[incoming === 'back' ? 'service' : 'other', 'request']]));
+  expect(layoutFlow(input).boxes.map(box => box.row)).toEqual([0, 1, 0, 1]);
+});
+
+it('routes across empty request rows around the lane and keeps request order when callers go upward', () => {
+  const input = flow([...Array.from({ length: 4 }, (_, i) => node(`front${i}`, 'front', 4 - i)),
+    node('first', 'request', 0), node('second', 'request', 0), node('third', 'request', 0), node('handler', 'back', 0)],
+  edges([['front0', 'first'], ['front3', 'second'], ['front0', 'third'], ['first', 'second']]));
+  const { boxes, lanes } = layoutFlow(input);
+  expect(boxes.slice(4).map(box => box.row)).toEqual([0, 3, 4, 0]);
+  expect(lanes.every(lane => lane.height === 640)).toBe(true);
+  expect(edgeRoute(boxes[4], boxes[5])).toEqual({ sourceHandle: 'out-right', targetHandle: 'in-right', type: 'smoothstep' });
 });
