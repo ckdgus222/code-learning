@@ -574,6 +574,11 @@ export function useFeatureFlows(project: ProjectView | null, revision: number) {
   }
   const routes = entry?.result;
   const groups = useMemo(() => project && routes ? featureGroups(project, routes, guide?.guide) : [], [project, routes, guide]);
+  const index = useMemo(() => {
+    if (!project || !routes || !flows) return null;
+    const paths = new Map(project.files.map(file => [file.id, file.relativePath]));
+    return featureIndex(routes, flows, fileId => paths.get(fileId) ?? '', guide?.guide);
+  }, [project?.files, routes, flows, guide]);
   const selection = useMemo(() => walkSelection(flow, walk), [flow, walk]);
   const handler = selection.steps.find(step => step.kind === 'handler')?.representative;
   const request = selection.steps.find(step => step.kind === 'request')?.representative ?? null;
@@ -590,10 +595,10 @@ export function useFeatureFlows(project: ProjectView | null, revision: number) {
       return next;
     });
   }
-  // Only an AI-named feature has a name and sentence of its own; a route alone is shown by its code name.
+  // Only an AI-named feature has a name and sentence of its own.
   const selectedFeature = useMemo(() => flow ? groups.flatMap(group => group.features).find(feature => feature.ai && feature.routes.includes(flow.routeIndex)) : undefined,
     [flow, groups]);
-  return { routes, finding, stale, error, groupingProps: { flows, guide: guide?.guide,
+  return { routes, finding, stale, error, groupingProps: { flows, index, guide: guide?.guide,
     grouping: grouping.status === 'running', groupError: grouping.status === 'failed' ? grouping.message : '',
     onRegroup: groupFlows, onCancelGrouping: cancelGrouping }, search, setSearch, guide, setGuideResult, groups, flow, following, selected, walk,
     selection, currentNode: selection.currentNode, selectedFeature, summary, setSummary,
@@ -640,13 +645,7 @@ export function FeatureList({ groups, routes, selected, disabled, onFollow, sear
   const visible = groups.map(group => ({ ...group, features: group.features.filter(feature => feature.haystack.includes(query)) }))
     .filter(group => group.features.length);
   const grouped = useMemo(() => flows ? screenGroups(routes, flows, guide) : null, [routes, flows, guide]);
-  const contents = useMemo(() => {
-    if (index !== undefined) return index;
-    if (!flows) return null;
-    const paths = new Map(flows.flatMap(flow => flow.nodes.map(node => [node.fileId, node.relativePath] as const)));
-    return featureIndex(routes, flows, fileId => paths.get(fileId) ?? '', guide);
-  }, [index, routes, flows, guide]);
-  const visibleContents = contents?.map(group => ({ ...group, features: group.features.filter(feature => feature.haystack.includes(query)) }))
+  const visibleContents = index?.map(group => ({ ...group, features: group.features.filter(feature => feature.haystack.includes(query)) }))
     .filter(group => group.features.length);
   const serverList = <>
     <p>기능 목록 · {groups.reduce((count, group) => count + group.features.length, 0)}개</p>
@@ -686,8 +685,8 @@ export function FeatureList({ groups, routes, selected, disabled, onFollow, sear
     <label>기능 검색 <input value={search} onChange={event => setSearch(event.target.value)} placeholder="화면·기능 이름·주소·함수 이름" /></label>
     {grouped && <>
       {flows?.some(flow => flow.limited) && <p className="notice">일부 기능은 분석 한도 때문에 흐름의 일부만 확인했어요.</p>}
-      {contents && <section aria-label="기능 목차">
-        <h4>기능 목차 · 묶음 {contents.length}개 · 서버 기능 {contents.reduce((count, group) => count + group.features.length, 0)}개</h4>
+      {index && <section aria-label="기능 목차">
+        <h4>기능 목차 · 묶음 {index.length}개 · 서버 기능 {index.reduce((count, group) => count + group.features.length, 0)}개</h4>
         <p className="hint">서버 코드에서 찾은 기능만 보여요. 앱의 모든 기능이라고 단정하지는 않아요.</p>
         {visibleContents?.map(group => <details className="card" key={group.key} open={!!query}>
           <summary>{group.title?.text ?? group.key}{group.title ? ` · ${group.key}` : ''} · 기능 {group.features.length}개 — {group.features.slice(0, 3).map(feature => feature.name).join(', ')}{group.features.length > 3 ? ', …' : ''}</summary>
@@ -736,11 +735,7 @@ export function FeatureChooser({ project, state, revision, locked, onFollow, mod
   const { routes, stale, guide, setGuideResult } = state;
   const feature = recommendedFeature(state.groups);
   const disabled = locked || stale;
-  const index = useMemo(() => {
-    if (!routes || !state.groupingProps.flows) return null;
-    const paths = new Map(project.files.map(file => [file.id, file.relativePath]));
-    return featureIndex(routes, state.groupingProps.flows, fileId => paths.get(fileId) ?? '', guide?.guide);
-  }, [project.files, routes, state.groupingProps.flows, guide]);
+  const index = state.groupingProps.index;
   const indexed = index?.flatMap(group => group.features).find(item => item.routeIndex === feature?.routes[0]);
   return <div className="card--wide">
     <RoutesStatus state={state} />
@@ -759,7 +754,7 @@ export function FeatureChooser({ project, state, revision, locked, onFollow, mod
           <p className="hint">고른 기준: 요청을 보내는 코드와 확실히 이어진 곳이 가장 많은 기능</p>
           <button className="btn" disabled={disabled} onClick={() => onFollow(feature.routes[0], indexed?.start ?? undefined)}>이 기능부터 따라가기</button>
         </section>}
-        <FeatureList {...state.groupingProps} index={index} search={state.search} setSearch={state.setSearch} groups={state.groups} routes={routes} selected={state.selected} disabled={disabled} onFollow={onFollow}>
+        <FeatureList {...state.groupingProps} search={state.search} setSearch={state.setSearch} groups={state.groups} routes={routes} selected={state.selected} disabled={disabled} onFollow={onFollow}>
           <FeatureGuideCard key={`${routes.routesId}:${revision}`} projectId={project.id} routesId={routes.routesId}
             result={guide} mode={mode} locked={disabled} running={running} checking={checking} connections={connections}
             onInspect={onInspect} onResult={setGuideResult} onRunning={onRunning} />

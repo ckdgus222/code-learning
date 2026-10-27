@@ -779,8 +779,10 @@ const indexFlows: FeatureFlow[] = indexRoutes.routes.map((_, routeIndex) => ({ .
     control: node.event && routeIndex === 1 ? { tag: 'button', texts: ['삭제'] } : null,
   })),
 }));
+const indexPathOf = (fileId: string) => project.files.find(file => file.id === fileId)?.relativePath ?? 'src/example.ts';
 const indexProps: Parameters<typeof FeatureList>[0] = { routes: indexRoutes, groups: featureGroups(project, indexRoutes),
-  flows: indexFlows, search: '', selected: 0, disabled: false, setSearch() {}, onFollow() {} };
+  flows: indexFlows, index: indexes.featureIndex(indexRoutes, indexFlows, indexPathOf),
+  search: '', selected: 0, disabled: false, setSearch() {}, onFollow() {} };
 
 it('places the folded index before screen and server lists, with three previews and naming evidence', () => {
   const html = renderToStaticMarkup(React.createElement(FeatureList, indexProps));
@@ -820,19 +822,30 @@ it('shows unmatched index labels and AI names, limits screen hints and disables 
     { ...flow, routeIndex: 2, nodes: [nodes[0]], edges: [] },
   ];
   const guide: FeatureGuide = { summary: '', unknowns: [], groups: [{ name: 'AI', about: '', features: [{ name: '이름 해석', about: '', routes: [1] }] }] };
-  const html = renderToStaticMarkup(React.createElement(FeatureList, { ...indexProps, flows, guide, disabled: true }));
+  const html = renderToStaticMarkup(React.createElement(FeatureList, { ...indexProps, flows, guide,
+    index: indexes.featureIndex(indexRoutes, flows, indexPathOf, guide), disabled: true }));
   const index = html.slice(html.indexOf('<section aria-label="기능 목차">'), html.indexOf('<details><summary>화면별로 보기'));
   expect(index).toContain('쓰는 화면 /dogs, /other0, /other1 외 2개');
   expect(index).toContain('화면은 못 정했지만 요청 코드는 찾았어요');
   expect(index).toContain('화면과 연결을 찾지 못했어요');
   expect(index).toContain('AI 해석 · 이름 해석');
   expect(index.match(/<button[^>]*disabled=""/g)).toHaveLength(3);
-  const missing = renderToStaticMarkup(React.createElement(FeatureList, { ...indexProps, flows: null }));
+  const missing = renderToStaticMarkup(React.createElement(FeatureList, { ...indexProps, flows: null, index: null }));
   expect(missing).not.toContain('aria-label="기능 목차"');
   expect(missing).not.toContain('화면별로 보기');
 });
 
-it('recommends the indexed name and evidence and follows the same named screen, computing the index once', () => {
+it.each([undefined, null])('shows no index and does not compute one when the supplied index is %s', index => {
+  const compute = vi.spyOn(indexes, 'featureIndex');
+  try {
+    const html = renderToStaticMarkup(React.createElement(FeatureList, { ...indexProps, index }));
+    expect(html).not.toContain('aria-label="기능 목차"');
+    expect(html).toContain('화면별로 보기');
+    expect(compute).not.toHaveBeenCalled();
+  } finally { compute.mockRestore(); }
+});
+
+it('recommends the supplied indexed name and evidence and follows the same named screen without recomputing', () => {
   const secondScreen = { ...nodes[3], id: 'z', screen: '/z', screenTitle: { text: '제목 있는 화면', site: {
     ...nodes[3].range, fileId: 'page', fileHash: 'h', text: '<h1>제목 있는 화면</h1>',
   } } };
@@ -840,11 +853,12 @@ it('recommends the indexed name and evidence and follows the same named screen, 
   const graph = { ...flow, nodes: [...nodes, secondScreen, namedEvent], edges: [...flow.edges,
     { ...flow.edges[0], from: 'z', to: 'z-event' }, { ...flow.edges[1], from: 'z-event' }] };
   const onFollow = vi.fn();
+  const suppliedIndex = indexes.featureIndex(indexRoutes, [graph], indexPathOf);
   const index = vi.spyOn(indexes, 'featureIndex');
   let follow: (() => void) | undefined;
   function Probe() {
     const tree = FeatureChooser({ ...chooserProps, onFollow, state: { ...chooserProps.state, routes: indexRoutes,
-      groups: featureGroups(project, indexRoutes), groupingProps: { ...chooserProps.state.groupingProps, flows: [graph] } } });
+      groups: featureGroups(project, indexRoutes), groupingProps: { ...chooserProps.state.groupingProps, flows: [graph], index: suppliedIndex } } });
     const pending: React.ReactNode[] = [tree];
     while (pending.length) {
       const item = pending.pop();
@@ -862,7 +876,7 @@ it('recommends the indexed name and evidence and follows the same named screen, 
     expect(card).toContain('<p class="hint">화면 /z · src/example.ts onClick 함수</p>');
     expect(card).toContain('<p class="hint">지우기 · /api/dogs/0</p>');
     expect(card).toContain('title="훅이 돌려준 값 remove를 써요 · 방식 모름">추정 연결</span>');
-    expect(index).toHaveBeenCalledTimes(1);
+    expect(index).not.toHaveBeenCalled();
     expect(follow).toBeTypeOf('function');
     follow!();
     expect(onFollow).toHaveBeenCalledExactlyOnceWith(0, { through: 'z', storyId: 'request@z' });
@@ -872,8 +886,9 @@ it('recommends the indexed name and evidence and follows the same named screen, 
 it('follows the index row with its chosen start and defaults only for unlinked features', () => {
   const onFollow = vi.fn();
   const starts: (() => void)[] = [];
+  const flows = [indexFlows[0], { ...indexFlows[1], nodes: [nodes[0]], edges: [] }];
   function Probe() {
-    const tree = FeatureList({ ...indexProps, onFollow, flows: [indexFlows[0], { ...indexFlows[1], nodes: [nodes[0]], edges: [] }] });
+    const tree = FeatureList({ ...indexProps, onFollow, flows, index: indexes.featureIndex(indexRoutes, flows, indexPathOf) });
     const pending: React.ReactNode[] = [tree];
     while (pending.length) {
       const item = pending.shift();
@@ -902,8 +917,8 @@ it('names two through stories from their request steps and preserves the screen 
   expect(changed.steps[0].nodes[0].id).toBe('screen');
 });
 
-it.each(['current', 'other-routes', 'other-revision', 'stale', 'no-routes'] as const)(
-  'uses the same available flows for the list and following: %s', async state => {
+it.each(['current', 'other-routes', 'other-revision', 'stale', 'no-routes', 'ungrouped'] as const)(
+  'uses the same available flows for the index, list and following: %s', async state => {
     const revision = 2;
     const currentRoutes = { ...routes, routesId: flow.routesId };
     const entry = state === 'no-routes' ? null : { result: currentRoutes, revision: state === 'stale' ? 1 : revision };
@@ -913,7 +928,7 @@ it.each(['current', 'other-routes', 'other-revision', 'stale', 'no-routes'] as c
     const useState = vi.mocked(ReactHooks.useState)
       .mockImplementationOnce(() => [null, vi.fn()])
       .mockImplementationOnce(() => [entry, vi.fn()])
-      .mockImplementationOnce(() => [cached, vi.fn()]);
+      .mockImplementationOnce(() => [state === 'ungrouped' ? { status: 'idle' } : cached, vi.fn()]);
     const featureFlow = vi.fn().mockResolvedValue({ ok: true, value: flow });
     vi.stubGlobal('window', { learning: { featureFlow } });
     let features!: ReturnType<typeof useFeatureFlows>;
@@ -926,9 +941,13 @@ it.each(['current', 'other-routes', 'other-revision', 'stale', 'no-routes'] as c
       const html = renderToStaticMarkup(React.createElement(Probe));
       const current = state === 'current';
       expect(features.groupingProps.flows).toBe(current ? cached.flows : null);
+      expect(features.groupingProps.index).toEqual(current
+        ? indexes.featureIndex(currentRoutes, cached.flows, fileId => project.files.find(file => file.id === fileId)?.relativePath ?? '')
+        : null);
+      expect(html.includes('aria-label="기능 목차"')).toBe(current);
       expect(html.includes('aria-label="화면 /dogs"')).toBe(current);
       await features.follow(0, { through: 'screen', storyId: 'request@screen' });
-      const needsRequest = state === 'other-routes' || state === 'other-revision';
+      const needsRequest = state === 'other-routes' || state === 'other-revision' || state === 'ungrouped';
       expect(featureFlow).toHaveBeenCalledTimes(needsRequest ? 1 : 0);
       if (needsRequest) expect(featureFlow).toHaveBeenCalledWith({ projectId: project.id, routesId: currentRoutes.routesId, routeIndex: 0 });
     } finally {
@@ -937,6 +956,36 @@ it.each(['current', 'other-routes', 'other-revision', 'stale', 'no-routes'] as c
     }
   },
 );
+
+it('keeps the shared index when only search and the selected step change', () => {
+  const useState = vi.mocked(ReactHooks.useState)
+    .mockImplementationOnce(() => React.useState<unknown>(null))
+    .mockImplementationOnce(() => React.useState<unknown>({ result: indexRoutes, revision: 2 }))
+    .mockImplementationOnce(() => React.useState<unknown>({ status: 'done', routesId: indexRoutes.routesId, revision: 2, flows: indexFlows }));
+  const compute = vi.spyOn(indexes, 'featureIndex');
+  const results: ReturnType<typeof useFeatureFlows>['groupingProps']['index'][] = [];
+  function Probe() {
+    const features = useFeatureFlows(project, 2);
+    results.push(features.groupingProps.index);
+    if (!features.search) {
+      features.setSearch('삭제');
+      features.setStep(1);
+    }
+    return null;
+  }
+  try {
+    renderToStaticMarkup(React.createElement(Probe));
+    expect(results).toHaveLength(2);
+    expect(results[0]).not.toBeNull();
+    expect(results[1]).toBe(results[0]);
+    expect(compute).toHaveBeenCalledExactlyOnceWith(indexRoutes, indexFlows, expect.any(Function), undefined);
+    expect(compute.mock.calls[0][2]('server')).toBe('api/dogs.controller.ts');
+    expect(compute.mock.calls[0][2]('missing')).toBe('');
+  } finally {
+    useState.mockRestore();
+    compute.mockRestore();
+  }
+});
 
 it('selects a requested node found only in the step other paths', () => {
   const alternate: FlowNode = { ...nodes[2], id: 'alternate', event: null, fileId: 'other-file' };

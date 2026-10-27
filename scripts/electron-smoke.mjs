@@ -998,8 +998,12 @@ try {
     const indexGroup = index.locator('details').first();
     assert.equal(await indexGroup.evaluate(element => element.open), false);
     await indexGroup.locator(':scope > summary').click();
+    const indexedName = await indexGroup.locator('li > b').innerText();
     await indexGroup.getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
     await page.getByRole('region', { name: '기능 따라가기', exact: true }).getByText('1 / 7 · 화면', { exact: true }).waitFor();
+    const indexedStory = page.getByRole('region', { name: '기능 따라가기', exact: true });
+    assert.equal(await indexedStory.locator(':scope > .map-actions > h3').innerText(), indexedName);
+    assert.equal(await indexedStory.locator(':scope > .map-actions + p').innerText(), '지우기 · /api/dogs/:id');
     assert.equal(await page.getByRole('button', { name: '흐름 따라가기', exact: true }).getAttribute('aria-current'), 'page');
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
     await openServerFeatures();
@@ -3581,8 +3585,12 @@ try {
     const calls = await app.evaluate(() => globalThis.testGuideCalls);
     assert.deepEqual(Object.keys(calls[0]).sort(), ['consent', 'mode', 'projectId', 'routesId']);
     assert.equal(calls[0].consent, true);
+    const index = page.getByRole('region', { name: '기능 목차', exact: true });
+    assert.ok((await index.locator('li > b').allTextContents()).includes('‘삭제’ 버튼 · 지우기'));
     await aiFeature.getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
     const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
+    await story.getByRole('heading', { name: '반려견 살펴보기와 삭제', exact: true, level: 3 }).waitFor();
+    assert.equal(await story.locator(':scope > .map-actions > h3').innerText(), '반려견 살펴보기와 삭제');
     // DELETE has a sure frontend link, so it is preferred over GET regardless of the AI's order.
     await story.getByRole('button', { name: '4단계 서버 받는 곳', exact: true }).click();
     await story.getByText('DogsController.remove가 요청을 받아요 → DogsService.remove에 넘겨요', { exact: true }).waitFor();
