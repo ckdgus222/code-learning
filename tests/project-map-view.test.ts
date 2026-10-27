@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { ReactFlow, type Edge, type Node } from '@xyflow/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ARROW_MARKER, MapCanvas, ProjectMapView, type MapChanges } from '../src/renderer/project-map';
-import { boxName, expandableIds, visibleGraph, type MapArrow } from '../src/renderer/map-layout';
+import { boxName, boxPlace, expandableIds, visibleGraph, type MapArrow } from '../src/renderer/map-layout';
 import type { MapFile, ProjectMap, ProjectView } from '../src/shared/contracts';
 
 vi.mock('react', async importOriginal => {
@@ -243,25 +243,30 @@ describe('connections listed by visible box', () => {
   const connectionSection = (html: string) => html.match(/<section class="card" aria-label="상자별 연결">(.*?)<\/section>/)![1].replace(/<\/?b>/g, '');
   const rows = (html: string) => [...connectionSection(html).matchAll(/<li>(.*?)<\/li>/g)].map(match => match[1]);
 
-  it('lists boxes in canvas order before changes, with only nonzero directions', () => {
+  it('lists deeper areas first and boxes in canvas order within each area, with only nonzero directions', () => {
     const html = render(opened);
     const list = connectionSection(html);
     expect(list).toContain('상자별 연결 · 상자 5개');
     expect(list).toContain('지금 지도에 보이는 상자끼리의 import예요. 펼치거나 접으면 함께 바뀌어요.');
     expect(html.indexOf('aria-label="상자별 연결"')).toBeLessThan(html.indexOf('aria-label="변경 목록"'));
+    const boxes = visibleGraph(map, opened).boxes;
+    const grouped = [...boxes.filter(box => boxPlace(box).area === 'web'), ...boxes.filter(box => boxPlace(box).area === '')];
+    expect([...list.matchAll(/<h4>(.*?)<\/h4>/g)].map(match => match[1]))
+      .toEqual(['web 안 · 상자 3개', '(최상위 폴더) 안 · 상자 2개']);
     expect(rows(html).map(row => row.match(/<button[^>]*>(.*?)<\/button>/)![1]))
-      .toEqual(visibleGraph(map, opened).boxes.map(boxName));
-    const app = rows(html).find(row => row.includes('>web/app</button>'))!;
-    expect(app).toContain('가져다 씀 1곳: web/lib');
+      .toEqual(grouped.map(box => boxPlace(box).short));
+    expect(rows(html).map(row => row.match(/aria-label="([^"]*)"/)![1])).toEqual(grouped.map(boxName));
+    const app = rows(html).find(row => row.includes('aria-label="web/app"'))!;
+    expect(app).toContain('가져다 씀 1곳: lib/');
     expect(app).not.toContain('이 상자를 가져다 씀');
-    const lib = rows(html).find(row => row.includes('>web/lib</button>'))!;
-    expect(lib).toContain('이 상자를 가져다 씀 1곳: web/app');
+    const lib = rows(html).find(row => row.includes('aria-label="web/lib"'))!;
+    expect(lib).toContain('이 상자를 가져다 씀 1곳: app/');
     expect(lib).not.toContain('가져다 씀 0곳');
     expect(list).not.toContain('(import 1개)');
     // A box that both uses and is used shows the two directions on separate lines.
     const both = render(opened, null, null, { ...map, edges: [...map.edges, { ...map.edges[0], fromFileId: 'b', toFileId: 'a', startUtf16: 5 }] });
-    expect(rows(both).find(row => row.includes('>web/lib</button>'))!.match(/class="map-connections__line"/g)).toHaveLength(2);
-    expect(rows(html).find(row => row.includes('>web 바로 아래 파일</button>')))
+    expect(rows(both).find(row => row.includes('aria-label="web/lib"'))!.match(/class="map-connections__line"/g)).toHaveLength(2);
+    expect(rows(html).find(row => row.includes('aria-label="web 바로 아래 파일"')))
       .toContain('지금 보이는 다른 상자와 이어진 import가 없어요.');
   });
 
@@ -269,9 +274,9 @@ describe('connections listed by visible box', () => {
     const html = render(opened, { id: 'files:web', opened });
     expect(drawnEdges()).toEqual([]);
     expect(rows(html)).toHaveLength(5);
-    expect(connectionSection(html)).toContain('가져다 씀 1곳: web/lib');
-    expect(connectionSection(html)).toContain('aria-pressed="true">web 바로 아래 파일</button>');
-    expect(connectionSection(html)).toContain('aria-pressed="false">web/app</button>');
+    expect(connectionSection(html)).toContain('가져다 씀 1곳: lib/');
+    expect(connectionSection(html)).toContain('aria-label="web 바로 아래 파일" aria-pressed="true">바로 아래 파일</button>');
+    expect(connectionSection(html)).toContain('aria-label="web/app" aria-pressed="false">app/</button>');
   });
 
   it('shows all eleven neighbours in name order in both directions, with grouped import counts', () => {
@@ -283,27 +288,86 @@ describe('connections listed by visible box', () => {
       { ...map.edges[0], fromFileId: 'n0', toFileId: 'center', startUtf16: 2 },
     ] };
     const html = render(new Set(), null, null, many);
-    const center = rows(html).find(row => row.includes('>center</button>'))!;
-    const names = neighbours.map((file, index) => `${file.folder}${index === 0 ? '(import 2개)' : ''}`).join(', ');
+    const center = rows(html).find(row => row.includes('aria-label="center"'))!;
+    const names = neighbours.map((file, index) => `${file.folder}/${index === 0 ? '(import 2개)' : ''}`).join(', ');
     expect(center).toContain(`가져다 씀 11곳: ${names}`);
     expect(center).toContain(`이 상자를 가져다 씀 11곳: ${names}`);
     expect(center).not.toContain('(import 1개)');
     expect(center).not.toContain('생략');
   });
 
-  it('updates group names to full file paths when folders open', () => {
+  it('shows file basenames with full accessible names and qualifies neighbours in other areas', () => {
     const sameNames = { ...map, files: [
       { ...file('a', 'web/app'), relativePath: 'web/app/index.ts' },
       { ...file('b', 'web/lib'), relativePath: 'web/lib/index.ts' },
     ] };
     const folded = connectionSection(render(new Set(), null, null, sameNames));
     expect(folded).toContain('상자별 연결 · 상자 1개');
-    expect(folded).toContain('>web</button>');
+    expect(folded).toContain('>web/</button>');
     const expanded = connectionSection(render(expandableIds(sameNames), null, null, sameNames));
     expect(expanded).toContain('상자별 연결 · 상자 2개');
-    expect(expanded).toContain('>web/app/index.ts</button>');
-    expect(expanded).toContain('>web/lib/index.ts</button>');
-    expect(expanded).toContain('가져다 씀 1곳: web/lib/index.ts');
+    expect(expanded).toContain('<h4>web/app 안 · 상자 1개</h4>');
+    expect(expanded).toContain('<h4>web/lib 안 · 상자 1개</h4>');
+    expect(expanded.indexOf('<h4>web/app 안')).toBeLessThan(expanded.indexOf('<h4>web/lib 안'));
+    expect(expanded).toContain('aria-label="web/app/index.ts" aria-pressed="false">index.ts</button>');
+    expect(expanded).toContain('aria-label="web/lib/index.ts" aria-pressed="false">index.ts</button>');
+    expect(expanded).toContain('가져다 씀 1곳: index.ts(web/lib 안)');
+    expect(expanded).toContain('이 상자를 가져다 씀 1곳: index.ts(web/app 안)');
+  });
+
+  it('distinguishes same-named neighbours inside the current area and at the root', () => {
+    const nested = { ...map, files: [file('x', 'api/src/x'), file('inner', 'api/src/test'), file('outer', 'test')],
+      edges: ['inner', 'outer'].map(toFileId => ({ ...map.edges[0], fromFileId: 'x', toFileId })) };
+    const html = render(new Set(['folder:api', 'folder:api/src']), null, null, nested);
+    const x = rows(html).find(row => row.includes('aria-label="api/src/x"'))!;
+    expect(x).toContain('가져다 씀 2곳: test/, test/(최상위)');
+    expect(rows(html).find(row => row.includes('aria-label="test"')))
+      .toContain('이 상자를 가져다 씀 1곳: x/(api/src 안)');
+  });
+
+  it.each([1, 2])('groups repeated folder names by area and qualifies %i imports in one pair of parentheses', count => {
+    const nested = { ...map, files: [file('x', 'api/src/x'), file('inner', 'api/src/test'), file('outer', 'api/test'), file('page', 'web')],
+      edges: Array.from({ length: count }, (_, startUtf16) => ({ ...map.edges[0], fromFileId: 'x', toFileId: 'outer', startUtf16 })) };
+    const opened = new Set(['folder:api', 'folder:api/src']);
+    const html = render(opened, null, null, nested);
+    const list = connectionSection(html);
+    expect([...list.matchAll(/<h4>(.*?)<\/h4>/g)].map(match => match[1]))
+      .toEqual(['api/src 안 · 상자 2개', 'api 안 · 상자 1개', '(최상위 폴더) 안 · 상자 1개']);
+    for (const name of ['api/src/test', 'api/test']) {
+      expect(rows(html).find(row => row.includes(`aria-label="${name}"`))).toContain('>test/</button>');
+    }
+    expect(rows(html).find(row => row.includes('aria-label="api/src/x"')))
+      .toContain(`가져다 씀 1곳: test/(api 안${count > 1 ? ', import 2개' : ''})`);
+    expect(rows(html).find(row => row.includes('aria-label="api/test"')))
+      .toContain(`이 상자를 가져다 씀 1곳: x/(api/src 안${count > 1 ? ', import 2개' : ''})`);
+    expect(rows(html).map(row => row.match(/aria-label="([^"]*)"/)![1]))
+      .toEqual(['api/src/x', 'api/src/test', 'api/test', 'web']);
+  });
+
+  it('distinguishes a folder named like a direct-file group and qualifies the root group', () => {
+    const nested = { ...map, files: [file('main', 'api/src'), file('child', 'api/src/바로 아래 파일'), file('root', '')],
+      edges: [{ ...map.edges[0], fromFileId: 'child', toFileId: 'main' }, { ...map.edges[0], fromFileId: 'main', toFileId: 'root' }] };
+    const html = render(new Set(['folder:api', 'folder:api/src']), null, null, nested);
+    expect(connectionSection(html)).toContain('<h4>api/src 안 · 상자 2개</h4>');
+    const group = rows(html).find(row => row.includes('aria-label="api/src 바로 아래 파일"'))!;
+    const folder = rows(html).find(row => row.includes('aria-label="api/src/바로 아래 파일"'))!;
+    expect(group).toContain('>바로 아래 파일</button>');
+    expect(folder).toContain('>바로 아래 파일/</button>');
+    expect(group).toContain('이 상자를 가져다 씀 1곳: 바로 아래 파일/');
+    expect(folder).toContain('가져다 씀 1곳: 바로 아래 파일');
+    expect(group).toContain('가져다 씀 1곳: 바로 아래 파일(최상위)');
+  });
+
+  it('limits rows before grouping even when the omitted box is in a deeper area', () => {
+    const files = [...Array.from({ length: 300 }, (_, index) => file(`f${String(index).padStart(3, '0')}`, '')), file('last', 'z/deep')];
+    const large = { ...map, files, edges: [] };
+    const html = render(expandableIds(large), null, null, large);
+    expect(rows(html)).toHaveLength(300);
+    expect(connectionSection(html)).toContain('<h4>(최상위 폴더) 안 · 상자 300개</h4>');
+    expect(connectionSection(html)).not.toContain('<h4>z/deep 안');
+    expect(connectionSection(html)).toContain('처음 300개만 보여요. 나머지 1개는 생략했어요.');
+    expect(rows(html).map(row => row.match(/aria-label="([^"]*)"/)![1]))
+      .toEqual(visibleGraph(large, expandableIds(large)).boxes.slice(0, 300).map(boxName));
   });
 
   it('limits rows to 300 while counting all boxes and retaining neighbours beyond the row limit', () => {

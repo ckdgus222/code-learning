@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { boxName, closeArea, expandableIds, folderArrows, linkedArrows, matchCallStep, matchFunction, matchImport, visibleGraph } from '../src/renderer/map-layout';
+import { boxName, boxPlace, closeArea, expandableIds, folderArrows, linkedArrows, matchCallStep, matchFunction, matchImport, visibleGraph } from '../src/renderer/map-layout';
 import { buildProjectMap } from '../src/core/analysis/project-map';
 import { analyzeSource } from '../src/core/analysis/syntax';
 import { readAllowed, scanProject } from '../src/core/project/files';
@@ -34,6 +34,47 @@ describe('box names in connection lists', () => {
     expect(boxes.map(box => [box.id, boxName(box)])).toEqual([
       ['files:', '(최상위 폴더) 바로 아래 파일'], ['files:web', 'web 바로 아래 파일'],
       ['folder:web/app', 'web/app'], ['folder:web/lib', 'web/lib']]);
+  });
+});
+
+describe('box places in connection lists', () => {
+  const nested: ProjectMap = { ...map, files: [file('root', ''), file('config', 'api'), file('main', 'api/src'),
+    file('auth', 'api/src/auth'), file('common', 'api/src/common'), file('inner', 'api/src/test'), file('outer', 'api/test'),
+    file('child', 'api/src/바로 아래 파일'), file('page', 'web')], edges: [] };
+  const opened = new Set(['folder:api', 'folder:api/src']);
+
+  it('places deep and top-level folders in their parent areas with trailing slashes', () => {
+    const boxes = visibleGraph(nested, opened).boxes;
+    expect(boxPlace(boxes.find(box => box.id === 'folder:api/src/auth')!)).toEqual({ area: 'api/src', short: 'auth/' });
+    expect(boxPlace(boxes.find(box => box.id === 'folder:api/test')!)).toEqual({ area: 'api', short: 'test/' });
+    expect(boxPlace(boxes.find(box => box.id === 'folder:web')!)).toEqual({ area: '', short: 'web/' });
+  });
+
+  it('places direct-file groups inside their own areas, including the root', () => {
+    const boxes = visibleGraph(nested, opened).boxes;
+    expect(boxPlace(boxes.find(box => box.id === 'files:api/src')!)).toEqual({ area: 'api/src', short: '바로 아래 파일' });
+    expect(boxPlace(boxes.find(box => box.id === 'files:')!)).toEqual({ area: '', short: '바로 아래 파일' });
+  });
+
+  it('places files in their folders with only their basenames', () => {
+    const boxes = visibleGraph(nested, expandableIds(nested)).boxes;
+    expect(boxPlace(boxes.find(box => box.id === 'main')!)).toEqual({ area: 'api/src', short: 'main.ts' });
+    expect(boxPlace(boxes.find(box => box.id === 'root')!)).toEqual({ area: '', short: 'root.ts' });
+  });
+
+  it('keeps short names unique within each area before and after direct-file groups open', () => {
+    const grouped = visibleGraph(nested, opened).boxes;
+    expect(grouped.map(box => box.id)).toEqual(expect.arrayContaining(['folder:api/test', 'folder:api/src/test',
+      'files:api/src', 'folder:api/src/바로 아래 파일']));
+    expect(boxPlace(grouped.find(box => box.id === 'folder:api/src/바로 아래 파일')!))
+      .toEqual({ area: 'api/src', short: '바로 아래 파일/' });
+    const ungrouped = visibleGraph(nested, new Set([...opened, 'files:', 'files:api', 'files:api/src'])).boxes;
+    expect(ungrouped.some(box => box.id.startsWith('files:'))).toBe(false);
+    expect(ungrouped.map(box => box.id)).toEqual(expect.arrayContaining(['root', 'config', 'main']));
+    for (const boxes of [grouped, ungrouped, visibleGraph(nested, expandableIds(nested)).boxes]) {
+      const places = boxes.map(boxPlace);
+      expect(new Set(places.map(place => JSON.stringify([place.area, place.short]))).size).toBe(boxes.length);
+    }
   });
 });
 
