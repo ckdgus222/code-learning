@@ -11,7 +11,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { AGY_DENY_RULES, AGY_NO_TOOLS_REASON, LocalAiRuntime } from '../../src/core/ai/runtime';
 import { runProcess, type ProcessRequest } from '../../src/core/ai/process';
-import { PROBE_URL_PATH, createAgyProbe, findAgyLaunch, forcedCallResults, forcedCallsPassed, forcedKindSummary, kindAttempts, responseShape, type AgyForcedCall, type AgyProbe } from './agy-probe';
+import { createAgyProbe, findAgyLaunch, forcedCallResults, forcedCallsPassed, forcedKindSummary, kindAttempts, responseShape, type AgyForcedCall, type AgyProbe } from './agy-probe';
 import type { StageRequest, StageResponse } from '../../src/core/ai/workflow';
 import { GEMINI_MODEL, explanationSchema } from '../../src/shared/ai';
 import { recordedFailure, rethrown } from './records';
@@ -451,32 +451,28 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
       const insideFile = (name: string) => path.join(fixture!.folders().inside ?? '/nonexistent', name);
       // The inside file exists only once agy's run folder does, which is when this call is sent.
       const insideFirstLine = () => readFileSync(insideFile('inside-original.ts'), 'utf8').split('\n')[0];
-      const common = { toolSummary: 'probe' };
       const calls: AgyForcedCall[] = [
-        { label: 'view_outside', name: 'view_file', args: () => ({ ...common, toolAction: 'read', AbsolutePath: canary }) },
-        { label: 'view_inside', name: 'view_file', args: () => ({ ...common, toolAction: 'read', AbsolutePath: insideFile('inside-canary.txt') }) },
-        { label: 'write_outside', name: 'write_to_file', args: () => ({ ...common, toolAction: 'edit', TargetFile: created, Overwrite: false, CodeContent: 'forced', Description: 'probe' }) },
-        { label: 'write_inside', name: 'write_to_file', args: () => ({ ...common, toolAction: 'edit', TargetFile: insideFile('inside-created.txt'), Overwrite: false, CodeContent: 'forced', Description: 'probe' }) },
-        { label: 'replace_outside', name: 'replace_file_content', args: () => ({ ...common, toolAction: 'edit', TargetFile: original, Instruction: 'probe',
-          Description: 'probe', AllowMultiple: false, TargetContent: firstLine, ReplacementContent: 'forced', StartLine: 1, EndLine: 1 }) },
-        { label: 'replace_inside', name: 'replace_file_content', args: () => ({ ...common, toolAction: 'edit', TargetFile: insideFile('inside-original.ts'),
-          Instruction: 'probe', Description: 'probe', AllowMultiple: false, TargetContent: insideFirstLine(), ReplacementContent: 'forced', StartLine: 1, EndLine: 1 }) },
+        { label: 'read_outside', name: 'read_file', args: () => ({ Path: canary }) },
+        { label: 'read_inside', name: 'read_file', args: () => ({ Path: insideFile('inside-canary.txt') }) },
+        { label: 'write_outside', name: 'write_file', args: () => ({ Path: created, Content: 'forced', Overwrite: false }) },
+        { label: 'write_inside', name: 'write_file', args: () => ({ Path: insideFile('inside-created.txt'), Content: 'forced', Overwrite: false }) },
+        { label: 'edit_outside', name: 'edit_file', args: () => ({ Path: original, Target: firstLine, Replacement: 'forced' }) },
+        { label: 'edit_inside', name: 'edit_file', args: () => ({ Path: insideFile('inside-original.ts'), Target: insideFirstLine(), Replacement: 'forced' }) },
         // WaitMsBeforeAsync keeps a command that did run in the foreground until it ends.
-        { label: 'shell_read', name: 'run_command', args: () => ({ ...common, toolAction: 'shell', Cwd: path.dirname(canary), CommandLine: `cat ${canary}`, WaitMsBeforeAsync: 5000 }) },
-        { label: 'shell_write', name: 'run_command', args: () => ({ ...common, toolAction: 'shell', Cwd: path.dirname(canary), CommandLine: `echo forced > ${shell}`, WaitMsBeforeAsync: 5000 }) },
-        { label: 'shell_bypass', name: 'run_command', args: () => ({ ...common, toolAction: 'shell', Cwd: path.dirname(canary), CommandLine: `cat ${canary}`, WaitMsBeforeAsync: 5000, BypassSandbox: true }) },
-        { label: 'read_url', name: 'read_url_content', args: () => ({ ...common, toolAction: 'web', Url: `${probe!.baseUrl}${PROBE_URL_PATH}` }) },
-        { label: 'search_web', name: 'search_web', args: () => ({ ...common, toolAction: 'web', query: 'code learning probe' }) },
+        { label: 'shell_read', name: 'run_command', args: () => ({ toolSummary: 'probe', CommandLine: `cat ${canary}`, WaitMsBeforeAsync: 5000 }) },
+        { label: 'shell_write', name: 'run_command', args: () => ({ toolSummary: 'probe', CommandLine: `echo forced > ${shell}`, WaitMsBeforeAsync: 5000 }) },
+        { label: 'shell_bypass', name: 'run_command', args: () => ({ toolSummary: 'probe', CommandLine: `cat ${canary}`, WaitMsBeforeAsync: 5000, BypassSandbox: true }) },
+        { label: 'search_web', name: 'search_web', args: () => ({ query: 'code learning probe' }) },
         // Tools that can reach outside a file, with harmless values only: never kill or send_input.
-        { label: 'task_status', name: 'manage_task', args: () => ({ ...common, toolAction: 'task', Action: 'status', TaskId: 'code-learning-missing-task' }) },
-        { label: 'subagents_list', name: 'manage_subagents', args: () => ({ ...common, toolAction: 'agent', Action: 'list' }) },
-        { label: 'message', name: 'send_message', args: () => ({ ...common, toolAction: 'message', Recipient: 'code-learning-probe-nobody', Message: 'probe' }) },
-        { label: 'schedule', name: 'schedule', args: () => ({ ...common, toolAction: 'schedule', Prompt: 'probe', DurationSeconds: 60, MaxIterations: 1, IsDaemon: false }) },
-        { label: 'define_agent', name: 'define_subagent', args: () => ({ ...common, toolAction: 'agent', name: 'code_learning_probe', description: 'probe',
-          system_prompt: 'probe', enable_mcp_tools: false, enable_subagent_tools: false, enable_write_tools: false }) },
-        { label: 'invoke_agent', name: 'invoke_subagent', args: () => ({ ...common, toolAction: 'agent', Subagents: [{ Role: 'probe', TypeName: 'code_learning_probe',
-          Prompt: 'Return OK.', Model: 'flash_lite', Workspace: fixture!.folders().inside ?? probe!.root }] }) },
-        { label: 'question', name: 'ask_question', args: () => ({ ...common, toolAction: 'question', questions: [{ question: 'probe?', options: ['yes', 'no'], is_multi_select: false }] }) },
+        { label: 'task_status', name: 'manage_task', args: () => ({ Action: 'status', TaskId: 'code-learning-missing-task' }) },
+        { label: 'subagents_list', name: 'manage_subagents', args: () => ({ Action: 'list' }) },
+        { label: 'message', name: 'send_message', args: () => ({ Recipient: 'code-learning-probe-nobody', Message: 'probe' }) },
+        { label: 'schedule', name: 'schedule', args: () => ({ Prompt: 'probe', DurationSeconds: 60, MaxIterations: 1, IsDaemon: false }) },
+        { label: 'define_agent', name: 'define_subagent', args: () => ({ Name: 'code_learning_probe', Description: 'probe',
+          SystemPrompt: 'probe', EnableMCPTools: false, EnableSubagentTools: false, EnableWriteTools: false }) },
+        { label: 'invoke_agent', name: 'invoke_subagent', args: () => ({ TypeName: 'code_learning_probe', Role: 'probe',
+          Prompt: 'Return OK.', Model: 'flash_lite', Workspace: fixture!.folders().inside ?? probe!.root }) },
+        { label: 'question', name: 'ask_question', args: () => ({ questions: [{ question: 'probe?', options: ['yes', 'no'], is_multi_select: false }] }) },
       ];
       probe.forced.push(...calls);
       inside = fixture.inside;

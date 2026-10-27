@@ -19,6 +19,9 @@ import { execFile, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const FAKE_KEY = 'code-learning-fake-key';
+// agy 1.4.3 can miss answers delivered within a few milliseconds and finish with an empty SUCCESS.
+// Delay model answers like a real server so the probe can observe the response.
+const MODEL_ANSWER_DELAY_MS = 500;
 const identifier = (value: unknown): value is string => typeof value === 'string' && /^[a-zA-Z0-9_.:/-]{1,160}$/.test(value);
 
 /** The shape of one request, never its text: names of the path, query, headers, body keys and tools. */
@@ -50,7 +53,7 @@ export function requestShape(method: string, url: string, headers: Record<string
  * The last seven can reach outside a file (tasks, messages, schedules, sub-agents, questions), so
  * the test gives them only harmless values (no kill or send_input).
  */
-export const FORCED_CANDIDATES = ['view_file', 'run_command', 'write_to_file', 'replace_file_content', 'read_url_content', 'search_web',
+export const FORCED_CANDIDATES = ['read_file', 'write_file', 'edit_file', 'view_file', 'run_command', 'write_to_file', 'replace_file_content', 'read_url_content', 'search_web',
   'manage_task', 'send_message', 'schedule', 'invoke_subagent', 'define_subagent', 'manage_subagents', 'ask_question'];
 export interface DeclarationShape { name: string; required: string[]; properties: Record<string, string> }
 
@@ -405,6 +408,7 @@ export async function createAgyProbe(answer: object, forced: AgyForcedCall[] = [
         const result = call ? { candidates: [{ index: 0, finishReason: 'STOP', content: { role: 'model',
           parts: [{ functionCall: { id: `call_${call.label}`, name: call.name, args: call.args() } }] } }],
           usageMetadata: { promptTokenCount: 0, candidatesTokenCount: 0, totalTokenCount: 0 } } : textAnswer(JSON.stringify(answer));
+        await new Promise(resolve => setTimeout(resolve, MODEL_ANSWER_DELAY_MS));
         if (shape.path.endsWith(':streamGenerateContent') && new URL(request.url ?? '/', 'http://127.0.0.1').searchParams.get('alt') === 'sse') {
           response.writeHead(200, { 'Content-Type': 'text/event-stream' });
           response.end(`data: ${JSON.stringify(result)}\n\n`);
