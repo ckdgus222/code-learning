@@ -1246,6 +1246,51 @@ try {
     assert.ok(edgeLabels.every(label => /^(?:.+ 부름|부름|화면 이벤트|화면에 놓음|안쪽 함수|훅 값|요청 보냄)(?: · \d+행)?$/.test(label)));
     assert.equal(await diagram.locator('.flow-lane').count(), 3);
     assert.deepEqual(await diagram.locator('.flow-lane h4').allTextContents(), ['화면 쪽', '요청', '서버 쪽']);
+    const diagramHeight = await diagram.evaluate(element => ({ height: element.getBoundingClientRect().height, viewport: window.innerHeight }));
+    assert.ok(diagramHeight.height > diagramHeight.viewport * 0.6, 'The flow canvas must grow beyond 60vh');
+    const mutationNode = diagram.getByRole('group', { name: 'web/lib/dogs.ts · mutationFn', exact: true });
+    const requestNode = diagram.locator('.react-flow__node.feature-box--request');
+    assert.equal(await requestNode.count(), 1);
+    const mutationBox = await mutationNode.boundingBox();
+    const requestBox = await requestNode.boundingBox();
+    assert.ok(mutationBox && requestBox);
+    assert.ok(Math.abs(mutationBox.y - requestBox.y) <= 2, 'The request must share its caller’s row');
+    // This fixture has no tagged box on a cross-lane row; static rendering also checks tagged handles.
+    const sourceHandle = await mutationNode.locator('.react-flow__handle[data-handleid="out-right"]').boundingBox();
+    const targetHandle = await requestNode.locator('.react-flow__handle[data-handleid="in-left"]').boundingBox();
+    assert.ok(sourceHandle && targetHandle);
+    assert.ok(Math.abs(sourceHandle.y + sourceHandle.height / 2 - targetHandle.y - targetHandle.height / 2) <= 1,
+      'Side handles on the same row must have the same vertical center');
+    const mutationId = await mutationNode.getAttribute('data-id');
+    const requestId = await requestNode.getAttribute('data-id');
+    const requestPath = await diagram.getByRole('group', { name: `Edge from ${mutationId} to ${requestId}`, exact: true })
+      .locator('.react-flow__edge-path').getAttribute('d');
+    assert.match(requestPath, /^M[-\d.,\s]+L[-\d.,\s]+$/);
+    const pathCoordinates = requestPath.match(/-?\d+(?:\.\d+)?/g).map(Number);
+    assert.equal(pathCoordinates.length, 4);
+    assert.ok(Math.abs(pathCoordinates[1] - pathCoordinates[3]) < 0.01, 'The caller-to-request path must be horizontal');
+    const labelOverlaps = await diagram.evaluate(element => {
+      const boxes = [...element.querySelectorAll('.react-flow__node.feature-box')].map(box => ({
+        name: box.getAttribute('aria-label'), rect: box.getBoundingClientRect(),
+      }));
+      return [...element.querySelectorAll('.react-flow__edge-textwrapper')].flatMap(label => {
+        const rect = label.getBoundingClientRect();
+        return boxes.filter(box => rect.left < box.rect.right && rect.right > box.rect.left
+          && rect.top < box.rect.bottom && rect.bottom > box.rect.top)
+          .map(box => ({ label: label.textContent, box: box.name }));
+      });
+    });
+    assert.deepEqual(labelOverlaps, [], 'Arrow labels must not overlap any feature box');
+    await screenNode.hover();
+    const center = page.locator('.center');
+    const scrollBeforeWheel = await center.evaluate(element => element.scrollTop);
+    const zoomBeforeWheel = await diagram.locator('.react-flow__viewport').evaluate(element =>
+      new DOMMatrix(getComputedStyle(element).transform).a);
+    await page.mouse.wheel(0, 320);
+    await until(async () => await center.evaluate(element => element.scrollTop) > scrollBeforeWheel);
+    const zoomAfterWheel = await diagram.locator('.react-flow__viewport').evaluate(element =>
+      new DOMMatrix(getComputedStyle(element).transform).a);
+    assert.equal(zoomAfterWheel, zoomBeforeWheel, 'Wheel scrolling must leave the diagram zoom unchanged');
     const evidenceStrip = page.getByRole('region', { name: '선택한 연결의 근거', exact: true });
     await evidenceStrip.getByText('지도에서 상자를 누르면 그 코드가 여기 보여요.', { exact: true }).waitFor();
     // Hold the read so a second box click must leave both selection and read count unchanged.

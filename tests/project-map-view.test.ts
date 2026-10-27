@@ -44,6 +44,24 @@ function drawnEdges(): Edge[] {
 }
 afterEach(() => vi.clearAllMocks());
 
+it.each([undefined, 0, 1080])('sets canvas height and lets wheel events scroll the page only with height=%s', height => {
+  const html = renderToStaticMarkup(React.createElement(MapCanvas, { testId: 'height-map', height, nodes: [], edges: [], onNodeClick() {} }));
+  const props = vi.mocked(ReactFlow).mock.calls.at(-1)![0];
+  if (height === undefined) expect(html).not.toContain('style=');
+  if (height !== undefined) expect(html).toContain(`style="height:${height}${height === 0 ? '' : 'px'}"`);
+  expect(props.zoomOnScroll).toBe(height === undefined);
+  expect(props.preventScrolling).toBe(height === undefined);
+  expect(props.fitViewOptions?.maxZoom).toBe(1);
+});
+
+it('keeps the project map at its CSS height with wheel zoom enabled', () => {
+  const html = render();
+  expect(html).toContain('<div class="map-canvas" data-testid="map-canvas">');
+  const props = vi.mocked(ReactFlow).mock.calls.at(-1)![0];
+  expect(props.zoomOnScroll).toBe(true);
+  expect(props.preventScrolling).toBe(true);
+});
+
 describe('project map area controls', () => {
   it('starts without a chip row and explains one-level opening and folding', () => {
     const html = render();
