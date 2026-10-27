@@ -969,3 +969,57 @@ it.each([null, 'screen'])('opens the requested cached story, step and node with 
     vi.unstubAllGlobals();
   }
 });
+
+it.each([null, 'api.example.com'])('renders both conditional request rows with unique keys and shared code navigation: %s', host => {
+  const requests: ProjectRoutes['requests'] = (['consequence', 'alternative'] as const).map((branch, index) => ({
+    ...nodes[1].range, fileId: 'client', fileHash: 'h', text: 'fetch(isNew ? "/api/a" : "/api/b")', host,
+    methods: [index ? 'PUT' : 'POST'], prefix: 'known', path: index ? '/api/b' : '/api/a', branch,
+    args: [], inTest: false, inFunction: null,
+  }));
+  const onCode = vi.fn();
+  const keys: (string | null)[] = [];
+  const open: (() => void)[] = [];
+  function Probe() {
+    const tree = FlowLimits({ project, routes: { ...routes, requests, links: [] }, flow, locked: false, onCode });
+    const pending: React.ReactNode[] = [tree];
+    while (pending.length) {
+      const item = pending.shift();
+      // Preserve raw keys: React.Children.toArray rewrites them with positional prefixes.
+      if (Array.isArray(item)) { pending.push(...item); continue; }
+      if (!React.isValidElement<{ children?: React.ReactNode; onClick?: () => void }>(item)) continue;
+      if (item.type === 'li') keys.push(item.key);
+      if (item.type === 'button') open.push(item.props.onClick!);
+      pending.push(item.props.children);
+    }
+    return tree;
+  }
+  const html = renderToStaticMarkup(React.createElement(Probe));
+  const prefix = host ? `//${host}` : '';
+  expect(html).toContain(`<summary>${host ? '다른 서버 주소 요청' : '이을 주소를 못 찾은 요청'} 2개</summary>`);
+  expect(html).toContain(`<code>POST ${prefix}/api/a</code>`);
+  expect(html).toContain(`<code>PUT ${prefix}/api/b</code>`);
+  expect(html).not.toContain('isNew');
+  expect(keys).toHaveLength(2);
+  expect(keys.every(key => key !== null)).toBe(true);
+  expect(new Set(keys).size).toBe(2);
+  expect(open).toHaveLength(2);
+  open.forEach(click => click());
+  expect(onCode.mock.calls).toEqual([[requests[0]], [requests[1]]]);
+  expect(requests[0].startUtf16).toBe(requests[1].startUtf16);
+});
+
+it.each([null, ['POST', 'PATCH']])('shows unknown and candidate methods for conditional request rows: %s', methods => {
+  const request: ProjectRoutes['requests'][number] = { ...nodes[1].range, fileId: 'client', fileHash: 'h', text: 'original call', host: null,
+    methods, prefix: 'known', path: '/api/a', branch: 'consequence', args: [], inTest: false, inFunction: null };
+  const html = renderToStaticMarkup(React.createElement(FlowLimits, { project, routes: { ...routes, requests: [request], links: [] },
+    flow, locked: false, onCode() {} }));
+  expect(html).toContain(`<code>${methods ? 'POST / PATCH' : '방식 모름'} /api/a</code>`);
+});
+
+it('keeps the original text for request rows without a branch', () => {
+  const request: ProjectRoutes['requests'][number] = { ...nodes[1].range, fileId: 'client', fileHash: 'h', text: 'fetch("/dogs")', host: null,
+    methods: ['GET'], prefix: 'known', path: '/dogs', args: [], inTest: false, inFunction: null };
+  const html = renderToStaticMarkup(React.createElement(FlowLimits, { project, routes: { ...routes, requests: [request], links: [] },
+    flow, locked: false, onCode() {} }));
+  expect(html).toContain('<code>fetch(&quot;/dogs&quot;)</code>');
+});

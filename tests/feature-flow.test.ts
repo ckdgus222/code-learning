@@ -850,3 +850,70 @@ it.each(['hook', 'function', 'user'])('checks unsupported code in each returned-
     { sure: false, reasons: ['훅이 돌려준 login 함수를 불러요', '지원하지 않는 코드 모양이 있어 확정하지 않았어요'] },
   ]);
 });
+
+it('connects both conditional save branches through a hook to the screen', async () => {
+  await put('web/next.config.ts', 'export default {}');
+  await put('web/lib/request.ts', 'export function apiRequest<T>(path, init) { return fetch(path, init); }');
+  await put('web/lib/diaries.ts', `import {apiRequest} from './request';
+    import {useMutation} from '@tanstack/react-query';
+    export function useSaveDiary(id) {
+      const isNew = id === undefined;
+      return useMutation({mutationFn: body => apiRequest<Diary>(isNew ? '/api/diaries' : \`/api/diaries/\${id}\`, {
+        method: isNew ? 'POST' : 'PATCH', body,
+      })});
+    }`);
+  await put('web/app/diaries/page.tsx', `import {useSaveDiary} from '../../lib/diaries';
+    export default function DiariesPage() {
+      const save = useSaveDiary();
+      return <button onClick={() => save.mutate(body)}>저장</button>;
+    }`);
+  await put('server.ts', "@Controller('api/diaries') class C { @Post() create() {} @Patch(':id') update() {} }");
+  const { project, routes } = await analyze();
+  expect(routes.links).toEqual([
+    { requestIndex: 0, routeIndex: 0, sure: true, reasons: [] },
+    { requestIndex: 1, routeIndex: 1, sure: true, reasons: [] },
+  ]);
+  const flows = await buildFeatureFlows(root, project.id, project.files, routes);
+  expect(flows).toHaveLength(2);
+  for (const [index, flow] of flows.entries()) {
+    expect(flow.nodes.filter(node => node.side === 'request').map(node => node.name)).toEqual([
+      index === 0 ? 'POST /api/diaries' : 'PATCH /api/diaries/*',
+    ]);
+    const screen = flow.nodes.find(node => node.name === 'DiariesPage');
+    expect(screen?.screen).toBe('/diaries');
+    const reachable = new Set([screen!.id]);
+    for (let i = 0; i < flow.nodes.length; i++) for (const edge of flow.edges) if (reachable.has(edge.from)) reachable.add(edge.to);
+    expect(flow.nodes.filter(node => node.side === 'back').every(node => reachable.has(node.id))).toBe(true);
+  }
+});
+
+it.each([
+  ["'/api/a'", "'/api/b'", true, []],
+  ['`${base}/api/a`', "'/api/b'", false, ['앞부분 모름']],
+  ["'/api/a'", '`${base}/api/b`', false, ['앞부분 모름']],
+  ['`${base}/api/a`', '`${base}/api/b`', false, ['앞부분 모름']],
+])('merges shared request nodes and route evidence in branch order: %s / %s', async (first, second, sure, reasons) => {
+  await put('server.ts', "@Controller('api') class C { @All('*') handle() {} }");
+  await put('client.ts', `function send(isNew) { fetch(isNew ? ${first} : ${second}, {method: isNew ? 'POST' : 'DELETE'}); }`);
+  const { flow } = await analyze();
+  expect(flow.nodes.filter(node => node.side === 'request').map(node => node.name)).toEqual(['POST /api/a · DELETE /api/b']);
+  const edges = flow.edges.filter(edge => edge.kind === 'route');
+  expect(edges).toHaveLength(1);
+  expect(edges[0]).toMatchObject({ sure, reasons });
+});
+
+it('unions multiple route reasons once and keeps their original order', async () => {
+  await put('server.ts', "@Controller('api') class C { @All('*') handle() {} }");
+  await put('client.ts', `function send(mode) { fetch(mode.new ? \`\${base}/api/a\` : \`\${base}/api/b\`, {method: mode.new ? 'POST' : 'DELETE'}); }`);
+  const { flow } = await analyze();
+  expect(flow.edges.filter(edge => edge.kind === 'route')).toEqual([
+    expect.objectContaining({ sure: false, reasons: ['앞부분 모름', '방식 후보 둘'] }),
+  ]);
+});
+
+it('uses branch paths when the conditional expression starts with a quote', async () => {
+  await put('server.ts', "@Controller('api') class C { @Post('a') create() {} }");
+  await put('client.ts', `function send(mode) { fetch("new" === mode ? "/api/a" : "/api/b", {method: 'POST'}); }`);
+  const { flow } = await analyze();
+  expect(flow.nodes.filter(node => node.side === 'request').map(node => node.name)).toEqual(['POST /api/a']);
+});
