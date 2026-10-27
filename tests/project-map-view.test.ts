@@ -26,8 +26,10 @@ const project: ProjectView = { id: 'p', name: 'project', files: [], excluded: {}
 const changes: MapChanges = { stale: false, result: { projectId: 'p', commit: '1234567', notCompared: [], notes: [],
   changes: map.files.map(file => ({ kind: 'modified', fileId: file.id, path: file.relativePath, oldPath: null })) } };
 
-function render(opened: ReadonlySet<string> = new Set()) {
+function render(opened: ReadonlySet<string> = new Set(), focus: { id: string; opened: ReadonlySet<string> } | null = null) {
   vi.mocked(ReactHooks.useState).mockImplementationOnce(() => [opened, vi.fn()]);
+  vi.mocked(ReactHooks.useState).mockImplementationOnce(() => [null, vi.fn()]);
+  vi.mocked(ReactHooks.useState).mockImplementationOnce(() => [focus, vi.fn()]);
   return renderToStaticMarkup(React.createElement(ProjectMapView, { project, entry: { map, revision: 0, build: 1 },
     stale: false, mapping: false, locked: false, changes,
     onBuild() {}, onCancel() {}, onOpenFile() {}, onShowImport() {}, onShowFunction() {}, onShowChange() {} }));
@@ -83,5 +85,49 @@ describe('project map area controls', () => {
     expect(vi.mocked(ReactFlow).mock.calls.at(-1)![0].edges).toEqual([]);
     expect(html).toContain('폴더 사이 연결(설계) · 1개');
     expect(html).toContain('web/app → web/lib · import 1개');
+  });
+});
+
+describe('project map focus', () => {
+  it('keeps box positions and highlights only the chosen box and its neighbours', () => {
+    const opened = new Set(['folder:web']);
+    render(opened);
+    const positions = drawnNodes().map(({ id, position }) => ({ id, position }));
+    const html = render(opened, { id: 'folder:web/app', opened });
+    expect(html).toContain('aria-label="이어진 것만 보는 중"');
+    expect(html).toContain('‘web/app · 파일 1개’과 이어진 것만 보는 중 · 가져다 씀 1곳 · 이 상자를 가져다 씀 0곳');
+    expect(drawnNodes().map(({ id, position }) => ({ id, position }))).toEqual(positions);
+    expect(drawnNodes().filter(node => node.className?.includes('map-box--focus')).map(node => node.id)).toEqual(['folder:web/app']);
+    expect(drawnNodes().filter(node => node.className?.includes('map-box--dim')).map(node => node.id).sort())
+      .toEqual(['files:', 'files:web', 'folder:website']);
+    expect(drawnNodes().find(node => node.id === 'folder:web/app')!.data.focused).toBe(true);
+    expect(vi.mocked(ReactFlow).mock.calls.at(-1)![0].edges?.map(edge => [edge.source, edge.target]))
+      .toEqual([['folder:web/app', 'folder:web/lib']]);
+  });
+
+  it('explains a disconnected box while hiding every arrow', () => {
+    const opened = new Set(['folder:web']);
+    const html = render(opened, { id: 'files:web', opened });
+    expect(html).toContain('지금 보이는 다른 상자와 이어진 import가 없어요.');
+    expect(vi.mocked(ReactFlow).mock.calls.at(-1)![0].edges).toEqual([]);
+    expect(drawnNodes()).toHaveLength(5);
+  });
+
+  it('clears focus when the opened set changes, even if the same boxes are visible again', () => {
+    const opened = new Set(['folder:web']);
+    const focus = { id: 'folder:web/app', opened };
+    for (const current of [new Set(['folder:web', 'folder:website']), new Set(['folder:web'])]) {
+      const html = render(current, focus);
+      expect(html).not.toContain('aria-label="이어진 것만 보는 중"');
+      expect(drawnNodes().every(node => !node.data.focused && !/map-box--(?:dim|focus)/.test(node.className ?? ''))).toBe(true);
+      expect(vi.mocked(ReactFlow).mock.calls.at(-1)![0].edges).toHaveLength(1);
+    }
+  });
+
+  it('ignores a chosen box missing from the visible graph', () => {
+    const opened = new Set(['folder:web']);
+    const html = render(opened, { id: 'folder:removed', opened });
+    expect(html).not.toContain('aria-label="이어진 것만 보는 중"');
+    expect(vi.mocked(ReactFlow).mock.calls.at(-1)![0].edges).toHaveLength(1);
   });
 });

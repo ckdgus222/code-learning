@@ -335,6 +335,8 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .map-canvas { height: 60vh; min-height: 360px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
 .map-canvas .react-flow__node.map-box { width: 200px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); color: var(--ink); text-align: left; font-size: 13px; }
 .map-canvas .react-flow__node.map-box--folder { background: var(--accent-soft); border-color: var(--accent); }
+.map-canvas .react-flow__node.map-box--dim { opacity: .35; }
+.map-canvas .react-flow__node.map-box--focus { outline: 2px solid var(--accent); }
 .map-canvas .react-flow__node.selected { outline: 2px solid var(--accent); }
 .map-canvas .react-flow { --xy-background-color: var(--surface); --xy-background-pattern-color: var(--line); --xy-controls-button-background-color: var(--side); --xy-controls-button-background-color-hover: var(--raised); --xy-controls-button-color: var(--ink); --xy-controls-button-border-color: var(--line); }
 .map-canvas .react-flow__attribution { background: var(--side); }

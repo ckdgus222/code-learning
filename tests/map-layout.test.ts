@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { closeArea, expandableIds, folderArrows, matchCallStep, matchFunction, matchImport, visibleGraph } from '../src/renderer/map-layout';
+import { closeArea, expandableIds, folderArrows, linkedArrows, matchCallStep, matchFunction, matchImport, visibleGraph } from '../src/renderer/map-layout';
 import { buildProjectMap } from '../src/core/analysis/project-map';
 import { analyzeSource } from '../src/core/analysis/syntax';
 import { readAllowed, scanProject } from '../src/core/project/files';
@@ -52,6 +52,22 @@ describe('design view and file view of the project map', () => {
 
   it('shows every file when every folder is expanded', () => {
     expect(summary(visibleGraph(map, new Set(['folder:a', 'folder:b'])))).toEqual([['a1', 'b1', 1], ['a2', 'b1', 1], ['b2', 'a1', 1], ['a1', 'a2', 1]]);
+  });
+});
+
+describe('arrows linked to one box', () => {
+  it('keeps incoming and outgoing arrows in input order and counts boxes rather than imports', () => {
+    const arrows = visibleGraph(map, new Set(['folder:a'])).arrows;
+    expect(linkedArrows(arrows, 'a1')).toEqual({ arrows: [arrows[0], arrows[2], arrows[3]],
+      linked: new Set(['folder:b', 'a2']), uses: 2, usedBy: 1 });
+    const grouped = visibleGraph(map, new Set()).arrows;
+    expect(linkedArrows(grouped, 'folder:a')).toEqual({ arrows: grouped, linked: new Set(['folder:b']), uses: 1, usedBy: 1 });
+  });
+
+  it('returns no arrows or linked boxes for a box with no connections', () => {
+    const arrows = visibleGraph({ ...map, files: [...map.files, file('alone', 'alone')] }, new Set()).arrows;
+    expect(linkedArrows(arrows, 'folder:alone')).toEqual({ arrows: [], linked: new Set(), uses: 0, usedBy: 0 });
+    expect(linkedArrows([], 'folder:a')).toEqual({ arrows: [], linked: new Set(), uses: 0, usedBy: 0 });
   });
 });
 
