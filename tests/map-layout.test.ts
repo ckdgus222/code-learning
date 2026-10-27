@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { closeArea, expandableIds, folderArrows, linkedArrows, matchCallStep, matchFunction, matchImport, visibleGraph } from '../src/renderer/map-layout';
+import { boxName, closeArea, expandableIds, folderArrows, linkedArrows, matchCallStep, matchFunction, matchImport, visibleGraph } from '../src/renderer/map-layout';
 import { buildProjectMap } from '../src/core/analysis/project-map';
 import { analyzeSource } from '../src/core/analysis/syntax';
 import { readAllowed, scanProject } from '../src/core/project/files';
@@ -17,6 +17,25 @@ const map: ProjectMap = { projectId: 'p', files: [file('a1', 'a'), file('a2', 'a
   edges: [edge('a1', 'b1'), edge('a2', 'b1'), edge('b2', 'a1'), edge('a1', 'a2')], unresolved: [], external: [], complexFunctions: [], limited: false, notes: [] };
 const summary = (graph: ReturnType<typeof visibleGraph>) => graph.arrows.map(arrow => [arrow.source, arrow.target, arrow.items.length]);
 const backs = (graph: ReturnType<typeof visibleGraph>) => graph.arrows.filter(arrow => arrow.back).map(arrow => arrow.id);
+
+describe('box names in connection lists', () => {
+  const named: ProjectMap = { ...map, files: [file('root', ''), file('index', 'web'),
+    { ...file('a', 'web/app'), relativePath: 'web/app/index.ts' },
+    { ...file('b', 'web/lib'), relativePath: 'web/lib/index.ts' }], edges: [] };
+
+  it('uses full relative paths for files with the same basename', () => {
+    const boxes = visibleGraph(named, expandableIds(named)).boxes;
+    expect(boxes.filter(box => box.label === 'index.ts').map(boxName).sort())
+      .toEqual(['web/app/index.ts', 'web/index.ts', 'web/lib/index.ts']);
+  });
+
+  it('names root and nested direct-file groups separately from areas', () => {
+    const boxes = visibleGraph(named, new Set(['folder:web'])).boxes;
+    expect(boxes.map(box => [box.id, boxName(box)])).toEqual([
+      ['files:', '(최상위 폴더) 바로 아래 파일'], ['files:web', 'web 바로 아래 파일'],
+      ['folder:web/app', 'web/app'], ['folder:web/lib', 'web/lib']]);
+  });
+});
 
 describe('design view and file view of the project map', () => {
   it('counts arrows between folders by direction and leaves out imports inside one folder', () => {

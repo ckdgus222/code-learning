@@ -1,8 +1,9 @@
 import React, { useMemo, useState } from 'react';
-import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps, type NodeTypes } from '@xyflow/react';
+import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Dimensions, type Edge, type Node, type NodeChange, type NodeProps,
+  type NodeTypes } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { ChangeKind, FileChange, MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectChanges, ProjectMap, ProjectView } from '../shared/contracts';
-import { closeArea, expandableIds, folderArrows, folderName, linkedArrows, visibleGraph, type MapArrow, type MapBox } from './map-layout';
+import { boxName, closeArea, expandableIds, folderArrows, folderName, linkedArrows, visibleGraph, type MapArrow, type MapBox } from './map-layout';
 import { COMPLEXITY_NOTE, ComplexityTags } from './complexity';
 import { ChangeList, kindLabels } from './changes';
 
@@ -62,16 +63,26 @@ export const ARROW_MARKER = { type: MarkerType.ArrowClosed, width: 18, height: 1
 const FIT = { maxZoom: 1, minZoom: 0.1 };
 
 /** The read-only dark canvas both maps draw on: boxes cannot be dragged or connected. */
-export function MapCanvas({ testId, canvasKey, nodes, edges, nodeTypes, onNodeClick, onEdgeClick }: {
+export function MapCanvas({ testId, canvasKey, nodes, edges, nodeTypes, onNodeClick, onNodeHover, onEdgeClick }: {
   testId: string; canvasKey?: string; nodes: Node[]; edges: Edge[]; nodeTypes?: NodeTypes;
-  onNodeClick(id: string): void; onEdgeClick?(id: string): void;
+  onNodeClick(id: string): void; onNodeHover?(id: string | null): void; onEdgeClick?(id: string): void;
 }) {
+  // Nodes are rebuilt on every render. Without their measured size, React Flow hides and re-measures
+  // every box, so a click landing during a hover re-render falls through to the pane.
+  const [sizes, setSizes] = useState<ReadonlyMap<string, Dimensions>>(() => new Map());
+  const measured = nodes.map(node => ({ ...node, measured: sizes.get(node.id) }));
+  const onNodesChange = (changes: NodeChange[]) => {
+    const resized = changes.flatMap(change => change.type === 'dimensions' && change.dimensions ? [[change.id, change.dimensions] as const] : []);
+    if (resized.length) setSizes(current => new Map([...current, ...resized]));
+  };
   return <div className="map-canvas" data-testid={testId}>
-    <ReactFlow colorMode="dark" key={canvasKey} nodes={nodes} edges={edges} nodeTypes={nodeTypes}
+    <ReactFlow colorMode="dark" key={canvasKey} nodes={measured} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange}
       // Only boxes in view are drawn, so the fit may zoom out far enough to show a whole opened folder.
       fitView fitViewOptions={FIT} minZoom={0.1} onlyRenderVisibleElements
       nodesDraggable={false} nodesConnectable={false}
       onNodeClick={(_event, node) => onNodeClick(node.id)}
+      onNodeMouseEnter={onNodeHover && ((_event, node) => onNodeHover(node.id))}
+      onNodeMouseLeave={onNodeHover && (() => onNodeHover(null))}
       onEdgeClick={onEdgeClick && ((_event, edge) => onEdgeClick(edge.id))}>
       <Background />
       <Controls showInteractive={false} />
@@ -88,9 +99,15 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
   const [selected, setSelected] = useState<MapArrow | null>(null);
   const [focus, setFocus] = useState<{ id: string; opened: ReadonlySet<string> } | null>(null);
+  const [hovered, setHovered] = useState<{ id: string; opened: ReadonlySet<string> } | null>(null);
   const graph = useMemo(() => visibleGraph(map, opened, expandable), [map, opened, expandable]);
-  const focused = focus && focus.opened === opened && graph.boxes.some(box => box.id === focus.id) ? focus.id : null;
+  const placeOf = new Map(graph.boxes.map(box => [box.id, box]));
+  // A pick made before the last open or fold no longer applies, even if its box is shown again.
+  const stillShown = (pick: { id: string; opened: ReadonlySet<string> } | null) => pick && pick.opened === opened && placeOf.has(pick.id) ? pick.id : null;
+  const focused = stillShown(focus);
   const connections = focused ? linkedArrows(graph.arrows, focused) : null;
+  const highlighted = stillShown(hovered) ?? focused;
+  const lit = highlighted ? linkedArrows(graph.arrows, highlighted).linked : null;
   // The folder-to-folder arrows are the design at a glance, so they are also listed as text.
   const design = useMemo(() => folderArrows(map), [map]);
   const pathOf = (id: string) => paths.get(id) ?? '(목록에 없는 파일)';
@@ -102,18 +119,25 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
   const nodes: Node[] = graph.boxes.map(box => ({ id: box.id, type: 'box', position: { x: box.x, y: box.y },
     data: { box, change: box.file ? changeOf.get(box.file.id) ?? null : null, changed: box.kind === 'folder' ? changedIn(box) : 0,
       focused: focused === box.id, onFocus: () => setFocus(focused === box.id ? null : { id: box.id, opened }) },
-    className: `map-box map-box--${box.kind}${focused === box.id ? ' map-box--focus' : connections && !connections.linked.has(box.id) ? ' map-box--dim' : ''}`,
+    className: `map-box map-box--${box.kind}${focused === box.id ? ' map-box--focus' : ''}${lit && highlighted !== box.id && !lit.has(box.id) ? ' map-box--dim' : ''}`,
     draggable: false, connectable: false }));
-  const placeOf = new Map(graph.boxes.map(box => [box.id, box]));
   const handlesFor = (arrow: MapArrow) => {
     const from = placeOf.get(arrow.source)!;
     const to = placeOf.get(arrow.target)!;
     if (from.x !== to.x) return { sourceHandle: 'out-right', targetHandle: 'in-left' };
     return to.y > from.y ? { sourceHandle: 'out-bottom', targetHandle: 'in-top' } : { sourceHandle: 'out-top', targetHandle: 'in-bottom' };
   };
-  const edges: Edge[] = (connections?.arrows ?? graph.arrows).map(arrow => ({ id: arrow.id, source: arrow.source, target: arrow.target, ...handlesFor(arrow),
-    label: arrow.items.length > 1 ? `import ${arrow.items.length}개` : undefined, className: arrow.back ? 'map-arrow map-arrow--back' : 'map-arrow',
-    markerEnd: ARROW_MARKER, selected: selected?.id === arrow.id }));
+  const edges: Edge[] = (connections?.arrows ?? graph.arrows).map(arrow => {
+    const strong = selected?.id === arrow.id || arrow.source === highlighted || arrow.target === highlighted;
+    return { id: arrow.id, source: arrow.source, target: arrow.target, ...handlesFor(arrow),
+      label: strong && arrow.items.length > 1 ? `import ${arrow.items.length}개` : undefined,
+      className: `map-arrow map-arrow--${strong ? 'strong' : 'faint'}${arrow.back ? ' map-arrow--back' : ''}`,
+      markerEnd: ARROW_MARKER, selected: selected?.id === arrow.id };
+  });
+  const namesOf = (arrows: MapArrow[], other: (arrow: MapArrow) => string) => arrows
+    .map(arrow => ({ name: boxName(placeOf.get(other(arrow))!), count: arrow.items.length }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(item => `${item.name}${item.count > 1 ? `(import ${item.count}개)` : ''}`).join(', ');
   const showButton = (item: MapImport) => <button className="btn btn--small" disabled={locked} onClick={() => onShowImport(item)}>코드 보기</button>;
   const externals = [...map.external.reduce((groups, item) => groups.set(item.specifier ?? '', (groups.get(item.specifier ?? '') ?? 0) + 1),
     new Map<string, number>())];
@@ -124,7 +148,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
     <div className="map-actions" role="group" aria-label="지도 보기">
       <button className="btn btn--small" aria-pressed={opened.size === 0} onClick={() => setOpened(new Set())}>설계 보기</button>
       <button className="btn btn--small" aria-pressed={graph.boxes.every(box => box.kind === 'file')} onClick={() => setOpened(new Set(expandable))}>파일 보기</button>
-      <span className="hint">상자를 누르면 그 안을 한 단계 펼쳐요. 위 ‘접기’로 다시 접어요. 파일 상자를 누르면 코드를 열어요. 점선은 오른쪽에서 왼쪽으로 거꾸로 가는 연결이라, 서로 가져다 쓰는 곳일 수 있어요. ‘이어진 것만’을 누르면 그 상자와 이어진 화살표만 남아요. 펼치거나 접으면 다시 모두 보여요.</span>
+      <span className="hint">상자를 누르면 그 안을 한 단계 펼쳐요. 위 ‘접기’로 다시 접어요. 파일 상자를 누르면 코드를 열어요. 점선은 오른쪽에서 왼쪽으로 거꾸로 가는 연결이라, 서로 가져다 쓰는 곳일 수 있어요. 상자에 마우스를 올리면 그 상자의 화살표가 진해져요. ‘이어진 것만’을 누르면 그 상자와 이어진 화살표만 남아요. 펼치거나 접으면 다시 모두 보여요.</span>
     </div>
     {openChips.length > 0 && <div className="map-actions" role="group" aria-label="펼친 곳">
       <span className="hint">펼친 곳</span>
@@ -146,7 +170,24 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
         if (box?.kind === 'folder') setOpened(current => new Set([...current, box.id]));
         else if (box?.file) onOpenFile(box.file.id);
       }}
+      onNodeHover={id => setHovered(id === null ? null : { id, opened })}
       onEdgeClick={id => setSelected(graph.arrows.find(item => item.id === id) ?? null)} />
+    <section className="card" aria-label="상자별 연결">
+      <h3>상자별 연결 · 상자 {graph.boxes.length}개</h3>
+      <p className="hint">지금 지도에 보이는 상자끼리의 import예요. 펼치거나 접으면 함께 바뀌어요.</p>
+      <ul className="map-list map-connections">{firstRows(graph.boxes).map(box => {
+        const uses = graph.arrows.filter(arrow => arrow.source === box.id);
+        const usedBy = graph.arrows.filter(arrow => arrow.target === box.id);
+        return <li key={box.id}>
+          <button className="btn btn--small" aria-pressed={focused === box.id}
+            onClick={() => setFocus(focused === box.id ? null : { id: box.id, opened })}>{boxName(box)}</button>
+          {uses.length > 0 && <span className="map-connections__line"><b>가져다 씀 {uses.length}곳:</b> {namesOf(uses, arrow => arrow.target)}</span>}
+          {usedBy.length > 0 && <span className="map-connections__line"><b>이 상자를 가져다 씀 {usedBy.length}곳:</b> {namesOf(usedBy, arrow => arrow.source)}</span>}
+          {uses.length + usedBy.length === 0 && <span className="map-connections__line">지금 보이는 다른 상자와 이어진 import가 없어요.</span>}
+        </li>;
+      })}</ul>
+      <Omitted count={graph.boxes.length} />
+    </section>
     <section className="card" aria-label="변경 목록">
       <h3>변경 목록{changes && ` · ${changes.result.changes.length}개`}</h3>
       {changes ? <>

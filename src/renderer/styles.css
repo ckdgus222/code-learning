@@ -343,6 +343,8 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .map-canvas .react-flow__attribution a { color: var(--muted); }
 .map-box__label { display: grid; gap: 4px; overflow-wrap: anywhere; }
 .map-canvas .map-arrow .react-flow__edge-path { stroke: var(--accent); stroke-width: 1.6; }
+.map-canvas .map-arrow--faint .react-flow__edge-path { opacity: .25; }
+.map-canvas .map-arrow--strong .react-flow__edge-path { stroke-width: 2.4; }
 .map-canvas .map-arrow.selected .react-flow__edge-path { stroke-width: 3; }
 .map-canvas .map-arrow--back .react-flow__edge-path { stroke-dasharray: 6 4; }
 /* Boxes are not connected by hand here, so the connection dots are only routing points. */
@@ -351,6 +353,10 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .map-canvas .react-flow__edge-text { fill: var(--ink); font-size: 12px; }
 .map-list { display: grid; gap: 6px; font-size: 14px; }
 .map-list code { font: 13px var(--mono); overflow-wrap: anywhere; }
+.map-connections { overflow-wrap: anywhere; }
+/* Each direction on its own line, so a box's uses and users read as two short lists. */
+.map-connections li { display: grid; gap: 2px; justify-items: start; }
+.map-connections__line { padding-left: 8px; }
 
 /* Plan v2.3 C-2: kinds of change, and the read-only comparison. */
 .tag--change { background: var(--raised); color: var(--ink); }
