@@ -168,7 +168,9 @@ function Target({ id, steps, locked, onStep }: { id: string | null; steps: CodeS
 }
 
 /** Original text of the checked range with its own line numbers; display only, offsets are untouched. */
-function Snippet({ source, evidence }: { source: SourceView; evidence: Evidence }) {
+export function Snippet({ source, evidence, more = '코드 크게 보기' }: {
+  source: SourceView; evidence: Pick<Evidence, 'startUtf16' | 'endUtf16' | 'startLine' | 'endLine'>; more?: string;
+}) {
   // Start at the beginning of the first line when only indentation precedes the range,
   // so the first line lines up with the rest.
   const lineStart = source.text.lastIndexOf('\n', evidence.startUtf16 - 1) + 1;
@@ -180,6 +182,6 @@ function Snippet({ source, evidence }: { source: SourceView; evidence: Evidence 
     <pre data-testid="flow-snippet">{lines.slice(0, SNIPPET_LINES).map((line, offset) => <span key={offset} className="snippet__line">
       <span className="snippet__no" aria-hidden="true">{evidence.startLine + offset}</span>{line}{'\n'}
     </span>)}</pre>
-    {hidden > 0 && <p className="hint snippet__more">이어지는 {hidden}줄은 ‘코드 크게 보기’에서 볼 수 있어요.</p>}
+    {hidden > 0 && <p className="hint snippet__more">이어지는 {hidden}줄은 ‘{more}’에서 볼 수 있어요.</p>}
   </figure>;
 }

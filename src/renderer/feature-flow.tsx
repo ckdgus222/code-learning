@@ -1,10 +1,11 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Position, type Edge, type Node } from '@xyflow/react';
-import type { Evidence, SourceView, CallTarget, FeatureFlow, FlowEdge, FlowNode, ProjectRoutes, ProjectView, Request, ValueSite } from '../shared/contracts';
+import { Handle, Position, type Edge, type Node, type NodeProps } from '@xyflow/react';
+import type { Result, Evidence, SourceView, CallTarget, FeatureFlow, FlowEdge, FlowNode, ProjectRoutes, ProjectView, Request, ValueSite } from '../shared/contracts';
 import { ARROW_MARKER, firstRows, MapCanvas, Omitted } from './project-map';
 import { screenGroups, type RouteRow } from './screen-groups';
 import { featureIndex, type IndexFeature, type IndexGroup } from './feature-index';
-import { layoutFlow } from './flow-layout';
+import { edgeRoute, LANE_TITLES, layoutFlow, type FlowLane } from './flow-layout';
+import { Snippet } from './flow';
 import { isNextConfig, nextRouteOf } from '../core/analysis/next-routes';
 import type { ConnectionReport, FeatureGuide, FeatureGuideResult, LearningMode } from '../shared/ai';
 import { FeatureGuideCard } from './feature-guide';
@@ -101,18 +102,17 @@ function SiteList({ items, omitted, disabled, onSite }: {
 }
 
 export function FlowWalk({ flow, title, about, codeName, walk, selection, setStory, setStep, setNode, locked, stale,
-  summary, setSummary, onFunction, onCode, onSite, onChoose, onAsk, children }: {
+  summary, setSummary, onFunction, onCode, onSite, onChoose, onAsk, readCode, children }: {
   flow: FeatureFlow; title: string; about?: string; codeName: string; walk: Walk; selection: WalkSelection;
   setStory(id: string): void; setStep(index: number): void; setNode(id: string): void;
   summary: [string, string, string]; setSummary(index: 0 | 1 | 2, value: string): void;
   locked: boolean; stale: boolean; onFunction(target: CallTarget): void; onCode(site: ValueSite): void;
   onSite(nodeId: string, site: ValueSite): void;
   onAsk(node: FlowNode, question: string, topic: string): void;
+  readCode(fileId: string): Promise<Result<SourceView> | null>;
   onChoose(): void; children?: React.ReactNode;
 }) {
   const { stories, storyId, steps, step, currentNode } = selection;
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [picks, setPicks] = useState(0);
   const stepHeading = useRef<HTMLHeadingElement>(null);
   const focusHint = useRef(false);
   useLayoutEffect(() => {
@@ -260,8 +260,7 @@ export function FlowWalk({ flow, title, about, codeName, walk, selection, setSto
       </details>}
     </>}
     <FoldedDetails key={`${flow.routesId}:${flow.routeIndex}`} summary="전체 그림과 단계 보기">
-      <FlowDiagram flow={flow} selectedNodeId={selectedNodeId} onSelect={id => { setSelectedNodeId(id); setPicks(count => count + 1); }} />
-      <FlowSteps flow={flow} locked={disabled} onCode={onCode} onFunction={onFunction} selectedNodeId={selectedNodeId} picks={picks} />
+      <FlowPicture flow={flow} locked={locked} stale={stale} readCode={readCode} onCode={onCode} onFunction={onFunction} />
     </FoldedDetails>
   </section>;
 }
@@ -319,40 +318,141 @@ export function FeatureOverview({ project, routes, guide }: { project: ProjectVi
   </section>;
 }
 
-/** Starts folded and draws its contents only once opened: a canvas laid out while folded has no size, and its fit leaves the boxes out of view. */
+/** Unmount the canvas while folded so reopening measures its visible size. */
 function FoldedDetails({ summary, children }: { summary: string; children: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
-  return <details className="card" onToggle={event => setOpen(event.currentTarget.open)}>
+  const [open, setOpen] = useState(true);
+  return <details className="card" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{summary}</summary>
     {open && children}
   </details>;
 }
 
-function FlowDiagram({ flow, selectedNodeId, onSelect }: {
-  flow: FeatureFlow; selectedNodeId: string | null; onSelect(id: string): void;
-}) {
-  // The search box and step clicks re-render the page; the canvas only needs new boxes when these change.
-  const nodes = useMemo((): Node[] => layoutFlow(flow).map(({ node, x, y }) => ({
-    id: node.id, position: { x, y }, sourcePosition: Position.Right, targetPosition: Position.Left,
-    className: `map-box feature-box feature-box--${node.side}`, selected: selectedNodeId === node.id,
-    ariaLabel: `${node.relativePath} · ${node.name}`,
-    data: { label: <span className="map-box__label">
+function FlowBoxNode({ data }: NodeProps<Node<{ node: FlowNode }>>) {
+  const { node } = data;
+  return <>
+    <Handle type="target" id="in-left" position={Position.Left} />
+    <Handle type="target" id="in-top" position={Position.Top} />
+    <Handle type="target" id="in-right" position={Position.Right} />
+    <span className="map-box__label">
       <small className="feature-box__file" title={node.relativePath}>{node.relativePath.split('/').at(-1)}</small>
       <b className="feature-box__name" title={node.name}>{node.name}</b>
       {node.event && <span className="tag tag--doc">화면 이벤트 {node.event}</span>}
       {node.screen !== null && <span className="tag tag--doc" title={`화면 주소 ${node.screen}`}>화면 주소 {node.screen}</span>}
-    </span> },
-  })), [flow, selectedNodeId]);
-  const edges = useMemo((): Edge[] => flow.edges.map((edge, index) => ({
-    id: `flow-edge:${index}`, source: edge.from, target: edge.to,
-    label: edge.site ? `${edge.site.startLine}행` : undefined,
-    className: `map-arrow${!edge.sure ? ' feature-arrow--inferred' : edge.kind === 'typed' ? ' feature-arrow--typed' : ''}`,
-    markerEnd: ARROW_MARKER,
-  })), [flow]);
+    </span>
+    <Handle type="source" id="out-right" position={Position.Right} />
+    <Handle type="source" id="out-bottom" position={Position.Bottom} />
+  </>;
+}
+
+function FlowLaneNode({ data }: NodeProps<Node<{ lane: FlowLane }>>) {
+  return <><h4>{data.lane.title}</h4>{data.lane.empty && <p>이 기능에서 찾지 못했어요</p>}</>;
+}
+const flowNodeTypes = { flowBox: FlowBoxNode, flowLane: FlowLaneNode };
+
+export function edgeLabel(edge: FlowEdge): string {
+  const text = edge.site?.text;
+  const name = text === undefined ? '' : `${text.length > 20 ? `${text.slice(0, 20)}…` : text} `;
+  const labels = { calls: `${name}부름`, typed: `${name}부름`, event: '화면 이벤트', placed: '화면에 놓음',
+    inside: '안쪽 함수', hook: '훅 값', route: '요청 보냄' };
+  return labels[edge.kind] + (edge.site ? ` · ${edge.site.startLine}행` : '');
+}
+
+function FlowDiagram({ flow, selectedNodeId, onSelect }: {
+  flow: FeatureFlow; selectedNodeId: string | null; onSelect(id: string): void;
+}) {
+  const { boxes, lanes } = useMemo(() => layoutFlow(flow), [flow]);
+  const nodes = useMemo((): Node[] => [
+    ...lanes.map(lane => ({ id: `lane:${lane.side}`, type: 'flowLane', position: { x: lane.x, y: 0 },
+      width: lane.width, height: lane.height, zIndex: -1, selectable: false, focusable: false, draggable: false,
+      className: 'flow-lane', data: { lane } })),
+    ...boxes.map(({ node, x, y }) => ({
+      id: node.id, type: 'flowBox', position: { x, y },
+      className: `map-box feature-box feature-box--${node.side}`, selected: selectedNodeId === node.id,
+      ariaLabel: `${node.relativePath} · ${node.name}`, data: { node },
+    })),
+  ], [boxes, lanes, selectedNodeId]);
+  const edges = useMemo((): Edge[] => {
+    const byId = new Map(boxes.map(box => [box.node.id, box]));
+    return flow.edges.map((edge, index) => ({
+      id: `flow-edge:${index}`, source: edge.from, target: edge.to,
+      ...edgeRoute(byId.get(edge.from)!, byId.get(edge.to)!), label: edgeLabel(edge),
+      className: `map-arrow${!edge.sure ? ' feature-arrow--inferred' : edge.kind === 'typed' ? ' feature-arrow--typed' : ''}`,
+      markerEnd: ARROW_MARKER,
+    }));
+  }, [flow, boxes]);
   return <section aria-label="기능 흐름 지도">
-    <p className="hint">왼쪽 화면 → 오른쪽 서버 · 점선은 추정·타입으로 찾음</p>
-    <MapCanvas testId="feature-flow-canvas" nodes={nodes} edges={edges} onNodeClick={onSelect} />
+    <p className="hint">왼쪽 화면 쪽 → 가운데 요청 → 오른쪽 서버 쪽 · 점선은 추정·타입으로 찾음 · 상자를 누르면 아래에 코드가 보여요</p>
+    <MapCanvas testId="feature-flow-canvas" nodes={nodes} edges={edges} nodeTypes={flowNodeTypes} onNodeClick={onSelect} />
   </section>;
+}
+
+export function pickNode(current: string | null, clicked: string, locked: boolean): string | null {
+  if (locked || clicked.startsWith('lane:')) return current;
+  return clicked;
+}
+
+type PickedEvidence = { nodeId: string; result: Result<SourceView> } | null;
+type EvidenceView = { kind: 'code'; source: SourceView } | { kind: 'empty' | 'loading' | 'stale' | 'changed' | 'error'; message: string };
+export function evidenceView(node: FlowNode | null, picked: PickedEvidence, stale: boolean): EvidenceView {
+  if (stale) return { kind: 'stale', message: '다시 확인 필요: 파일이 바뀌었거나 잠자기에서 돌아왔어요. 주소를 다시 찾아 주세요.' };
+  if (!node) return { kind: 'empty', message: '지도에서 상자를 누르면 그 코드가 여기 보여요.' };
+  if (!picked || picked.nodeId !== node.id) return { kind: 'loading', message: '코드를 읽는 중…' };
+  if (!picked.result.ok) return { kind: 'error', message: picked.result.message };
+  if (picked.result.value.hash !== node.fileHash) return {
+    kind: 'changed', message: '흐름을 찾은 뒤 이 파일이 바뀌어 코드를 보여 주지 않았어요. 주소를 다시 찾아 주세요.',
+  };
+  return { kind: 'code', source: picked.result.value };
+}
+
+function FlowEvidence({ flow, node, picked, locked, stale, onCode, onFunction }: {
+  flow: FeatureFlow; node: FlowNode | null; picked: PickedEvidence; locked: boolean; stale: boolean;
+  onCode(site: ValueSite): void; onFunction(target: CallTarget): void;
+}) {
+  const view = evidenceView(node, picked, stale);
+  return <section aria-label="선택한 연결의 근거" className="flow-evidence">
+    {node && <>
+      <h4>선택한 연결의 근거 · {node.relativePath}</h4>
+      <p>{LANE_TITLES[node.side]} · {node.name} · {node.range.startLine}–{node.range.endLine}줄</p>
+    </>}
+    {view.kind === 'code' && node ? <Snippet source={view.source} evidence={node.range} more="코드 보기" />
+      : view.kind !== 'code' && <p>{view.message}</p>}
+    {node && <>
+      <ul className="map-list">{flow.edges.filter(edge => edge.from === node.id || edge.to === node.id).map((edge, index) => {
+        const incoming = edge.to === node.id;
+        const other = flow.nodes.find(item => item.id === (incoming ? edge.from : edge.to));
+        return <li key={index}>
+          {incoming ? `${other?.name} → 이 상자` : `이 상자 → ${other?.name}`} · {edgeText(edge)}{' '}
+          {!edge.sure && <><span className="tag tag--unknown">추정</span>{edge.kind !== 'hook' && ` · ${edge.reasons.join(' · ')}`}</>}
+        </li>;
+      })}</ul>
+      <NodeButtons node={node} locked={locked || stale} onCode={onCode} onFunction={onFunction} />
+    </>}
+  </section>;
+}
+
+function FlowPicture({ flow, locked, stale, readCode, onCode, onFunction }: {
+  flow: FeatureFlow; locked: boolean; stale: boolean; readCode(fileId: string): Promise<Result<SourceView> | null>;
+  onCode(site: ValueSite): void; onFunction(target: CallTarget): void;
+}) {
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [picked, setPicked] = useState<PickedEvidence>(null);
+  async function selectNode(clicked: string) {
+    const next = pickNode(selectedNodeId, clicked, locked || stale);
+    if (next === selectedNodeId) return;
+    const node = flow.nodes.find(item => item.id === next);
+    if (!node) return;
+    setSelectedNodeId(next);
+    setPicked(null);
+    const result = await readCode(node.fileId);
+    if (result === null) { setSelectedNodeId(null); return; }
+    setPicked({ nodeId: node.id, result });
+  }
+  return <>
+    <FlowDiagram flow={flow} selectedNodeId={selectedNodeId} onSelect={id => void selectNode(id)} />
+    <FlowEvidence flow={flow} node={flow.nodes.find(node => node.id === selectedNodeId) ?? null}
+      picked={picked} locked={locked} stale={stale} onCode={onCode} onFunction={onFunction} />
+    <FlowSteps flow={flow} locked={locked || stale} onCode={onCode} onFunction={onFunction} selectedNodeId={selectedNodeId} />
+  </>;
 }
 
 function edgeText(edge: FlowEdge): string {
@@ -368,20 +468,13 @@ function edgeText(edge: FlowEdge): string {
   }
 }
 
-export function FlowSteps({ flow, locked, onCode, onFunction, selectedNodeId = null, picks = 0 }: {
+export function FlowSteps({ flow, locked, onCode, onFunction, selectedNodeId = null }: {
   flow: FeatureFlow; locked: boolean; onCode(site: ValueSite): void; onFunction(target: CallTarget): void;
   selectedNodeId?: string | null;
-  /** Counts picks on the diagram, so choosing the same box again scrolls back to its step. */
-  picks?: number;
 }) {
   const requests = flow.nodes.filter(node => node.side === 'request');
   const groups = requests.length ? requests : [null];
-  const section = useRef<HTMLElement>(null);
-  // A box chosen on the diagram brings its step into view before the screen is drawn; the list knows where its steps are.
-  useLayoutEffect(() => {
-    if (selectedNodeId) section.current?.querySelector(`[data-node-id="${CSS.escape(selectedNodeId)}"]`)?.scrollIntoView({ block: 'center' });
-  }, [selectedNodeId, picks]);
-  return <section ref={section} className="card" aria-label="기능 흐름 단계">
+  return <section className="card" aria-label="기능 흐름 단계">
     <h3>기능 흐름 단계</h3>
     {groups.map(request => {
       const upstream = new Set<string>();

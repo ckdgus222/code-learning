@@ -1219,8 +1219,7 @@ try {
     await route.click();
     await story.getByText('1 / 7 · 화면', { exact: true }).waitFor();
     const disclosure = page.locator('details').filter({ has: page.locator('summary', { hasText: /^전체 그림과 단계 보기$/ }) });
-    assert.equal(await disclosure.getAttribute('open'), null);
-    await disclosure.locator('summary').first().click();
+    assert.notEqual(await disclosure.getAttribute('open'), null);
     const steps = page.getByRole('region', { name: '기능 흐름 단계' });
     await steps.getByText('화면 주소 /dogs', { exact: true }).waitFor();
     await steps.getByText('화면 이벤트 onClick', { exact: true }).waitFor();
@@ -1242,21 +1241,65 @@ try {
     assert.equal(await diagram.getByText('화면 이벤트 onClick', { exact: true }).count(), 1);
     assert.equal(await diagram.locator('.feature-arrow--typed .react-flow__edge-path').evaluate(edge => getComputedStyle(edge).strokeDasharray), '3px, 4px');
     assert.equal(await diagram.locator('.feature-arrow--inferred .react-flow__edge-path').evaluate(edge => getComputedStyle(edge).strokeDasharray), '9px, 5px');
-    assert.ok((await diagram.locator('.react-flow__edge-text').allTextContents()).every(label => /^\d+행$/.test(label)));
+    const edgeLabels = await diagram.locator('.react-flow__edge-text').allTextContents();
+    assert.ok(edgeLabels.some(label => /부름 · \d+행$/.test(label)));
+    assert.ok(edgeLabels.every(label => /^(?:.+ 부름|부름|화면 이벤트|화면에 놓음|안쪽 함수|훅 값|요청 보냄)(?: · \d+행)?$/.test(label)));
+    assert.equal(await diagram.locator('.flow-lane').count(), 3);
+    assert.deepEqual(await diagram.locator('.flow-lane h4').allTextContents(), ['화면 쪽', '요청', '서버 쪽']);
+    const evidenceStrip = page.getByRole('region', { name: '선택한 연결의 근거', exact: true });
+    await evidenceStrip.getByText('지도에서 상자를 누르면 그 코드가 여기 보여요.', { exact: true }).waitFor();
+    // Hold the read so a second box click must leave both selection and read count unchanged.
+    await app.evaluate(({ ipcMain }) => {
+      globalThis.testFlowRead = ipcMain._invokeHandlers.get('learning:read');
+      globalThis.testFlowReadCalls = 0;
+      const gate = new Promise(resolve => { globalThis.releaseFlowRead = resolve; });
+      ipcMain.removeHandler('learning:read');
+      ipcMain.handle('learning:read', async (event, request) => {
+        globalThis.testFlowReadCalls++;
+        await gate;
+        return globalThis.testFlowRead(event, request);
+      });
+    });
+    try {
+      await serviceNode.click();
+      await evidenceStrip.getByText('코드를 읽는 중…', { exact: true }).waitFor();
+      await until(async () => await app.evaluate(() => globalThis.testFlowReadCalls) === 1);
+      await screenNode.click();
+      assert.equal(await app.evaluate(() => globalThis.testFlowReadCalls), 1);
+      assert.equal(await steps.locator('[aria-current="step"]').count(), 1);
+      assert.equal(await steps.locator('[aria-current="step"] b').innerText(), 'DogsService.remove');
+      assert.ok((await evidenceStrip.getByRole('button').all()).length > 0);
+      for (const button of await evidenceStrip.getByRole('button').all()) assert.equal(await button.isDisabled(), true);
+    } finally {
+      await app.evaluate(({ ipcMain }) => {
+        globalThis.releaseFlowRead();
+        ipcMain.removeHandler('learning:read');
+        ipcMain.handle('learning:read', globalThis.testFlowRead);
+      });
+    }
+    for (const [node, name, file, code] of [
+      [serviceNode, 'DogsService.remove', 'api/service.ts', 'this.db.$transaction'],
+      [screenNode, 'DogsPage', 'web/app/dogs/page.tsx', 'DogList'],
+    ]) {
+      // The first read is already running; wait for it before clicking the next box.
+      if (node === screenNode) await node.click();
+      await evidenceStrip.getByRole('heading', { name: `선택한 연결의 근거 · ${file}`, exact: true }).waitFor();
+      await until(async () => (await evidenceStrip.getByTestId('flow-snippet').innerText()).includes(code));
+      await until(async () => await evidenceStrip.getByRole('button', { name: '코드 보기', exact: true }).isEnabled());
+      assert.equal(await steps.locator('[aria-current="step"]').count(), 1);
+      assert.equal(await steps.locator('[aria-current="step"] b').innerText(), name);
+    }
     await diagram.scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(artifacts, 'feature-flow-map.png') });
-    for (const [node, name] of [[serviceNode, 'DogsService.remove'], [serviceNode, 'DogsService.remove'], [screenNode, 'DogsPage']]) {
-      await node.click();
-      const selectedStep = steps.locator('[aria-current="step"]').filter({ has: page.locator('b', { hasText: name }) });
-      await selectedStep.waitFor();
-      assert.equal(await steps.locator('[aria-current="step"]').count(), 1);
-      assert.equal(await selectedStep.getAttribute('aria-current'), 'step');
-      assert.equal(await selectedStep.evaluate(step => {
-        const bounds = step.getBoundingClientRect();
-        const viewport = step.closest('.center').getBoundingClientRect();
-        return bounds.top >= viewport.top && bounds.bottom <= viewport.bottom;
-      }), true);
-    }
+    // Returning from the chooser starts with an empty evidence strip.
+    await story.getByRole('button', { name: '다른 기능 고르기', exact: true }).click();
+    await openServerFeatures();
+    await route.click();
+    await evidenceStrip.getByText('지도에서 상자를 누르면 그 코드가 여기 보여요.', { exact: true }).waitFor();
+    await until(async () => await story.getByRole('button', { name: '다른 기능 고르기', exact: true }).isEnabled());
+    await serviceNode.click();
+    await evidenceStrip.getByTestId('flow-snippet').waitFor();
+    await until(async () => await evidenceStrip.getByRole('button', { name: '코드 보기', exact: true }).isEnabled());
     await page.screenshot({ path: path.join(artifacts, 'feature-flow-text.png') });
     await steps.getByTestId('feature-step').filter({ has: page.locator('b', { hasText: /^DogsService.remove$/ }) })
       .getByRole('button', { name: '코드 보기', exact: true }).click();
@@ -1272,8 +1315,13 @@ try {
     await page.getByRole('article', { name: '함수 요약', exact: true }).waitFor();
     assert.equal(await page.getByTestId('question-scope').innerText(), scope);
     await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    if (await disclosure.getAttribute('open') === null) await disclosure.locator('summary').first().click();
+    await serviceNode.click();
+    await evidenceStrip.getByTestId('flow-snippet').waitFor();
+    await until(async () => await evidenceStrip.getByRole('button', { name: '코드 보기', exact: true }).isEnabled());
     await app.evaluate(({ powerMonitor }) => powerMonitor.emit('resume'));
-    await page.locator('.feature-page').getByText('다시 확인 필요: 파일이 바뀌었거나 잠자기에서 돌아왔어요.', { exact: false }).waitFor();
+    await evidenceStrip.getByText('다시 확인 필요: 파일이 바뀌었거나 잠자기에서 돌아왔어요. 주소를 다시 찾아 주세요.', { exact: true }).waitFor();
+    assert.equal(await evidenceStrip.getByTestId('flow-snippet').count(), 0);
     await page.getByRole('region', { name: '설명', exact: true }).getByText('다시 확인 필요: 파일이 바뀌었거나 잠자기에서 돌아왔어요. 주소를 다시 찾아 주세요.', { exact: true }).waitFor();
     assert.equal(await page.getByTestId('flow-step-explanation').count(), 0);
     await page.getByRole('button', { name: '다른 기능 고르기', exact: true }).click();
@@ -1316,7 +1364,6 @@ try {
     await story.getByRole('button', { name: '2단계 프론트 처리', exact: true }).click();
     const explanation = page.getByTestId('flow-step-explanation');
     assert.equal((await explanation.innerText()).includes('추정'), false);
-    await story.getByText('전체 그림과 단계 보기', { exact: true }).click();
     await story.getByText('코드에서 확인됨: 훅이 돌려준 login 함수를 불러요', { exact: false }).waitFor();
     await story.getByText('전체 그림과 단계 보기', { exact: true }).click();
     await story.getByRole('button', { name: '5단계 화면 결과', exact: true }).click();
@@ -3814,6 +3861,12 @@ try {
     assert.ok((await index.locator('li > b').allTextContents()).includes('‘삭제’ 버튼 · 지우기'));
     await aiFeature.getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
     const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
+    const evidenceStrip = story.getByRole('region', { name: '선택한 연결의 근거', exact: true });
+    const diagram = story.getByTestId('feature-flow-canvas');
+    await until(async () => await story.getByRole('button', { name: '다른 기능 고르기', exact: true }).isEnabled());
+    await diagram.getByRole('group', { name: 'api/service.ts · DogsService.remove', exact: true }).click();
+    await evidenceStrip.getByTestId('flow-snippet').waitFor();
+    await until(async () => await evidenceStrip.getByRole('button', { name: '코드 보기', exact: true }).isEnabled());
     await story.getByRole('heading', { name: '반려견 살펴보기와 삭제', exact: true, level: 3 }).waitFor();
     assert.equal(await story.locator(':scope > .map-actions > h3').innerText(), '반려견 살펴보기와 삭제');
     // DELETE has a sure frontend link, so it is preferred over GET regardless of the AI's order.
@@ -3826,6 +3879,13 @@ try {
     await openServerFeatures();
     await list.getByRole('button', { name: 'GET /api/dogs/:id', exact: true }).click();
     await story.getByText('DogsController.get가 요청을 받아요', { exact: true }).waitFor();
+    await evidenceStrip.getByText('지도에서 상자를 누르면 그 코드가 여기 보여요.', { exact: true }).waitFor();
+    assert.equal(await evidenceStrip.getByTestId('flow-snippet').count(), 0);
+    await until(async () => await story.getByRole('button', { name: '다른 기능 고르기', exact: true }).isEnabled());
+    await diagram.getByRole('group', { name: 'api/controller.ts · DogsController.get', exact: true }).click();
+    await evidenceStrip.getByTestId('flow-snippet').waitFor();
+    await until(async () => await evidenceStrip.getByRole('button', { name: '코드 보기', exact: true }).isEnabled());
+
     for (const label of ['받는 것', '확인하는 것', '돌려주는 것']) {
       assert.equal(await summary.getByRole('textbox', { name: label, exact: true }).inputValue(), '');
     }
@@ -3833,6 +3893,8 @@ try {
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
     await openServerFeatures();
     await list.getByRole('button', { name: 'DELETE /api/dogs/:id', exact: true }).click();
+    await evidenceStrip.getByText('지도에서 상자를 누르면 그 코드가 여기 보여요.', { exact: true }).waitFor();
+    assert.equal(await evidenceStrip.getByTestId('flow-snippet').count(), 0);
     await story.getByRole('button', { name: '4단계 서버 받는 곳', exact: true }).click();
     await story.getByText('DogsController.remove가 요청을 받아요 → DogsService.remove에 넘겨요', { exact: true }).waitFor();
     await story.getByRole('button', { name: '7단계 화면 결과', exact: true }).click();

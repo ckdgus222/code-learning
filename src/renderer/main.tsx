@@ -732,6 +732,18 @@ function App() {
     if (!node) return;
     await readSiteRange(siteOf(node), '흐름을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 주소를 다시 찾아 주세요.');
   }
+  async function readFlowCode(fileId: string) {
+    if (!project || currentBusy.current) return null;
+    const current = ++request.current;
+    currentBusy.current = true;
+    setBusy(true);
+    try {
+      const result = await window.learning.readSource({ projectId: project.id, fileId });
+      return current === request.current ? result : null;
+    } finally {
+      if (current === request.current) { currentBusy.current = false; setBusy(false); }
+    }
+  }
   // Only the question's code changes: readFile would clear the flow view's source and highlight, so both reads are direct.
   async function askFlowStep(node: FlowNode, question: string, topic: string) {
     if (!project || currentBusy.current) return;
@@ -954,7 +966,7 @@ function App() {
             summary={features.summary} setSummary={features.setSummary}
             setStory={id => void showFlowNode(features.setStory(id))} setStep={index => void showFlowNode(features.setStep(index))}
             setNode={id => void showFlowNode(features.setNode(id))} locked={busy} stale={features.stale}
-            onChoose={features.clearFlow} onCode={site => void showValueSite(site)} onSite={(id, site) => void showFlowSite(id, site)}
+            readCode={readFlowCode} onChoose={features.clearFlow} onCode={site => void showValueSite(site)} onSite={(id, site) => void showFlowSite(id, site)}
             onFunction={target => void showCallFunction(target)} onAsk={(node, question, topic) => void askFlowStep(node, question, topic)}>
             {features.currentNode && (source && evidence && hasFlowCode(source, evidence, features.currentNode, features.walk.site)
               ? <div className="code flow-walk-code" data-testid="flow-code">
