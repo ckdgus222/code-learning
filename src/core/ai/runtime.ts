@@ -11,7 +11,7 @@ import type { StageRequest, StageResponse } from './workflow';
 // The user opened the local worker on 2026-10-19 with the C04 gaps stated as known limits
 // (README ‘알려진 한계’), and the same day the Codex and Gemini single modes for faster answers.
 // Claude Code stays closed: it has no stage runner and no isolation checks.
-const KNOWN_LIMITS = '알려진 한계: 도구 차단은 Codex 0.163.0·Antigravity 1.4.2에서 시험한 범위만 확인했어요. '
+const KNOWN_LIMITS = '알려진 한계: 도구 차단은 Codex 0.163.0·Antigravity 1.4.3에서 시험한 범위만 확인했어요. '
   + '울타리는 홈 폴더 읽기와 허용 폴더 밖 쓰기를 막지만 네트워크는 막지 않아요. 자세한 내용은 README의 ‘알려진 한계’에 있어요.';
 export const LOCAL_WORKER_READY = `질문을 보낼 수 있어요. ${KNOWN_LIMITS}`;
 export const SINGLE_READY = `질문을 보낼 수 있어요. 한 AI가 바로 설명하고 다른 AI의 대조는 없어요. ${KNOWN_LIMITS}`;
