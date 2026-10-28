@@ -1123,7 +1123,7 @@ it.each(['calls', 'typed', 'event', 'placed', 'inside', 'hook', 'route'] as cons
   },
 );
 
-it('labels adjacent and cross-lane arrows but leaves skipped rows, upward arrows and self-calls unlabelled', () => {
+it('labels adjacent arrows but leaves crowded cross-lane arrows, skipped rows, upward arrows and self-calls unlabelled', () => {
   vi.mocked(ReactFlow).mockImplementationOnce(() => React.createElement(React.Fragment));
   const input: FeatureFlow = { ...flow, nodes: [...nodes, { ...nodes[2], id: 'last', depth: 0 }], edges: [
     ...[['screen', 'event'], ['screen', 'last'], ['last', 'screen'], ['event', 'event'],
@@ -1134,12 +1134,31 @@ it('labels adjacent and cross-lane arrows but leaves skipped rows, upward arrows
   renderToStaticMarkup(React.createElement(FlowDiagram, { flow: input, selectedNodeId: null, onSelect() {} }));
   const drawn = vi.mocked(ReactFlow).mock.calls.at(-1)![0].edges!;
   expect(drawn.map(edge => edge.label)).toEqual(['remove() 부름 · 12행', undefined, undefined, undefined,
-    '부름 · 12행', '부름 · 12행', '부름']);
+    undefined, '부름 · 12행', undefined]);
   expect(drawn.map(edge => edge.type)).toEqual(['straight', 'smoothstep', 'smoothstep', 'smoothstep',
     'smoothstep', 'straight', 'smoothstep']);
   expect(drawn.map(edge => [edge.source, edge.target])).toEqual(input.edges.map(edge => [edge.from, edge.to]));
   const steps = renderToStaticMarkup(React.createElement(FlowSteps, { flow: input, locked: false, onCode() {}, onFunction() {} }));
   expect(steps).toContain('remove()를 불러요 (12행)');
+});
+
+it('passes route options to the canvas and keeps a lone cross-lane label short', () => {
+  vi.mocked(ReactFlow).mockImplementationOnce(() => React.createElement(React.Fragment));
+  const input: FeatureFlow = { ...flow, edges: [
+    { ...flow.edges[1], kind: 'calls', site: { ...nodes[0].range, fileId: 'f', fileHash: 'h', text: 'remove()' } },
+    { ...flow.edges[0], from: 'event', to: 'screen' },
+    { ...flow.edges[0], from: 'event', to: 'event' },
+    flow.edges[0],
+  ] };
+  renderToStaticMarkup(React.createElement(FlowDiagram, { flow: input, selectedNodeId: null, onSelect() {} }));
+  const drawn = vi.mocked(ReactFlow).mock.calls.at(-1)![0].edges!;
+  expect(drawn.map(edge => edge.label)).toEqual(['부름 · 1행', undefined, undefined, '안쪽 함수']);
+  expect(drawn.map(edge => 'pathOptions' in edge ? edge.pathOptions : undefined)).toEqual([
+    { offset: 20, stepPosition: 0.5 }, { offset: 34 }, { offset: 20 }, undefined,
+  ]);
+  expect(drawn.map(edge => [edge.sourceHandle, edge.targetHandle])).toEqual([
+    ['out-right', 'in-left'], ['out-right', 'in-right'], ['out-right', 'in-top'], ['out-bottom', 'in-top'],
+  ]);
 });
 
 it('keeps all side handles at the same fixed height with and without event and screen tags', () => {

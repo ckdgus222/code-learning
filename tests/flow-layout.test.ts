@@ -1,7 +1,8 @@
 import { expect, it } from 'vitest';
 import type { FeatureFlow, FlowNode } from '../src/shared/contracts';
 import { getSmoothStepPath, Position } from '@xyflow/react';
-import { edgeRoute, layoutFlow } from '../src/renderer/flow-layout';
+import { edgeRoute, layoutFlow, routeEdges, type EdgeRouteInfo, type FlowBox } from '../src/renderer/flow-layout';
+import { SIDE_HANDLE_TOP } from '../src/renderer/feature-flow';
 
 const node = (id: string, side: FlowNode['side'], depth: number): FlowNode => ({
   id, side, depth, fileId: id, fileHash: 'h', relativePath: `${id}.ts`, name: id,
@@ -188,4 +189,139 @@ it('stacks requests without gaps and connects adjacent rows vertically when call
   expect(boxes.slice(4).map(box => box.row)).toEqual([0, 1, 2, 0]);
   expect(lanes.every(lane => lane.height === 530)).toBe(true);
   expect(edgeRoute(boxes[4], boxes[5])).toEqual({ sourceHandle: 'out-bottom', targetHandle: 'in-top', type: 'straight' });
+});
+
+function smoothPath(from: FlowBox, to: FlowBox, route: EdgeRouteInfo): string {
+  return getSmoothStepPath({ sourceX: from.x + 200, sourceY: from.y + SIDE_HANDLE_TOP, sourcePosition: Position.Right,
+    targetX: to.x + (route.targetHandle === 'in-top' ? 100 : route.targetHandle === 'in-right' ? 200 : 0),
+    targetY: to.y + (route.targetHandle === 'in-top' ? 0 : SIDE_HANDLE_TOP),
+    targetPosition: route.targetHandle === 'in-top' ? Position.Top
+      : route.targetHandle === 'in-right' ? Position.Right : Position.Left,
+    ...route.pathOptions })[0];
+}
+
+function verticalXs(path: string): number[] {
+  const xs: number[] = [];
+  let previous: number[] = [];
+  for (const [, command, coordinates] of path.matchAll(/([MLQ])([^MLQ]*)/g)) {
+    const values = coordinates.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+    if (command === 'L' && values[0] === previous[0] && values[1] !== previous[1]) xs.push(values[0]);
+    previous = values.slice(-2);
+  }
+  return xs;
+}
+
+const mixedGap = flow([
+  ...Array.from({ length: 4 }, (_, index) => node(`front${index}`, 'front', 4 - index)),
+  ...Array.from({ length: 3 }, (_, index) => node(`request${index}`, 'request', 0)),
+], edges([['front0', 'request1'], ['front1', 'request2'], ['front3', 'request0'],
+  ['front0', 'front3'], ['front3', 'front1'], ['front2', 'front2']]));
+
+it('spreads mixed cross-lane, outside and self-call paths into distinct positions in the same gap', () => {
+  const { boxes } = layoutFlow(mixedGap);
+  const before = structuredClone({ edges: mixedGap.edges, boxes });
+  const routes = routeEdges(mixedGap.edges, boxes);
+  const byId = new Map(boxes.map(box => [box.node.id, box]));
+  const xs = routes.map((route, index) => {
+    const edge = mixedGap.edges[index];
+    const from = byId.get(edge.from)!;
+    const to = byId.get(edge.to)!;
+    expect(route).toMatchObject(edgeRoute(from, to));
+    const verticals = verticalXs(smoothPath(from, to, route)).filter(x => x > from.x + 200);
+    expect(verticals).toHaveLength(1);
+    return verticals[0];
+  });
+  const right = boxes[0].x + 200;
+  expect(new Set(xs).size).toBe(6);
+  expect(xs.every(x => x > right && x < right + 120)).toBe(true);
+  [61, 74, 87, 24 + 20 / 3, 24 + 40 / 3, 20].forEach((offset, index) =>
+    expect(xs[index]).toBeCloseTo(right + offset));
+  expect(routes.map(route => route.crowded)).toEqual([true, true, true, false, false, false]);
+  expect({ edges: mixedGap.edges, boxes }).toEqual(before);
+  expect(routeEdges(mixedGap.edges, boxes)).toEqual(routes);
+});
+
+it('keeps twenty vertical segments distinct even when their gap is crowded', () => {
+  const input = flow([
+    ...Array.from({ length: 12 }, (_, index) => node(`front${index}`, 'front', 12 - index)),
+    ...Array.from({ length: 12 }, (_, index) => node(`request${index}`, 'request', 0)),
+  ], edges([
+    ...Array.from({ length: 11 }, (_, index) => [`front${index}`, `request${index + 1}`]),
+    ...Array.from({ length: 9 }, (_, index) => ['front0', `front${index + 2}`]),
+  ]));
+  const { boxes } = layoutFlow(input);
+  const byId = new Map(boxes.map(box => [box.node.id, box]));
+  const xs = routeEdges(input.edges, boxes).flatMap((route, index) =>
+    verticalXs(smoothPath(byId.get(input.edges[index].from)!, byId.get(input.edges[index].to)!, route)));
+  expect(xs).toHaveLength(20);
+  expect(new Set(xs).size).toBe(20);
+  expect(xs.slice(0, 11).every(x => x > 260 + 48 && x < 260 + 100)).toBe(true);
+  expect(xs.slice(11).every(x => x > 260 + 24 && x < 260 + 44)).toBe(true);
+});
+
+it('keeps the entire self-call path below the box immediately above it', () => {
+  const { boxes } = layoutFlow(flow([node('upper', 'front', 2), node('lower', 'front', 1)]));
+  const [route] = routeEdges([{ from: 'lower', to: 'lower' }], boxes);
+  expect(route.pathOptions).toEqual({ offset: 20 });
+  const coordinates = smoothPath(boxes[1], boxes[1], route).match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+  const ys = coordinates.filter((_, index) => index % 2 === 1);
+  // Every endpoint and quadratic control point is below the upper rectangle, so the curves are too.
+  expect(Math.min(...ys)).toBe(boxes[1].y - 20);
+  expect(Math.min(...ys)).toBeGreaterThan(boxes[0].y + 60);
+});
+
+it('marks only multiple cross-lane arrows in one gap as crowded and keeps a lone arrow at R + 60', () => {
+  const { boxes } = layoutFlow(mixedGap);
+  const byId = new Map(boxes.map(box => [box.node.id, box]));
+  expect(routeEdges(mixedGap.edges.slice(0, 2), boxes).map(route => route.crowded)).toEqual([true, true]);
+  const input = [mixedGap.edges[0], ...mixedGap.edges.slice(3)];
+  const routes = routeEdges(input, boxes);
+  expect(routes.every(route => !route.crowded)).toBe(true);
+  expect(routes[0].pathOptions).toEqual({ offset: 20, stepPosition: 0.5 });
+  expect(verticalXs(smoothPath(byId.get('front0')!, byId.get('request1')!, routes[0]))).toEqual([260 + 60]);
+});
+
+it('leaves straight and leftward connections unchanged and handles an empty flow', () => {
+  const input = flow([node('first', 'front', 2), node('second', 'front', 1), node('request', 'request', 0)],
+    edges([['first', 'second'], ['first', 'request'], ['request', 'second']]));
+  const { boxes } = layoutFlow(input);
+  const routes = routeEdges(input.edges, boxes);
+  expect(routes.map(route => route.type)).toEqual(['straight', 'straight', 'smoothstep']);
+  for (const route of routes) {
+    expect(route).not.toHaveProperty('pathOptions');
+    expect(route.crowded).toBe(false);
+  }
+  expect(routeEdges([], [])).toEqual([]);
+});
+
+it.each([false, true])('routes a two-lane jump through the source gap with another cross-lane arrow=%s', crowded => {
+  const input = flow([node('first', 'front', 2), node('second', 'front', 1), node('request', 'request', 0),
+    node('handler', 'back', 0)], edges(crowded
+    ? [['second', 'handler'], ['second', 'request']] : [['second', 'handler']]));
+  const { boxes } = layoutFlow(input);
+  const [route] = routeEdges(input.edges, boxes);
+  const [x] = verticalXs(smoothPath(boxes[1], boxes[3], route));
+  expect(x).toBeCloseTo(260 + (crowded ? 48 + 52 / 3 : 60));
+  expect(route.pathOptions!.stepPosition).toBeGreaterThan(0);
+  expect(route.pathOptions!.stepPosition).toBeLessThan(0.5);
+  expect(route.crowded).toBe(crowded);
+});
+
+it('sorts each region by source row, target row, then original order without mixing gaps', () => {
+  const input = flow([
+    ...Array.from({ length: 4 }, (_, index) => node(`front${index}`, 'front', 4 - index)),
+    ...Array.from({ length: 3 }, (_, index) => node(`request${index}`, 'request', 0)),
+    node('handler', 'back', 0),
+  ], edges([['front3', 'request0'], ['front0', 'request2'], ['front0', 'request1'], ['front0', 'request1'],
+    ['front3', 'front1'], ['front0', 'front3'], ['front0', 'front2'], ['front0', 'front2'],
+    ['request1', 'handler']]));
+  const { boxes } = layoutFlow(input);
+  const routes = routeEdges(input.edges, boxes);
+  const byId = new Map(boxes.map(box => [box.node.id, box]));
+  const xs = routes.map((route, index) => verticalXs(smoothPath(
+    byId.get(input.edges[index].from)!, byId.get(input.edges[index].to)!, route))[0]);
+  [4, 3, 1, 2].forEach((order, index) => expect(xs[index]).toBeCloseTo(260 + 48 + 52 * order / 5));
+  [4, 3, 1, 2].forEach((order, index) => expect(xs[index + 4]).toBeCloseTo(260 + 24 + 20 * order / 5));
+  expect(xs[8]).toBe(580 + 60);
+  expect(routes[8].crowded).toBe(false);
 });
