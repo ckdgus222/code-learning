@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { lstat, mkdir, mkdtemp, readdir, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readlink, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import type { FSWatcher } from 'chokidar';
 import { LocalWorkerWorkflow } from '../src/core/ai/workflow';
 import type { LearningEvent } from '../src/shared/ai';
 import { ProjectSession, workersStopped } from '../src/main/project-session';
@@ -376,6 +377,153 @@ describe('the value-shape search runs in a worker of its own and ends its checke
     await symlink('v2', link);
     await until(() => events.includes('changed'));
     await made.close();
+  });
+
+  it.each(['replaced', 'deleted'])('rechecks a %s link without events and notifies only once over three seconds', async change => {
+    await mkdir(path.join(deps, 'v1'));
+    await mkdir(path.join(deps, 'v2'));
+    const link = path.join(deps, 'pkg');
+    const unchanged = path.join(deps, 'unchanged');
+    await symlink('v1', link);
+    await symlink('v1', unchanged);
+    const events: string[] = [];
+    // An unchanged first link must not hide a change to the next link.
+    const made = await watching([], [{ path: unchanged, target: 'v1' }, { path: link, target: 'v1' }], events);
+    made.holdTypeWatch = async watcher => { watcher.removeAllListeners('all'); };
+    try {
+      await made.shapes(target, []);
+      await unlink(link);
+      if (change === 'replaced') await symlink('v2', link);
+      await new Promise(resolve => setTimeout(resolve, 3100));
+      expect(events).toEqual(['changed']);
+    } finally { await made.close(); }
+  });
+
+  it('does not recheck links for a watch containing only type files', async () => {
+    const file = path.join(deps, 'index.d.ts');
+    await writeFile(file, 'export declare const x: 1;\n');
+    const made = await watching([file], [], []);
+    const intervals = vi.spyOn(globalThis, 'setInterval');
+    try {
+      await made.shapes(target, []);
+      expect(intervals.mock.calls.filter(([, delay]) => delay === 1000)).toEqual([]);
+    } finally { await made.close(); intervals.mockRestore(); }
+  });
+
+  it('keeps checking a link recreated with the same target without notifying', async () => {
+    await mkdir(path.join(deps, 'v1'));
+    const link = path.join(deps, 'pkg');
+    await symlink('v1', link);
+    const events: string[] = [];
+    const made = await watching([], [{ path: link, target: 'v1' }], events);
+    const read = vi.fn((filename: string) => readlink(filename));
+    made.readTypeLink = read;
+    made.holdTypeWatch = async watcher => {
+      watcher.removeAllListeners('all');
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    };
+    try {
+      await made.shapes(target, []);
+      await unlink(link);
+      await symlink('v1', link);
+      await vi.advanceTimersByTimeAsync(1000);
+      await until(() => read.mock.results.length === 1);
+      await read.mock.results[0].value;
+      await vi.advanceTimersByTimeAsync(1000);
+      await until(() => read.mock.results.length === 2);
+      await read.mock.results[1].value;
+      expect(events).toEqual([]);
+      expect(vi.getTimerCount()).toBe(1);
+    } finally { await made.close(); vi.useRealTimers(); }
+  });
+
+  it.each(['event', 'close', 'replace'] as const)('discards an in-flight link recheck after %s and never overlaps reads', async action => {
+    await mkdir(path.join(deps, 'v1'));
+    const link = path.join(deps, 'pkg');
+    await symlink('v1', link);
+    const events: string[] = [];
+    const made = await watching([], [{ path: link, target: 'v1' }], events);
+    let watcher!: FSWatcher;
+    let release = () => {};
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const read = vi.fn(async () => { await held; return 'v2'; });
+    made.readTypeLink = read;
+    made.holdTypeWatch = async ready => {
+      watcher = ready;
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    };
+    try {
+      await made.shapes(target, []);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(read).toHaveBeenCalledExactlyOnceWith(link);
+      if (action === 'event') watcher.emit('all', 'change', link);
+      if (action === 'close') await made.close();
+      if (action === 'replace') {
+        process.env.SHAPES_WATCH = JSON.stringify({ files: [], links: [] });
+        await made.shapes(target, []);
+      }
+      expect(vi.getTimerCount()).toBe(0);
+      const beforeReadFinishes = [...events];
+      expect(beforeReadFinishes).toEqual(action === 'event' ? ['changed'] : []);
+      release();
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(events).toEqual(beforeReadFinishes);
+      expect(read).toHaveBeenCalledTimes(1);
+      // Stopping the fallback must leave ordinary watcher events working.
+      if (action === 'event') {
+        watcher.emit('all', 'change', link);
+        expect(events).toEqual(['changed', 'changed']);
+      }
+    } finally { release(); await made.close(); vi.useRealTimers(); }
+  });
+
+  it('removes the unreferenced link timer on close and sends no notification for a later replacement', async () => {
+    await mkdir(path.join(deps, 'v1'));
+    await mkdir(path.join(deps, 'v2'));
+    const link = path.join(deps, 'pkg');
+    await symlink('v1', link);
+    const events: string[] = [];
+    const made = await watching([], [{ path: link, target: 'v1' }], events);
+    made.holdTypeWatch = async watcher => { watcher.removeAllListeners('all'); };
+    const intervals = vi.spyOn(globalThis, 'setInterval');
+    const cleared = vi.spyOn(globalThis, 'clearInterval');
+    try {
+      await made.shapes(target, []);
+      const index = intervals.mock.calls.findIndex(([, delay]) => delay === 1000);
+      expect(index).toBeGreaterThanOrEqual(0);
+      const timer = intervals.mock.results[index].value as NodeJS.Timeout;
+      expect(timer.hasRef()).toBe(false);
+      await made.close();
+      expect(cleared).toHaveBeenCalledWith(timer);
+      await unlink(link);
+      await symlink('v2', link);
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      expect(events).toEqual([]);
+    } finally { await made.close(); intervals.mockRestore(); cleared.mockRestore(); }
+  });
+
+  it('stops checking the old link when a new result adopts another link watch', async () => {
+    await mkdir(path.join(deps, 'v1'));
+    await mkdir(path.join(deps, 'v2'));
+    const older = path.join(deps, 'older');
+    const newer = path.join(deps, 'newer');
+    await symlink('v1', older);
+    await symlink('v1', newer);
+    const events: string[] = [];
+    const made = await watching([], [{ path: older, target: 'v1' }], events);
+    made.holdTypeWatch = async watcher => { watcher.removeAllListeners('all'); };
+    try {
+      await made.shapes(target, []);
+      process.env.SHAPES_WATCH = JSON.stringify({ files: [], links: [{ path: newer, target: 'v1' }] });
+      await made.shapes(target, []);
+      await unlink(older);
+      await symlink('v2', older);
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      expect(events).toEqual([]);
+      await unlink(newer);
+      await symlink('v2', newer);
+      await until(() => events.includes('changed'));
+    } finally { await made.close(); }
   });
 
   it('refuses a result whose type files changed between reading and the watch being ready', async () => {
