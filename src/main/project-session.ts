@@ -44,6 +44,8 @@ const sideWords: Record<SideJob, { failed: string; ended: string; slow: string; 
     changed: '코드를 여는 동안 파일이 바뀌었어요. 다시 열어 주세요.' },
 };
 const changedTypes = '모양을 찾는 동안 외부 패키지 타입 파일이 바뀌었어요. 다시 찾아 주세요.';
+// On macOS, chokidar missed 2 of 240 immediate v1 → v2 link replacements; reread targets as an event fallback.
+const LINK_RECHECK_MS = 1000;
 
 export class ProjectSession {
   private worker: Worker;
@@ -61,6 +63,7 @@ export class ProjectSession {
   private sideRuns: Partial<Record<SideJob, { worker: Worker; stop: Int32Array }>> = {};
   /** The dependency type files the shown shapes were read from (plan v2.3 V-2), and a wait for a new watch to be ready. */
   private typeWatcher?: FSWatcher;
+  private stopTypeLinkRecheck?: () => void;
   private abortTypeWatch?: () => void;
   /** Counts shape searches and their cancels: a search adopts its watch only while it is still the latest. */
   private shapesRun = 0;
@@ -73,6 +76,8 @@ export class ProjectSession {
 
   /** Tests only: holds a new type watch back after it is ready and checked, just before it would be adopted. */
   holdTypeWatch?: (watcher: FSWatcher) => Promise<void>;
+  /** Tests only: delays a periodic link read to exercise events, replacement and closing during the read. */
+  readTypeLink?: (filename: string) => Promise<string>;
 
   constructor(readonly id: string, readonly root: string, private readonly workerPath: string, private notify: (event: ProjectEvent) => void,
     private readonly requestTimeoutMs = 30_000) {
@@ -281,6 +286,13 @@ export class ProjectSession {
     let ready = false;
     let adopted = false;
     let changedEarly = false;
+    let recheckTimer: ReturnType<typeof setInterval> | undefined;
+    let recheckStopped = false;
+    let recheckRunning = false;
+    const stopRecheck = () => {
+      recheckStopped = true;
+      clearInterval(recheckTimer);
+    };
     // Until the watch is adopted, an error, the time limit or a cancel fails the whole wait, checks included.
     let fail = (_error: AppError) => {};
     const failed = new Promise<never>((_, reject) => { fail = reject; });
@@ -290,7 +302,11 @@ export class ProjectSession {
       // in that time is caught by the check after 'ready'.
       if (!ready) return;
       if (!adopted) changedEarly = true;
-      else if (!this.closed && this.typeWatcher === watcher) { this.observedChanges++; this.notify({ projectId: this.id, kind: 'changed' }); }
+      else if (!this.closed && this.typeWatcher === watcher) {
+        stopRecheck();
+        this.observedChanges++;
+        this.notify({ projectId: this.id, kind: 'changed' });
+      }
     });
     watcher.on('error', () => {
       if (!adopted) fail(new AppError('IO', '타입 파일을 감시하지 못했어요.'));
@@ -326,12 +342,30 @@ export class ProjectSession {
     }
     // Adopted in the same turn as the last check, so no event falls between them.
     adopted = true;
-    await this.replaceTypeWatcher(watcher);
+    const recheckLinks = async () => {
+      if (recheckStopped || recheckRunning || this.closed || this.typeWatcher !== watcher) return;
+      recheckRunning = true;
+      const same = await Promise.all(watch.links.map(async link =>
+        await (this.readTypeLink ?? readlink)(link.path).catch(() => null) === link.target));
+      recheckRunning = false;
+      // Clearing the timer cannot cancel a read already in flight, including one overtaken by an event.
+      if (recheckStopped || this.closed || this.typeWatcher !== watcher || !same.includes(false)) return;
+      stopRecheck();
+      this.observedChanges++;
+      this.notify({ projectId: this.id, kind: 'changed' });
+    };
+    if (watch.links.length) {
+      recheckTimer = setInterval(() => { void recheckLinks(); }, LINK_RECHECK_MS);
+      recheckTimer.unref();
+    }
+    await this.replaceTypeWatcher(watcher, stopRecheck);
     return shapes;
   }
 
-  private async replaceTypeWatcher(next: FSWatcher | undefined): Promise<void> {
+  private async replaceTypeWatcher(next: FSWatcher | undefined, stopRecheck?: () => void): Promise<void> {
     const previous = this.typeWatcher;
+    this.stopTypeLinkRecheck?.();
+    this.stopTypeLinkRecheck = stopRecheck;
     this.typeWatcher = next;
     await previous?.close();
   }
