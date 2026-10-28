@@ -4,7 +4,7 @@ import type { Result, Evidence, SourceView, CallTarget, FeatureFlow, FlowEdge, F
 import { ARROW_MARKER, firstRows, MapCanvas, Omitted } from './project-map';
 import { screenGroups, type RouteRow } from './screen-groups';
 import { featureIndex, type IndexFeature, type IndexGroup } from './feature-index';
-import { edgeRoute, LANE_TITLES, layoutFlow, type FlowLane } from './flow-layout';
+import { routeEdges, LANE_TITLES, layoutFlow, type FlowLane } from './flow-layout';
 import { Snippet } from './flow';
 import { isNextConfig, nextRouteOf } from '../core/analysis/next-routes';
 import type { ConnectionReport, FeatureGuide, FeatureGuideResult, LearningMode } from '../shared/ai';
@@ -377,13 +377,14 @@ export function FlowDiagram({ flow, selectedNodeId, onSelect }: {
   ], [boxes, lanes, selectedNodeId]);
   const edges = useMemo((): Edge[] => {
     const byId = new Map(boxes.map(box => [box.node.id, box]));
+    const routes = routeEdges(flow.edges, boxes);
     return flow.edges.map((edge, index) => {
       const from = byId.get(edge.from)!;
       const to = byId.get(edge.to)!;
-      const route = edgeRoute(from, to);
+      const { crowded, ...route } = routes[index];
       // Arrows looping outside a lane get no text, and arrows between lanes drop the call name: the 120px gap
       // cannot hold it. The evidence strip and step list below still say both.
-      const label = route.targetHandle === 'in-right' || edge.from === edge.to
+      const label = crowded || route.targetHandle === 'in-right' || edge.from === edge.to
         ? undefined : edgeLabel(edge, { name: from.node.side === to.node.side });
       return {
         id: `flow-edge:${index}`, source: edge.from, target: edge.to, ...route, label,

@@ -1435,6 +1435,37 @@ try {
         'Every straight segment of the caller-to-request path must be horizontal or vertical');
       previous = values.slice(-2);
     }
+    const dogListNode = diagram.getByRole('group', { name: 'web/components/DogList.tsx · DogList', exact: true });
+    const hookNode = diagram.getByRole('group', { name: 'web/lib/dogs.ts · useDeleteDog', exact: true });
+    const gapZoom = await diagram.locator('.react-flow__viewport').evaluate(element =>
+      new DOMMatrix(getComputedStyle(element).transform).a);
+    const gapVerticalXs = [];
+    for (const [from, to, offset] of [[dogListNode, hookNode, 34], [mutationNode, requestNode, 60]]) {
+      const fromId = await from.getAttribute('data-id');
+      const toId = await to.getAttribute('data-id');
+      const verticals = await diagram.getByRole('group', { name: `Edge from ${fromId} to ${toId}`, exact: true })
+        .locator('.react-flow__edge-path').evaluate(path => {
+          const xs = [];
+          let previous = [];
+          for (const [, command, coordinates] of path.getAttribute('d').matchAll(/([MLQ])([^MLQ]*)/g)) {
+            const values = coordinates.match(/-?\d+(?:\.\d+)?/g).map(Number);
+            if (command === 'L' && Math.abs(values[0] - previous[0]) < 0.01 && Math.abs(values[1] - previous[1]) > 0.01) {
+              xs.push(new DOMPoint(values[0], values[1]).matrixTransform(path.getScreenCTM()).x);
+            }
+            previous = values.slice(-2);
+          }
+          return xs;
+        });
+      assert.equal(verticals.length, 1, 'Each fixture arrow must have one vertical segment');
+      const fromBox = await from.boundingBox();
+      assert.ok(fromBox);
+      const screenOffset = verticals[0] - (fromBox.x + fromBox.width);
+      assert.ok(Math.abs(screenOffset - offset * gapZoom) <= 2 * gapZoom,
+        `The vertical segment must be ${offset}px beyond its source box after accounting for zoom`);
+      gapVerticalXs.push(verticals[0]);
+    }
+    assert.ok(Math.abs(gapVerticalXs[0] - gapVerticalXs[1]) > 20 * gapZoom,
+      'The outside arrow and caller-to-request arrow must use separate regions of gap zero');
     const labelOverlaps = await diagram.evaluate(element => {
       const boxes = [...element.querySelectorAll('.react-flow__node.feature-box')].map(box => ({
         name: box.getAttribute('aria-label'), rect: box.getBoundingClientRect(),
