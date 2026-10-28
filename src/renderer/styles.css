@@ -354,6 +354,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .consent-details { font-size: 14px; color: var(--muted); }
 .consent-details summary { cursor: pointer; }
 .ai-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.ai-actions > .hint { flex-basis: 100%; }
 .ai-panel ul { display: grid; gap: 8px; }
 .ai-panel .fact { overflow-wrap: anywhere; }
 .panel__head { display: flex; align-items: center; justify-content: flex-end; padding: 8px 12px 0; border-bottom: 1px solid var(--line); }
