@@ -20,6 +20,22 @@ const phases: Record<LearningPhase, string> = {
 };
 
 const documentFile = /\.(?:md|txt)$/i;
+export function sendBlockedReason(state: {
+  checked: boolean; ready: boolean; readyReason: string | null; hasEvidence: boolean; stale: boolean;
+  running: boolean; otherRunning: boolean; question: string; consent: boolean;
+}): string | null {
+  if (!state.checked) return '먼저 ‘설정’에서 ‘로컬 AI 설치 확인’을 눌러 주세요.';
+  if (!state.ready) return '지금 고른 AI 방식은 쓸 수 없어요. ‘설정’에서 다른 방식을 골라 보세요.'
+    + (state.readyReason ? ` (이유: ${state.readyReason})` : '');
+  if (state.stale) return '코드가 바뀌었어요. 코드 읽기에서 파일을 다시 열고(이미 열려 있으면 ‘파일 다시 읽기’) 함수나 구문을 다시 골라 주세요.';
+  if (!state.hasEvidence) return '코드 읽기에서 함수나 구문을 골라 주세요. 고른 부분이 질문할 범위가 돼요.';
+  if (state.running) return null;
+  if (state.otherRunning) return '다른 AI 작업이 끝나면 보낼 수 있어요.';
+  if (!state.question.trim()) return '질문을 적어 주세요.';
+  if (!state.consent) return '‘보낼 자료에 동의’에 체크해 주세요.';
+  return null;
+}
+
 /**
  * How one source of an answer is named: the selected code by its lines; a file given whole (a related file, or the
  * selection's own file) says that no finer place was checked.
@@ -63,6 +79,7 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
   const [question, setQuestion] = useState('');
   const [consent, setConsent] = useState(false);
   const consentDescriptionId = useId();
+  const sendBlockedId = useId();
   const [running, setRunning] = useState(false);
   useEffect(() => { onRunning(running); }, [running, onRunning]);
   useEffect(() => () => onRunning(false), [onRunning]);
@@ -195,6 +212,10 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
   }
 
   const answerScope = running || answers.length > 0;
+  const blockedReason = sendBlockedReason({
+    checked: connections !== null, ready: ready?.ready ?? false, readyReason: ready?.reason ?? null,
+    hasEvidence: evidence !== null, stale, running, otherRunning, question, consent,
+  });
   const questionScope = evidence && <p className="hint" data-testid="question-scope">질문 기준: {relativePath} · {evidence.startLine}–{evidence.endLine}행</p>;
   return <div className="panel__body ai-panel">
     <div className="ai-line" role="group" aria-label="AI 연결">
@@ -232,8 +253,6 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
         <textarea aria-label="선택한 코드에 질문" maxLength={2000} value={question} disabled={running}
           placeholder="이 부분은 어떤 일을 하나요?" onChange={event => setQuestion(event.target.value)} />
       </label>
-      {!evidence && <p className="hint">함수나 구문을 선택하면 질문할 코드 범위가 정해집니다.</p>}
-      {stale && <p className="hint">코드가 바뀌었습니다. 파일을 다시 읽고 근거를 선택해 주세요.</p>}
       <label className="ai-consent"><input type="checkbox" checked={consent} disabled={running || !ready?.ready}
         aria-describedby={consentDescriptionId} onChange={event => setConsent(event.target.checked)} />보낼 자료에 동의</label>
       <details className="consent-details">
@@ -242,7 +261,9 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
           {mode !== 'local-worker' && ' 다른 파일은 더 읽지 않습니다.'} 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.</p>
       </details>
       <div className="ai-actions">
-        <button className="btn btn--primary" onClick={ask} disabled={!ready?.ready || !evidence || stale || !consent || running || otherRunning || !question.trim()}>질문 보내기</button>
+        <button className="btn btn--primary" onClick={ask} aria-describedby={blockedReason ? sendBlockedId : undefined}
+          disabled={!ready?.ready || !evidence || stale || !consent || running || otherRunning || !question.trim()}>질문 보내기</button>
+        {blockedReason && <p className="hint" id={sendBlockedId} data-testid="send-blocked">{blockedReason}</p>}
       </div>
       <p className="hint">대화는 앱 실행 중에만 보관합니다. 코드 범위를 바꾸면 새 대화로 시작합니다.</p>
     </div>
