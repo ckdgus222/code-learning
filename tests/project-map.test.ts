@@ -270,6 +270,17 @@ describe('TypeScript counterparts for explicit JavaScript extensions', () => {
 });
 
 describe('unused files in the project map', () => {
+  it('excludes code referenced by config and HTML files while retaining ordinary candidates', async () => {
+    await put('references/forge.config.ts', "export default { entry: 'main-entry.ts' };");
+    await put('references/index.html', '<script src="/references/renderer-entry.ts"></script>');
+    for (const name of ['main-entry.ts', 'renderer-entry.ts', 'orphan.ts']) await put(`references/${name}`, '');
+    const project = await scanProject(root, randomUUID());
+    const files = project.files.filter(file => file.relativePath.startsWith('references/'));
+    const result = await buildProjectMap(root, project.id, files, []);
+    expect(result.unused.candidates.map(file => file.relativePath)).toEqual(['references/orphan.ts']);
+    expect(result.unused.excluded).toEqual([{ kind: 'config', count: 1 }, { kind: 'reference', count: 2 }]);
+  });
+
   it('fills candidates, uncertainty and exclusions from code and package scripts', async () => {
     await put('unused/from.ts', "import './used';\nimport('./lazy');\nimport '@/lib/foo.js';\n");
     for (const name of ['used.ts', 'lazy.ts', 'lib/foo.ts', 'orphan.ts', 'seed.ts', 'unit.test.ts']) await put(`unused/${name}`, '');

@@ -416,6 +416,13 @@ describe('connections listed by visible box', () => {
 describe('unused file candidates card', () => {
   const section = (html: string) => html.match(/<section class="card" aria-label="아무도 가져다 쓰지 않는 파일 후보">(.*?)<\/section>/)![1];
 
+  it('labels files referenced by config and HTML after script exclusions', () => {
+    const card = section(render(new Set(), null, null, { ...map, unused: {
+      candidates: [], unsure: [], notes: [], excluded: [{ kind: 'script', count: 2 }, { kind: 'reference', count: 1 }],
+    } }));
+    expect(card).toContain('뺀 파일: 실행 명령에 적힌 파일 2 · 설정·HTML에 적힌 파일 1');
+  });
+
   it('shows candidates, collapsed uncertainty, exclusion counts and notes before complex functions', () => {
     const html = render(new Set(), null, null, { ...map, unused: {
       candidates: [{ fileId: 'orphan', relativePath: 'lib/orphan.ts' }],

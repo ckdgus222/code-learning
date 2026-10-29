@@ -18,7 +18,7 @@ const checkedLabels: Record<Exclude<MapFile['checked'], 'full'>, string> = {
 };
 const unusedExcludeLabels: Record<UnusedExcludeKind, string> = {
   start: '시작점 후보', test: '시험 파일', config: '설정 파일', types: '타입 선언',
-  framework: '프레임워크가 부르는 파일', script: '실행 명령에 적힌 파일',
+  framework: '프레임워크가 부르는 파일', script: '실행 명령에 적힌 파일', reference: '설정·HTML에 적힌 파일',
 };
 const unresolvedLabels: Record<MapUnresolvedReason, string> = {
   'not-found': '찾지 못함(파일이 없거나 탐색 목록에서 제외됨)', ambiguous: '후보 여럿', outside: '프로젝트 밖',

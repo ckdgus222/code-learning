@@ -93,6 +93,8 @@ for (const [name, text] of Object.entries(mapFiles)) {
 const unusedMapFixture = path.join(temporary, '안 쓰는 파일 후보 프로젝트');
 await mkdir(unusedMapFixture);
 await writeFile(path.join(unusedMapFixture, 'orphan.ts'), 'const orphanValue = 42;\n');
+await writeFile(path.join(unusedMapFixture, 'html-entry.ts'), 'const htmlEntryValue = 1;\n');
+await writeFile(path.join(unusedMapFixture, 'index.html'), '<script src="/html-entry.ts"></script>');
 // Nested areas have their own fixture so the existing map counts stay unchanged.
 const areaMapFixture = path.join(temporary, '영역 지도 프로젝트');
 const areaMapFiles = {
@@ -2225,6 +2227,8 @@ try {
     await openFileMap();
     const candidates = page.getByRole('region', { name: '아무도 가져다 쓰지 않는 파일 후보', exact: true });
     await candidates.getByRole('heading', { name: '아무도 가져다 쓰지 않는 파일 후보 · 1개', exact: true }).waitFor();
+    assert.equal(await candidates.getByRole('button', { name: 'html-entry.ts', exact: true }).count(), 0);
+    await candidates.getByText('뺀 파일: 설정·HTML에 적힌 파일 1', { exact: true }).waitFor();
     await candidates.getByRole('button', { name: 'orphan.ts', exact: true }).click();
     await page.getByRole('heading', { name: 'orphan.ts', exact: true }).waitFor();
     assert.match(await page.locator('.reader').innerText(), /const orphanValue = 42;/);
