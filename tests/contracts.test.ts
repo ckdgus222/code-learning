@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { learningSpotSchema, saveLearningSpotSchema, sourceRequestSchema, evidenceRequestSchema, featureFlowsRequestSchema, featureFlowRequestSchema, projectRequestSchema } from '../src/shared/contracts';
+import { learningMarkSchema, saveLearningMarkSchema, storedLearningMarkSchema, learningSpotSchema, saveLearningSpotSchema, sourceRequestSchema, evidenceRequestSchema, featureFlowsRequestSchema, featureFlowRequestSchema, projectRequestSchema } from '../src/shared/contracts';
 describe.each([
   ['source', sourceRequestSchema, 'fileId'],
   ['evidence', evidenceRequestSchema, 'evidenceId'],
@@ -79,5 +79,31 @@ describe('saved learning location boundary', () => {
       { ...spot.place.range, startUtf16: -1 }, { ...spot.place.range, endUtf16: 100_000_001 },
       { ...spot.place.range, startLine: 0 }, { ...spot.place.range, endLine: 10_000_001 },
     ]) expect(learningSpotSchema.safeParse({ ...spot, place: { ...spot.place, range } }).success).toBe(false);
+  });
+});
+
+describe('function learning marks boundary', () => {
+  const mark = { relativePath: 'src/read.ts', name: 'read', occurrence: 0, state: 'understood', note: '', codeHash: 'a'.repeat(64) };
+  it('accepts 500 characters, the maximum occurrence and a separate stored timestamp', () => {
+    expect(learningMarkSchema.parse(mark)).toEqual(mark);
+    expect(learningMarkSchema.safeParse({ ...mark, note: 'a'.repeat(500), occurrence: 100_000 }).success).toBe(true);
+    expect(learningMarkSchema.safeParse({ ...mark, state: null }).success).toBe(true);
+    const stored = { ...mark, savedAt: '2026-10-29' };
+    expect(storedLearningMarkSchema.parse(stored)).toEqual(stored);
+    expect(learningMarkSchema.safeParse(stored).success).toBe(false);
+    expect(storedLearningMarkSchema.safeParse(mark).success).toBe(false);
+  });
+  it.each([
+    { note: 'a'.repeat(501) }, { extra: true }, { codeHash: 'bad' }, { codeHash: 'A'.repeat(64) },
+    { occurrence: -1 }, { occurrence: .5 }, { occurrence: 100_001 }, { occurrence: '0' },
+    { state: 'done' }, { relativePath: '' }, { name: '' },
+  ])('rejects invalid mark fields: %j', fields => {
+    expect(learningMarkSchema.safeParse({ ...mark, ...fields }).success).toBe(false);
+    expect(saveLearningMarkSchema.safeParse({ projectId: randomUUID(), mark: { ...mark, ...fields } }).success).toBe(false);
+  });
+  it('rejects unknown request fields and invalid project IDs', () => {
+    expect(saveLearningMarkSchema.safeParse({ projectId: randomUUID(), mark }).success).toBe(true);
+    expect(saveLearningMarkSchema.safeParse({ projectId: 'bad', mark }).success).toBe(false);
+    expect(saveLearningMarkSchema.safeParse({ projectId: randomUUID(), mark, path: '/tmp' }).success).toBe(false);
   });
 });
