@@ -1,9 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor, type IpcMainInvokeEvent } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { mkdir, realpath } from 'node:fs/promises';
+import { mkdir, realpath, stat } from 'node:fs/promises';
 import { z } from 'zod';
-import { channels, featureFlowsRequestSchema, featureFlowRequestSchema, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, shapesRequestSchema, changesRequestSchema, diffRequestSchema, type Result, type Evidence } from '../shared/contracts';
+import { channels, learningSpotSchema, saveLearningSpotSchema, featureFlowsRequestSchema, featureFlowRequestSchema, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, shapesRequestSchema, changesRequestSchema, diffRequestSchema, type Result, type Evidence } from '../shared/contracts';
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { ProjectSession, workersStopped } from './project-session';
@@ -125,6 +125,50 @@ async function dispose() {
   await Promise.all([learning.close(), aiRuntime.close(), previous?.close()]);
 }
 
+async function openFolder(selectRoot: (requestedAt: number) => Promise<string | null>) {
+  // A worker started now would not be among those quitting waits for.
+  if (quitting) throw new AppError('CANCELLED', '앱을 끝내는 중이에요.');
+  if (opening) throw new AppError('INVALID_REQUEST', '폴더 선택 작업이 이미 진행 중입니다.');
+  opening = true;
+  const requestedAt = ++generation;
+  try {
+    const root = await selectRoot(requestedAt);
+    if (generation !== requestedAt) throw new AppError('CANCELLED', '폴더 열기를 취소했습니다.');
+    if (root === null) return null;
+    const previous = session;
+    session = undefined;
+    aiContext = undefined;
+    projectRevision++;
+    await Promise.all([learning.close(), previous?.close()]);
+    if (generation !== requestedAt) throw new AppError('CANCELLED', '폴더 열기를 취소했습니다.');
+    const id = storage.recordOpen(root, path.basename(root));
+    const next = new ProjectSession(id, root, path.join(__dirname, 'analysis.cjs'), event => {
+      if (session === next) {
+        projectRevision++;
+        aiContext?.clear();
+        void learning.close();
+        if (window) window.webContents.send(channels.event, event);
+      }
+    });
+    next.onRoutesInvalidated = () => learning.cancelFeatureGuide(next.id);
+    session = next;
+    try {
+      // The screen does not know this project yet, so it ignores a change or wake-up notice sent during
+      // the scan and would show a scan older than the files.
+      const revision = projectRevision;
+      const project = await next.open();
+      if (generation !== requestedAt || session !== next) throw new AppError('CANCELLED', '이전 프로젝트 결과를 버렸습니다.');
+      if (projectRevision !== revision) throw new AppError('CHANGED', '폴더를 여는 동안 파일이 바뀌었거나 잠자기에서 돌아왔습니다. 다시 열어 주세요.');
+      aiContext = new ProjectAiContext(root, project);
+      return project;
+    } catch (error) {
+      if (session === next) session = undefined;
+      await next.close();
+      throw error;
+    }
+  } finally { opening = false; }
+}
+
 function createWindow() {
   window = new BrowserWindow({ width: 1280, height: 800, minWidth: 760, minHeight: 560,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true,
@@ -157,49 +201,42 @@ app.whenReady().then(async () => {
   });
   handle(channels.open, async argument => {
     z.undefined().parse(argument);
-    // A worker started now would not be among those quitting waits for.
-    if (quitting) throw new AppError('CANCELLED', '앱을 끝내는 중이에요.');
-    if (opening) throw new AppError('INVALID_REQUEST', '폴더 선택 작업이 이미 진행 중입니다.');
-    opening = true;
-    const requestedAt = ++generation;
-    try {
+    return openFolder(async requestedAt => {
       const selected = await dialog.showOpenDialog(window!, { properties: ['openDirectory'], title: '읽을 프로젝트 폴더 선택' });
       if (generation !== requestedAt) throw new AppError('CANCELLED', '폴더 열기를 취소했습니다.');
       if (selected.canceled || !selected.filePaths[0]) return null;
-      const root = await realpath(selected.filePaths[0]);
-      if (generation !== requestedAt) throw new AppError('CANCELLED', '폴더 열기를 취소했습니다.');
-      const previous = session;
-      session = undefined;
-      aiContext = undefined;
-      projectRevision++;
-      await Promise.all([learning.close(), previous?.close()]);
-      if (generation !== requestedAt) throw new AppError('CANCELLED', '폴더 열기를 취소했습니다.');
-      const id = storage.recordOpen(root, path.basename(root));
-      const next = new ProjectSession(id, root, path.join(__dirname, 'analysis.cjs'), event => {
-        if (session === next) {
-          projectRevision++;
-          aiContext?.clear();
-          void learning.close();
-          if (window) window.webContents.send(channels.event, event);
-        }
-      });
-      next.onRoutesInvalidated = () => learning.cancelFeatureGuide(next.id);
-      session = next;
-      try {
-        // The screen does not know this project yet, so it ignores a change or wake-up notice sent during
-        // the scan and would show a scan older than the files.
-        const revision = projectRevision;
-        const project = await next.open();
-        if (generation !== requestedAt || session !== next) throw new AppError('CANCELLED', '이전 프로젝트 결과를 버렸습니다.');
-        if (projectRevision !== revision) throw new AppError('CHANGED', '폴더를 여는 동안 파일이 바뀌었거나 잠자기에서 돌아왔습니다. 다시 열어 주세요.');
-        aiContext = new ProjectAiContext(root, project);
-        return project;
-      } catch (error) {
-        if (session === next) session = undefined;
-        await next.close();
-        throw error;
-      }
-    } finally { opening = false; }
+      return realpath(selected.filePaths[0]);
+    });
+  });
+  handle(channels.recentProjects, async argument => {
+    z.undefined().parse(argument);
+    return storage.recentProjects(10);
+  });
+  handle(channels.openRecent, async argument => {
+    const { projectId } = projectRequestSchema.parse(argument);
+    return openFolder(async () => {
+      const root = storage.rootOf(projectId);
+      if (root === null) throw new AppError('INVALID_REQUEST', '목록에 없는 프로젝트입니다.');
+      // The stored root is a real path: one that resolves elsewhere now (a link put in its place) is not that folder.
+      const found = await realpath(root).then(async real => real === root && (await stat(root)).isDirectory()).catch(() => false);
+      if (!found) throw new AppError('IO', '이 폴더를 찾지 못했어요. 옮겼거나 지웠다면 ‘프로젝트 폴더 열기’로 다시 골라 주세요.');
+      return root;
+    });
+  });
+  handle(channels.learningSpot, async argument => {
+    const { projectId } = projectRequestSchema.parse(argument);
+    current(projectId);
+    const saved = storage.spotOf(projectId);
+    if (!saved) return null;
+    // A damaged or older value shows no card and stays stored.
+    const parsed = learningSpotSchema.safeParse(saved.spot);
+    return parsed.success ? { spot: parsed.data, savedAt: saved.savedAt } : null;
+  });
+  handle(channels.saveLearningSpot, async argument => {
+    const { projectId, spot } = saveLearningSpotSchema.parse(argument);
+    current(projectId);
+    storage.saveSpot(projectId, spot);
+    return null;
   });
   handle(channels.routes, async argument => {
     const input = projectRequestSchema.parse(argument);

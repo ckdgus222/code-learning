@@ -3,6 +3,8 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { scanProject } from '../src/core/project/files';
+import { restoreSpot, spotOf, type Topic, type Place } from '../src/renderer/overview';
+import { learningSpotSchema } from '../src/shared/contracts';
 import { buildOverview } from '../src/core/analysis/overview';
 
 let sandbox: string;
@@ -212,5 +214,33 @@ describe('entry files independent of learning candidates', () => {
     const exportedOnly = await overview();
     expect(exportedOnly.candidates[0].reason).toBe('exported');
     expect(exportedOnly.entryFileIds).toEqual([]);
+  });
+});
+
+
+describe('saved learning locations', () => {
+  const files = [{ id: 'old-start', relativePath: 'start.ts', size: 20 }, { id: 'old-last', relativePath: 'last.ts', size: 30 }];
+  const topic: Topic = { name: 'My topic', original: 'start', origin: 'start', anchor: 'start:old-start:0',
+    start: { fileId: 'old-start', relativePath: 'start.ts', fileHash: 'a'.repeat(64), functionName: 'start', startUtf16: 0 } };
+  const place: Place = { fileId: 'old-last', fileHash: 'b'.repeat(64), view: 'function',
+    symbol: { name: 'last', startUtf16: 0, step: 2 }, range: { startUtf16: 10, endUtf16: 20, startLine: 2, endLine: 3 } };
+  it('round trips by relative path when every file ID changes', () => {
+    const saved = spotOf(topic, place, files);
+    expect(learningSpotSchema.parse(saved)).toEqual(saved);
+    const reopened = files.map(file => ({ ...file, id: `new-${file.id}` }));
+    const restored = restoreSpot(saved, reopened);
+    expect(restored).toEqual({ topic: { ...topic, anchor: null, start: { ...topic.start, fileId: 'new-old-start' } },
+      place: { ...place, fileId: 'new-old-last' }, placeMissing: false });
+    if ('missingStart' in restored) throw new Error('Unexpected missing start');
+    expect(spotOf(restored.topic, restored.place, reopened)).toEqual(saved);
+  });
+  it('distinguishes a missing start from a missing last file and a topic with no place', () => {
+    expect(restoreSpot(spotOf(topic, place, files), files.slice(1))).toEqual({ missingStart: 'start.ts' });
+    expect(restoreSpot(spotOf(topic, place, files), files.slice(0, 1))).toEqual({ topic: { ...topic, anchor: null }, place: null, placeMissing: true });
+    expect(restoreSpot(spotOf(topic, null, files), files)).toEqual({ topic: { ...topic, anchor: null }, place: null, placeMissing: false });
+  });
+  it('never serializes a file ID from a different project', () => {
+    expect(() => spotOf(topic, place, [])).toThrow('not in this project');
+    expect(() => spotOf(topic, { ...place, fileId: 'foreign' }, files)).toThrow('not in this project');
   });
 });

@@ -153,9 +153,14 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .notice--info { background: var(--accent-soft); color: var(--accent); }
 
 /* Welcome */
-.welcome { grid-area: center; justify-self: center; align-self: center; max-width: 620px; padding: 32px 24px; }
+.welcome { grid-area: center; justify-self: center; align-self: center; min-width: 0; max-width: 620px; max-height: 100%; overflow: auto; padding: 32px 24px; }
 .welcome h2 { font-size: 26px; line-height: 1.3; }
 .welcome__lead { margin-top: 12px; color: var(--muted); font-size: 17px; }
+.welcome__recent { margin-top: 28px; }
+.recent-projects { display: grid; gap: 8px; margin-top: 12px; }
+.recent-projects .btn { display: flex; flex-wrap: wrap; gap: 4px 12px; width: 100%; text-align: left; }
+.recent-projects small { color: var(--muted); overflow-wrap: anywhere; }
+.recent-projects b { width: 100%; }
 .welcome__steps { display: grid; gap: 10px; margin-top: 28px; counter-reset: step; }
 .welcome__steps li {
   display: grid; grid-template-columns: 32px 1fr; column-gap: 12px;
