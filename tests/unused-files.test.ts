@@ -12,7 +12,7 @@ const imported = (specifier: string | null, fromFileId = 'from.ts'): MapImport =
 const mapOf = (files: MapFile[], extra: Partial<Omit<ProjectMap, 'unused'>> = {}): Omit<ProjectMap, 'unused'> => ({
   projectId: 'project', files, edges: [], unresolved: [], external: [], complexFunctions: [], limited: false, notes: [], ...extra,
 });
-const scripts = (): ScriptFiles => ({ files: new Set(), failed: [] });
+const scripts = (): ScriptFiles => ({ files: new Set(), failed: [], references: new Set(), referenceFailed: [] });
 
 describe('unused file candidates', () => {
   it('sorts candidates, ignores self imports and counts incoming edges even from tests or unused cycles', () => {
@@ -53,6 +53,27 @@ describe('unused file candidates', () => {
       { kind: 'types', count: 1 }, { kind: 'framework', count: 1 }, { kind: 'script', count: 1 },
     ]);
     expect(result.candidates).toEqual([]);
+  });
+
+  it('excludes references last and preserves every earlier matching kind', () => {
+    const names = ['entry.ts', 'unit.test.ts', 'next.config.ts', 'global.d.ts', 'app/page.ts', 'script.ts', 'referenced.ts'];
+    const result = unusedFiles(mapOf([...names.map((name, index) => file(name, { start: index === 0 })), file('orphan.ts')]), {
+      ...scripts(), files: new Set(['script.ts']), references: new Set(names),
+    });
+    expect(result.excluded).toEqual(['start', 'test', 'config', 'types', 'framework', 'script', 'reference']
+      .map(kind => ({ kind, count: 1 })));
+    expect(result.candidates).toEqual([{ fileId: 'orphan.ts', relativePath: 'orphan.ts' }]);
+    expect(result.unsure).toEqual([]);
+  });
+
+  it.each([1, 5, 7])('reports %i failed reference sources with at most five names', count => {
+    const referenceFailed = Array.from({ length: count }, (_, i) => ({ relativePath: `p${i}/index.html`, reason: '읽기 실패' }));
+    const result = unusedFiles(mapOf([]), { ...scripts(), referenceFailed });
+    const names = referenceFailed.slice(0, 5).map(item => `${item.relativePath}(읽기 실패)`).join(', ');
+    expect(result.notes).toEqual([
+      `설정·HTML 파일 ${count}개를 읽지 못해 거기 적힌 경로를 확인하지 못했어요: ${names}${count > 5 ? ' 외 2개' : ''}`,
+      '안 쓰는 파일이 가져다 쓰는 파일은 후보에 나오지 않아요(그 파일이 아직 import하고 있으므로).',
+    ]);
   });
 
   it.each(['', 'web/'])('excludes Next conventions only under the configured root %s', root => {
@@ -118,7 +139,7 @@ describe('unused file candidates', () => {
     const result = unusedFiles(mapOf([
       file('a.ts', { checked: 'partial' }), file('b.ts', { checked: 'failed' }), file('c.ts', { checked: 'skipped' }),
     ], { unresolved: [null, '@/dynamic', './relative'].map(specifier => ({ ...imported(specifier), reason: 'not-static', candidates: [] })) }), {
-      files: new Set(), failed: Array.from({ length: 7 }, (_, i) => ({ relativePath: `p${i}/package.json`, reason: '읽기 실패' })),
+      ...scripts(), failed: Array.from({ length: 7 }, (_, i) => ({ relativePath: `p${i}/package.json`, reason: '읽기 실패' })),
     });
     expect(result.notes).toEqual([
       '끝까지 읽지 못한 파일 3개가 가져다 쓰는 파일이 후보에 섞였을 수 있어요.',
@@ -176,7 +197,7 @@ describe('package script files', () => {
     await put('a/package.json', '{broken');
     await put('b/package.json', '{"scripts":{"dev":"run.ts"}}');
     await put('b/run.ts', '');
-    expect(await read()).toEqual({ files: new Set(['b/run.ts']), failed: [{ relativePath: 'a/package.json', reason: 'JSON 형식으로 읽을 수 없어요.' }] });
+    expect(await read()).toEqual({ ...scripts(), files: new Set(['b/run.ts']), failed: [{ relativePath: 'a/package.json', reason: 'JSON 형식으로 읽을 수 없어요.' }] });
     const limited = await read(Buffer.byteLength('{broken'));
     expect(limited.files.size).toBe(0);
     expect(limited.failed[1]).toEqual({ relativePath: 'b/package.json', reason: '지도의 읽기 한도에 닿아 읽지 않았어요.' });
@@ -184,7 +205,7 @@ describe('package script files', () => {
 
   it('does not read any package at zero budget', async () => {
     await put('package.json', '{broken');
-    expect(await read(0)).toEqual({ files: new Set(), failed: [{ relativePath: 'package.json', reason: '지도의 읽기 한도에 닿아 읽지 않았어요.' }] });
+    expect(await read(0)).toEqual({ ...scripts(), failed: [{ relativePath: 'package.json', reason: '지도의 읽기 한도에 닿아 읽지 않았어요.' }] });
   });
 
   it('reads packages in path order within the total remaining bytes, including UTF-8 bytes', async () => {
@@ -228,6 +249,125 @@ describe('package script files', () => {
     await expect(read(100, () => true)).rejects.toMatchObject({ code: 'CANCELLED' });
     const stop = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
     await expect(read(0, stop)).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(stop).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads config entries and HTML sources, including comments, spaces and static backticks without executing them', async () => {
+    const names = ['src/main/main.ts', 'src/preload/preload.ts', 'src/renderer/main.tsx', 'src/comment.ts', 'src/with space.ts'];
+    for (const name of names) await put(name, '');
+    await put('forge.config.ts', [
+      "export default { entry: 'src/main/main.ts', preload: `src/preload/preload.ts`, other: 'src/with space.ts' };",
+      '// "src/comment.ts"', "throw new Error('must not execute');",
+    ].join('\n'));
+    await put('index.html', '<script src="/src/renderer/main.tsx"></script>');
+    expect(await read()).toEqual({ ...scripts(), references: new Set(names) });
+  });
+
+  it('keeps strings after a comment apostrophe paired, as in forge.config.ts', async () => {
+    for (const name of ['src/main/main.ts', 'src/preload/preload.ts']) await put(name, '');
+    await put('forge.config.ts', [
+      "// tree-sitter 0.21's source build selects C++17.",
+      "export default { ignore: ['tree-sitter'], build: [{ entry: 'src/main/main.ts' }, { entry: 'src/preload/preload.ts' }] };",
+    ].join('\n'));
+    expect((await read()).references).toEqual(new Set(['src/main/main.ts', 'src/preload/preload.ts']));
+  });
+
+  it('resolves leading slashes from both the source folder and root, but relative paths only from the source folder', async () => {
+    const names = ['src/app.ts', 'pages/src/app.ts', 'pages/x.ts', 'x.ts', 'web/src/app.ts', 'pages/parent.ts'];
+    for (const name of names) await put(name, '');
+    await put('pages/index.html', '<script src="/src/app.ts"></script><script src="./x.ts"></script>');
+    await put('pages/nested/index.html', '<script src="../parent.ts"></script>');
+    await put('web/vite.config.ts', "export default { entry: 'src/app.ts' };");
+    expect((await read()).references).toEqual(new Set(names.filter(name => name !== 'x.ts')));
+  });
+
+  it('ignores URLs, globs, interpolated templates, empty strings, bare names, outside paths and non-code matches', async () => {
+    for (const name of ['src/a.ts', 'a.js', 'a.ts', 'bare.ts', 'style.css']) await put(name, '');
+    await put('vite.config.ts', [
+      "'src/**/*.ts'", "'https://x.dev/a.js'", '`${dir}/a.ts`', '`${"./a.ts"}`', "''", "'bare'",
+      "'../a.ts'", "'/../a.ts'", "'./style.css'",
+    ].join(';\n'));
+    await put('nested/vite.config.ts', "'../../a.ts';");
+    await put('ordinary.ts', "'./a.ts';");
+    await put('index.htm', '<script src="./a.ts"></script>');
+    expect(await read()).toEqual(scripts());
+  });
+
+  it('collects every extensionless match and JS counterpart through the existing candidate rules', async () => {
+    const names = ['src/job.ts', 'src/job.js', 'src/job/index.ts', 'src/run.ts', 'src/run.js'];
+    for (const name of [...names, 'src/job.d.ts']) await put(name, '');
+    await put('vite.config.ts', "['src/job', './src/run.js'];");
+    expect((await read()).references).toEqual(new Set(names));
+  });
+
+  it('uses the same config rule for exclusion and reference source selection', async () => {
+    const configs = ['vite.config.ts', 'nested/tool.config.cjs', '.eslintrc.js', 'nested/.customrc.mjs', 'web/next.config.mts'];
+    const ordinary = ['config.ts', 'tool.config.json', 'nested.config/helper.ts', 'eslintrc.js', '.rc.json'];
+    for (const name of [...configs, ...ordinary]) await put(name, '');
+    const result = await read(0);
+    const selected = result.referenceFailed.map(item => item.relativePath);
+    const excluded = [...configs, ...ordinary].filter(name =>
+      unusedFiles(mapOf([file(name)]), scripts()).excluded.some(item => item.kind === 'config'));
+    expect(selected).toEqual(configs.sort((a, b) => a.localeCompare(b)));
+    expect(selected).toEqual(excluded.sort((a, b) => a.localeCompare(b)));
+  });
+
+  it('reads all packages before config and HTML sources, then uses the shared remaining UTF-8 byte budget in path order', async () => {
+    const manifest = '{"scripts":{"dev":"run.ts"}}';
+    const config = "'./run.ts'; // 시험";
+    for (const folder of ['y', 'z']) {
+      await put(`${folder}/package.json`, manifest);
+      await put(`${folder}/run.ts`, '');
+    }
+    await put('a.config.ts', config);
+    await put('b.html', '<script src="./run.ts"></script>');
+    await put('run.ts', '');
+    const exhausted = await read(Buffer.byteLength(manifest) * 2);
+    expect(exhausted).toEqual({ ...scripts(), files: new Set(['y/run.ts', 'z/run.ts']), referenceFailed: [
+      { relativePath: 'a.config.ts', reason: '지도의 읽기 한도에 닿아 읽지 않았어요.' },
+      { relativePath: 'b.html', reason: '지도의 읽기 한도에 닿아 읽지 않았어요.' },
+    ] });
+    const partial = await read(Buffer.byteLength(manifest) * 2 + Buffer.byteLength(config));
+    expect(partial.references).toEqual(new Set(['run.ts']));
+    expect(partial.referenceFailed).toEqual([exhausted.referenceFailed[1]]);
+    const short = await read(Buffer.byteLength(manifest) * 2 + Buffer.byteLength(config) - 1);
+    expect(short.references.size).toBe(0);
+    expect(short.referenceFailed).toEqual(['a.config.ts', 'b.html'].map(relativePath => ({
+      relativePath, reason: '파일이 초기 읽기 크기 제한을 넘습니다.',
+    })));
+  });
+
+  it.each(['deleted', 'linked', 'oversized'] as const)('continues when a config becomes %s after scanning', async change => {
+    await put('a.config.ts', "'./run.ts';");
+    await put('b.html', '<script src="./run.ts"></script>');
+    await put('run.ts', '');
+    const project = await scanProject(root, 'project');
+    const name = path.join(root, 'a.config.ts');
+    await rm(name);
+    if (change === 'linked') await symlink(path.join(root, 'b.html'), name);
+    if (change === 'oversized') await writeFile(name, ' '.repeat(MAX_FILE_BYTES + 1));
+    const result = await scriptFilesOf(root, project.files, new Map(project.files.map(file => [file.relativePath, file])), MAX_FILE_BYTES * 2, () => false);
+    expect(result.references).toEqual(new Set(['run.ts']));
+    expect(result.failed).toEqual([]);
+    expect(result.referenceFailed).toEqual([{ relativePath: 'a.config.ts', reason: change === 'linked'
+      ? '심볼릭 링크와 폴더 밖 파일은 읽지 않습니다.' : change === 'oversized'
+        ? '파일이 초기 읽기 크기 제한을 넘습니다.' : '파일을 읽지 못했어요.' }]);
+  });
+
+  it.each([0, 100])('cancels before and between reference reads at a budget of %i bytes', async bytes => {
+    await put('a.config.ts', '');
+    await put('b.html', '');
+    await expect(read(bytes, () => true)).rejects.toMatchObject({ code: 'CANCELLED' });
+    const stop = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    await expect(read(bytes, stop)).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(stop).toHaveBeenCalledTimes(2);
+  });
+
+  it('checks cancellation between the last package and first reference source', async () => {
+    await put('z/package.json', '{}');
+    await put('a.config.ts', '');
+    const stop = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    await expect(read(100, stop)).rejects.toMatchObject({ code: 'CANCELLED' });
     expect(stop).toHaveBeenCalledTimes(2);
   });
 });

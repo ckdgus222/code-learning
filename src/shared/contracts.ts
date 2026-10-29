@@ -201,7 +201,7 @@ export interface MapFunction {
   depth: number;
 }
 export type MapUnresolvedReason = 'not-found' | 'ambiguous' | 'outside' | 'not-static' | 'syntax' | 'unavailable' | 'unreadable';
-export type UnusedExcludeKind = 'start' | 'test' | 'config' | 'types' | 'framework' | 'script';
+export type UnusedExcludeKind = 'start' | 'test' | 'config' | 'types' | 'framework' | 'script' | 'reference';
 export interface UnusedFiles {
   candidates: { fileId: string; relativePath: string }[];
   unsure: { fileId: string; relativePath: string; reason: string }[];
