@@ -18,7 +18,7 @@ export interface WorkerResponse { id: number; result: Result<ProjectRoutes | Fea
   | { shapes: ValueShapes; watch: TypeWatch } | GitHistory | ProjectChanges | FileDiff> }
 
 const { root, projectId, map, calls, shapes, git, routes, flow, flows, stop } = workerData as {
-  root: string; projectId: string; map?: { files: ProjectFile[]; starts: string[]; stop: SharedArrayBuffer };
+  root: string; projectId: string; map?: { files: ProjectFile[]; starts: string[]; entries: string[]; stop: SharedArrayBuffer };
   calls?: { files: ProjectFile[]; target: { fileId: string; fileHash: string; startUtf16: number; endUtf16: number }; stop: SharedArrayBuffer };
   shapes?: { files: ProjectFile[]; target: ShapesTarget; names: ShapeQuery[]; stop: SharedArrayBuffer };
   git?: { job: GitJob; stop: SharedArrayBuffer };
@@ -88,7 +88,7 @@ parentPort!.on('message', async (request: WorkerRequest) => {
 // when the session raises the shared flag, because terminating it mid-parse would abort the app.
 if (map) {
   const stop = new Int32Array(map.stop);
-  buildProjectMap(root, projectId, map.files, map.starts, MAP_LIMITS, () => Atomics.load(stop, 0) === 1).then(
+  buildProjectMap(root, projectId, map.files, map.starts, MAP_LIMITS, () => Atomics.load(stop, 0) === 1, map.entries).then(
     value => parentPort!.postMessage({ id: 0, result: { ok: true, value } } satisfies WorkerResponse),
     error => parentPort!.postMessage({ id: 0, result: failure(error) } satisfies WorkerResponse));
 }

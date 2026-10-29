@@ -17,12 +17,12 @@ vi.mock('@xyflow/react', async importOriginal => {
 });
 
 const file = (id: string, folder: string): MapFile => ({ id, folder, relativePath: `${folder ? `${folder}/` : ''}${id}.ts`,
-  start: false, checked: 'full', reason: null });
+  start: false, entry: false, checked: 'full', reason: null });
 const map: ProjectMap = { projectId: 'p', files: [file('a', 'web/app'), file('b', 'web/lib'), file('index', 'web'), file('root', ''), file('sibling', 'website')],
-  edges: [{ fromFileId: 'a', toFileId: 'b', fileHash: 'h', startUtf16: 0, endUtf16: 1, startLine: 1, endLine: 1, text: 'import', specifier: '../lib/b' }],
-  unresolved: [], external: [], complexFunctions: [], unused: { candidates: [], unsure: [], excluded: [], notes: [] }, limited: false, notes: [] };
+  edges: [{ fromFileId: 'a', toFileId: 'b', names: [], fileHash: 'h', startUtf16: 0, endUtf16: 1, startLine: 1, endLine: 1, text: 'import', specifier: '../lib/b' }],
+  unresolved: [], external: [], complexFunctions: [], exports: [], unused: { exports: { candidates: [], unsure: [], notes: [] }, candidates: [], unsure: [], excluded: [], notes: [] }, limited: false, notes: [] };
 const project: ProjectView = { id: 'p', name: 'project', files: [], excluded: {}, warnings: [],
-  overview: { intro: null, candidates: [], checkedFiles: 0, limited: false, notes: [] } };
+  overview: { entryFileIds: [], intro: null, candidates: [], checkedFiles: 0, limited: false, notes: [] } };
 const changes: MapChanges = { stale: false, result: { projectId: 'p', commit: '1234567', notCompared: [], notes: [],
   changes: map.files.map(file => ({ kind: 'modified', fileId: file.id, path: file.relativePath, oldPath: null })) } };
 
@@ -418,6 +418,7 @@ describe('unused file candidates card', () => {
 
   it('labels files referenced by config and HTML after script exclusions', () => {
     const card = section(render(new Set(), null, null, { ...map, unused: {
+      exports: { candidates: [], unsure: [], notes: [] },
       candidates: [], unsure: [], notes: [], excluded: [{ kind: 'script', count: 2 }, { kind: 'reference', count: 1 }],
     } }));
     expect(card).toContain('뺀 파일: 실행 명령에 적힌 파일 2 · 설정·HTML에 적힌 파일 1');
@@ -425,6 +426,7 @@ describe('unused file candidates card', () => {
 
   it('shows candidates, collapsed uncertainty, exclusion counts and notes before complex functions', () => {
     const html = render(new Set(), null, null, { ...map, unused: {
+      exports: { candidates: [], unsure: [], notes: [] },
       candidates: [{ fileId: 'orphan', relativePath: 'lib/orphan.ts' }],
       unsure: [{ fileId: 'lazy', relativePath: 'lib/lazy.ts', reason: '동적 import(또는 require)로 쓰일 수 있어요.' }],
       excluded: [{ kind: 'start', count: 3 }, { kind: 'test', count: 12 }, { kind: 'config', count: 5 },
@@ -437,7 +439,7 @@ describe('unused file candidates card', () => {
     expect(card).toContain('<button class="btn btn--small path">lib/orphan.ts</button>');
     expect(card).toContain('<details><summary>확인 못 함 · 1개</summary>');
     expect(card).toContain('<button class="btn btn--small path">lib/lazy.ts</button> · 동적 import(또는 require)로 쓰일 수 있어요.');
-    expect(card).toContain('뺀 파일: 시작점 후보 3 · 시험 파일 12 · 설정 파일 5 · 타입 선언 2 · 프레임워크가 부르는 파일 9 · 실행 명령에 적힌 파일 1');
+    expect(card).toContain('뺀 파일: 시작 파일(main·bin·index 등) 3 · 시험 파일 12 · 설정 파일 5 · 타입 선언 2 · 프레임워크가 부르는 파일 9 · 실행 명령에 적힌 파일 1');
     expect(card).toContain('<p class="hint">끝까지 읽지 못한 파일 1개가 가져다 쓰는 파일이 후보에 섞였을 수 있어요.</p>');
     expect(html.indexOf('aria-label="아무도 가져다 쓰지 않는 파일 후보"')).toBeLessThan(html.indexOf('aria-label="어려운 코드 살펴볼 곳"'));
   });
@@ -453,10 +455,56 @@ describe('unused file candidates card', () => {
   it('caps both lists at 300 rows and reports omitted entries', () => {
     const entries = Array.from({ length: 301 }, (_, i) => ({ fileId: `id${i}`, relativePath: `file${i}.ts` }));
     const card = section(render(new Set(), null, null, { ...map, unused: {
+      exports: { candidates: [], unsure: [], notes: [] },
       candidates: entries, unsure: entries.map(file => ({ ...file, reason: '확인 못 함' })), excluded: [], notes: [],
     } }));
     expect(card).toContain('후보 · 301개');
     expect(card).toContain('확인 못 함 · 301개');
+    expect(card.match(/<button /g)).toHaveLength(600);
+    expect(card).not.toContain('file300.ts');
+    expect(card.match(/처음 300개만 보여요. 나머지 1개는 생략했어요./g)).toHaveLength(2);
+  });
+});
+
+describe('unused exports card', () => {
+  const section = (html: string) => html.match(/<section class="card" aria-label="다른 파일이 가져다 쓰지 않는 export 후보">(.*?)<\/section>/)![1];
+  const candidate = { fileId: 'a', fileHash: 'h', relativePath: 'web/app/a.ts', name: 'default', displayName: 'default (Named)',
+    kind: 'function' as const, startUtf16: 10, endUtf16: 20, startLine: 2, endLine: 3, usedInFile: true };
+
+  it('renders count, kinds, local-use tag, collapsed uncertainty and notes immediately after unused files', () => {
+    const html = render(new Set(), null, null, { ...map, unused: { ...map.unused, exports: {
+      candidates: [candidate, { ...candidate, name: 'Class', displayName: 'Class', kind: 'class', usedInFile: false },
+        { ...candidate, name: 'value', displayName: 'value', kind: 'value', usedInFile: false }],
+      unsure: [{ fileId: 'b', relativePath: 'web/lib/b.ts', reason: '경로 별칭으로 쓰일 수 있어요.', count: 4 }], notes: ['export 이름만 비교했어요.'],
+    } } });
+    const card = section(html);
+    expect(card).toContain('다른 파일이 가져다 쓰지 않는 export 후보 · 3개');
+    expect(card).toContain('default (Named) · 함수 · web/app/a.ts:2');
+    expect(card).toContain('Class · 클래스 · web/app/a.ts:2');
+    expect(card).toContain('value · 값 · web/app/a.ts:2');
+    expect(card.match(/파일 안에서는 씀/g)).toHaveLength(1);
+    expect(card).toContain('<details><summary>확인 못 함 · 1개 파일</summary>');
+    expect(card).toContain('web/lib/b.ts</button> · 경로 별칭으로 쓰일 수 있어요. · export 4개');
+    expect(card).toContain('<p class="hint">export 이름만 비교했어요.</p>');
+    const fileCardEnd = html.indexOf('</section>', html.indexOf('aria-label="아무도 가져다 쓰지 않는 파일 후보"')) + '</section>'.length;
+    expect(html.slice(fileCardEnd)).toMatch(/^<section class="card" aria-label="다른 파일이 가져다 쓰지 않는 export 후보">/);
+    expect(html.indexOf('aria-label="다른 파일이 가져다 쓰지 않는 export 후보"')).toBeLessThan(html.indexOf('aria-label="어려운 코드 살펴볼 곳"'));
+  });
+
+  it('renders the empty message without empty details', () => {
+    const card = section(render());
+    expect(card).toContain('다른 파일이 가져다 쓰지 않는 export 후보 · 0개');
+    expect(card).toContain('후보가 없어요.');
+    expect(card).not.toContain('<details>');
+  });
+
+  it('limits candidates and uncertain files to 300 rows each', () => {
+    const entries = Array.from({ length: 301 }, (_, i) => ({ ...candidate, fileId: `f${i}`, relativePath: `file${i}.ts` }));
+    const card = section(render(new Set(), null, null, { ...map, unused: { ...map.unused, exports: {
+      candidates: entries, unsure: entries.map(item => ({ fileId: item.fileId, relativePath: item.relativePath, count: 1, reason: '확인 못 함' })), notes: [],
+    } } }));
+    expect(card).toContain('후보 · 301개');
+    expect(card).toContain('확인 못 함 · 301개 파일');
     expect(card.match(/<button /g)).toHaveLength(600);
     expect(card).not.toContain('file300.ts');
     expect(card.match(/처음 300개만 보여요. 나머지 1개는 생략했어요./g)).toHaveLength(2);

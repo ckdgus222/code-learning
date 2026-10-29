@@ -6,11 +6,11 @@ import { MAX_FILE_BYTES, scanProject } from '../src/core/project/files';
 import { scriptFilesOf, unusedFiles, type ScriptFiles } from '../src/core/analysis/unused-files';
 
 const file = (relativePath: string, extra: Partial<MapFile> = {}): MapFile => ({ id: relativePath, relativePath,
-  folder: path.posix.dirname(relativePath), start: false, checked: 'full', reason: null, ...extra });
+  folder: path.posix.dirname(relativePath), start: false, entry: false, checked: 'full', reason: null, ...extra });
 const imported = (specifier: string | null, fromFileId = 'from.ts'): MapImport => ({ fromFileId, specifier,
   fileHash: 'hash', startUtf16: 0, endUtf16: 1, startLine: 1, endLine: 1, text: 'import' });
 const mapOf = (files: MapFile[], extra: Partial<Omit<ProjectMap, 'unused'>> = {}): Omit<ProjectMap, 'unused'> => ({
-  projectId: 'project', files, edges: [], unresolved: [], external: [], complexFunctions: [], limited: false, notes: [], ...extra,
+  projectId: 'project', files, edges: [], unresolved: [], external: [], complexFunctions: [], exports: [], limited: false, notes: [], ...extra,
 });
 const scripts = (): ScriptFiles => ({ files: new Set(), failed: [], references: new Set(), referenceFailed: [] });
 
@@ -18,10 +18,10 @@ describe('unused file candidates', () => {
   it('sorts candidates, ignores self imports and counts incoming edges even from tests or unused cycles', () => {
     const map = mapOf(['z.ts', 'a.ts', 'used.ts', 'a.test.ts', 'cycle-a.ts', 'cycle-b.ts'].map(name => file(name)), {
       edges: [
-        { ...imported('./a', 'a.ts'), toFileId: 'a.ts' },
-        { ...imported('./used', 'a.test.ts'), toFileId: 'used.ts' },
-        { ...imported('./cycle-b', 'cycle-a.ts'), toFileId: 'cycle-b.ts' },
-        { ...imported('./cycle-a', 'cycle-b.ts'), toFileId: 'cycle-a.ts' },
+        { ...imported('./a', 'a.ts'), toFileId: 'a.ts', names: [] },
+        { ...imported('./used', 'a.test.ts'), toFileId: 'used.ts', names: [] },
+        { ...imported('./cycle-b', 'cycle-a.ts'), toFileId: 'cycle-b.ts', names: [] },
+        { ...imported('./cycle-a', 'cycle-b.ts'), toFileId: 'cycle-a.ts', names: [] },
       ],
     });
     const result = unusedFiles(map, scripts());
@@ -35,7 +35,7 @@ describe('unused file candidates', () => {
     ['next.config.mjs', 'config'], ['global.d.ts', 'types'], ['global.d.mts', 'types'], ['global.d.cts', 'types'],
     ['scripts/seed.js', 'script'],
   ])('excludes %s as %s', (name, kind) => {
-    const result = unusedFiles(mapOf([file(name, { start: kind === 'start' })]), {
+    const result = unusedFiles(mapOf([file(name, { entry: kind === 'start' })]), {
       ...scripts(), files: new Set(kind === 'script' ? [name] : []),
     });
     expect(result.candidates).toEqual([]);
@@ -45,7 +45,7 @@ describe('unused file candidates', () => {
 
   it('counts only the first matching exclusion, in the specified kind order', () => {
     const names = ['entry.test.config.d.ts', 'unit.test.config.d.ts', 'tool.config.d.ts', 'app/page.d.ts', 'app/page.ts', 'script.ts'];
-    const result = unusedFiles(mapOf([...names.map((name, index) => file(name, { start: index === 0 })), file('next.config.ts')]), {
+    const result = unusedFiles(mapOf([...names.map((name, index) => file(name, { entry: index === 0 })), file('next.config.ts')]), {
       ...scripts(), files: new Set(names),
     });
     expect(result.excluded).toEqual([
@@ -57,7 +57,7 @@ describe('unused file candidates', () => {
 
   it('excludes references last and preserves every earlier matching kind', () => {
     const names = ['entry.ts', 'unit.test.ts', 'next.config.ts', 'global.d.ts', 'app/page.ts', 'script.ts', 'referenced.ts'];
-    const result = unusedFiles(mapOf([...names.map((name, index) => file(name, { start: index === 0 })), file('orphan.ts')]), {
+    const result = unusedFiles(mapOf([...names.map((name, index) => file(name, { entry: index === 0 })), file('orphan.ts')]), {
       ...scripts(), files: new Set(['script.ts']), references: new Set(names),
     });
     expect(result.excluded).toEqual(['start', 'test', 'config', 'types', 'framework', 'script', 'reference']
@@ -128,7 +128,7 @@ describe('unused file candidates', () => {
 
   it('keeps known used and excluded files out of unsure', () => {
     const result = unusedFiles(mapOf([file('a.ts'), file('a.test.ts')], {
-      edges: [{ ...imported('./a'), toFileId: 'a.ts' }],
+      edges: [{ ...imported('./a'), toFileId: 'a.ts', names: [] }],
       unresolved: [{ ...imported('./a'), reason: 'ambiguous', candidates: ['a.ts', 'a.test.ts'] }],
     }), scripts());
     expect(result.unsure).toEqual([]);
@@ -369,5 +369,87 @@ describe('package script files', () => {
     const stop = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
     await expect(read(100, stop)).rejects.toMatchObject({ code: 'CANCELLED' });
     expect(stop).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('unused value exports', () => {
+  const exported = (fileId: string, name: string, startLine = 1): ProjectMap['exports'][number] => ({ fileId, fileHash: 'hash',
+    name, displayName: name, kind: 'value', startUtf16: startLine * 10, endUtf16: startLine * 10 + 5, startLine, endLine: startLine, usedInFile: false });
+
+  it('matches names per target file, counts tests, ignores self imports and sorts by path and range', () => {
+    const exports = [exported('z.ts', 'same'), exported('a.ts', 'later', 3), exported('a.ts', 'same'),
+      exported('a.ts', 'default', 2), exported('a.ts', 'used'), exported('a.ts', 'testOnly')];
+    const result = unusedFiles(mapOf(['z.ts', 'a.ts', 'from.ts', 'from.test.ts'].map(name => file(name)), { exports,
+      edges: [
+        { ...imported('./a'), toFileId: 'a.ts', names: ['used'] },
+        { ...imported('./z'), toFileId: 'z.ts', names: ['same'] },
+        { ...imported('./a', 'from.test.ts'), toFileId: 'a.ts', names: ['testOnly'] },
+        { ...imported('./a', 'a.ts'), toFileId: 'a.ts', names: ['same', 'later', 'default'] },
+        { ...imported('./a', 'a.ts'), toFileId: 'a.ts', names: 'all' },
+      ],
+    }), scripts());
+    expect(result.exports.candidates.map(item => [item.relativePath, item.name, item.startLine])).toEqual([
+      ['a.ts', 'same', 1], ['a.ts', 'default', 2], ['a.ts', 'later', 3],
+    ]);
+    expect(result.exports.candidates[0]).toEqual({ ...exports[2], relativePath: 'a.ts' });
+    expect(result.exports.unsure).toEqual([]);
+    expect(result.exports.notes).toEqual([
+      "시험 파일이 가져다 쓰는 export도 '쓰임'으로 봐요.",
+      'export 이름만 비교했어요. 객체 안 속성이나 클래스 메서드가 쓰이는지는 보지 않아요.',
+    ]);
+  });
+
+  it('does not offer any names when a different file imports all names', () => {
+    const result = unusedFiles(mapOf([file('a.ts'), file('from.ts')], {
+      exports: [exported('a.ts', 'a'), exported('a.ts', 'b')],
+      edges: [{ ...imported('./a'), toFileId: 'a.ts', names: ['a'] }, { ...imported('./a'), toFileId: 'a.ts', names: 'all' }],
+    }), scripts());
+    expect(result.exports).toEqual({ candidates: [], notes: [], unsure: [{ fileId: 'a.ts', relativePath: 'a.ts', count: 2,
+      reason: '모두 가져오는 import(* as, export *)가 있어 어느 이름을 쓰는지 정할 수 없어요.' }] });
+  });
+
+  it.each(['dynamic', 'alias', 'unresolved'] as const)('reports %s uncertainty even alongside a named import', kind => {
+    const extra: Partial<ProjectMap> = kind === 'alias' ? { external: [imported('@/a')] }
+      : { unresolved: [{ ...imported('./a'), reason: kind === 'dynamic' ? 'not-static' : 'ambiguous',
+        candidates: kind === 'dynamic' ? [] : ['a.ts'] }] };
+    const source = mapOf([file('from.ts'), file('a.ts')], { ...extra, exports: [exported('a.ts', 'used'), exported('a.ts', 'maybe')],
+      edges: [{ ...imported('./a'), toFileId: 'a.ts', names: ['used'] }],
+    });
+    const result = unusedFiles(source, scripts());
+    expect(result.candidates.map(item => item.fileId)).toEqual(['from.ts']);
+    expect(result.unsure).toEqual([]);
+    expect(result.exports.candidates).toEqual([]);
+    expect(result.exports.unsure).toEqual([{ fileId: 'a.ts', relativePath: 'a.ts', count: 2,
+      reason: kind === 'dynamic' ? '동적 import(또는 require)로 쓰일 수 있어요.' : kind === 'alias'
+        ? '경로 별칭으로 쓰일 수 있어요.' : '대상을 확정하지 못한 import가 이 파일을 가리킬 수 있어요.' }]);
+    const withoutNamedImport = unusedFiles({ ...source, edges: [] }, scripts());
+    expect(withoutNamedImport.exports.unsure).toEqual(result.exports.unsure);
+    expect(withoutNamedImport.unsure).toEqual([{ fileId: 'a.ts', relativePath: 'a.ts', reason: result.exports.unsure[0].reason }]);
+  });
+
+  it('omits orphan-file exports and every exclusion kind but examines learning-only starts', () => {
+    const excluded = ['entry.ts', 'unit.test.ts', 'next.config.ts', 'global.d.ts', 'app/page.ts', 'script.ts', 'referenced.ts'];
+    const files = [...excluded.map(name => file(name, { entry: name === 'entry.ts' })), file('orphan.ts'), file('learning.ts', { start: true })];
+    const result = unusedFiles(mapOf(files, { exports: files.map(item => exported(item.id, 'value')),
+      edges: [...excluded, 'learning.ts'].map(toFileId => ({ ...imported('./file'), toFileId, names: [] })),
+    }), { ...scripts(), files: new Set(['script.ts']), references: new Set(['referenced.ts']) });
+    expect(result.candidates.map(item => item.fileId)).toEqual(['orphan.ts']);
+    expect(result.exports.candidates.map(item => item.fileId)).toEqual(['learning.ts']);
+    expect(result.excluded).toEqual(['start', 'test', 'config', 'types', 'framework', 'script', 'reference'].map(kind => ({ kind, count: 1 })));
+    expect(result.exports.unsure).toEqual([]);
+    const isolatedStart = unusedFiles(mapOf([file('learning.ts', { start: true })]), scripts());
+    expect(isolatedStart.candidates.map(item => item.fileId)).toEqual(['learning.ts']);
+  });
+
+  it('preserves default display names and local-use tags, and repeats the unread-file note', () => {
+    const result = unusedFiles(mapOf([file('a.ts', { checked: 'partial' }), file('z.ts'), file('from.ts')], {
+      exports: [{ ...exported('a.ts', 'default'), displayName: 'default (Named)', kind: 'class', usedInFile: true }, exported('z.ts', 'default')],
+      edges: ['a.ts', 'z.ts'].map(toFileId => ({ ...imported('./file'), toFileId, names: [] })),
+    }), scripts());
+    expect(result.exports.candidates.map(item => [item.displayName, item.usedInFile])).toEqual([['default (Named)', true], ['default', false]]);
+    expect(result.exports.notes).toContain(result.notes[0]);
+    expect(result.notes[0]).toBe('끝까지 읽지 못한 파일 1개가 가져다 쓰는 파일이 후보에 섞였을 수 있어요.');
+    const empty = unusedFiles(mapOf([file('a.ts', { checked: 'failed' })]), scripts());
+    expect(empty.exports).toEqual({ candidates: [], unsure: [], notes: [result.notes[0]] });
   });
 });

@@ -9,12 +9,12 @@ import { readAllowed, scanProject } from '../src/core/project/files';
 import type { MapFile, ProjectMap, SourceView } from '../src/shared/contracts';
 
 const file = (id: string, folder: string): MapFile =>
-  ({ id, relativePath: `${folder ? `${folder}/` : ''}${id}.ts`, folder, start: false, checked: 'full', reason: null });
-const edge = (from: string, to: string) => ({ fromFileId: from, toFileId: to, fileHash: 'h', startUtf16: 0, endUtf16: 1,
+  ({ id, relativePath: `${folder ? `${folder}/` : ''}${id}.ts`, folder, start: false, entry: false, checked: 'full', reason: null });
+const edge = (from: string, to: string) => ({ fromFileId: from, toFileId: to, names: [], fileHash: 'h', startUtf16: 0, endUtf16: 1,
   startLine: 1, endLine: 1, text: 'import', specifier: './x' });
 // Two folders: a→b twice, b→a once, and one import inside folder a.
 const map: ProjectMap = { projectId: 'p', files: [file('a1', 'a'), file('a2', 'a'), file('b1', 'b'), file('b2', 'b')],
-  edges: [edge('a1', 'b1'), edge('a2', 'b1'), edge('b2', 'a1'), edge('a1', 'a2')], unresolved: [], external: [], complexFunctions: [], unused: { candidates: [], unsure: [], excluded: [], notes: [] }, limited: false, notes: [] };
+  edges: [edge('a1', 'b1'), edge('a2', 'b1'), edge('b2', 'a1'), edge('a1', 'a2')], unresolved: [], external: [], complexFunctions: [], exports: [], unused: { exports: { candidates: [], unsure: [], notes: [] }, candidates: [], unsure: [], excluded: [], notes: [] }, limited: false, notes: [] };
 const summary = (graph: ReturnType<typeof visibleGraph>) => graph.arrows.map(arrow => [arrow.source, arrow.target, arrow.items.length]);
 const backs = (graph: ReturnType<typeof visibleGraph>) => graph.arrows.filter(arrow => arrow.back).map(arrow => arrow.id);
 

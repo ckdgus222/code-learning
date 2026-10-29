@@ -7,15 +7,15 @@ import type { FileExplanationResult } from '../src/shared/ai';
 const site = { fileId: 'f', fileHash: 'h', startUtf16: 10, endUtf16: 15, startLine: 2, endLine: 2, text: 'send()' };
 const imported: MapImport = { ...site, fromFileId: 'a', specifier: './target' };
 const map: ProjectMap = { projectId: 'p', files: ['target', 'a', 'b'].map(id => ({ id, relativePath: `${id}.ts`, folder: '',
-  start: false, checked: 'full', reason: null })), edges: [], unresolved: [], external: [], complexFunctions: [], unused: { candidates: [], unsure: [], excluded: [], notes: [] }, limited: false, notes: [] };
+  start: false, entry: false, checked: 'full', reason: null })), edges: [], unresolved: [], external: [], complexFunctions: [], exports: [], unused: { exports: { candidates: [], unsure: [], notes: [] }, candidates: [], unsure: [], excluded: [], notes: [] }, limited: false, notes: [] };
 
 describe('importersOf', () => {
   it('keeps only incoming edges, the earliest import per file and path order', () => {
     const result = importersOf('target', 'target.ts', { ...map, edges: [
-      { ...imported, fromFileId: 'b', toFileId: 'target' },
-      { ...imported, toFileId: 'target', startUtf16: 40, startLine: 8 },
-      { ...imported, toFileId: 'target' },
-      { ...imported, fromFileId: 'target', toFileId: 'a' },
+      { ...imported, fromFileId: 'b', toFileId: 'target', names: [] },
+      { ...imported, toFileId: 'target', names: [], startUtf16: 40, startLine: 8 },
+      { ...imported, toFileId: 'target', names: [] },
+      { ...imported, fromFileId: 'target', toFileId: 'a', names: [] },
     ] });
     expect(result.files.map(file => [file.relativePath, file.item.startLine])).toEqual([['a.ts', 2], ['b.ts', 2]]);
     expect(result.unread).toEqual([]);

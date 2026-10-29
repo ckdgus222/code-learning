@@ -61,6 +61,7 @@ export async function buildOverview(root: string, project: ProjectFiles, shouldS
   const intro = await readIntro(root, project.files);
   const order = await candidateFiles(root, project.files, notes);
 
+  const entryFileIds = order.filter(([, reason]) => reason !== 'exported').map(([file]) => file.id);
   const candidates: StartCandidate[] = [];
   let examined = 0;
   let checkedFiles = 0;
@@ -83,7 +84,7 @@ export async function buildOverview(root: string, project: ProjectFiles, shouldS
     if (exported.length === 0 && reason !== 'exported') candidates.push({ ...base, name: null, startUtf16: 0, startLine: 1 });
   }
   if (unreadable) notes.push(`읽지 못한 파일 ${unreadable}개는 건너뛰었어요.`);
-  return { intro, candidates: candidates.slice(0, MAX_CANDIDATES), checkedFiles, limited: examined < order.length, notes };
+  return { intro, entryFileIds, candidates: candidates.slice(0, MAX_CANDIDATES), checkedFiles, limited: examined < order.length, notes };
 }
 
 /** The first heading and the first prose paragraph of a root README, as written. */

@@ -93,7 +93,14 @@ for (const [name, text] of Object.entries(mapFiles)) {
 const unusedMapFixture = path.join(temporary, '안 쓰는 파일 후보 프로젝트');
 await mkdir(unusedMapFixture);
 await writeFile(path.join(unusedMapFixture, 'orphan.ts'), 'const orphanValue = 42;\n');
-await writeFile(path.join(unusedMapFixture, 'html-entry.ts'), 'const htmlEntryValue = 1;\n');
+await writeFile(path.join(unusedMapFixture, 'html-entry.ts'), "import { used } from './library';\nused();\nconst htmlEntryValue = 1;\n");
+const unusedExportsSource = [
+  'export function used() { return 1; }',
+  'export function unusedExport() { return 2; }',
+  'export const localExport = 3;',
+  'console.log(localExport);',
+].join('\n');
+await writeFile(path.join(unusedMapFixture, 'library.ts'), unusedExportsSource);
 await writeFile(path.join(unusedMapFixture, 'index.html'), '<script src="/html-entry.ts"></script>');
 // Nested areas have their own fixture so the existing map counts stay unchanged.
 const areaMapFixture = path.join(temporary, '영역 지도 프로젝트');
@@ -2232,6 +2239,28 @@ try {
     await candidates.getByRole('button', { name: 'orphan.ts', exact: true }).click();
     await page.getByRole('heading', { name: 'orphan.ts', exact: true }).waitFor();
     assert.match(await page.locator('.reader').innerText(), /const orphanValue = 42;/);
+    for (const [name, kind, snippet, line] of [
+      ['unusedExport', '함수', 'function unusedExport() { return 2; }', 2],
+      ['localExport', '값', 'localExport = 3', 3],
+    ]) {
+      await openFileMap();
+      const exports = page.getByRole('region', { name: '다른 파일이 가져다 쓰지 않는 export 후보', exact: true });
+      await exports.getByRole('heading', { name: '다른 파일이 가져다 쓰지 않는 export 후보 · 2개', exact: true }).waitFor();
+      await exports.getByText('파일 안에서는 씀', { exact: true }).waitFor();
+      await exports.getByRole('button', { name: `${name} · ${kind} · library.ts:${line}`, exact: true }).click();
+      await page.getByRole('heading', { name: 'library.ts', exact: true }).waitFor();
+      const start = unusedExportsSource.indexOf(snippet);
+      await until(async () => await page.getByTestId('evidence-range').getAttribute('data-utf16') === `${start},${start + snippet.length}`);
+      assert.match(await page.getByTestId('evidence-range').innerText(), new RegExp(`library.ts · ${line}–${line}줄`));
+    }
+    await openFileMap();
+    await writeFile(path.join(unusedMapFixture, 'library.ts'), '\n' + unusedExportsSource);
+    await page.getByText('지도를 만든 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요.', { exact: false }).waitFor();
+    await page.getByRole('region', { name: '다른 파일이 가져다 쓰지 않는 export 후보', exact: true })
+      .getByRole('button', { name: 'unusedExport · 함수 · library.ts:2', exact: true }).click();
+    await page.getByText('지도를 만든 뒤 이 파일이 바뀌어 export 위치를 강조하지 않았어요.', { exact: false }).waitFor();
+    assert.equal(await page.getByTestId('evidence-range').count(), 0);
+
   });
 
   await check('Project map: file and design views, evidence, freshness, reopening and cancelled or stale maps', async () => {
