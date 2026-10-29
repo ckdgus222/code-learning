@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { storedLearningMarkSchema } from '../src/shared/contracts';
 import { ProjectStorage } from '../src/core/storage/projects';
 let temp: string;
 let storage: ProjectStorage | undefined;
@@ -90,5 +91,56 @@ it('opens a legacy projects-only database and leaves malformed saved JSON untouc
     expect(writer.prepare('SELECT spot FROM learning_spots').get()).toEqual({ spot: '{broken' });
     storage.saveSpot('legacy', null);
     expect(storage.recentProjects(10)).toHaveLength(1);
+  } finally { writer.close(); }
+});
+
+it('upserts one mark per key, separates projects and occurrences, and persists validated rows after reopening', () => {
+  const filename = path.join(temp, 'app.sqlite');
+  storage = new ProjectStorage(filename);
+  const first = storage.recordOpen('/a', 'A');
+  const second = storage.recordOpen('/b', 'B');
+  const mark = { relativePath: 'start.ts', name: 'start', occurrence: 0, state: 'understood' as const, note: '', codeHash: 'a'.repeat(64) };
+  expect(storage.marksOf(first)).toEqual([]);
+  storage.saveMark(first, mark);
+  storage.saveMark(second, mark);
+  storage.saveMark(first, { ...mark, occurrence: 1 });
+  storage.saveMark(first, { ...mark, relativePath: 'other.ts' });
+  storage.saveMark(first, { ...mark, name: 'other' });
+  const updated = storage.saveMark(first, { ...mark, state: 'review', note: 'again' });
+  expect(updated).toEqual({ ...mark, state: 'review', note: 'again', savedAt: expect.any(String) });
+  expect(storedLearningMarkSchema.safeParse(updated).success).toBe(true);
+  storage.close();
+  storage = new ProjectStorage(filename);
+  const rows = storage.marksOf(first).map(row => storedLearningMarkSchema.parse(row));
+  expect(rows).toHaveLength(4);
+  expect(rows.map(row => [row.relativePath, row.name, row.occurrence])).toEqual([
+    ['other.ts', 'start', 0], ['start.ts', 'other', 0], ['start.ts', 'start', 0], ['start.ts', 'start', 1],
+  ]);
+  expect(rows[2]).toEqual(updated);
+  expect(storage.marksOf(second)).toEqual([{ ...mark, savedAt: expect.any(String) }]);
+  expect(storage.saveMark(first, { ...mark, state: null, note: ' \n\t' })).toBeNull();
+  expect(storage.marksOf(first)).toHaveLength(3);
+  expect(storage.marksOf(second)).toHaveLength(1);
+  expect(storage.saveMark(first, { ...mark, state: null, note: 'note only' })).toMatchObject({ state: null, note: 'note only' });
+  expect(storage.saveMark(first, { ...mark, state: 'understood', note: '   ' })).toMatchObject({ state: 'understood' });
+});
+
+it('rejects unknown states in SQLite and retains damaged rows while valid rows pass the read schema', () => {
+  const filename = path.join(temp, 'app.sqlite');
+  storage = new ProjectStorage(filename);
+  const id = storage.recordOpen('/a', 'A');
+  const writer = new DatabaseSync(filename);
+  try {
+    const insert = writer.prepare('INSERT INTO learning_marks VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+    expect(() => insert.run(id, 'a.ts', 'f', 0, 'unknown', '', 'a'.repeat(64), 'now')).toThrow(/CHECK/);
+    insert.run(id, 'a.ts', 'f', 0, 'review', '', 'a'.repeat(64), 'now');
+    expect(() => insert.run(id, 'a.ts', 'f', 0, 'review', '', 'a'.repeat(64), 'now')).toThrow(/UNIQUE/);
+    insert.run(id, 'a.ts', 'bad', 0, null, 'note', 'broken', 'now');
+    const rows = storage.marksOf(id);
+    expect(rows).toHaveLength(2);
+    expect(rows.filter(row => storedLearningMarkSchema.safeParse(row).success)).toEqual([
+      { relativePath: 'a.ts', name: 'f', occurrence: 0, state: 'review', note: '', codeHash: 'a'.repeat(64), savedAt: 'now' },
+    ]);
+    expect(storage.marksOf(id)).toHaveLength(2);
   } finally { writer.close(); }
 });

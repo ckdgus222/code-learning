@@ -4710,6 +4710,220 @@ try {
       await rm(folder); await rename(`${folder}-moved`, folder);
     });
   }
+  {
+    const folder = path.join(temporary, '함수 학습 기록 프로젝트');
+    let text = 'export function begin(value) { return value; }\nexport function revisit() { return 2; }\nitems.map(item => item + 1);\n';
+    await mkdir(folder);
+    await writeFile(path.join(folder, 'start.ts'), text);
+    const editor = () => page.locator('.learning-mark');
+    const marksCard = () => page.locator('.cards [aria-label="학습 기록"]');
+    const resumeCard = () => page.getByRole('region', { name: '지난번 학습 이어서 보기', exact: true });
+    const overview = () => page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    const closeProject = async () => {
+      await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
+      await until(async () => !await page.locator('.busy').count());
+    };
+    const reopen = async () => {
+      await page.getByRole('region', { name: '최근 프로젝트', exact: true }).getByRole('button').filter({ hasText: '함수 학습 기록 프로젝트' }).click();
+      await page.getByRole('heading', { name: '함수 학습 기록 프로젝트', exact: true }).waitFor();
+      await until(async () => !await page.locator('.busy').count());
+    };
+    const choose = async name => {
+      await page.locator('.outline .symbols__item').filter({ hasText: name }).click();
+      await until(async () => await editor().getByRole('button', { name: '이해함', exact: true }).isEnabled());
+    };
+    const note = async value => {
+      await editor().getByRole('textbox', { name: '메모', exact: true }).fill(value);
+      await editor().getByRole('button', { name: '메모 저장', exact: true }).click();
+      await until(async () => await editor().getByRole('button', { name: '이해함', exact: true }).isEnabled());
+    };
+    const reload = async name => {
+      await page.getByRole('button', { name: 'start.ts', exact: true }).click();
+      await choose(name);
+    };
+    let projectId;
+    const readMarks = async () => {
+      const result = await page.evaluate(projectId => window.learning.learningMarks({ projectId }), projectId);
+      assert.equal(result.ok, true);
+      return result.value;
+    };
+    await check('Function marks persist understanding, review and notes and navigate from the overview', async () => {
+      await dialogTo(folder);
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      await page.getByRole('heading', { name: '함수 학습 기록 프로젝트', exact: true }).waitFor();
+      projectId = (await page.evaluate(() => window.learning.recentProjects())).value.find(item => item.root === folder).id;
+      await page.locator('.starts__item').filter({ hasText: 'begin' }).click();
+      await until(async () => await editor().getByRole('button', { name: '이해함', exact: true }).isEnabled());
+      assert.deepEqual(await readMarks(), [], 'Opening a function must not mark it understood');
+      await editor().getByRole('button', { name: '이해함', exact: true }).click();
+      await page.locator('.outline').getByText('✓ 이해함', { exact: true }).waitFor();
+      await note('understood note');
+      await choose('revisit');
+      await editor().getByRole('button', { name: '다시 보기', exact: true }).click();
+      await until(async () => await editor().getByRole('button', { name: '다시 보기', exact: true }).getAttribute('aria-pressed') === 'true');
+      await note('review first line\nreview second line');
+      await closeProject(); await reopen(); await overview();
+      await marksCard().getByText('이해함 1개 · 다시 보기 1개 · 메모만 0개', { exact: true }).waitFor();
+      await marksCard().getByText('review first line', { exact: true }).waitFor();
+      assert.equal(await marksCard().getByText('review second line', { exact: true }).count(), 0);
+      await marksCard().getByRole('button', { name: 'start.ts › revisit', exact: true }).click();
+      await until(async () => await page.locator('.outline .symbols__item[aria-pressed="true"]').innerText() === 'revisit');
+      await choose('begin');
+      assert.equal(await editor().getByRole('button', { name: '이해함', exact: true }).getAttribute('aria-pressed'), 'true');
+      assert.equal(await editor().getByRole('textbox', { name: '메모', exact: true }).inputValue(), 'understood note');
+    });
+    await check('Only the marked function changes its hash; note edits retain warnings and confirmation clears them', async () => {
+      text = text.replace('return 2', 'return 3');
+      await writeFile(path.join(folder, 'start.ts'), text);
+      await until(async () => await editor().getByRole('button', { name: '이해함', exact: true }).isDisabled());
+      await reload('begin');
+      assert.equal(await editor().getByRole('button', { name: '지금 코드로 확인', exact: true }).count(), 0);
+      assert.equal(await editor().getByRole('button', { name: '이해함', exact: true }).getAttribute('aria-pressed'), 'true');
+      text = text.replace('return value', 'return value + 1');
+      await writeFile(path.join(folder, 'start.ts'), text);
+      await until(async () => await editor().getByRole('button', { name: '이해함', exact: true }).isDisabled());
+      await reload('begin');
+      const warning = '이해한 뒤 이 함수 코드가 바뀌었어요. 다시 읽고 확인해 주세요.';
+      await editor().getByText(warning, { exact: false }).waitFor();
+      await page.locator('.outline li').filter({ has: page.getByRole('button', { name: 'begin', exact: true }) })
+        .getByText('! 표시한 뒤 바뀜', { exact: false }).waitFor();
+      await note('edited after code change');
+      await editor().getByText(warning, { exact: false }).waitFor();
+      await editor().getByRole('button', { name: '지금 코드로 확인', exact: true }).click();
+      await until(async () => await editor().getByRole('button', { name: '지금 코드로 확인', exact: true }).count() === 0);
+      assert.equal(await editor().getByRole('button', { name: '이해함', exact: true }).getAttribute('aria-pressed'), 'true');
+      await choose('map에 넘긴 함수');
+      await editor().getByRole('button', { name: '다시 보기', exact: true }).click();
+      await until(async () => await editor().getByRole('button', { name: '다시 보기', exact: true }).getAttribute('aria-pressed') === 'true');
+      text = '\n\n' + text;
+      await writeFile(path.join(folder, 'start.ts'), text);
+      await until(async () => await editor().getByRole('button', { name: '이해함', exact: true }).isDisabled());
+      await reload('map에 넘긴 함수');
+      assert.equal(await editor().getByRole('button', { name: '다시 보기', exact: true }).getAttribute('aria-pressed'), 'true');
+      assert.equal(await editor().getByRole('button', { name: '지금 코드로 확인', exact: true }).count(), 0);
+    });
+    await check('A pending mark save locks that function and the next note uses the returned state', async () => {
+      await choose('begin');
+      await editor().getByRole('textbox', { name: '메모', exact: true }).fill('after pending review');
+      await app.evaluate(({ ipcMain }) => {
+        const handlers = ipcMain._invokeHandlers;
+        const original = handlers.get('learning:save-mark');
+        handlers.set('learning:save-mark', async (...args) => {
+          handlers.set('learning:save-mark', original);
+          await new Promise(resolve => { globalThis.releaseMarkSave = resolve; });
+          return original(...args);
+        });
+      });
+      await editor().getByRole('button', { name: '다시 보기', exact: true }).click();
+      await until(() => app.evaluate(() => !!globalThis.releaseMarkSave));
+      for (const label of ['표시 없음', '이해함', '다시 보기', '메모 저장']) {
+        assert.equal(await editor().getByRole('button', { name: label, exact: true }).isDisabled(), true);
+      }
+      await choose('revisit');
+      await page.locator('.outline .symbols__item').filter({ hasText: 'begin' }).click();
+      assert.equal(await editor().getByRole('button', { name: '이해함', exact: true }).isDisabled(), true);
+      // Cancelling the picker leaves this session's pending save intact.
+      await app.evaluate(({ dialog }) => { dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] }); });
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      await until(async () => !await page.locator('.busy').count());
+      assert.equal(await editor().getByRole('button', { name: '이해함', exact: true }).isDisabled(), true);
+      await app.evaluate(() => globalThis.releaseMarkSave());
+      await until(async () => await editor().getByRole('button', { name: '다시 보기', exact: true }).isEnabled());
+      await note('after pending review');
+      assert.equal((await readMarks()).find(mark => mark.name === 'begin').state, 'review');
+    });
+    await check('Failed mark saves retain state, closed-project errors stay quiet, and invalid IPC input is rejected', async () => {
+      const before = await readMarks();
+      for (const code of ['IO', 'PROJECT_CLOSED']) {
+        await reload('begin');
+        await app.evaluate(({ ipcMain }, code) => {
+          const handlers = ipcMain._invokeHandlers;
+          const original = handlers.get('learning:save-mark');
+          handlers.set('learning:save-mark', async () => {
+            handlers.set('learning:save-mark', original);
+            return { ok: false, code, message: '시험용 저장 실패' };
+          });
+        }, code);
+        await editor().getByRole('button', { name: '이해함', exact: true }).click();
+        await until(async () => await editor().getByRole('button', { name: '이해함', exact: true }).isEnabled());
+        assert.equal(await page.getByText('학습 기록을 저장하지 못했어요.', { exact: true }).count(), code === 'IO' ? 1 : 0);
+        assert.equal(await editor().getByRole('button', { name: '다시 보기', exact: true }).getAttribute('aria-pressed'), 'true');
+      }
+      assert.deepEqual(await readMarks(), before);
+      const { savedAt, ...mark } = before[0];
+      const rejected = await page.evaluate(({ projectId, mark }) => Promise.all([
+        window.learning.saveLearningMark({ projectId, mark: { ...mark, note: 'x'.repeat(501) } }),
+        window.learning.saveLearningMark({ projectId, mark: { ...mark, occurrence: -1 } }),
+        window.learning.saveLearningMark({ projectId, mark: { ...mark, codeHash: 'bad' } }),
+        window.learning.saveLearningMark({ projectId, mark: { ...mark, extra: true } }),
+        window.learning.learningMarks({ projectId, extra: true }),
+      ]), { projectId, mark });
+      assert.equal(rejected.every(result => !result.ok && result.code === 'INVALID_REQUEST'), true);
+    });
+    // Hold both overview reads after taking their snapshots; newer reads use the restored handlers.
+    const holdOverviewReads = () => app.evaluate(({ ipcMain }) => {
+      globalThis.markReadReleases = [];
+      globalThis.markReadsReturned = 0;
+      for (const channel of ['learning:marks', 'learning:spot']) {
+        const original = ipcMain._invokeHandlers.get(channel);
+        ipcMain._invokeHandlers.set(channel, async (...args) => {
+          ipcMain._invokeHandlers.set(channel, original);
+          const result = await original(...args);
+          await new Promise(resolve => globalThis.markReadReleases.push(resolve));
+          globalThis.markReadsReturned++;
+          return result;
+        });
+      }
+    });
+    const releaseOverviewReads = async () => {
+      await app.evaluate(() => globalThis.markReadReleases.forEach(release => release()));
+      await until(() => app.evaluate(() => globalThis.markReadsReturned === 2));
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    };
+    await check('Overview mark and resume reads survive opening a file while their responses are pending', async () => {
+      await closeProject(); await holdOverviewReads(); await reopen();
+      await until(() => app.evaluate(() => globalThis.markReadReleases.length === 2));
+      await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+      await page.getByRole('button', { name: 'start.ts', exact: true }).click();
+      await until(async () => !await page.locator('.busy').count());
+      await releaseOverviewReads(); await overview();
+      await marksCard().waitFor(); await resumeCard().waitFor();
+    });
+    await check('Reopening the same folder discards older mark and resume responses despite identical project IDs', async () => {
+      await closeProject(); await holdOverviewReads(); await reopen();
+      await until(() => app.evaluate(() => globalThis.markReadReleases.length === 2));
+      const marks = await readMarks();
+      const { savedAt, ...mark } = marks.find(mark => mark.name === 'begin');
+      const saved = await page.evaluate(projectId => window.learning.learningSpot({ projectId }), projectId);
+      assert.equal(saved.ok, true); assert.ok(saved.value);
+      const results = await page.evaluate(({ projectId, mark, spot }) => Promise.all([
+        window.learning.saveLearningMark({ projectId, mark: { ...mark, note: 'new opening note' } }),
+        window.learning.saveLearningSpot({ projectId, spot: { ...spot, topic: { ...spot.topic, name: 'new opening topic' } } }),
+      ]), { projectId, mark, spot: saved.value.spot });
+      assert.equal(results.every(result => result.ok), true);
+      await closeProject(); await reopen(); await overview();
+      await marksCard().getByText('new opening note', { exact: true }).waitFor();
+      await resumeCard().getByText('new opening topic', { exact: true }).waitFor();
+      await releaseOverviewReads();
+      assert.equal(await marksCard().getByText('new opening note', { exact: true }).isVisible(), true);
+      assert.equal(await resumeCard().getByText('new opening topic', { exact: true }).isVisible(), true);
+    });
+    await check('Missing functions and renamed files keep their records and show an explanation', async () => {
+      const before = await readMarks();
+      text = text.replace('function revisit()', 'function renamed()');
+      await writeFile(path.join(folder, 'start.ts'), text);
+      await marksCard().getByRole('button', { name: 'start.ts › revisit', exact: true }).click();
+      await page.getByText('‘revisit’ 함수를 이 파일에서 찾지 못했어요. 이름이 바뀌었을 수 있어요.', { exact: true }).waitFor();
+      await rename(path.join(folder, 'start.ts'), path.join(folder, 'renamed.ts'));
+      await closeProject(); await reopen(); await overview();
+      await marksCard().getByText('파일을 찾지 못했어요', { exact: false }).first().waitFor();
+      assert.equal(await marksCard().getByRole('button').count(), 0);
+      assert.deepEqual(await readMarks(), before);
+      await closeProject();
+      const closed = await page.evaluate(projectId => window.learning.learningMarks({ projectId }), projectId);
+      assert.equal(closed.ok, false); assert.equal(closed.code, 'PROJECT_CLOSED');
+    });
+  }
   await check('Quitting while files are parsed waits for the workers and ends cleanly', async () => {
     // (a) Closing the window while a large folder opens.
     await dialogTo(bigMapFixture);

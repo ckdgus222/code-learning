@@ -3,7 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { mkdir, realpath, stat } from 'node:fs/promises';
 import { z } from 'zod';
-import { channels, learningSpotSchema, saveLearningSpotSchema, featureFlowsRequestSchema, featureFlowRequestSchema, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, shapesRequestSchema, changesRequestSchema, diffRequestSchema, type Result, type Evidence } from '../shared/contracts';
+import { channels, learningSpotSchema, saveLearningSpotSchema, saveLearningMarkSchema, storedLearningMarkSchema, featureFlowsRequestSchema, featureFlowRequestSchema, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, shapesRequestSchema, changesRequestSchema, diffRequestSchema, type Result, type Evidence } from '../shared/contracts';
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { ProjectSession, workersStopped } from './project-session';
@@ -231,6 +231,19 @@ app.whenReady().then(async () => {
     // A damaged or older value shows no card and stays stored.
     const parsed = learningSpotSchema.safeParse(saved.spot);
     return parsed.success ? { spot: parsed.data, savedAt: saved.savedAt } : null;
+  });
+  handle(channels.learningMarks, async argument => {
+    const { projectId } = projectRequestSchema.parse(argument);
+    current(projectId);
+    return storage.marksOf(projectId).flatMap(row => {
+      const parsed = storedLearningMarkSchema.safeParse(row);
+      return parsed.success ? [parsed.data] : [];
+    });
+  });
+  handle(channels.saveLearningMark, async argument => {
+    const { projectId, mark } = saveLearningMarkSchema.parse(argument);
+    current(projectId);
+    return storage.saveMark(projectId, mark);
   });
   handle(channels.saveLearningSpot, async argument => {
     const { projectId, spot } = saveLearningSpotSchema.parse(argument);

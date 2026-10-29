@@ -1,5 +1,7 @@
-import React from 'react';
-import type { CodeStep, CodeSymbol, Evidence, SourceView } from '../shared/contracts';
+import React, { useEffect, useMemo, useState } from 'react';
+import type { CodeStep, CodeSymbol, Evidence, LearningMark, MarkKey, SourceView } from '../shared/contracts';
+import { functionCodeHash, markKeysOf, sameMarkKey, type MarkChange } from './marks';
+import { MarkBadge, MarkEditor } from './learning-marks';
 
 // Fixed wording for what each language construct does. It says nothing about what this
 // project means by the code; that needs the AI explanation, which is not connected yet.
@@ -52,9 +54,27 @@ interface FlowProps {
   onOpenCode(): void;
   /** What the chosen function calls and where it is called from (calls.tsx), shown in its summary. */
   calls: React.ReactNode;
+  /** The project's learning records (plan v2.2 9.3), null until they are read; saving one locks it until main answers. */
+  marks: LearningMark[] | null;
+  pendingMarks: MarkKey[];
+  onSaveMark(key: MarkKey, change: MarkChange, currentHash: string): void;
 }
 
-export function Flow({ source, symbol, step, evidence, locked, onSymbol, onStep, onOpenCode, calls }: FlowProps) {
+export function Flow({ source, symbol, step, evidence, locked, onSymbol, onStep, onOpenCode, calls, marks, pendingMarks, onSaveMark }: FlowProps) {
+  const [hashes, setHashes] = useState<{ source: SourceView; values: Map<string, string> } | null>(null);
+  const keys = useMemo(() => source ? markKeysOf(source) : new Map<string, MarkKey>(), [source]);
+  const markOf = (item: CodeSymbol) => marks?.find(mark => sameMarkKey(mark, keys.get(item.id)!));
+  useEffect(() => {
+    if (!source) return;
+    let active = true;
+    // Only saved functions and the selected summary need a fingerprint.
+    const needed = source.analysis.symbols.filter(item => item.id === symbol?.id || markOf(item));
+    void Promise.all(needed.map(async item => [item.id, await functionCodeHash(source, item)] as const))
+      .then(values => { if (active) setHashes({ source, values: new Map(values) }); })
+      .catch(() => { if (active) setHashes(null); });
+    return () => { active = false; };
+  }, [source, symbol?.id, marks]);
+  const hashOf = (item: CodeSymbol) => hashes?.source === source ? hashes.values.get(item.id) : undefined;
   if (!source) {
     return <div className="page page--empty">
       <h2 className="page__title">함수 안 순서</h2>
@@ -79,6 +99,7 @@ export function Flow({ source, symbol, step, evidence, locked, onSymbol, onStep,
         <ul className="symbols">{source.analysis.symbols.map(item => <li key={item.id}>
           <button className="symbols__item" aria-pressed={symbol?.id === item.id} disabled={locked}
             onClick={() => onSymbol(item)}>{item.name}</button>
+          <MarkBadge mark={markOf(item)} currentHash={hashOf(item)} />
           {symbol?.id === item.id && <ol className="steps" aria-label={`${item.name} 단계`}>
             {item.steps.map((next, number) => <li key={next.id} style={{ paddingLeft: next.depth * 14 }}>
               <span className="steps__no" aria-hidden="true">{number + 1}</span>
@@ -90,7 +111,10 @@ export function Flow({ source, symbol, step, evidence, locked, onSymbol, onStep,
       </nav>
       <section className="flow__main" aria-label="현재 위치">
         {!symbol ? <p className="hint">따라갈 함수를 왼쪽에서 골라 주세요.</p>
-          : !step ? <Summary symbol={symbol} source={source} locked={locked} onStep={onStep} calls={calls} />
+          : !step ? <Summary symbol={symbol} source={source} locked={locked} onStep={onStep} calls={calls}
+            learningMark={<MarkEditor key={`${source.fileId}:${symbol.id}`} mark={markOf(symbol)} currentHash={hashOf(symbol)}
+              locked={locked || marks === null || pendingMarks.some(key => sameMarkKey(key, keys.get(symbol.id)!))}
+              onSave={change => { const hash = hashOf(symbol); if (hash) onSaveMark(keys.get(symbol.id)!, change, hash); }} />} />
           : <article className="flow-card" aria-label="현재 단계">
             <div className="flow-card__top">
               <span className="eyebrow">{index + 1} / {steps.length} 단계 · {symbol.name}</span>
@@ -126,8 +150,8 @@ export function Flow({ source, symbol, step, evidence, locked, onSymbol, onStep,
   </div>;
 }
 
-function Summary({ symbol, source, locked, onStep, calls }: {
-  symbol: CodeSymbol; source: SourceView; locked: boolean; onStep(step: CodeStep): void; calls: React.ReactNode;
+function Summary({ symbol, source, locked, onStep, calls, learningMark }: {
+  symbol: CodeSymbol; source: SourceView; locked: boolean; onStep(step: CodeStep): void; calls: React.ReactNode; learningMark: React.ReactNode;
 }) {
   // Where the code returns or throws. Whether the function really ends there is not checked.
   const exits = symbol.steps.filter(item => exitKinds.has(item.kind));
@@ -153,6 +177,7 @@ function Summary({ symbol, source, locked, onStep, calls }: {
       <dt>하는 일</dt>
       <dd><span className="tag tag--unknown">확인하지 못함</span>AI 설명 연결 전이라 이 함수가 왜 있는지는 아직 확인하지 못했어요.</dd>
     </dl>
+    {learningMark}
     <p className="hint">코드에 적힌 순서대로 한 단계씩 보여줘요. 실제로는 조건에 따라 건너뛰거나 되풀이하는 단계가 있어요.</p>
     <div className="flow-nav">
       <button className="btn btn--primary" disabled={locked || symbol.steps.length === 0} onClick={() => onStep(symbol.steps[0])}>다음 단계</button>

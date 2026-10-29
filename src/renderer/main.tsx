@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { FlowNode, CallSite, ValueSite, CodeSide, CodeSymbol, Evidence, FileChange, FunctionCalls, GitHistory, MapExport, MapFunction, MapImport, ProjectView, SourceView,
-  StartCandidate, LearningSpot, RecentProject, SavedSpot } from '../shared/contracts';
+  StartCandidate, LearningMark, MarkKey, LearningSpot, RecentProject, SavedSpot } from '../shared/contracts';
 import { showsFiles, useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
 import { Icon } from './icons';
@@ -12,6 +12,8 @@ import { fileUses } from './screen-groups';
 import { aiFunctionSummaries, functionDoes, importersOf } from './guide-facts';
 import { FileExplanationCard, rememberFileExplanation, type FileExplanationEntry, type FileExplanationState } from './file-explanation';
 import { Flow } from './flow';
+import { markKeysOf, sameMarkKey, nextMark, type MarkChange } from './marks';
+import { LearningMarksCard } from './learning-marks';
 import { ProjectMapView, type MapEntry } from './project-map';
 import { FeatureChooser, FeatureList, FlowLimits, FlowPicture, FlowWalk, hasFlowCode, RoutesStatus, siteOf, useFeatureFlows, type FlowStart } from './feature-flow';
 import { codeNameOf } from '../core/analysis/flow-story';
@@ -104,6 +106,10 @@ function App() {
   const overviewJob = useRef<{ id: string | null; starting: boolean; queued: LearningEvent[] }>({ id: null, starting: false, queued: [] });
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
   const [resume, setResume] = useState<{ projectId: string; saved: SavedSpot } | null>(null);
+  const openedAt = useRef(0);
+  const [marks, setMarks] = useState<{ projectId: string; list: LearningMark[] } | null>(null);
+  const [pendingMarks, setPendingMarks] = useState<MarkKey[]>([]);
+  const savingMarks = useRef<MarkKey[]>([]);
   const [topic, setTopic] = useState<Topic | null>(null);
   // The places looked at under the topic (the last 20).
   const [places, setPlaces] = useState<Place[]>([]);
@@ -296,16 +302,71 @@ function App() {
     if (current !== request.current) return;
     setBusy(false);
     if (!result.ok) {
+      openedAt.current++;
       setError(result.message); setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap(); forgetCalls(); forgetChanges(); forgetOverview(); return;
     }
     if (!result.value) return;
+    // Cancelling the folder picker keeps this session, including its pending reads and saves.
+    const opening = ++openedAt.current;
     // Reopening the same folder keeps the project ID but gives every file a new ID, so the map goes too.
     forgetMap(); forgetCalls(); forgetChanges(); forgetOverview();
     setExpandedFolders(new Set());
     setProject(result.value); setSource(null); setEvidence(null); setStale(false); setOverviewStale(false); setWatchError(false); setSearch(''); selectSymbol(null);
-    const saved = await window.learning.learningSpot({ projectId: result.value.id });
-    if (current !== request.current) return;
-    if (saved.ok && saved.value) setResume({ projectId: result.value.id, saved: saved.value });
+    const id = result.value.id;
+    await Promise.all([
+      window.learning.learningSpot({ projectId: id }).then(saved => {
+        if (opening !== openedAt.current) return;
+        if (saved.ok && saved.value) setResume({ projectId: id, saved: saved.value });
+      }),
+      window.learning.learningMarks({ projectId: id }).then(saved => {
+        if (opening !== openedAt.current) return;
+        if (saved.ok) setMarks({ projectId: id, list: saved.value });
+        else if (saved.code !== 'PROJECT_CLOSED') setNotice('학습 기록을 불러오지 못했어요.');
+      }),
+    ]);
+  }
+
+  async function saveMark(key: MarkKey, change: MarkChange, currentHash: string) {
+    if (!project || marks?.projectId !== project.id || busy || stale || savingMarks.current.some(item => sameMarkKey(item, key))) return;
+    const opening = openedAt.current;
+    const mark = nextMark(marks.list.find(item => sameMarkKey(item, key)), change, currentHash, key);
+    savingMarks.current = [...savingMarks.current, key];
+    setPendingMarks(savingMarks.current);
+    try {
+      const result = await window.learning.saveLearningMark({ projectId: project.id, mark });
+      if (opening !== openedAt.current) return;
+      if (!result.ok) {
+        if (result.code !== 'PROJECT_CLOSED') setNotice('학습 기록을 저장하지 못했어요.');
+        return;
+      }
+      setMarks(previous => {
+        if (previous?.projectId !== project.id) return previous;
+        const list = previous.list.filter(item => !sameMarkKey(item, key));
+        if (result.value) list.push(result.value);
+        return { projectId: project.id, list };
+      });
+    } catch {
+      if (opening === openedAt.current) setNotice('학습 기록을 저장하지 못했어요.');
+    } finally {
+      if (opening === openedAt.current) {
+        savingMarks.current = savingMarks.current.filter(item => !sameMarkKey(item, key));
+        setPendingMarks(savingMarks.current);
+      }
+    }
+  }
+
+  async function openMark(mark: LearningMark) {
+    if (!project || busy) return;
+    const file = project.files.find(item => item.relativePath === mark.relativePath);
+    if (!file) return;
+    setView('function');
+    const atRevision = revision.current;
+    const opened = await readFile(file.id);
+    if (!opened || revision.current !== atRevision) return;
+    const keys = markKeysOf(opened);
+    const found = opened.analysis.symbols.find(item => sameMarkKey(mark, keys.get(item.id)!));
+    if (!found) { setNotice(`‘${mark.name}’ 함수를 이 파일에서 찾지 못했어요. 이름이 바뀌었을 수 있어요.`); return; }
+    selectSymbol(found.id); setReaderEvidence(found.evidence);
   }
 
   /**
@@ -488,6 +549,7 @@ function App() {
     return null;
   }
   function forgetOverview() {
+    setMarks(null); savingMarks.current = []; setPendingMarks([]);
     setResume(null);
     fileExplanationRequest.current++;
     fileExplanationJob.current = { id: null, starting: false, queued: [], revision: revision.current };
@@ -872,6 +934,7 @@ function App() {
   }
 
   async function cancel() {
+    openedAt.current++;
     const current = ++request.current;
     setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap(); forgetCalls(); forgetChanges(); forgetOverview();
     setBusy(true); setError(''); setNotice('');
@@ -978,6 +1041,8 @@ function App() {
           <div className="cards">
             {resume?.projectId === project.id && !topic && <ResumeCard saved={resume.saved} files={project.files} locked={busy}
               onResume={() => void resumeLearning()} />}
+            {marks?.projectId === project.id && <LearningMarksCard marks={marks.list} files={project.files} locked={busy}
+              onOpen={mark => void openMark(mark)} />}
             {view === 'overview' && <section className="card card--wide" aria-labelledby="overview-intro">
               <h3 id="overview-intro">이 프로젝트는 무엇을 하나요?</h3>
               {intro ? <>
@@ -1103,7 +1168,8 @@ function App() {
         </div>}
 
         {view === 'function' && functionExplanation && <p className="function-explanation" data-testid="function-chunk-summary">{functionExplanation}</p>}
-        {view === 'function' && <Flow source={source} symbol={symbol} step={step} evidence={evidence} locked={busy || stale}
+        {view === 'function' && <Flow marks={marks?.projectId === project.id ? marks.list : null} pendingMarks={pendingMarks}
+          onSaveMark={(key, change, hash) => void saveMark(key, change, hash)} source={source} symbol={symbol} step={step} evidence={evidence} locked={busy || stale}
           onSymbol={item => { selectSymbol(item.id); void showEvidence(item.evidence, null); }}
           onStep={next => {
             if (next) void showEvidence(next.evidence, next.id);

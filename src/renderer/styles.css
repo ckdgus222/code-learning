@@ -342,6 +342,13 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .flow-nav__steps { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .flow-nav__steps .btn { max-width: 100%; }
 
+/* Function learning records */
+.learning-mark { display: grid; gap: 10px; min-width: 0; }
+.learning-mark .flow-nav { display: flex; flex-wrap: wrap; }
+.learning-mark [aria-pressed="true"] { background: var(--accent-soft); outline: 2px solid var(--accent); }
+.learning-mark textarea { width: 100%; min-height: 80px; resize: vertical; padding: 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink); font: inherit; }
+.learning-mark__badge { display: block; padding: 0 10px 6px; }
+
 /* Explanation panel */
 .panel { grid-area: panel; display: flex; flex-direction: column; min-height: 0; overflow: auto; border-left: 1px solid var(--line); background: var(--side); }
 .panel > * { flex-shrink: 0; min-width: 0; }

@@ -10,6 +10,16 @@ const line = z.number().int().min(1).max(10_000_000);
 const relativePath = z.string().min(1).max(1024);
 const text = z.string().min(1).max(1024);
 const fileHash = z.string().regex(/^[a-f0-9]{64}$/);
+/** A function's file, normalized analyzer name and zero-based occurrence among functions of that name. */
+export const markKeySchema = z.object({ relativePath, name: text, occurrence: z.number().int().min(0).max(100_000) }).strict();
+export type MarkKey = z.infer<typeof markKeySchema>;
+export const LEARNING_NOTE_LIMIT = 500;
+export const learningMarkSchema = markKeySchema.extend({
+  state: z.enum(['understood', 'review']).nullable(), note: z.string().max(LEARNING_NOTE_LIMIT), codeHash: fileHash,
+}).strict();
+export type LearningMark = z.infer<typeof learningMarkSchema> & { savedAt: string };
+export const storedLearningMarkSchema = learningMarkSchema.extend({ savedAt: z.string().min(1).max(64) }).strict();
+export const saveLearningMarkSchema = z.object({ projectId: idSchema, mark: learningMarkSchema }).strict();
 export const learningSpotSchema = z.object({
   version: z.literal(1),
   topic: z.object({
@@ -487,6 +497,8 @@ export interface LearningApi {
   recentProjects(): Promise<Result<RecentProject[]>>;
   openRecent(input: z.infer<typeof projectRequestSchema>): Promise<Result<ProjectView | null>>;
   learningSpot(input: z.infer<typeof projectRequestSchema>): Promise<Result<SavedSpot | null>>;
+  learningMarks(input: z.infer<typeof projectRequestSchema>): Promise<Result<LearningMark[]>>;
+  saveLearningMark(input: z.infer<typeof saveLearningMarkSchema>): Promise<Result<LearningMark | null>>;
   saveLearningSpot(input: z.infer<typeof saveLearningSpotSchema>): Promise<Result<null>>;
   readSource(input: z.infer<typeof sourceRequestSchema>): Promise<Result<SourceView>>;
   readEvidence(input: z.infer<typeof evidenceRequestSchema>): Promise<Result<{ source: SourceView; evidence: Evidence }>>;
@@ -520,6 +532,7 @@ export interface LearningApi {
 export const channels = {
   recentProjects: 'learning:recent-projects', openRecent: 'learning:open-recent',
   learningSpot: 'learning:spot', saveLearningSpot: 'learning:save-spot',
+  learningMarks: 'learning:marks', saveLearningMark: 'learning:save-mark',
   open: 'learning:open', read: 'learning:read', evidence: 'learning:evidence',
   cancel: 'learning:cancel', event: 'learning:project-event', routes: 'learning:routes', cancelRoutes: 'learning:cancel-routes', featureFlows: 'learning:feature-flows', cancelFeatureFlows: 'learning:cancel-feature-flows', featureFlow: 'learning:feature-flow', cancelFeatureFlow: 'learning:cancel-feature-flow', map: 'learning:map', cancelMap: 'learning:cancel-map',
   calls: 'learning:calls', cancelCalls: 'learning:cancel-calls', shapes: 'learning:shapes', cancelShapes: 'learning:cancel-shapes',
