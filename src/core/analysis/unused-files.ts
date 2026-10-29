@@ -6,7 +6,7 @@ import { candidatesFor, codeFile, isRelative } from './project-map';
 import { isTestFile } from './routes';
 import { isNextConfig } from './next-routes';
 
-export type { UnusedExcludeKind, UnusedFiles } from '../../shared/contracts';
+export type { UnusedExcludeKind, UnusedFiles, UnusedExports } from '../../shared/contracts';
 export interface ScriptFiles {
   files: Set<string>;
   failed: { relativePath: string; reason: string }[];
@@ -29,7 +29,7 @@ const failedNames = (failed: ScriptFiles['failed']) => failed.slice(0, 5).map(fi
   + (failed.length > 5 ? ` 외 ${failed.length - 5}개` : '');
 
 export function unusedFiles(map: Omit<ProjectMap, 'unused'>, scripts: ScriptFiles): UnusedFiles {
-  const result: UnusedFiles = { candidates: [], unsure: [], excluded: [], notes: [] };
+  const result: UnusedFiles = { candidates: [], unsure: [], excluded: [], notes: [], exports: { candidates: [], unsure: [], notes: [] } };
   const files = map.files.filter(file => file.checked !== 'not-code' && codeFile.test(file.relativePath))
     .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   const known = new Map(files.map(file => [file.relativePath, { id: file.id, relativePath: file.relativePath, size: 0 }]));
@@ -48,6 +48,24 @@ export function unusedFiles(map: Omit<ProjectMap, 'unused'>, scripts: ScriptFile
     const folder = path.posix.dirname(file.relativePath);
     return folder === '.' ? '' : `${folder}/`;
   }))];
+  const uncertainty = (name: string) => {
+    const normalized = aliasPath(name);
+    if (unresolved.has(name)) return '대상을 확정하지 못한 import가 이 파일을 가리킬 수 있어요.';
+    if (dynamic.has(name)) return '동적 import(또는 require)로 쓰일 수 있어요.';
+    if (aliases.some(tail => normalized === tail || normalized.endsWith(`/${tail}`))) return '경로 별칭으로 쓰일 수 있어요.';
+    return null;
+  };
+  const exportsByFile = new Map<string, ProjectMap['exports']>();
+  for (const item of map.exports) {
+    if (!exportsByFile.has(item.fileId)) exportsByFile.set(item.fileId, []);
+    exportsByFile.get(item.fileId)!.push(item);
+  }
+  const incoming = new Map<string, ProjectMap['edges']>();
+  for (const edge of map.edges) {
+    if (edge.fromFileId === edge.toFileId) continue;
+    if (!incoming.has(edge.toFileId)) incoming.set(edge.toFileId, []);
+    incoming.get(edge.toFileId)!.push(edge);
+  }
   const counts = new Map<UnusedExcludeKind, number>();
   for (const file of files) {
     const name = file.relativePath;
@@ -58,7 +76,7 @@ export function unusedFiles(map: Omit<ProjectMap, 'unused'>, scripts: ScriptFile
       return local.startsWith('pages/') || (local.startsWith('app/') && nextAppFile.test(basename))
         || /^(?:middleware|instrumentation)\.[^.]+$/.test(local);
     });
-    const kind: UnusedExcludeKind | null = file.start ? 'start'
+    const kind: UnusedExcludeKind | null = file.entry ? 'start'
       // Playwright projects often name tests `*.e2e.ts` or keep them in an `e2e/` folder (dog-walk does both).
       : isTestFile(name) || /[.-](?:spec|test|e2e)\.[^/]+$/.test(name) || /(?:^|\/)e2e\//.test(name) ? 'test'
       : isConfigFile(name) ? 'config'
@@ -67,18 +85,31 @@ export function unusedFiles(map: Omit<ProjectMap, 'unused'>, scripts: ScriptFile
       : scripts.files.has(name) ? 'script'
       : scripts.references.has(name) ? 'reference' : null;
     if (kind) { counts.set(kind, (counts.get(kind) ?? 0) + 1); continue; }
-    if (used.has(file.id)) continue;
-    const normalized = aliasPath(name);
-    const reason = unresolved.has(name) ? '대상을 확정하지 못한 import가 이 파일을 가리킬 수 있어요.'
-      : dynamic.has(name) ? '동적 import(또는 require)로 쓰일 수 있어요.'
-      : aliases.some(tail => normalized === tail || normalized.endsWith(`/${tail}`)) ? '경로 별칭으로 쓰일 수 있어요.' : null;
+    const reason = uncertainty(name);
     const entry = { fileId: file.id, relativePath: name };
-    if (reason) { result.unsure.push({ ...entry, reason }); continue; }
-    result.candidates.push(entry);
+    if (!used.has(file.id) && !reason) { result.candidates.push(entry); continue; }
+    if (!used.has(file.id) && reason) result.unsure.push({ ...entry, reason });
+    const exports = exportsByFile.get(file.id) ?? [];
+    if (!exports.length) continue;
+    const edges = incoming.get(file.id) ?? [];
+    const exportReason = reason ?? (edges.some(edge => edge.names === 'all')
+      ? '모두 가져오는 import(* as, export *)가 있어 어느 이름을 쓰는지 정할 수 없어요.' : null);
+    if (exportReason) { result.exports.unsure.push({ ...entry, reason: exportReason, count: exports.length }); continue; }
+    const names = new Set(edges.flatMap(edge => edge.names === 'all' ? [] : edge.names));
+    result.exports.candidates.push(...exports.filter(item => !names.has(item.name))
+      .sort((a, b) => a.startUtf16 - b.startUtf16).map(item => ({ ...item, relativePath: name })));
   }
   result.excluded = excludeKinds.filter(kind => counts.has(kind)).map(kind => ({ kind, count: counts.get(kind)! }));
   const unread = files.filter(file => ['partial', 'failed', 'skipped'].includes(file.checked)).length;
-  if (unread) result.notes.push(`끝까지 읽지 못한 파일 ${unread}개가 가져다 쓰는 파일이 후보에 섞였을 수 있어요.`);
+  if (unread) {
+    const note = `끝까지 읽지 못한 파일 ${unread}개가 가져다 쓰는 파일이 후보에 섞였을 수 있어요.`;
+    result.notes.push(note);
+    result.exports.notes.push(note);
+  }
+  if (result.exports.candidates.length) result.exports.notes.push(
+    "시험 파일이 가져다 쓰는 export도 '쓰임'으로 봐요.",
+    'export 이름만 비교했어요. 객체 안 속성이나 클래스 메서드가 쓰이는지는 보지 않아요.',
+  );
   const computed = map.unresolved.filter(item => item.reason === 'not-static' && (!item.specifier || !isRelative(item.specifier))).length;
   if (computed) result.notes.push(`코드로 정하는 가져오기가 ${computed}곳 있어 후보가 실제로 쓰일 수 있어요.`);
   if (scripts.failed.length) {

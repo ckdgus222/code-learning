@@ -37,7 +37,7 @@ describe('folded AI consent disclosures', () => {
 
   it.each([false, true])('keeps the full overview disclosure and requires consent when ready=%s', ready => {
     const project: ProjectView = { id: 'project', name: 'test', files: [], excluded: {}, warnings: [],
-      overview: { intro: null, candidates: [], checkedFiles: 0, limited: false, notes: [] } };
+      overview: { entryFileIds: [], intro: null, candidates: [], checkedFiles: 0, limited: false, notes: [] } };
     const html = renderToStaticMarkup(React.createElement(OverviewAi, {
       project, state: null, stale: false, locked: false, readiness: { ready, reason: 'test' }, checking: false,
       revealAnchor: null, topicName: null,

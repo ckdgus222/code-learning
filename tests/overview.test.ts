@@ -185,3 +185,32 @@ describe('nested entry files and exported class methods', () => {
     expect((await picked()).map(([, name]) => name)).toEqual(['Controller.login', 'Default.run', 'Abstract.run', 'Keywords.private', 'Keywords.protected', 'Keywords.get', 'Keywords.set']);
   });
 });
+
+describe('entry files independent of learning candidates', () => {
+  it('keeps every main, bin and entry-name ID before the eight-candidate limit', async () => {
+    await put('package.json', JSON.stringify({ main: 'boot.ts', bin: { run: 'cli.ts' } }));
+    await put('boot.ts', Array.from({ length: 8 }, (_, i) => `export function f${i}() {}`).join('\n'));
+    await put('cli.ts', 'console.log("cli");');
+    await put('src/index.ts', '');
+    await put('helper.ts', 'export function helper() {}');
+    const project = await scanProject(root, randomUUID());
+    const result = await buildOverview(root, project);
+    const pathOf = (id: string) => project.files.find(file => file.id === id)!.relativePath;
+    expect(result.candidates).toHaveLength(8);
+    expect(result.candidates.every(item => item.relativePath === 'boot.ts')).toBe(true);
+    expect(result.entryFileIds.map(pathOf)).toEqual(['boot.ts', 'cli.ts', 'src/index.ts']);
+  });
+
+  it('keeps entry-name files beyond the read limit but excludes exported-only candidates', async () => {
+    for (let i = 0; i < 22; i++) await put(`p${i}/index.ts`, '');
+    await put('helper.ts', 'export function helper() {}');
+    const result = await overview();
+    expect(result.entryFileIds).toHaveLength(22);
+    await rm(root, { recursive: true });
+    await mkdir(root);
+    await put('helper.ts', 'export function helper() {}');
+    const exportedOnly = await overview();
+    expect(exportedOnly.candidates[0].reason).toBe('exported');
+    expect(exportedOnly.entryFileIds).toEqual([]);
+  });
+});

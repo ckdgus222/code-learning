@@ -113,6 +113,7 @@ export interface StartCandidate {
 export interface ProjectOverview {
   intro: ProjectIntro | null;
   candidates: StartCandidate[];
+  entryFileIds: string[];
   /** TS/JS files actually read for candidates; `limited` when more existed than were checked. */
   checkedFiles: number;
   limited: boolean;
@@ -184,6 +185,7 @@ export interface MapFile {
   /** The folder the file sits in ('' for the project root); the design view groups by it. */
   folder: string;
   start: boolean;
+  entry: boolean;
   /** How far this file was examined: full, partly, not readable, skipped by the map's limits, or not code. */
   checked: 'full' | 'partial' | 'failed' | 'skipped' | 'not-code';
   reason: string | null;
@@ -202,7 +204,19 @@ export interface MapFunction {
 }
 export type MapUnresolvedReason = 'not-found' | 'ambiguous' | 'outside' | 'not-static' | 'syntax' | 'unavailable' | 'unreadable';
 export type UnusedExcludeKind = 'start' | 'test' | 'config' | 'types' | 'framework' | 'script' | 'reference';
+export interface MapExport extends Pick<MapFunction, 'fileId' | 'fileHash' | 'startUtf16' | 'endUtf16' | 'startLine' | 'endLine'> {
+  name: string;
+  displayName: string;
+  kind: 'function' | 'class' | 'value';
+  usedInFile: boolean;
+}
+export interface UnusedExports {
+  candidates: (MapExport & { relativePath: string })[];
+  unsure: { fileId: string; relativePath: string; reason: string; count: number }[];
+  notes: string[];
+}
 export interface UnusedFiles {
+  exports: UnusedExports;
   candidates: { fileId: string; relativePath: string }[];
   unsure: { fileId: string; relativePath: string; reason: string }[];
   excluded: { kind: UnusedExcludeKind; count: number }[];
@@ -212,12 +226,13 @@ export interface ProjectMap {
   projectId: string;
   files: MapFile[];
   /** Static imports that lead to exactly one file. An arrow means "uses", not an execution order. */
-  edges: (MapImport & { toFileId: string })[];
+  edges: (MapImport & { toFileId: string; names: string[] | 'all' })[];
   unresolved: (MapImport & { reason: MapUnresolvedReason; candidates: string[] })[];
   /** Non-relative specifiers: a package and a path alias cannot be told apart from the import alone. */
   external: MapImport[];
   /** Functions over a complexity limit in the files the map read, in path and then source order. */
   complexFunctions: MapFunction[];
+  exports: MapExport[];
   unused: UnusedFiles;
   limited: boolean;
   notes: string[];

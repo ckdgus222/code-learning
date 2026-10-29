@@ -211,7 +211,7 @@ export class ProjectSession {
     if (this.closed || !this.project) throw new AppError('PROJECT_CLOSED', '프로젝트가 닫혔습니다. 다시 열어 주세요.');
     if (this.sideRuns.map) throw new AppError('INVALID_REQUEST', '이미 지도를 만드는 중입니다.');
     const { files, overview } = this.project;
-    return await this.runSide('map', stop => ({ map: { files, starts: overview.candidates.map(candidate => candidate.fileId), stop } }), timeoutMs) as ProjectMap;
+    return await this.runSide('map', stop => ({ map: { files, starts: overview.candidates.map(candidate => candidate.fileId), entries: overview.entryFileIds, stop } }), timeoutMs) as ProjectMap;
   }
 
   /** Finds what one function calls and where it is called from. Asking for another function replaces the search. */

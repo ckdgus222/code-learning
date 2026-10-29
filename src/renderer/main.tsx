@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { FlowNode, CallSite, ValueSite, CodeSide, CodeSymbol, Evidence, FileChange, FunctionCalls, GitHistory, MapFunction, MapImport, ProjectView, SourceView,
+import type { FlowNode, CallSite, ValueSite, CodeSide, CodeSymbol, Evidence, FileChange, FunctionCalls, GitHistory, MapExport, MapFunction, MapImport, ProjectView, SourceView,
   StartCandidate } from '../shared/contracts';
 import { showsFiles, useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
@@ -580,13 +580,23 @@ function App() {
       : `이 import(${item.startLine}행)는 코드 분석 범위 밖이라 강조하지 못했어요.`);
   }
 
-  // Like showImport: the function is chosen only while the file has the hash it had for the map.
-  async function showFunction(item: MapFunction) {
+  // Like showImport: a map range is chosen only while the file has the hash it had for the map.
+  async function showFunction(item: MapFunction | MapExport) {
     if (busy) return;
     setView('code');
     const atRevision = revision.current;
     const opened = await readFile(item.fileId);
     if (!opened || revision.current !== atRevision) return;
+    if ('kind' in item) {
+      if (opened.fileId !== item.fileId || opened.hash !== item.fileHash) {
+        setNotice('지도를 만든 뒤 이 파일이 바뀌어 export 위치를 강조하지 않았어요. 지도를 다시 만들어 주세요.');
+        return;
+      }
+      selectSymbol(null);
+      setReaderEvidence({ id: crypto.randomUUID(), projectId: opened.projectId, fileId: item.fileId, fileHash: item.fileHash,
+        startUtf16: item.startUtf16, endUtf16: item.endUtf16, startLine: item.startLine, endLine: item.endLine });
+      return;
+    }
     const found = matchFunction(opened, item);
     if (found.status === 'found') { selectSymbol(found.symbol.id); setReaderEvidence(found.symbol.evidence); }
     else setNotice(found.status === 'changed' ? '지도를 만든 뒤 이 파일이 바뀌어 함수를 고르지 않았어요. 지도를 다시 만들어 주세요.'

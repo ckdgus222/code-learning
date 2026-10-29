@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { scanProject } from '../src/core/project/files';
 import { buildProjectMap, MAP_LIMITS } from '../src/core/analysis/project-map';
+import { buildOverview } from '../src/core/analysis/overview';
 import { analyzeSource } from '../src/core/analysis/syntax';
 import type { ProjectFiles, ProjectMap } from '../src/shared/contracts';
 import { complexitySource, legacySource } from './complexity-fixture';
@@ -288,7 +289,7 @@ describe('unused files in the project map', () => {
     const project = await scanProject(root, randomUUID());
     const files = project.files.filter(file => file.relativePath.startsWith('unused/'));
     const start = files.find(file => file.relativePath === 'unused/from.ts')!.id;
-    const result = await buildProjectMap(root, project.id, files, [start]);
+    const result = await buildProjectMap(root, project.id, files, [start], MAP_LIMITS, undefined, [start]);
     expect(result.unused.candidates).toEqual([{ fileId: files.find(file => file.relativePath === 'unused/orphan.ts')!.id, relativePath: 'unused/orphan.ts' }]);
     expect(result.unused.unsure.map(file => [file.relativePath, file.reason])).toEqual([
       ['unused/lazy.ts', '동적 import(또는 require)로 쓰일 수 있어요.'],
@@ -309,4 +310,146 @@ describe('unused files in the project map', () => {
     expect(result.unused.candidates.map(file => file.relativePath)).toEqual(['budget/run.ts']);
     expect(result.unused.notes).toContain(`package.json 1개를 읽지 못해 실행 명령에 적힌 파일을 확인하지 못했어요: budget/package.json(${remaining ? '파일이 초기 읽기 크기 제한을 넘습니다.' : '지도의 읽기 한도에 닿아 읽지 않았어요.'})`);
   });
+});
+
+describe('imported names and declared value exports', () => {
+  it.each<[string, string[] | 'all']>([
+    ["import a from './target';", ['default']],
+    ["import { b, c as d } from './target';", ['b', 'c']],
+    ["import a, { b } from './target';", ['default', 'b']],
+    ["import * as ns from './target';", 'all'],
+    ["export * from './target';", 'all'],
+    ["export * as ns from './target';", 'all'],
+    ["export { x, y as z } from './target';", ['x', 'y']],
+    ["import type { Model } from './target';", ['Model']],
+    ["import { type helper, value } from './target';", ['helper', 'value']],
+    ["import type Model from './target';", ['default']],
+    ["import type * as ns from './target';", 'all'],
+    ["export type { Model } from './target';", ['Model']],
+    ["export { type Model, helper as h } from './target';", ['Model', 'helper']],
+    ["import './target';", []],
+  ])('counts names from %s', async (text, names) => {
+    await put('names/from.ts', text);
+    await put('names/target.ts', 'export const value = 1;');
+    const project = await scanProject(root, randomUUID());
+    const files = project.files.filter(file => file.relativePath.startsWith('names/'));
+    const result = await buildProjectMap(root, project.id, files, []);
+    expect(result.edges).toHaveLength(1);
+    expect(result.edges[0].names).toEqual(names);
+    expect(result.exports.map(item => item.name)).toEqual(['value']);
+  });
+
+  it('lists only top-level value declarations, including destructuring and local export aliases', async () => {
+    const text = [
+      '// 📦 declarations keep UTF-16 ranges',
+      'export function helper() {}',
+      'export class Model {}',
+      'export const a = 1, b = 2;',
+      'export let { key: renamed, nested: { inner }, short = 1, ...rest } = source;',
+      'export var [first, , last = 2, ...tail] = list;',
+      'export enum Status { Ready }',
+      'const local = 1; export { local as publicName };',
+      'const called = 2; export { called }; console.log(called);',
+      'export type Shape = string; export interface Interface {}',
+      'export declare const declared: number; export declare function ambient(): void;',
+      'declare class AmbientClass {} export { AmbientClass };',
+      'type Private = number; interface PrivateInterface {} export { Private, PrivateInterface };',
+      "import imported from './other'; export { imported };",
+      'export type { local }; export { type called };',
+      'function outer() { const hidden = 1; }',
+      'export function recursive() { recursive(); }',
+    ].join('\n');
+    await put('exports/values.ts', text);
+    const project = await scanProject(root, randomUUID());
+    const files = project.files.filter(file => file.relativePath === 'exports/values.ts');
+    const result = await buildProjectMap(root, project.id, files, []);
+    expect(result.files[0].checked).toBe('full');
+    expect(result.exports.map(item => [item.name, item.kind, item.usedInFile])).toEqual([
+      ['helper', 'function', false], ['Model', 'class', false], ['a', 'value', false], ['b', 'value', false],
+      ['renamed', 'value', false], ['inner', 'value', false], ['short', 'value', false], ['rest', 'value', false],
+      ['first', 'value', false], ['last', 'value', false], ['tail', 'value', false], ['Status', 'value', false],
+      ['publicName', 'value', false], ['called', 'value', true], ['recursive', 'function', true],
+    ]);
+    for (const item of result.exports) {
+      expect(item.fileId).toBe(files[0].id);
+      expect(item.fileHash).toBe(createHash('sha256').update(text).digest('hex'));
+      expect(item.displayName).toBe(item.name);
+      const snippet = text.slice(item.startUtf16, item.endUtf16);
+      expect(snippet).not.toMatch(/^export /);
+      expect(text.slice(0, item.startUtf16).split('\n')).toHaveLength(item.startLine);
+      expect(text.slice(0, item.endUtf16).split('\n')).toHaveLength(item.endLine);
+    }
+    expect(text.slice(result.exports[2].startUtf16, result.exports[2].endUtf16)).toBe('a = 1');
+    expect(text.slice(result.exports[12].startUtf16, result.exports[12].endUtf16)).toBe('local = 1');
+  });
+
+  it.each([
+    ['export default function named() {}', 'default (named)', 'function', false],
+    ['export default function () {}', 'default', 'function', false],
+    ['export default class Named {}', 'default (Named)', 'class', false],
+    ['export default abstract class Named {}', 'default (Named)', 'class', false],
+    ['export default class {}', 'default', 'class', false],
+    ['export default () => 1;', 'default', 'function', false],
+    ['export default 42;', 'default', 'value', false],
+    ['const a = 1; export default a;', 'default (a)', 'value', false],
+    ['const a = 1; export { a as default };', 'default (a)', 'value', false],
+    ['const a = 1; export default a; console.log(a);', 'default (a)', 'value', true],
+    ['export default function recursive() { return recursive(); }', 'default (recursive)', 'function', true],
+  ])('describes %s', async (text, displayName, kind, usedInFile) => {
+    await put('default.ts', text);
+    const project = await scanProject(root, randomUUID());
+    const result = await buildProjectMap(root, project.id, project.files.filter(file => file.relativePath === 'default.ts'), []);
+    expect(result.files[0].checked).toBe('full');
+    expect(result.exports).toHaveLength(1);
+    expect(result.exports[0]).toMatchObject({ name: 'default', displayName, kind, usedInFile });
+  });
+
+  it.each(['ts', 'js'])('does not treat nested declaration names or export-only names as local uses in %s', async extension => {
+    const text = 'export const a = function a(a) {}; export const b = b => 1; export const C = class C {}; const d = 1; export { d };';
+    await put(`declaration-names.${extension}`, text);
+    const project = await scanProject(root, randomUUID());
+    const result = await buildProjectMap(root, project.id, project.files.filter(file => file.relativePath === `declaration-names.${extension}`), []);
+    expect(result.exports.map(item => [item.name, item.usedInFile])).toEqual([['a', false], ['b', false], ['C', false], ['d', false]]);
+  });
+
+  it('ignores broken exports and exports beyond the analysis budget', async () => {
+    await put('limited.ts', 'export function first() {}\nexport function broken( {\n');
+    const project = await scanProject(root, randomUUID());
+    const files = project.files.filter(file => file.relativePath === 'limited.ts');
+    const result = await buildProjectMap(root, project.id, files, []);
+    expect(result.files[0].checked).toBe('partial');
+    expect(result.exports.map(item => item.name)).toEqual(['first']);
+    await put('limited.ts', 'const before = 1;\nexport const beyond = 2;');
+    const limited = await buildProjectMap(root, project.id, files, [], { ...MAP_LIMITS, nodesPerFile: 3 });
+    expect(limited.files[0].checked).toBe('partial');
+    expect(limited.exports).toEqual([]);
+  });
+
+  it('treats type-only imports and reexports as use of the target value', async () => {
+    await put('typed/values.ts', 'export class Model {}\nexport function helper() {}\nexport const unused = 1;\nexport default class Default {}');
+    await put('typed/from.test.ts', "import type { Model } from './values';\nimport { type helper } from './values';\nexport { default } from './values';");
+    const project = await scanProject(root, randomUUID());
+    const result = await buildProjectMap(root, project.id, project.files.filter(file => file.relativePath.startsWith('typed/')), []);
+    expect(result.unused.exports.candidates.map(item => item.name)).toEqual(['unused']);
+  });
+});
+
+
+it('maps every overview entry before candidate limits without excluding learning-only starts', async () => {
+  await put('package.json', JSON.stringify({ main: 'boot.ts', bin: 'cli.ts' }));
+  await put('boot.ts', Array.from({ length: 8 }, (_, i) => `export function f${i}() {}`).join('\n'));
+  await put('cli.ts', 'export const cli = 1;');
+  await put('index.ts', "import './helper';");
+  await put('helper.ts', 'export function helper() {}');
+  const project = await scanProject(root, randomUUID());
+  const files = project.files.filter(file => !file.relativePath.includes('/'));
+  const overview = await buildOverview(root, { ...project, files });
+  const helper = files.find(file => file.relativePath === 'helper.ts')!;
+  const result = await buildProjectMap(root, project.id, files, [...overview.candidates.map(item => item.fileId), helper.id],
+    MAP_LIMITS, undefined, overview.entryFileIds);
+  expect(result.files.filter(file => file.entry).map(file => file.relativePath)).toEqual(['boot.ts', 'cli.ts', 'index.ts']);
+  expect(result.files.find(file => file.relativePath === 'cli.ts')).toMatchObject({ entry: true, start: false });
+  expect(result.files.find(file => file.id === helper.id)).toMatchObject({ entry: false, start: true });
+  expect(result.unused.excluded).toContainEqual({ kind: 'start', count: 3 });
+  expect(result.unused.exports.candidates.map(item => item.name)).toEqual(['helper']);
 });

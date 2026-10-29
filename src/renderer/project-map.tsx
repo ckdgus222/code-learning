@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Dimensions, type Edge, type Node, type NodeChange, type NodeProps,
   type NodeTypes } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import type { ChangeKind, FileChange, MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectChanges, ProjectMap, ProjectView, UnusedExcludeKind } from '../shared/contracts';
+import type { ChangeKind, FileChange, MapExport, MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectChanges, ProjectMap, ProjectView, UnusedExcludeKind } from '../shared/contracts';
 import { boxName, boxPlace, closeArea, expandableIds, folderArrows, folderName, linkedArrows, visibleGraph, type MapArrow, type MapBox } from './map-layout';
 import { COMPLEXITY_NOTE, ComplexityTags } from './complexity';
 import { ChangeList, kindLabels } from './changes';
@@ -17,7 +17,7 @@ const checkedLabels: Record<Exclude<MapFile['checked'], 'full'>, string> = {
   partial: '일부만 봄', failed: '못 읽음', skipped: '읽지 않음', 'not-code': '코드 아님',
 };
 const unusedExcludeLabels: Record<UnusedExcludeKind, string> = {
-  start: '시작점 후보', test: '시험 파일', config: '설정 파일', types: '타입 선언',
+  start: '시작 파일(main·bin·index 등)', test: '시험 파일', config: '설정 파일', types: '타입 선언',
   framework: '프레임워크가 부르는 파일', script: '실행 명령에 적힌 파일', reference: '설정·HTML에 적힌 파일',
 };
 const unresolvedLabels: Record<MapUnresolvedReason, string> = {
@@ -98,7 +98,7 @@ export function MapCanvas({ testId, canvasKey, height, nodes, edges, nodeTypes, 
 
 function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunction, onShowChange }: {
   map: ProjectMap; changes: MapChanges | null; locked: boolean; onOpenFile(fileId: string): void; onShowImport(item: MapImport): void;
-  onShowFunction(item: MapFunction): void; onShowChange(change: FileChange): void;
+  onShowFunction(item: MapFunction | MapExport): void; onShowChange(change: FileChange): void;
 }) {
   const expandable = useMemo(() => expandableIds(map), [map]);
   const paths = useMemo(() => new Map(map.files.map(file => [file.id, file.relativePath])), [map]);
@@ -247,6 +247,25 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
       {map.unused.excluded.length > 0 && <p className="hint">뺀 파일: {map.unused.excluded.map(item => `${unusedExcludeLabels[item.kind]} ${item.count}`).join(' · ')}</p>}
       {map.unused.notes.map(note => <p key={note} className="hint">{note}</p>)}
     </section>
+    <section className="card" aria-label="다른 파일이 가져다 쓰지 않는 export 후보">
+      <h3>다른 파일이 가져다 쓰지 않는 export 후보 · {map.unused.exports.candidates.length}개</h3>
+      <p className="hint">다른 파일의 import에 이름이 나오지 않는 함수·클래스·값이에요. 프레임워크나 다른 프로그램이 이름으로 부를 수도 있으니 직접 확인해 주세요.</p>
+      {map.unused.exports.candidates.length ? <ul className="map-list">{firstRows(map.unused.exports.candidates).map(item =>
+        <li key={`${item.fileId}:${item.startUtf16}:${item.name}`}>
+          <button className="btn btn--small" disabled={locked} onClick={() => onShowFunction(item)}>
+            {item.displayName} · {{ function: '함수', class: '클래스', value: '값' }[item.kind]} · {item.relativePath}:{item.startLine}
+          </button> {item.usedInFile && <span className="tag tag--doc">파일 안에서는 씀</span>}
+        </li>)}</ul> : <p className="hint">후보가 없어요.</p>}
+      <Omitted count={map.unused.exports.candidates.length} />
+      {map.unused.exports.unsure.length > 0 && <details><summary>확인 못 함 · {map.unused.exports.unsure.length}개 파일</summary>
+        <ul className="map-list">{firstRows(map.unused.exports.unsure).map(file => <li key={file.fileId}>
+          <button className="btn btn--small path" disabled={locked} onClick={() => onOpenFile(file.fileId)}>{file.relativePath}</button>
+          {' '}· {file.reason} · export {file.count}개
+        </li>)}</ul>
+        <Omitted count={map.unused.exports.unsure.length} />
+      </details>}
+      {map.unused.exports.notes.map(note => <p key={note} className="hint">{note}</p>)}
+    </section>
     <section className="card" aria-label="어려운 코드 살펴볼 곳">
       <h3>어려운 코드 살펴볼 곳 · {map.complexFunctions.length}개</h3>
       <p className="hint">{COMPLEXITY_NOTE}</p>
@@ -289,7 +308,7 @@ export function ProjectMapView({ project, entry, stale, mapping, locked, changes
   project: ProjectView; entry: MapEntry | null; stale: boolean; mapping: boolean; changes: MapChanges | null; onShowChange(change: FileChange): void;
   /** A folder is opening or a file is being read, so moving to code would drop that work. */
   locked: boolean;
-  onBuild(): void; onCancel(): void; onOpenFile(fileId: string): void; onShowImport(item: MapImport): void; onShowFunction(item: MapFunction): void;
+  onBuild(): void; onCancel(): void; onOpenFile(fileId: string): void; onShowImport(item: MapImport): void; onShowFunction(item: MapFunction | MapExport): void;
 }) {
   return <>
     <p className="hint">화살표는 ‘가져다 씀(import)’이에요. 실행 순서가 아니에요. 설계 보기는 폴더끼리, 파일 보기는 파일끼리 보여 줘요.</p>

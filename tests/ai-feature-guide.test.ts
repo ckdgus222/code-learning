@@ -14,7 +14,7 @@ function fixture(count = 3) {
     { id: 'web', relativePath: 'web/dogs.ts', size: 1 },
     { id: 'config', relativePath: 'web/next.config.ts', size: 1 },
     { id: 'screen', relativePath: 'web/app/dogs/page.tsx', size: 1 },
-  ], excluded: {}, warnings: [], overview: { intro: { text: 'NEVER_SEND_README', fileId: 'readme', title: null, relativePath: 'README.md', startLine: 1, endLine: 1 },
+  ], excluded: {}, warnings: [], overview: { entryFileIds: [], intro: { text: 'NEVER_SEND_README', fileId: 'readme', title: null, relativePath: 'README.md', startLine: 1, endLine: 1 },
     candidates: [], checkedFiles: 0, limited: false, notes: [] } };
   const site = { fileId: 'api', fileHash: 'h', startUtf16: 0, endUtf16: 10, startLine: 1, endLine: 1, text: 'NEVER_SEND_CODE' };
   const routes: ProjectRoutes = { projectId: project.id, routesId: randomUUID(), routes: Array.from({ length: count }, (_, index) => ({
@@ -176,7 +176,7 @@ describe('names sent to the AI', () => {
       await writeFile(path.join(root, 'client.ts'), "export const api = { ['k' + 'CODE_IN_NAME_REQUEST']() { return fetch('/dogs/x'); }, load() { return fetch('/dogs/y'); } };");
       const project = await scanProject(root, randomUUID());
       const routes = await findProjectRoutes(root, project.id, project.files);
-      const view = { ...project, overview: { intro: null, candidates: [], checkedFiles: 0, limited: false, notes: [] } };
+      const view = { ...project, overview: { entryFileIds: [], intro: null, candidates: [], checkedFiles: 0, limited: false, notes: [] } };
       const sent = JSON.stringify(featureGuideMaterial(view, routes).material);
       expect(sent).not.toContain('CODE_IN_NAME');
       expect(sent).toContain('이름 미확인');

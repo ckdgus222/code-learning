@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { lstat, mkdir, mkdtemp, readdir, readlink, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { FSWatcher } from 'chokidar';
@@ -65,6 +65,7 @@ if (workerData.shapes) {
 } else if (side) {
   const job = workerData.routes ? 'routes' : workerData.flow ? 'flow' : workerData.flows ? 'flows' : workerData.map ? 'map' : 'calls';
   mark(job + '-started');
+  if (workerData.map) fs.writeFileSync(path.join(process.env.MARK_DIR, 'map-input.json'), JSON.stringify({ starts: side.starts, entries: side.entries }));
   const stop = new Int32Array(side.stop);
   const started = Date.now();
   const poll = setInterval(() => {
@@ -102,7 +103,7 @@ if (workerData.shapes) {
     const file = { id: 'f1', relativePath: 'a.ts', size: 1 };
     const value = request.kind === 'scan'
       ? { id: workerData.projectId, name: 'p', files: [file], excluded: {}, warnings: [],
-        overview: { intro: null, candidates: [], checkedFiles: 0, limited: false, notes: [] } }
+        overview: { entryFileIds: ['f1'], intro: null, candidates: [{ fileId: 'learning-only', reason: 'exported' }], checkedFiles: 0, limited: false, notes: [] } }
       : { projectId: workerData.projectId, fileId: 'f1', relativePath: 'a.ts', hash: 'h', text: 'x',
         guide: null, analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] } };
     parentPort.postMessage({ id: request.id, result: { ok: true, value } });
@@ -217,6 +218,12 @@ describe('closing never ends a worker in the middle of its work', () => {
 });
 
 describe('the project map runs in a worker of its own', () => {
+  it('passes actual entry IDs separately from the visible learning starts', async () => {
+    process.env.MAP_DELAY = '10';
+    await session.map();
+    expect(JSON.parse(await readFile(path.join(marks, 'map-input.json'), 'utf8'))).toEqual({ starts: ['learning-only'], entries: ['f1'] });
+  });
+
   it('keeps answering reads while the map is drawn, and a cancel stops only the map', async () => {
     process.env.MAP_DELAY = '-1';
     const map = session.map();
