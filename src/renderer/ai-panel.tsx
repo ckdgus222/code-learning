@@ -262,7 +262,8 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
       </details>
       <div className="ai-actions">
         <button className="btn btn--primary" onClick={ask} aria-describedby={blockedReason ? sendBlockedId : undefined}
-          disabled={!ready?.ready || !evidence || stale || !consent || running || otherRunning || !question.trim()}>질문 보내기</button>
+          // The reason and the lock are one decision; the view test keeps it equal to the earlier explicit gate.
+          disabled={running || blockedReason !== null}>질문 보내기</button>
         {blockedReason && <p className="hint" id={sendBlockedId} data-testid="send-blocked">{blockedReason}</p>}
       </div>
       <p className="hint">대화는 앱 실행 중에만 보관합니다. 코드 범위를 바꾸면 새 대화로 시작합니다.</p>
