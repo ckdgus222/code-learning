@@ -6,6 +6,7 @@ import { COMPLEXITY_LIMITS, type MapFile, type MapImport, type ProjectFile, type
 import { AppError } from '../../shared/errors';
 import { assertAllowedFile, MAX_FILE_BYTES, readAllowed, textExtensions } from '../project/files';
 import { functionName, functionTypes, importOf, measureFunction } from './syntax';
+import { scriptFilesOf, unusedFiles } from './unused-files';
 
 export const codeFile = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
 // Plan v2.3 A: a relative path without an extension may name one of these files or its folder's index file.
@@ -94,7 +95,7 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
     placed.set(file.id, { id: file.id, relativePath: file.relativePath, folder: folder === '.' ? '' : folder,
       start: starts.has(file.id), checked, reason });
   };
-  const map: ProjectMap = { projectId, files: [], edges: [], unresolved: [], external: [], complexFunctions: [], limited: false, notes: [] };
+  const map: Omit<ProjectMap, 'unused'> = { projectId, files: [], edges: [], unresolved: [], external: [], complexFunctions: [], limited: false, notes: [] };
   // A target may have been deleted, excluded or swapped for a link since the folder was opened.
   const availability = new Map<string, Promise<boolean>>();
   const available = (relative: string): Promise<boolean> => {
@@ -159,5 +160,6 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
   }
   if (map.limited) map.notes.push(`지도는 파일 ${limits.files}개·합계 ${limits.bytes / 1024 / 1024} MiB까지만 읽어요. 나머지 파일의 연결은 보지 않았어요.`);
   map.files = [...placed.values()].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
-  return map;
+  const scripts = await scriptFilesOf(root, files, known, limits.bytes - bytesRead, shouldStop);
+  return { ...map, unused: unusedFiles(map, scripts) };
 }

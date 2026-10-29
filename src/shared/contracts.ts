@@ -201,6 +201,13 @@ export interface MapFunction {
   depth: number;
 }
 export type MapUnresolvedReason = 'not-found' | 'ambiguous' | 'outside' | 'not-static' | 'syntax' | 'unavailable' | 'unreadable';
+export type UnusedExcludeKind = 'start' | 'test' | 'config' | 'types' | 'framework' | 'script';
+export interface UnusedFiles {
+  candidates: { fileId: string; relativePath: string }[];
+  unsure: { fileId: string; relativePath: string; reason: string }[];
+  excluded: { kind: UnusedExcludeKind; count: number }[];
+  notes: string[];
+}
 export interface ProjectMap {
   projectId: string;
   files: MapFile[];
@@ -211,6 +218,7 @@ export interface ProjectMap {
   external: MapImport[];
   /** Functions over a complexity limit in the files the map read, in path and then source order. */
   complexFunctions: MapFunction[];
+  unused: UnusedFiles;
   limited: boolean;
   notes: string[];
 }

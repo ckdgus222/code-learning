@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Dimensions, type Edge, type Node, type NodeChange, type NodeProps,
   type NodeTypes } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import type { ChangeKind, FileChange, MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectChanges, ProjectMap, ProjectView } from '../shared/contracts';
+import type { ChangeKind, FileChange, MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectChanges, ProjectMap, ProjectView, UnusedExcludeKind } from '../shared/contracts';
 import { boxName, boxPlace, closeArea, expandableIds, folderArrows, folderName, linkedArrows, visibleGraph, type MapArrow, type MapBox } from './map-layout';
 import { COMPLEXITY_NOTE, ComplexityTags } from './complexity';
 import { ChangeList, kindLabels } from './changes';
@@ -15,6 +15,10 @@ export function Omitted({ count }: { count: number }) {
 }
 const checkedLabels: Record<Exclude<MapFile['checked'], 'full'>, string> = {
   partial: '일부만 봄', failed: '못 읽음', skipped: '읽지 않음', 'not-code': '코드 아님',
+};
+const unusedExcludeLabels: Record<UnusedExcludeKind, string> = {
+  start: '시작점 후보', test: '시험 파일', config: '설정 파일', types: '타입 선언',
+  framework: '프레임워크가 부르는 파일', script: '실행 명령에 적힌 파일',
 };
 const unresolvedLabels: Record<MapUnresolvedReason, string> = {
   'not-found': '찾지 못함(파일이 없거나 탐색 목록에서 제외됨)', ambiguous: '후보 여럿', outside: '프로젝트 밖',
@@ -226,6 +230,22 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
         {folderName(arrow.source.replace(/^folder:/, ''))} → {folderName(arrow.target.replace(/^folder:/, ''))} · import {arrow.items.length}개
       </li>)}</ul> : <p className="hint">폴더 사이에 이어진 import가 없어요.</p>}
       <Omitted count={design.length} />
+    </section>
+    <section className="card" aria-label="아무도 가져다 쓰지 않는 파일 후보">
+      <h3>아무도 가져다 쓰지 않는 파일 후보 · {map.unused.candidates.length}개</h3>
+      <p className="hint">지도가 확인한 범위에서, 다른 파일의 정적 import로 연결되지 않은 파일 후보예요. 실행 명령·프레임워크·다른 프로그램이 직접 부를 수도 있으니 지우기 전에 직접 확인해 주세요.</p>
+      {map.unused.candidates.length ? <ul className="map-list">{firstRows(map.unused.candidates).map(file => <li key={file.fileId}>
+        <button className="btn btn--small path" disabled={locked} onClick={() => onOpenFile(file.fileId)}>{file.relativePath}</button>
+      </li>)}</ul> : <p className="hint">후보가 없어요.</p>}
+      <Omitted count={map.unused.candidates.length} />
+      {map.unused.unsure.length > 0 && <details><summary>확인 못 함 · {map.unused.unsure.length}개</summary>
+        <ul className="map-list">{firstRows(map.unused.unsure).map(file => <li key={file.fileId}>
+          <button className="btn btn--small path" disabled={locked} onClick={() => onOpenFile(file.fileId)}>{file.relativePath}</button> · {file.reason}
+        </li>)}</ul>
+        <Omitted count={map.unused.unsure.length} />
+      </details>}
+      {map.unused.excluded.length > 0 && <p className="hint">뺀 파일: {map.unused.excluded.map(item => `${unusedExcludeLabels[item.kind]} ${item.count}`).join(' · ')}</p>}
+      {map.unused.notes.map(note => <p key={note} className="hint">{note}</p>)}
     </section>
     <section className="card" aria-label="어려운 코드 살펴볼 곳">
       <h3>어려운 코드 살펴볼 곳 · {map.complexFunctions.length}개</h3>

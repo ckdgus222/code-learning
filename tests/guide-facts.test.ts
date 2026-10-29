@@ -7,7 +7,7 @@ import type { FileExplanationResult } from '../src/shared/ai';
 const site = { fileId: 'f', fileHash: 'h', startUtf16: 10, endUtf16: 15, startLine: 2, endLine: 2, text: 'send()' };
 const imported: MapImport = { ...site, fromFileId: 'a', specifier: './target' };
 const map: ProjectMap = { projectId: 'p', files: ['target', 'a', 'b'].map(id => ({ id, relativePath: `${id}.ts`, folder: '',
-  start: false, checked: 'full', reason: null })), edges: [], unresolved: [], external: [], complexFunctions: [], limited: false, notes: [] };
+  start: false, checked: 'full', reason: null })), edges: [], unresolved: [], external: [], complexFunctions: [], unused: { candidates: [], unsure: [], excluded: [], notes: [] }, limited: false, notes: [] };
 
 describe('importersOf', () => {
   it('keeps only incoming edges, the earliest import per file and path order', () => {

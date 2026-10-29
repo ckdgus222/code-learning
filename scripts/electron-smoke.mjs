@@ -90,6 +90,9 @@ for (const [name, text] of Object.entries(mapFiles)) {
   await mkdir(path.dirname(path.join(mapFixture, name)), { recursive: true });
   await writeFile(path.join(mapFixture, name), text);
 }
+const unusedMapFixture = path.join(temporary, '안 쓰는 파일 후보 프로젝트');
+await mkdir(unusedMapFixture);
+await writeFile(path.join(unusedMapFixture, 'orphan.ts'), 'const orphanValue = 42;\n');
 // Nested areas have their own fixture so the existing map counts stay unchanged.
 const areaMapFixture = path.join(temporary, '영역 지도 프로젝트');
 const areaMapFiles = {
@@ -2215,6 +2218,18 @@ try {
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
   });
+  await check('Project map: an unused candidate opens its file in the code reader', async () => {
+    await dialogTo(unusedMapFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '안 쓰는 파일 후보 프로젝트', exact: true }).waitFor();
+    await openFileMap();
+    const candidates = page.getByRole('region', { name: '아무도 가져다 쓰지 않는 파일 후보', exact: true });
+    await candidates.getByRole('heading', { name: '아무도 가져다 쓰지 않는 파일 후보 · 1개', exact: true }).waitFor();
+    await candidates.getByRole('button', { name: 'orphan.ts', exact: true }).click();
+    await page.getByRole('heading', { name: 'orphan.ts', exact: true }).waitFor();
+    assert.match(await page.locator('.reader').innerText(), /const orphanValue = 42;/);
+  });
+
   await check('Project map: file and design views, evidence, freshness, reopening and cancelled or stale maps', async () => {
     await dialogTo(mapFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();

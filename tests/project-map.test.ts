@@ -268,3 +268,34 @@ describe('TypeScript counterparts for explicit JavaScript extensions', () => {
     else expect(result.unresolved.find(item => item.fromFileId === fileId)).toMatchObject({ reason: targets.length > 1 ? 'ambiguous' : 'not-found' });
   });
 });
+
+describe('unused files in the project map', () => {
+  it('fills candidates, uncertainty and exclusions from code and package scripts', async () => {
+    await put('unused/from.ts', "import './used';\nimport('./lazy');\nimport '@/lib/foo.js';\n");
+    for (const name of ['used.ts', 'lazy.ts', 'lib/foo.ts', 'orphan.ts', 'seed.ts', 'unit.test.ts']) await put(`unused/${name}`, '');
+    await put('unused/package.json', JSON.stringify({ scripts: { seed: 'node ./seed.ts' } }));
+    const project = await scanProject(root, randomUUID());
+    const files = project.files.filter(file => file.relativePath.startsWith('unused/'));
+    const start = files.find(file => file.relativePath === 'unused/from.ts')!.id;
+    const result = await buildProjectMap(root, project.id, files, [start]);
+    expect(result.unused.candidates).toEqual([{ fileId: files.find(file => file.relativePath === 'unused/orphan.ts')!.id, relativePath: 'unused/orphan.ts' }]);
+    expect(result.unused.unsure.map(file => [file.relativePath, file.reason])).toEqual([
+      ['unused/lazy.ts', '동적 import(또는 require)로 쓰일 수 있어요.'],
+      ['unused/lib/foo.ts', '경로 별칭으로 쓰일 수 있어요.'],
+    ]);
+    expect(result.unused.excluded).toEqual([{ kind: 'start', count: 1 }, { kind: 'test', count: 1 }, { kind: 'script', count: 1 }]);
+  });
+
+  it.each([0, 10])('uses only the %i bytes left after code analysis for package.json and reports failure', async remaining => {
+    const code = 'const value = 1;';
+    await put('budget/run.ts', code);
+    await put('budget/package.json', JSON.stringify({ scripts: { dev: 'node run.ts' } }));
+    const project = await scanProject(root, randomUUID());
+    const result = await buildProjectMap(root, project.id, project.files.filter(file => file.relativePath.startsWith('budget/')), [], {
+      ...MAP_LIMITS, bytes: Buffer.byteLength(code) + remaining,
+    });
+    expect(result.files[0].checked).toBe('full');
+    expect(result.unused.candidates.map(file => file.relativePath)).toEqual(['budget/run.ts']);
+    expect(result.unused.notes).toContain(`package.json 1개를 읽지 못해 실행 명령에 적힌 파일을 확인하지 못했어요: budget/package.json(${remaining ? '파일이 초기 읽기 크기 제한을 넘습니다.' : '지도의 읽기 한도에 닿아 읽지 않았어요.'})`);
+  });
+});
