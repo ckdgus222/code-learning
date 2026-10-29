@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { FlowNode, CallSite, ValueSite, CodeSide, CodeSymbol, Evidence, FileChange, FunctionCalls, GitHistory, MapExport, MapFunction, MapImport, ProjectView, SourceView,
-  StartCandidate } from '../shared/contracts';
+  StartCandidate, LearningSpot, RecentProject, SavedSpot } from '../shared/contracts';
 import { showsFiles, useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
 import { Icon } from './icons';
@@ -20,7 +20,7 @@ import { CallsFacts, type CallFunction, type CallsState } from './calls';
 import { shapeQueries, ValuesFacts, type ShapeSlot, type ShapesState } from './values';
 import { COMPLEXITY_NOTE, ComplexityTags, overLimit } from './complexity';
 import { ChangesView, type ChangesEntry, type DiffEntry, type Loaded } from './changes';
-import { OverviewAi, TopicBar, recordPlace, type OverviewState, type Place, type Topic } from './overview';
+import { ResumeCard, restoreSpot, spotOf, OverviewAi, TopicBar, recordPlace, type OverviewState, type Place, type Topic } from './overview';
 import type { ConnectionReport, LearningEvent, OverviewFeature, LearningMode, FileExplanationRange } from '../shared/ai';
 import './styles.css';
 
@@ -35,6 +35,7 @@ const candidateReasons: Record<StartCandidate['reason'], string> = {
   exported: '다른 파일에서 쓰도록 내보낸(export) 함수',
 };
 // Plan v2.3 C-1: the AI is only asked; the app never changes the code.
+const SAVE_FAILED = '학습 위치를 저장하지 못했어요. 다음에 이어서 보기가 예전 위치일 수 있어요.';
 const SIMPLER_QUESTION = '이 함수를 더 단순하고 읽기 쉽게 쓸 수 있을까요? 바꾼다면 어디를 어떻게 바꾸면 좋을지 알려 주세요.';
 // Plan G1·F1: the question a topic prepares about its feature; only put in the box, sent by the user.
 const featureQuestion = (name: string) => `‘${name}’ 기능이 이 함수에서 어떻게 시작하는지, 어떤 입력을 받고 어느 코드에서 주요 처리를 하며 `
@@ -101,6 +102,8 @@ function App() {
   const [overviewCard, setOverviewCard] = useState(0);
   const overviewRequest = useRef(0);
   const overviewJob = useRef<{ id: string | null; starting: boolean; queued: LearningEvent[] }>({ id: null, starting: false, queued: [] });
+  const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
+  const [resume, setResume] = useState<{ projectId: string; saved: SavedSpot } | null>(null);
   const [topic, setTopic] = useState<Topic | null>(null);
   // The places looked at under the topic (the last 20).
   const [places, setPlaces] = useState<Place[]>([]);
@@ -242,6 +245,31 @@ function App() {
     setPlaces(previous => recordPlace(previous, place));
   }, [topic === null, busy, stale, view, source?.fileId, source?.hash, symbol?.id, stepId, evidence?.id]);
 
+  useEffect(() => {
+    if (project) return;
+    let cancelled = false;
+    void window.learning.recentProjects().then(result => {
+      if (!cancelled && result.ok) setRecentProjects(result.value);
+    });
+    return () => { cancelled = true; };
+  }, [project]);
+
+  const lastPlace = places.at(-1) ?? null;
+  useEffect(() => {
+    // Opening or closing a folder clears the topic in memory, never its saved location.
+    if (!project || !topic) return;
+    try { void saveSpot(project.id, spotOf(topic, lastPlace, project.files)); }
+    catch { setNotice(SAVE_FAILED); }
+  }, [project, topic, lastPlace]);
+
+  async function saveSpot(projectId: string, spot: LearningSpot | null) {
+    try {
+      const result = await window.learning.saveLearningSpot({ projectId, spot });
+      if (result.ok || result.code === 'PROJECT_CLOSED') return;
+    } catch { /* An unavailable IPC connection is also a save failure. */ }
+    setNotice(SAVE_FAILED);
+  }
+
   // A newly opened project starts from its overview, not the previous project's view.
   useEffect(() => setView('overview'), [project, setView]);
   // Choosing a function in the flow view searches its calls; coming back to it reuses what was found.
@@ -261,10 +289,10 @@ function App() {
     if (view === 'map' && mapTab === 'file' && project && !projectMap && !mapping) void buildMap();
   }, [view, project, mapTab]);
 
-  async function openProject() {
+  async function openProject(projectId?: string) {
     const current = ++request.current;
     setBusy(true); setError(''); setNotice('');
-    const result = await window.learning.openProject();
+    const result = await (projectId ? window.learning.openRecent({ projectId }) : window.learning.openProject());
     if (current !== request.current) return;
     setBusy(false);
     if (!result.ok) {
@@ -275,6 +303,9 @@ function App() {
     forgetMap(); forgetCalls(); forgetChanges(); forgetOverview();
     setExpandedFolders(new Set());
     setProject(result.value); setSource(null); setEvidence(null); setStale(false); setOverviewStale(false); setWatchError(false); setSearch(''); selectSymbol(null);
+    const saved = await window.learning.learningSpot({ projectId: result.value.id });
+    if (current !== request.current) return;
+    if (saved.ok && saved.value) setResume({ projectId: result.value.id, saved: saved.value });
   }
 
   /**
@@ -319,6 +350,10 @@ function App() {
     const target = places.at(-2);
     if (!target) return;
     setPlaces(previous => previous.slice(0, -1));
+    await goTo(target, '그 뒤 파일이 바뀌어 위치를 되살리지 않았어요. 파일만 열었어요.');
+  }
+
+  async function goTo(target: Place, changedNotice: string) {
     setView(target.view);
     const atRevision = revision.current;
     const opened = await readFile(target.fileId);
@@ -327,8 +362,11 @@ function App() {
     const land = (symbol: Place['symbol'], marked: Evidence | null) => setPlaces(previous => [...previous.slice(0, -1), {
       view: target.view, fileId: opened.fileId, fileHash: opened.hash, symbol,
       range: marked && { startUtf16: marked.startUtf16, endUtf16: marked.endUtf16, startLine: marked.startLine, endLine: marked.endLine } }]);
-    if (opened.hash !== target.fileHash) { setNotice('그 뒤 파일이 바뀌어 위치를 되살리지 않았어요. 파일만 열었어요.'); land(null, null); return; }
     const { range, symbol: chosen } = target;
+    if (opened.hash !== target.fileHash || (range && range.endUtf16 > opened.text.length) ||
+        (chosen && chosen.startUtf16 >= opened.text.length)) {
+      setNotice(changedNotice); land(null, null); return;
+    }
     const found = chosen && opened.analysis.symbols.find(item => item.name === chosen.name && item.evidence.startUtf16 === chosen.startUtf16);
     const same = (marked: Evidence) => range !== null && marked.startUtf16 === range.startUtf16 && marked.endUtf16 === range.endUtf16;
     // The same file as it was gives the same steps in the same order.
@@ -346,13 +384,16 @@ function App() {
    * Opens a topic's start in the flow view, keeping the question. A function is chosen only while the file has the hash
    * it had: by name and place when the place is known, by name when that name is the file's only function by it.
    */
-  async function openStart(target: Topic) {
+  async function openStart(target: Topic, changedNotice?: string) {
     setView('function');
     const atRevision = revision.current;
     const opened = await readFile(target.start.fileId);
     // A change notice during the read (a wake from sleep included) leaves the code to be checked again.
     if (opened && revision.current !== atRevision) return;
     const { functionName, startUtf16, fileHash } = target.start;
+    if (opened && changedNotice && (opened.hash !== fileHash || (startUtf16 !== null && startUtf16 >= opened.text.length))) {
+      setNotice(changedNotice); return;
+    }
     if (!opened || functionName === null) {
       if (opened && target.origin === 'ai') setNotice('AI가 출발 함수를 정하지 못했어요. 이 파일에서 함수를 골라 주세요.');
       return;
@@ -372,6 +413,22 @@ function App() {
     setReaderEvidence(found[0].evidence);
     // Found once by name, the start is kept by place, so returning to it finds this very function.
     if (startUtf16 === null) setTopic(current => current === target ? { ...target, start: { ...target.start, startUtf16: found[0].evidence.startUtf16 } } : current);
+  }
+
+  async function resumeLearning() {
+    if (!project || !resume || resume.projectId !== project.id || busy || topic) return;
+    const restored = restoreSpot(resume.saved.spot, project.files);
+    if ('missingStart' in restored) return;
+    // Restore both together before reading: a failed or cancelled read must keep the saved step.
+    setTopic(restored.topic); setPlaces(restored.place ? [restored.place] : []); setResume(null);
+    const changedNotice = '지난번 본 뒤로 이 파일이 바뀌었어요. 이 부분은 다시 확인해 주세요. 파일만 열었어요.';
+    if (restored.place) { await goTo(restored.place, changedNotice); return; }
+    await openStart(restored.topic, changedNotice);
+  }
+
+  function closeTopic() {
+    beginTopic(null); setResume(null);
+    if (project) void saveSpot(project.id, null);
   }
 
   /**
@@ -431,6 +488,7 @@ function App() {
     return null;
   }
   function forgetOverview() {
+    setResume(null);
     fileExplanationRequest.current++;
     fileExplanationJob.current = { id: null, starting: false, queued: [], revision: revision.current };
     setFileExplanations([]); setFileExplanationState(null); setMode('local-worker');
@@ -851,7 +909,7 @@ function App() {
         {busy && <span role="status" className="busy"><span className="spinner" aria-hidden="true" />처리 중…</span>}
         {fileExplanationState?.status === 'running' && (view !== 'code' || source?.fileId !== fileExplanationState.fileId || !panelOpen) &&
           <span role="status">파일 설명 진행 중 <button className="btn btn--small" onClick={() => void cancelFileExplanation()}>파일 설명 작업 취소</button></span>}
-        <button className="btn" onClick={openProject} disabled={busy}>프로젝트 폴더 열기</button>
+        <button className="btn" onClick={() => void openProject()} disabled={busy}>프로젝트 폴더 열기</button>
         <button className="btn btn--ghost" onClick={cancel} disabled={!project && !busy}>프로젝트 닫기</button>
       </div>
     </header>
@@ -872,6 +930,15 @@ function App() {
     {!project ? <main className="welcome">
       <h2>프로젝트를 열어 코드를 읽어 보세요</h2>
       <p className="welcome__lead">폴더 하나를 고르면 어떤 파일이 있는지 보여주고, 함수 안의 조건·반환 같은 부분을 실제 코드 위치와 함께 짚어 줘요.</p>
+      {recentProjects.length > 0 && <section className="welcome__recent" aria-label="최근 프로젝트">
+        <h3>최근 프로젝트</h3>
+        <ul className="recent-projects">{recentProjects.map(recent => <li key={recent.id}>
+          <button className="btn" disabled={busy} onClick={() => void openProject(recent.id)}>
+            <b>{recent.name}</b><small>{recent.root}</small>
+            <small>{new Date(recent.openedAt).toLocaleDateString('ko-KR', { month: 'long', day: 'numeric' })}</small>
+          </button>
+        </li>)}</ul>
+      </section>}
       <ol className="welcome__steps">
         <li><b>폴더 열기</b><span>위의 ‘프로젝트 폴더 열기’를 눌러요.</span></li>
         <li><b>파일과 함수 고르기</b><span>‘코드 읽기’에서 읽을 파일을 골라요.</span></li>
@@ -904,11 +971,13 @@ function App() {
           canAsk={!!symbol && !stale} locked={busy || stale} onRename={name => setTopic(current => current && { ...current, name })}
           onStartHere={startTopicHere} onStart={() => { if (topic) void openStart(topic); }} onBack={() => void goBack()}
           onAsk={() => void prepareTopicQuestion()}
-          onOverview={() => { setView('overview'); setFocusAnchor(topic?.anchor ?? 'overview'); }} onClose={() => beginTopic(null)} />
+          onOverview={() => { setView('overview'); setFocusAnchor(topic?.anchor ?? 'overview'); }} onClose={closeTopic} />
         <div className="page" hidden={view !== 'overview'}>
           <h2 className="page__title" tabIndex={-1} data-anchor="overview">한눈에 보기</h2>
           {overviewStale && <p className="notice notice--warn overview-stale"><b>다시 확인 필요:</b> 프로젝트를 연 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 아래 소개와 후보는 폴더를 열 때 읽은 내용이에요. 폴더를 다시 열면 새로 계산해요.</p>}
           <div className="cards">
+            {resume?.projectId === project.id && !topic && <ResumeCard saved={resume.saved} files={project.files} locked={busy}
+              onResume={() => void resumeLearning()} />}
             {view === 'overview' && <section className="card card--wide" aria-labelledby="overview-intro">
               <h3 id="overview-intro">이 프로젝트는 무엇을 하나요?</h3>
               {intro ? <>

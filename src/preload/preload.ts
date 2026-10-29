@@ -4,6 +4,10 @@ import type { LearningEvent } from '../shared/ai';
 
 const api: LearningApi = {
   openProject: () => ipcRenderer.invoke(channels.open),
+  recentProjects: () => ipcRenderer.invoke(channels.recentProjects),
+  openRecent: input => ipcRenderer.invoke(channels.openRecent, input),
+  learningSpot: input => ipcRenderer.invoke(channels.learningSpot, input),
+  saveLearningSpot: input => ipcRenderer.invoke(channels.saveLearningSpot, input),
   readSource: input => ipcRenderer.invoke(channels.read, input),
   readEvidence: input => ipcRenderer.invoke(channels.evidence, input),
   cancel: () => ipcRenderer.invoke(channels.cancel),

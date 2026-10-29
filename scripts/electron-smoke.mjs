@@ -1,6 +1,6 @@
 import { _electron as electron } from 'playwright';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, rename, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -4422,6 +4422,294 @@ try {
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
   });
+  // Start with real handlers again: earlier checks replace several handlers with AI fixtures.
+  await app.close();
+  await launch();
+  {
+    const folder = path.join(temporary, '이어서 보기 프로젝트');
+    const otherFolder = path.join(temporary, '이어서 보기 다른 프로젝트');
+    const original = 'export function begin(value: number) {\n  if (value < 0) return 0;\n  return value;\n}\n';
+    await mkdir(folder); await mkdir(otherFolder);
+    await writeFile(path.join(folder, 'start.ts'), original);
+    await writeFile(path.join(folder, 'last.ts'), 'export function last() { return 2; }\n');
+    await writeFile(path.join(folder, 'index.js'), 'console.log("start");\n');
+    await writeFile(path.join(otherFolder, 'other.ts'), 'export function other() {}\n');
+    let projectId;
+    let saved;
+    const card = () => page.getByRole('region', { name: '지난번 학습 이어서 보기', exact: true });
+    const closeProject = async () => {
+      await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
+      await until(async () => !await page.locator('.busy').count());
+    };
+    const openRecent = async () => {
+      await page.getByRole('region', { name: '최근 프로젝트', exact: true }).getByRole('button').filter({ hasText: '이어서 보기 프로젝트' }).click();
+      await page.getByRole('heading', { name: '이어서 보기 프로젝트', exact: true }).waitFor();
+      await until(async () => !await page.locator('.busy').count());
+    };
+    const readSpot = async () => {
+      const result = await page.evaluate(projectId => window.learning.learningSpot({ projectId }), projectId);
+      assert.equal(result.ok, true);
+      return result.value?.spot ?? null;
+    };
+    const seedSpot = async spot => {
+      const result = await page.evaluate(input => window.learning.saveLearningSpot(input), { projectId, spot });
+      assert.equal(result.ok, true);
+      await closeProject(); await openRecent();
+    };
+    const changedNotice = '지난번 본 뒤로 이 파일이 바뀌었어요. 이 부분은 다시 확인해 주세요. 파일만 열었어요.';
+    const saveFailure = '학습 위치를 저장하지 못했어요. 다음에 이어서 보기가 예전 위치일 수 있어요.';
+    await check('Recent projects open without a folder dialog and keep a topic and step after an app restart', async () => {
+      await dialogTo(folder);
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      await page.getByRole('heading', { name: '이어서 보기 프로젝트', exact: true }).waitFor();
+      const recent = await page.evaluate(() => window.learning.recentProjects());
+      assert.equal(recent.ok, true);
+      projectId = recent.value.find(item => item.root === folder).id;
+      await until(() => page.locator('.starts__item').filter({ hasText: 'begin' }).isVisible());
+      await page.locator('.starts__item').filter({ hasText: 'begin' }).click();
+      await page.locator('.steps__item').nth(1).click();
+      await page.getByRole('textbox', { name: '학습 이름', exact: true }).fill('조건과 반환 읽기');
+      await until(async () => (await readSpot())?.place?.symbol?.step === 1 && (await readSpot())?.topic.name === '조건과 반환 읽기');
+      saved = await readSpot();
+      await closeProject();
+      await app.evaluate(({ dialog }) => { dialog.showOpenDialog = async () => { throw new Error('Unexpected folder dialog'); }; });
+      await openRecent();
+      await card().getByText('조건과 반환 읽기', { exact: true }).waitFor();
+      // Opening the project without choosing resume must leave its stored location untouched.
+      assert.deepEqual(await readSpot(), saved);
+      await closeProject(); await openRecent();
+      assert.deepEqual(await readSpot(), saved);
+      await app.close(); await launch();
+      await app.evaluate(({ dialog }) => { dialog.showOpenDialog = async () => { throw new Error('Unexpected folder dialog'); }; });
+      await openRecent();
+      await card().getByText('마지막 위치: start.ts › begin · 2단계', { exact: true }).waitFor();
+      await card().getByRole('button', { name: '이어서 보기', exact: true }).click();
+      await until(async () => await page.getByRole('button', { name: 'begin', exact: true }).getAttribute('aria-pressed') === 'true');
+      await until(async () => await page.locator('.steps__item').nth(1).getAttribute('aria-current') === 'step');
+    });
+    await check('Resume opens only the file with a warning when its saved hash changed', async () => {
+      await app.close();
+      await writeFile(path.join(folder, 'start.ts'), original + '// changed\n');
+      await launch(); await openRecent();
+      await card().getByRole('button', { name: '이어서 보기', exact: true }).click();
+      await page.getByText(changedNotice, { exact: true }).waitFor();
+      await page.getByRole('button', { name: 'begin', exact: true }).waitFor();
+      assert.equal(await page.locator('.symbols__item[aria-pressed="true"]').count(), 0);
+      assert.equal(await page.getByTestId('evidence-range').count(), 0);
+      await closeProject();
+      await writeFile(path.join(folder, 'start.ts'), original);
+      await openRecent();
+    });
+    await check('Failed and cancelled resume reads preserve the original saved function and step', async () => {
+      await seedSpot(saved);
+      await app.evaluate(({ ipcMain }) => {
+        const handlers = ipcMain._invokeHandlers;
+        const read = handlers.get('learning:read');
+        handlers.set('learning:read', async () => {
+          handlers.set('learning:read', read);
+          return { ok: false, code: 'IO', message: '시험용 읽기 실패' };
+        });
+      });
+      await card().getByRole('button', { name: '이어서 보기', exact: true }).click();
+      await page.getByText('시험용 읽기 실패', { exact: true }).waitFor();
+      assert.deepEqual(await readSpot(), saved);
+      await closeProject(); await openRecent();
+      await card().getByText('마지막 위치: start.ts › begin · 2단계', { exact: true }).waitFor();
+      await app.evaluate(({ ipcMain }) => {
+        const handlers = ipcMain._invokeHandlers;
+        const read = handlers.get('learning:read');
+        globalThis.resumeReadWaiting = false;
+        handlers.set('learning:read', async (...args) => {
+          handlers.set('learning:read', read);
+          const result = await read(...args);
+          await new Promise(resolve => { globalThis.resumeReadWaiting = true; globalThis.releaseResumeRead = resolve; });
+          return result;
+        });
+      });
+      await card().getByRole('button', { name: '이어서 보기', exact: true }).click();
+      await until(() => app.evaluate(() => globalThis.resumeReadWaiting));
+      await closeProject();
+      await app.evaluate(() => globalThis.releaseResumeRead());
+      await openRecent();
+      await card().getByText('마지막 위치: start.ts › begin · 2단계', { exact: true }).waitFor();
+      assert.deepEqual(await readSpot(), saved);
+    });
+    await check('Out-of-source saved ranges and function starts open the file without selecting or highlighting', async () => {
+      for (const place of [
+        { ...saved.place, range: { startUtf16: 0, endUtf16: 100_000, startLine: 1, endLine: 2 } },
+        { ...saved.place, symbol: { ...saved.place.symbol, startUtf16: 100_000 } },
+      ]) {
+        // Bypass IPC to reproduce a stored value with a valid schema and matching hash but an invalid source offset.
+        await app.evaluate(({ app: electronApp }, { projectId, spot }) => {
+          const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+          const db = new DatabaseSync(process.getBuiltinModule('node:path').join(electronApp.getPath('userData'), 'learning.sqlite'));
+          try { db.prepare('UPDATE learning_spots SET spot = ? WHERE project_id = ?').run(JSON.stringify(spot), projectId); }
+          finally { db.close(); }
+        }, { projectId, spot: { ...saved, place } });
+        await closeProject(); await openRecent();
+        await card().getByRole('button', { name: '이어서 보기', exact: true }).click();
+        await page.getByText(changedNotice, { exact: true }).waitFor();
+        assert.equal(await page.locator('.symbols__item[aria-pressed="true"]').count(), 0);
+        assert.equal(await page.getByTestId('evidence-range').count(), 0);
+      }
+    });
+    await check('A file-only topic without a visited location still checks its hash before resume', async () => {
+      await closeProject(); await openRecent();
+      await until(() => page.locator('.starts__item').filter({ hasText: 'index.js' }).isVisible());
+      await app.evaluate(({ ipcMain }) => {
+        const handlers = ipcMain._invokeHandlers;
+        const read = handlers.get('learning:read');
+        handlers.set('learning:read', async () => {
+          handlers.set('learning:read', read);
+          return { ok: false, code: 'IO', message: '시험용 출발점 읽기 실패' };
+        });
+      });
+      await page.locator('.starts__item').filter({ hasText: 'index.js' }).click();
+      await page.getByText('시험용 출발점 읽기 실패', { exact: true }).waitFor();
+      await until(async () => (await readSpot())?.topic.start.relativePath === 'index.js');
+      assert.equal((await readSpot()).place, null);
+      assert.equal((await readSpot()).topic.start.functionName, null);
+      await app.close();
+      await writeFile(path.join(folder, 'index.js'), 'console.log("changed");\n');
+      await launch(); await openRecent();
+      await card().getByRole('button', { name: '이어서 보기', exact: true }).click();
+      await page.getByText(changedNotice, { exact: true }).waitFor();
+      assert.equal(await page.locator('.symbols__item[aria-pressed="true"]').count(), 0);
+    });
+    await check('Save failures show one notice and leave the topic editable; PROJECT_CLOSED is ignored', async () => {
+      await seedSpot(saved);
+      await card().getByRole('button', { name: '이어서 보기', exact: true }).click();
+      await until(async () => await page.locator('.steps__item').nth(1).getAttribute('aria-current') === 'step');
+      await app.evaluate(({ ipcMain }) => {
+        const handlers = ipcMain._invokeHandlers;
+        globalThis.resumeSaveHandler = handlers.get('learning:save-spot');
+        handlers.set('learning:save-spot', async () => ({ ok: false, code: 'IO', message: '시험용 저장 실패' }));
+      });
+      await page.getByRole('textbox', { name: '학습 이름', exact: true }).fill('계속 학습');
+      await page.getByText(saveFailure, { exact: true }).waitFor();
+      await app.evaluate(({ ipcMain }) => ipcMain._invokeHandlers.set('learning:save-spot', globalThis.resumeSaveHandler));
+      await page.getByRole('textbox', { name: '학습 이름', exact: true }).fill('다시 저장');
+      await until(async () => (await readSpot()).topic.name === '다시 저장');
+      assert.equal(await page.getByText(saveFailure, { exact: true }).count(), 1);
+      await page.getByRole('button', { name: '출발점으로', exact: true }).click();
+      await until(async () => !await page.locator('.busy').count());
+      await app.evaluate(({ ipcMain }) => ipcMain._invokeHandlers.set('learning:save-spot', async () => ({ ok: false, code: 'PROJECT_CLOSED', message: 'Closed' })));
+      await page.getByRole('textbox', { name: '학습 이름', exact: true }).fill('닫힌 프로젝트 응답');
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await page.getByText(saveFailure, { exact: true }).count(), 0);
+      await app.evaluate(({ ipcMain }) => ipcMain._invokeHandlers.set('learning:save-spot', globalThis.resumeSaveHandler));
+    });
+    await check('Another project never shows or saves the previous project card while its response is delayed', async () => {
+      await seedSpot(saved);
+      await card().waitFor();
+      await app.evaluate(({ ipcMain }) => {
+        const handlers = ipcMain._invokeHandlers;
+        const spot = handlers.get('learning:spot');
+        globalThis.resumeSpotWaiting = false;
+        handlers.set('learning:spot', async (...args) => {
+          handlers.set('learning:spot', spot);
+          const result = await spot(...args);
+          await new Promise(resolve => { globalThis.resumeSpotWaiting = true; globalThis.releaseResumeSpot = resolve; });
+          return result;
+        });
+      });
+      await dialogTo(otherFolder);
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      await page.getByRole('heading', { name: '이어서 보기 다른 프로젝트', exact: true }).waitFor();
+      await until(() => app.evaluate(() => globalThis.resumeSpotWaiting));
+      assert.equal(await card().count(), 0);
+      assert.equal(await page.getByRole('textbox', { name: '학습 이름', exact: true }).count(), 0);
+      const other = (await page.evaluate(() => window.learning.recentProjects())).value.find(item => item.root === otherFolder);
+      assert.deepEqual(await page.evaluate(projectId => window.learning.learningSpot({ projectId }), other.id), { ok: true, value: null });
+      const closedSave = await page.evaluate(input => window.learning.saveLearningSpot(input), { projectId, spot: null });
+      assert.equal(closedSave.code, 'PROJECT_CLOSED');
+      // Returning to A before B replies also checks that a late response cannot replace A's card.
+      await closeProject(); await openRecent(); await card().waitFor();
+      await app.evaluate(() => globalThis.releaseResumeSpot());
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await card().getByText('조건과 반환 읽기', { exact: true }).waitFor();
+      assert.deepEqual(await readSpot(), saved);
+    });
+    await check('Missing last files offer a new start; missing start files offer no resume', async () => {
+      await card().getByRole('button', { name: '이어서 보기', exact: true }).click();
+      await page.getByRole('button', { name: 'last.ts', exact: true }).click();
+      await page.getByRole('button', { name: 'last', exact: true }).click();
+      await until(async () => (await readSpot())?.place?.relativePath === 'last.ts');
+      await closeProject(); await rm(path.join(folder, 'last.ts')); await openRecent();
+      await card().getByText('지난번 마지막으로 본 파일 last.ts을 찾지 못했어요.', { exact: true }).waitFor();
+      await card().getByRole('button', { name: '출발점에서 다시 시작', exact: true }).click();
+      await until(async () => await page.getByRole('button', { name: 'begin', exact: true }).getAttribute('aria-pressed') === 'true');
+      await until(async () => (await readSpot())?.place?.relativePath === 'start.ts');
+      await closeProject(); await rename(path.join(folder, 'start.ts'), path.join(folder, 'renamed.ts')); await openRecent();
+      await card().getByText('지난번 출발 파일 start.ts을 이 폴더에서 찾지 못했어요. 새로 시작해 주세요.', { exact: true }).waitFor();
+      assert.equal(await card().getByRole('button').count(), 0);
+      await closeProject(); await rename(path.join(folder, 'renamed.ts'), path.join(folder, 'start.ts')); await openRecent();
+    });
+    await check('Closing a topic deletes only its saved location and reopening shows no card', async () => {
+      await card().getByRole('button', { name: '이어서 보기', exact: true }).click();
+      await until(async () => !await page.locator('.busy').count());
+      await page.getByRole('button', { name: '주제 닫기', exact: true }).click();
+      await until(async () => await readSpot() === null);
+      await closeProject(); await openRecent();
+      assert.equal(await readSpot(), null);
+      assert.equal(await card().count(), 0);
+    });
+    await check('Invalid stored versions are ignored without deleting the stored value', async () => {
+      const invalid = JSON.stringify({ ...saved, version: 2 });
+      await app.evaluate(({ app: electronApp }, { projectId, invalid }) => {
+        const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+        const db = new DatabaseSync(process.getBuiltinModule('node:path').join(electronApp.getPath('userData'), 'learning.sqlite'));
+        try { db.prepare('INSERT INTO learning_spots VALUES (?, ?, ?)').run(projectId, invalid, new Date().toISOString()); }
+        finally { db.close(); }
+      }, { projectId, invalid });
+      await closeProject(); await openRecent();
+      assert.equal(await readSpot(), null);
+      assert.equal(await card().count(), 0);
+      const stored = await app.evaluate(({ app: electronApp }, projectId) => {
+        const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+        const db = new DatabaseSync(process.getBuiltinModule('node:path').join(electronApp.getPath('userData'), 'learning.sqlite'));
+        try { return db.prepare('SELECT spot FROM learning_spots WHERE project_id = ?').get(projectId).spot; }
+        finally { db.close(); }
+      }, projectId);
+      assert.equal(stored, invalid);
+    });
+    await check('Recent project opens share the open lock and cancellation generation', async () => {
+      await closeProject();
+      await holdWorkerMessages();
+      let pending;
+      try {
+        pending = page.evaluate(projectId => window.learning.openRecent({ projectId }), projectId);
+        await until(() => app.evaluate(() => globalThis.testHeld.length > 0));
+        const refused = await page.evaluate(projectId => Promise.all([
+          window.learning.openRecent({ projectId }), window.learning.openProject(),
+        ]), projectId);
+        assert.deepEqual(refused.map(result => result.code), ['INVALID_REQUEST', 'INVALID_REQUEST']);
+        assert.equal((await page.evaluate(() => window.learning.cancel())).ok, true);
+      } finally { await releaseWorkerMessages(); }
+      const cancelled = await pending;
+      assert.equal(cancelled.code, 'CANCELLED');
+      const unknown = await page.evaluate(() => window.learning.openRecent({ projectId: crypto.randomUUID() }));
+      assert.equal(unknown.code, 'INVALID_REQUEST');
+      await openRecent();
+    });
+    await check('A moved recent folder, a replacement link and a replacement file are refused without opening another project', async () => {
+      await closeProject();
+      await rename(folder, `${folder}-moved`);
+      const missing = '이 폴더를 찾지 못했어요. 옮겼거나 지웠다면 ‘프로젝트 폴더 열기’로 다시 골라 주세요.';
+      const recent = () => page.getByRole('region', { name: '최근 프로젝트', exact: true }).getByRole('button').filter({ hasText: '이어서 보기 프로젝트' });
+      await recent().click();
+      await page.getByText(missing, { exact: true }).waitFor();
+      assert.equal(await page.locator('.views').count(), 0);
+      await symlink(otherFolder, folder);
+      await recent().click();
+      await page.getByText(missing, { exact: true }).waitFor();
+      assert.equal(await page.locator('.views').count(), 0);
+      await rm(folder); await writeFile(folder, 'not a directory');
+      const result = await page.evaluate(projectId => window.learning.openRecent({ projectId }), projectId);
+      assert.deepEqual(result, { ok: false, code: 'IO', message: missing });
+      await rm(folder); await rename(`${folder}-moved`, folder);
+    });
+  }
   await check('Quitting while files are parsed waits for the workers and ends cleanly', async () => {
     // (a) Closing the window while a large folder opens.
     await dialogTo(bigMapFixture);
@@ -4448,8 +4736,8 @@ try {
     await until(() => app.evaluate(() => globalThis.testHeld.length > 0));
     ended = ending();
     await app.evaluate(({ app: electronApp }) => electronApp.quit());
-    const refused = await page.evaluate(id => Promise.all([window.learning.openProject(), window.learning.projectMap({ projectId: id })]), opened.value.id);
-    assert.deepEqual(refused.map(result => [result.ok, result.code]), [[false, 'CANCELLED'], [false, 'CANCELLED']]);
+    const refused = await page.evaluate(id => Promise.all([window.learning.openProject(), window.learning.openRecent({ projectId: id }), window.learning.projectMap({ projectId: id })]), opened.value.id);
+    assert.deepEqual(refused.map(result => [result.ok, result.code]), [[false, 'CANCELLED'], [false, 'CANCELLED'], [false, 'CANCELLED']]);
     // Only the held scan answer of the folder that was opening: a refused open started no worker.
     await new Promise(resolve => setTimeout(resolve, 300));
     assert.equal(await app.evaluate(() => globalThis.testHeld.length), 1);

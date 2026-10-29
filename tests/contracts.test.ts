@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { sourceRequestSchema, evidenceRequestSchema, featureFlowsRequestSchema, featureFlowRequestSchema, projectRequestSchema } from '../src/shared/contracts';
+import { learningSpotSchema, saveLearningSpotSchema, sourceRequestSchema, evidenceRequestSchema, featureFlowsRequestSchema, featureFlowRequestSchema, projectRequestSchema } from '../src/shared/contracts';
 describe.each([
   ['source', sourceRequestSchema, 'fileId'],
   ['evidence', evidenceRequestSchema, 'evidenceId'],
@@ -41,4 +41,43 @@ it('rejects renderer-supplied batch limits, revisions, routes and file data', ()
   for (const extra of [{ routes: [] }, { files: [] }, { revision: 0 }, { timeoutMs: 0 }, { limits: {} }, { routeIndex: 0 }]) {
     expect(featureFlowsRequestSchema.safeParse({ ...input, ...extra }).success).toBe(false);
   }
+});
+
+
+describe('saved learning location boundary', () => {
+  const spot = { version: 1, topic: { name: '', original: 'start', origin: 'start',
+    start: { relativePath: 'src/start.ts', fileHash: 'a'.repeat(64), functionName: 'start', startUtf16: 0 } },
+    place: { view: 'function', relativePath: 'src/start.ts', fileHash: 'b'.repeat(64),
+      symbol: { name: 'start', startUtf16: 0, step: 0 }, range: { startUtf16: 0, endUtf16: 10, startLine: 1, endLine: 2 } } };
+  it('accepts long analyzer names and file paths without keeping opaque file IDs', () => {
+    expect(learningSpotSchema.parse(spot)).toEqual(spot);
+    const name = 'f'.repeat(200);
+    for (const original of [name, `src/${name}.ts`]) {
+      expect(learningSpotSchema.safeParse({ ...spot, topic: { ...spot.topic, name: original, original,
+        start: { ...spot.topic.start, functionName: name, relativePath: `src/${name}.ts` } } }).success).toBe(true);
+    }
+    expect(saveLearningSpotSchema.safeParse({ projectId: randomUUID(), spot: null }).success).toBe(true);
+    expect(saveLearningSpotSchema.safeParse({ projectId: randomUUID(), spot, path: '/tmp' }).success).toBe(false);
+  });
+  it('rejects unknown fields at every level and unsupported versions', () => {
+    const invalid = [
+      { ...spot, extra: true }, { ...spot, version: 2 }, { ...spot, topic: { ...spot.topic, anchor: 'old' } },
+      { ...spot, topic: { ...spot.topic, start: { ...spot.topic.start, fileId: randomUUID() } } },
+      { ...spot, place: { ...spot.place, fileId: randomUUID() } },
+      { ...spot, place: { ...spot.place, symbol: { ...spot.place.symbol, extra: true } } },
+      { ...spot, place: { ...spot.place, range: { ...spot.place.range, extra: true } } },
+    ];
+    for (const value of invalid) expect(learningSpotSchema.safeParse(value).success).toBe(false);
+  });
+  it('rejects malformed hashes, reversed ranges and out-of-contract offsets', () => {
+    for (const fileHash of ['', 'a'.repeat(63), 'A'.repeat(64), 'g'.repeat(64)]) {
+      expect(learningSpotSchema.safeParse({ ...spot, topic: { ...spot.topic, start: { ...spot.topic.start, fileHash } } }).success).toBe(false);
+      expect(learningSpotSchema.safeParse({ ...spot, place: { ...spot.place, fileHash } }).success).toBe(false);
+    }
+    for (const range of [
+      { ...spot.place.range, startUtf16: 11 }, { ...spot.place.range, startLine: 3 },
+      { ...spot.place.range, startUtf16: -1 }, { ...spot.place.range, endUtf16: 100_000_001 },
+      { ...spot.place.range, startLine: 0 }, { ...spot.place.range, endLine: 10_000_001 },
+    ]) expect(learningSpotSchema.safeParse({ ...spot, place: { ...spot.place, range } }).success).toBe(false);
+  });
 });

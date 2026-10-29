@@ -1,5 +1,5 @@
 import React, { useId, useState } from 'react';
-import type { Evidence, ProjectView } from '../shared/contracts';
+import type { Evidence, LearningSpot, ProjectFile, ProjectView, SavedSpot } from '../shared/contracts';
 import type { LearningPhase, OverviewFeature, OverviewResult } from '../shared/ai';
 import { SourceButtons } from './ai-panel';
 
@@ -31,6 +31,52 @@ export interface Place {
   symbol: { name: string; startUtf16: number; step: number | null } | null;
   range: { startUtf16: number; endUtf16: number; startLine: number; endLine: number } | null;
 }
+export function spotOf(topic: Topic, place: Place | null, files: ProjectFile[]): LearningSpot {
+  const startFile = files.find(file => file.id === topic.start.fileId);
+  const placeFile = place && files.find(file => file.id === place.fileId);
+  if (!startFile || (place && !placeFile)) throw new Error('The learning location is not in this project.');
+  return {
+    version: 1,
+    topic: { name: topic.name, original: topic.original, origin: topic.origin,
+      start: { relativePath: startFile.relativePath, fileHash: topic.start.fileHash,
+        functionName: topic.start.functionName, startUtf16: topic.start.startUtf16 } },
+    place: place && placeFile ? { view: place.view, relativePath: placeFile.relativePath, fileHash: place.fileHash,
+      symbol: place.symbol, range: place.range } : null,
+  };
+}
+
+export function restoreSpot(spot: LearningSpot, files: ProjectFile[]):
+  { topic: Topic; place: Place | null; placeMissing: boolean } | { missingStart: string } {
+  const startFile = files.find(file => file.relativePath === spot.topic.start.relativePath);
+  if (!startFile) return { missingStart: spot.topic.start.relativePath };
+  const placeFile = spot.place && files.find(file => file.relativePath === spot.place!.relativePath);
+  return {
+    topic: { ...spot.topic, start: { ...spot.topic.start, fileId: startFile.id }, anchor: null },
+    place: spot.place && placeFile ? { view: spot.place.view, fileId: placeFile.id, fileHash: spot.place.fileHash,
+      symbol: spot.place.symbol, range: spot.place.range } : null,
+    placeMissing: spot.place !== null && !placeFile,
+  };
+}
+
+export function ResumeCard({ saved, files, locked, onResume }: {
+  saved: SavedSpot; files: ProjectFile[]; locked: boolean; onResume(): void;
+}) {
+  const { topic, place } = saved.spot;
+  const restored = restoreSpot(saved.spot, files);
+  const location = place ?? { ...topic.start, symbol: topic.start.functionName ? { name: topic.start.functionName, step: null } : null };
+  return <section className="card card--wide" aria-labelledby="resume-title">
+    <h3 id="resume-title">지난번 학습 이어서 보기</h3>
+    <b>{topic.name || topic.original}</b>
+    <p>{place ? '마지막 위치' : '출발점'}: {location.relativePath}{location.symbol && ` › ${location.symbol.name}`}
+      {location.symbol?.step != null && ` · ${location.symbol.step + 1}단계`}</p>
+    <p className="hint">저장 날짜: {new Date(saved.savedAt).toLocaleDateString('ko-KR')}</p>
+    {'missingStart' in restored ? <p>지난번 출발 파일 {restored.missingStart}을 이 폴더에서 찾지 못했어요. 새로 시작해 주세요.</p> : <>
+      {restored.placeMissing && <p>지난번 마지막으로 본 파일 {place!.relativePath}을 찾지 못했어요.</p>}
+      <button className="btn btn--primary" disabled={locked} onClick={onResume}>{restored.placeMissing ? '출발점에서 다시 시작' : '이어서 보기'}</button>
+    </>}
+  </section>;
+}
+
 const HISTORY = 20;
 const samePlace = (a: Place, b: Place) => a.view === b.view && a.fileId === b.fileId && a.fileHash === b.fileHash
   && a.symbol?.name === b.symbol?.name && a.symbol?.startUtf16 === b.symbol?.startUtf16 && a.symbol?.step === b.symbol?.step

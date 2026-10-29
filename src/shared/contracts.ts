@@ -5,6 +5,28 @@ export const idSchema = z.string().uuid();
 export const sourceRequestSchema = z.object({ projectId: idSchema, fileId: idSchema }).strict();
 export const evidenceRequestSchema = z.object({ projectId: idSchema, evidenceId: idSchema }).strict();
 export const projectRequestSchema = z.object({ projectId: idSchema }).strict();
+const utf16 = z.number().int().min(0).max(100_000_000);
+const line = z.number().int().min(1).max(10_000_000);
+const relativePath = z.string().min(1).max(1024);
+const text = z.string().min(1).max(1024);
+const fileHash = z.string().regex(/^[a-f0-9]{64}$/);
+export const learningSpotSchema = z.object({
+  version: z.literal(1),
+  topic: z.object({
+    name: z.string().max(1024), original: text, origin: z.enum(['ai', 'start', 'function']),
+    start: z.object({ relativePath, fileHash, functionName: text.nullable(), startUtf16: utf16.nullable() }).strict(),
+  }).strict(),
+  place: z.object({
+    view: z.enum(['function', 'code']), relativePath, fileHash,
+    symbol: z.object({ name: text, startUtf16: utf16, step: z.number().int().min(0).max(100_000).nullable() }).strict().nullable(),
+    range: z.object({ startUtf16: utf16, endUtf16: utf16, startLine: line, endLine: line }).strict()
+      .refine(range => range.startUtf16 <= range.endUtf16 && range.startLine <= range.endLine).nullable(),
+  }).strict().nullable(),
+}).strict();
+export type LearningSpot = z.infer<typeof learningSpotSchema>;
+export interface SavedSpot { spot: LearningSpot; savedAt: string }
+export interface RecentProject { id: string; name: string; root: string; openedAt: string }
+export const saveLearningSpotSchema = z.object({ projectId: idSchema, spot: learningSpotSchema.nullable() }).strict();
 export const featureFlowsRequestSchema = projectRequestSchema.extend({ routesId: idSchema }).strict();
 export const featureFlowRequestSchema = projectRequestSchema.extend({ routesId: idSchema, routeIndex: z.number().int().min(0) }).strict();
 /** A function as the analyzer listed it: its file, the hash the file had and the function's range. */
@@ -462,6 +484,10 @@ export type ProjectEvent = { projectId: string; kind: 'changed' | 'watch-error' 
 
 export interface LearningApi {
   openProject(): Promise<Result<ProjectView | null>>;
+  recentProjects(): Promise<Result<RecentProject[]>>;
+  openRecent(input: z.infer<typeof projectRequestSchema>): Promise<Result<ProjectView | null>>;
+  learningSpot(input: z.infer<typeof projectRequestSchema>): Promise<Result<SavedSpot | null>>;
+  saveLearningSpot(input: z.infer<typeof saveLearningSpotSchema>): Promise<Result<null>>;
   readSource(input: z.infer<typeof sourceRequestSchema>): Promise<Result<SourceView>>;
   readEvidence(input: z.infer<typeof evidenceRequestSchema>): Promise<Result<{ source: SourceView; evidence: Evidence }>>;
   cancel(): Promise<Result<null>>;
@@ -492,6 +518,8 @@ export interface LearningApi {
 }
 
 export const channels = {
+  recentProjects: 'learning:recent-projects', openRecent: 'learning:open-recent',
+  learningSpot: 'learning:spot', saveLearningSpot: 'learning:save-spot',
   open: 'learning:open', read: 'learning:read', evidence: 'learning:evidence',
   cancel: 'learning:cancel', event: 'learning:project-event', routes: 'learning:routes', cancelRoutes: 'learning:cancel-routes', featureFlows: 'learning:feature-flows', cancelFeatureFlows: 'learning:cancel-feature-flows', featureFlow: 'learning:feature-flow', cancelFeatureFlow: 'learning:cancel-feature-flow', map: 'learning:map', cancelMap: 'learning:cancel-map',
   calls: 'learning:calls', cancelCalls: 'learning:cancel-calls', shapes: 'learning:shapes', cancelShapes: 'learning:cancel-shapes',
