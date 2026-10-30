@@ -32,6 +32,11 @@ await mkdir(path.join(treeFixture, 'api/test'), { recursive: true });
 await writeFile(path.join(treeFixture, 'api/src/main.ts'), 'export function nested(value: number) { if (value < 0) return 0; return value; }\n');
 await writeFile(path.join(treeFixture, 'api/test/helper.ts'), 'export const helper = 1;\n');
 await writeFile(path.join(treeFixture, 'root.ts'), 'export const root = 1;\n');
+const aliasFixture = path.join(temporary, '경로 별칭 프로젝트');
+await mkdir(path.join(aliasFixture, 'src'), { recursive: true });
+await writeFile(path.join(aliasFixture, 'tsconfig.json'), '{"compilerOptions":{"paths":{"@/*":["src/*"]}}}');
+await writeFile(path.join(aliasFixture, 'main.ts'), "import {load} from '@/api'; export function run() { return load(); }");
+await writeFile(path.join(aliasFixture, 'src/api.ts'), 'export function load() { return 1; }');
 // One feature, with a nested event and a hook result, exercises the diagram and steps independently of the full map.
 const featureFlowFixture = path.join(temporary, '기능 흐름 프로젝트');
 const featureFlowFiles = {
@@ -2226,6 +2231,20 @@ try {
     assert.equal(await canvas.locator('.map-box--dim, .map-box--focus').count(), 0);
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+  });
+  await check('Path aliases: map arrow, file guide and unused candidates agree', async () => {
+    await dialogTo(aliasFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '경로 별칭 프로젝트', exact: true }).waitFor();
+    await openTreeFile('main.ts');
+    const guide = await openFileGuide();
+    await guide.locator('.file-guide__imports').getByRole('button', { name: 'api.ts 열기', exact: true }).waitFor();
+    await openFileMap();
+    await page.getByText('tsconfig 1개의 경로 별칭을 따라갔어요.', { exact: true }).waitFor();
+    // Arrows between areas start faint (hidden), so the alias arrow is checked by its presence.
+    await page.locator('[data-id="files:->folder:src"]').waitFor({ state: 'attached' });
+    const candidates = page.getByRole('region', { name: '아무도 가져다 쓰지 않는 파일 후보', exact: true });
+    assert.equal(await candidates.getByRole('button', { name: 'src/api.ts', exact: true }).count(), 0);
   });
   await check('Project map: an unused candidate opens its file in the code reader', async () => {
     await dialogTo(unusedMapFixture);

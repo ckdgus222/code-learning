@@ -1,8 +1,9 @@
 import type Parser from 'tree-sitter';
 import type { CallLink, CallSite, CallUnknownReason, FunctionCalls, ProjectFile } from '../../shared/contracts';
+import { readPathAliases, resolveImport, type PathAliases } from './path-aliases';
 import { AppError } from '../../shared/errors';
 import { assertAllowedFile, MAX_FILE_BYTES, readAllowed } from '../project/files';
-import { candidatesFor, codeFile, isRelative, type MapLimits } from './project-map';
+import { codeFile, type MapLimits } from './project-map';
 import { functionName, functionTypes } from './syntax';
 import { valuesOf } from './values';
 import { calledProperty, firstLine, hasToken, isMemberCall, lineRange, nearest, propertyName, readFacts, reassigned, sameRange,
@@ -128,7 +129,7 @@ export interface CallsCache {
  */
 export async function findFunctionCalls(root: string, projectId: string, files: ProjectFile[],
   target: { fileId: string; fileHash: string; startUtf16: number; endUtf16: number },
-  limits: MapLimits, shouldStop: () => boolean = () => false, cache?: CallsCache): Promise<FunctionCalls> {
+  limits: MapLimits, shouldStop: () => boolean = () => false, cache?: CallsCache, pathAliases?: PathAliases): Promise<FunctionCalls> {
   const chosenFile = files.find(file => file.id === target.fileId);
   if (!chosenFile) throw new AppError('NOT_ALLOWED', '현재 프로젝트의 파일이 아닙니다.');
   const known = new Map(files.map(file => [file.relativePath, file]));
@@ -137,7 +138,8 @@ export async function findFunctionCalls(root: string, projectId: string, files: 
     if (!result.unexamined.has(file.id)) result.unexamined.set(file.id, { fileId: file.id, relativePath: file.relativePath, reason });
   };
   let filesRead = 0;
-  let bytesRead = 0;
+  const aliases = pathAliases ?? await readPathAliases(root, files, limits.bytes, shouldStop);
+  let bytesRead = aliases.bytesRead;
   const texts = new Map<string, Promise<{ text: string; hash: string } | null>>();
   const read = (file: ProjectFile) => {
     if (!texts.has(file.id)) texts.set(file.id, (async () => {
@@ -184,9 +186,11 @@ export async function findFunctionCalls(root: string, projectId: string, files: 
   const importedFile = async (from: FileFacts, specifier: string | null): Promise<ProjectFile | Found> => {
     if (specifier === null) return unknown('import-file', '경로 글을 그대로 읽을 수 없어요.');
     if (specifier.startsWith('/')) return unknown('import-file', '프로젝트 밖을 가리켜요.');
-    if (!isRelative(specifier)) return { kind: 'external', specifier };
-    const named = candidatesFor(from.file.relativePath, specifier, known);
-    if (named === null) return unknown('import-file', '프로젝트 밖을 가리켜요.');
+    const resolved = resolveImport(from.file.relativePath, specifier, known, aliases);
+    if (resolved.kind === 'external') return { kind: 'external', specifier };
+    if (resolved.kind === 'outside') return unknown('import-file', '프로젝트 밖을 가리켜요.');
+    if (!resolved.sure) return unknown('import-file', '경로 별칭이 가리키는 파일을 하나로 정하지 못했어요.');
+    const named = resolved.candidates;
     const usable: string[] = [];
     for (const name of named) if (await available(name)) usable.push(name);
     if (usable.length !== 1) {
@@ -449,6 +453,7 @@ export async function findFunctionCalls(root: string, projectId: string, files: 
   });
 
   const notes = result.limited ? [`부르는 곳은 파일 ${limits.files}개·합계 ${limits.bytes / 1024 / 1024} MiB까지만 찾아요. 나머지 파일은 보지 않았어요.`] : [];
+  notes.push(...aliases.notes);
   return { projectId, fileId: chosenFile.id, fileHash: chosen.hash, startUtf16: fn.startIndex, endUtf16: fn.endIndex, name: functionName(fn),
     calls, callers: searched ? callers : null, typedCallers, maybeCallers, names, unexamined: [...result.unexamined.values()], values, limited: result.limited, notes };
 }

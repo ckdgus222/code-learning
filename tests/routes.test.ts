@@ -507,3 +507,26 @@ export function useSaveDiary(id) {
     expect(result.limited).toBe(true);
   });
 });
+
+it('follows an imported request wrapper through an alias', async () => {
+  await put('tsconfig.json', '{"compilerOptions":{"paths":{"@/*":["src/*"]}}}');
+  await put('src/api.ts', 'export function request(path, init) { return fetch(path, init); }');
+  await put('client.ts', "import {request} from '@/api'; request('/dogs', {method:'DELETE'});");
+  expect((await find()).requests.map(request => [request.path, request.methods])).toEqual([['/dogs', ['DELETE']]]);
+  await put('src/api.js', 'export function request() {}');
+  expect((await find()).requests).toEqual([]);
+});
+
+it('does not recognize internal aliases named axios or express as packages', async () => {
+  await put('client.ts', "import axios from 'axios'; axios.get('/dogs');");
+  await put('server.ts', "import express from 'express'; const app = express(); app.get('/dogs', (req, res) => res.send('ok'));");
+  await put('src/fake-axios.ts', 'export default function axios() {}');
+  await put('src/fake-express.ts', 'export default function express() {}');
+  const before = await find();
+  expect(before.requests.map(item => item.path)).toEqual(['/dogs']);
+  expect(before.routes.map(item => item.path)).toEqual(['/dogs']);
+  await put('tsconfig.json', '{"compilerOptions":{"paths":{"axios":["./src/fake-axios.ts"],"express":["./src/fake-express.ts"]}}}');
+  const after = await find();
+  expect(after.requests).toEqual([]);
+  expect(after.routes).toEqual([]);
+});

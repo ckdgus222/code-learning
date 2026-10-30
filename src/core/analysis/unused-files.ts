@@ -2,7 +2,8 @@ import path from 'node:path';
 import type { ProjectFile, ProjectMap, UnusedExcludeKind, UnusedFiles } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 import { MAX_FILE_BYTES, readAllowed } from '../project/files';
-import { candidatesFor, codeFile, isRelative } from './project-map';
+import { candidatesFor, codeFile } from './project-map';
+import { NO_ALIASES, resolveImport, type PathAliases } from './path-aliases';
 import { isTestFile } from './routes';
 import { isNextConfig } from './next-routes';
 
@@ -28,7 +29,7 @@ function isConfigFile(name: string): boolean {
 const failedNames = (failed: ScriptFiles['failed']) => failed.slice(0, 5).map(file => `${file.relativePath}(${file.reason})`).join(', ')
   + (failed.length > 5 ? ` 외 ${failed.length - 5}개` : '');
 
-export function unusedFiles(map: Omit<ProjectMap, 'unused'>, scripts: ScriptFiles): UnusedFiles {
+export function unusedFiles(map: Omit<ProjectMap, 'unused'>, scripts: ScriptFiles, pathAliases: PathAliases = NO_ALIASES): UnusedFiles {
   const result: UnusedFiles = { candidates: [], unsure: [], excluded: [], notes: [], exports: { candidates: [], unsure: [], notes: [] } };
   const files = map.files.filter(file => file.checked !== 'not-code' && codeFile.test(file.relativePath))
     .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
@@ -38,10 +39,11 @@ export function unusedFiles(map: Omit<ProjectMap, 'unused'>, scripts: ScriptFile
   const unresolved = new Set(map.unresolved.flatMap(item => item.candidates));
   const dynamic = new Set<string>();
   for (const item of map.unresolved) {
-    if (item.reason !== 'not-static' || !item.specifier || !isRelative(item.specifier)) continue;
+    if (item.reason !== 'not-static' || !item.specifier) continue;
     const from = pathsById.get(item.fromFileId);
     if (!from) continue;
-    for (const name of candidatesFor(from, item.specifier, known) ?? []) dynamic.add(name);
+    const resolved = resolveImport(from, item.specifier, known, pathAliases);
+    if (resolved.kind === 'project') for (const name of resolved.candidates) dynamic.add(name);
   }
   const aliases = [...new Set(map.external.map(item => aliasPath(item.specifier?.split('/').slice(1).join('/') ?? '')).filter(Boolean))];
   const nextRoots = [...new Set(map.files.filter(file => isNextConfig(file.relativePath)).map(file => {
@@ -110,7 +112,12 @@ export function unusedFiles(map: Omit<ProjectMap, 'unused'>, scripts: ScriptFile
     "시험 파일이 가져다 쓰는 export도 '쓰임'으로 봐요.",
     'export 이름만 비교했어요. 객체 안 속성이나 클래스 메서드가 쓰이는지는 보지 않아요.',
   );
-  const computed = map.unresolved.filter(item => item.reason === 'not-static' && (!item.specifier || !isRelative(item.specifier))).length;
+  const computed = map.unresolved.filter(item => {
+    if (item.reason !== 'not-static') return false;
+    const from = pathsById.get(item.fromFileId);
+    return !item.specifier || item.specifier.startsWith('/')
+      || resolveImport(from ?? '', item.specifier, known, pathAliases).kind === 'external';
+  }).length;
   if (computed) result.notes.push(`코드로 정하는 가져오기가 ${computed}곳 있어 후보가 실제로 쓰일 수 있어요.`);
   if (scripts.failed.length) {
     result.notes.push(`package.json ${scripts.failed.length}개를 읽지 못해 실행 명령에 적힌 파일을 확인하지 못했어요: ${failedNames(scripts.failed)}`);
@@ -118,6 +125,7 @@ export function unusedFiles(map: Omit<ProjectMap, 'unused'>, scripts: ScriptFile
   if (scripts.referenceFailed.length) {
     result.notes.push(`설정·HTML 파일 ${scripts.referenceFailed.length}개를 읽지 못해 거기 적힌 경로를 확인하지 못했어요: ${failedNames(scripts.referenceFailed)}`);
   }
+  result.notes.push(...pathAliases.notes);
   result.notes.push('안 쓰는 파일이 가져다 쓰는 파일은 후보에 나오지 않아요(그 파일이 아직 import하고 있으므로).');
   return result;
 }

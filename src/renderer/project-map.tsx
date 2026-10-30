@@ -283,7 +283,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
     </details>
     <details className="card" open={map.unresolved.length > 0}><summary>확인 못 함 · {map.unresolved.length}개</summary>
       <ul className="map-list">{firstRows(map.unresolved).map(item => <li key={`${item.fromFileId}:${item.startUtf16}`}>
-        <span className="path">{pathOf(item.fromFileId)} {item.startLine}행</span> <code>{item.text}</code> · {unresolvedLabels[item.reason]}
+        <span className="path">{pathOf(item.fromFileId)} {item.startLine}행</span> <code>{item.text}</code> · {item.reasonText ?? unresolvedLabels[item.reason]}
         {item.candidates.length > 0 && <> · 후보: {item.candidates.join(', ')}</>} {showButton(item)}
       </li>)}</ul>
       <Omitted count={map.unresolved.length} />

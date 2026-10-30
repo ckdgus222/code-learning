@@ -1,7 +1,8 @@
 import type Parser from 'tree-sitter';
 import type { Analysis, FileGuide, GuideFunction, GuideImport, GuideRange, ProjectFile } from '../../shared/contracts';
+import { NO_ALIASES, resolveImport, type PathAliases } from './path-aliases';
 import { splitFileChunks } from './file-chunks';
-import { candidatesFor, isRelative, MAP_LIMITS, parse } from './project-map';
+import { MAP_LIMITS, parse } from './project-map';
 import { readFacts } from './names';
 import { serverFacts } from './feature-flow';
 import { functionTypes, importOf } from './syntax';
@@ -74,7 +75,7 @@ function shapeOf(fn: Node) {
 }
 
 export function describeFile(text: string, relativePath: string, fileId: string, fileHash: string,
-  analysis: Analysis, projectFiles: ProjectFile[]): FileGuide {
+  analysis: Analysis, projectFiles: ProjectFile[], aliases: PathAliases = NO_ALIASES): FileGuide {
   const root = parse(text, relativePath);
   const split = splitFileChunks(text, relativePath, fileId, fileHash, root);
   const top = root.namedChildren.filter(node => !['comment', 'hash_bang_line', 'empty_statement'].includes(node.type));
@@ -177,7 +178,7 @@ export function describeFile(text: string, relativePath: string, fileId: string,
   else if (top.length && top.every(node => node.type === 'export_statement' && node.childForFieldName('source'))) fileRole = role('모아 내보내기', '다른 파일의 것을 한곳에서 내보내요.', top[0]);
   else if (/\.config\./.test(relativePath.split('/').at(-1)!)) fileRole = role('설정 파일', '도구의 설정이에요.', relativePath);
   else fileRole = role('일반 코드', `함수 ${functions.length}개·클래스 ${classes.length}개가 있어요.`, top[0] ?? relativePath);
-  const notes: string[] = [];
+  const notes: string[] = [...aliases.notes];
   const directive = top[0]?.type === 'expression_statement' ? top[0].namedChildren[0] : null;
   if (directive?.type === 'string') {
     if (directive.text.slice(1, -1) === 'use client') notes.push('브라우저에서 도는 화면 코드예요.');
@@ -236,9 +237,11 @@ export function describeFile(text: string, relativePath: string, fileId: string,
     if (kind !== 'static') { imports.push({ ...item, status: kind }); continue; }
     if (specifier === null) { imports.push({ ...item, status: 'unreadable' }); continue; }
     if (specifier.startsWith('/')) { imports.push({ ...item, status: 'outside' }); continue; }
-    if (!isRelative(specifier)) { external.add(specifier); continue; }
-    const candidates = candidatesFor(relativePath, specifier, known);
-    if (candidates === null) { imports.push({ ...item, status: 'outside' }); continue; }
+    const resolved = resolveImport(relativePath, specifier, known, aliases);
+    if (resolved.kind === 'external') { external.add(specifier); continue; }
+    if (resolved.kind === 'outside') { imports.push({ ...item, status: 'outside' }); continue; }
+    const candidates = resolved.candidates;
+    if (!resolved.sure) { imports.push({ ...item, status: 'ambiguous' }); continue; }
     if (candidates.length !== 1) { imports.push({ ...item, status: candidates.length ? 'ambiguous' : 'not-found' }); continue; }
     const target = known.get(candidates[0])!;
     if (targets.has(target.id)) continue;
