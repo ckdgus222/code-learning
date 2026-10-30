@@ -386,9 +386,9 @@ const caret = () => page.evaluate(() => {
   return { anchor: place(selection.anchorNode, selection.anchorOffset), head: place(selection.focusNode, selection.focusOffset) };
 });
 const at = (line, column) => ({ line, column });
-async function launch() {
+async function launch(entry = bootstrap) {
   // Playwright pretends the system is light unless told not to; null lets nativeTheme reach the page as on a real Mac.
-  app = await electron.launch({ executablePath: require('electron'), args: [bootstrap], cwd: root,
+  app = await electron.launch({ executablePath: require('electron'), args: [entry], cwd: root,
     chromiumSandbox: true, timeout: 30_000, colorScheme: null });
   page = await app.firstWindow();
   page.on('pageerror', error => failures.push(error.message));
@@ -436,7 +436,184 @@ async function releaseWorkerMessages() {
     for (const deliver of globalThis.testHeld.splice(0)) deliver();
   });
 }
+// These independent runs use a separate profile so the original welcome/recent-project tests stay unchanged.
+const inspectionProfile = path.join(temporary, 'inspection-profile');
+await mkdir(inspectionProfile);
+const inspectionBootstrap = path.join(temporary, 'inspection-bootstrap.cjs');
+await writeFile(inspectionBootstrap, `const { app } = require('electron');\napp.setPath('userData', ${JSON.stringify(inspectionProfile)});\nrequire(${JSON.stringify(path.join(root, '.vite/build/main.cjs'))});\n`);
 try {
+  await launch(inspectionBootstrap);
+  await check('Fresh app: real IPC rejects AI requests before any installation check', async () => {
+    // Real IPC gates, before any installation check in this app run. The local worker opens only once a
+    // check has found both Codex and Antigravity, so a valid request here must be refused. Never send a
+    // valid one after the check: it would start the real AI CLIs (this test profile's app homes have no
+    // login, so they would fail at sign-in, but they would run).
+    await dialogTo(fixture);
+    const gate = await page.evaluate(async () => {
+      const opened = await window.learning.openProject();
+      if (!opened.ok || !opened.value) throw new Error('fixture open failed');
+      const file = opened.value.files.find(item => item.relativePath === 'order.ts');
+      if (!file) throw new Error('fixture file absent');
+      const source = await window.learning.readSource({ projectId: opened.value.id, fileId: file.id });
+      if (!source.ok) throw new Error('fixture source failed');
+      const evidence = source.value.analysis.symbols[0].evidence;
+      const request = { projectId: evidence.projectId, evidenceId: evidence.id, expectedFileHash: evidence.fileHash,
+        question: '값을 설명해 주세요', mode: 'local-worker', consent: true };
+      const ready = await window.learning.startExplanation(request);
+      if (ready.ok) {
+        await window.learning.cancelExplanation({ jobId: ready.value.jobId });
+        throw new Error('Unexpected AI readiness before installation inspection; stopping the test');
+      }
+      const single = await window.learning.startExplanation({ ...request, mode: 'codex' });
+      if (single.ok) {
+        await window.learning.cancelExplanation({ jobId: single.value.jobId });
+        throw new Error('Unexpected single-provider readiness before installation inspection; stopping the test');
+      }
+      return {
+        ready, single,
+        consent: await window.learning.startExplanation({ ...request, consent: false }),
+        path: await window.learning.startExplanation({ ...request, path: '/etc/passwd' }),
+      };
+    });
+    assert.equal(gate.ready.ok, false); assert.equal(gate.ready.code, 'AI_UNAVAILABLE');
+    assert.equal(gate.single.ok, false); assert.equal(gate.single.code, 'AI_UNAVAILABLE');
+    assert.equal(gate.consent.ok, false); assert.equal(gate.consent.code, 'INVALID_REQUEST');
+    assert.equal(gate.path.ok, false); assert.equal(gate.path.code, 'INVALID_REQUEST');
+    // Keep malformed inspection requests after every real AI request, even if schema validation regresses.
+    const invalidChecks = await page.evaluate(() => Promise.all([
+      window.learning.checkConnections({ automatic: false }),
+      window.learning.checkConnections({ automatic: true, extra: true }),
+      window.learning.checkConnections({}),
+    ]));
+    assert.deepEqual(invalidChecks.map(result => [result.ok, result.code]),
+      [[false, 'INVALID_REQUEST'], [false, 'INVALID_REQUEST'], [false, 'INVALID_REQUEST']]);
+  });
+  await app.close();
+  // Each entry starts with empty App connections. Fake IPC records the automatic input and never runs a CLI.
+  for (const entry of ['question', 'settings', 'file', 'feature', 'openQuestion', 'idle', 'ipc-failure', 'ipc-rejection', 'unusable', 'missing']) {
+    await launch(inspectionBootstrap);
+    await check(`Automatic installation inspection: ${entry}, independent app run`, async () => {
+      await app.evaluate(({ ipcMain }, entry) => {
+        globalThis.testInspectionCalls = [];
+        globalThis.testUnexpectedAiCalls = [];
+        globalThis.testReleaseInspection = null;
+        ipcMain.removeHandler('learning:connections');
+        ipcMain.handle('learning:connections', async (_event, request) => {
+          globalThis.testInspectionCalls.push(request);
+          const first = globalThis.testInspectionCalls.length === 1;
+          if (first && entry === 'ipc-failure') return { ok: false, code: 'IO', message: '시험용 설치 확인 실패' };
+          if (first && entry === 'ipc-rejection') throw new Error('synthetic IPC rejection');
+          if (first && entry === 'question') await new Promise(resolve => { globalThis.testReleaseInspection = resolve; });
+          const installation = first && entry === 'unusable' ? 'unusable' : entry === 'missing' ? 'missing' : 'found';
+          const ready = installation === 'found';
+          return { ok: true, value: {
+            checkedAt: new Date().toISOString(),
+            providers: (request?.automatic ? ['codex', 'antigravity'] : ['codex', 'antigravity', 'claude-code']).map(provider => ({
+              provider, installation, version: ready ? '1.2.3' : null, authentication: 'unchecked', isolation: 'unverified', message: '시험용 설치 상태',
+            })),
+            modes: ['local-worker', 'codex', 'antigravity', 'claude-code'].map(mode => ({
+              mode, ready: ready && mode !== 'claude-code', reason: '시험용 설치 상태',
+            })),
+          } };
+        });
+        for (const channel of ['learning:explain', 'learning:overview', 'learning:file-explanation', 'learning:feature-guide']) {
+          ipcMain.removeHandler(channel);
+          ipcMain.handle(channel, () => {
+            globalThis.testUnexpectedAiCalls.push(channel);
+            return { ok: false, code: 'INVALID_REQUEST', message: '이 시험은 AI 작업을 시작하지 않습니다.' };
+          });
+        }
+      }, entry);
+      await dialogTo(entry === 'feature' || entry === 'openQuestion' ? featureFlowFixture : fixture);
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      await page.getByRole('heading', { name: entry === 'feature' || entry === 'openQuestion' ? '기능 흐름 프로젝트' : '한글 프로젝트', exact: true }).waitFor();
+      const calls = () => app.evaluate(() => globalThis.testInspectionCalls);
+      assert.deepEqual(await calls(), []);
+      if (entry === 'idle') {
+        // This fixture's AI overview is under the automatically opened non-AI extra information.
+        await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+        await page.getByRole('button', { name: 'order.ts', exact: true }).click();
+        assert.deepEqual(await calls(), []);
+        return;
+      }
+      if (entry === 'file') {
+        await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+        await page.getByRole('button', { name: 'order.ts', exact: true }).click();
+        await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).click();
+        await page.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
+      } else if (entry === 'feature') {
+        await openServerFeatures();
+        await page.getByRole('button', { name: 'AI로 기능 정리하기', exact: true }).click();
+      } else if (entry === 'openQuestion') {
+        await page.getByRole('region', { name: '처음 따라갈 기능', exact: true }).getByRole('button', { name: '이 기능부터 따라가기', exact: true }).click();
+        const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
+        await story.getByRole('button', { name: '4단계 서버 받는 곳', exact: true }).click();
+        const ask = story.getByRole('button', { name: 'AI에게 쉽게 물어보기', exact: true });
+        await until(() => ask.isEnabled());
+        await ask.click();
+        await page.getByRole('textbox', { name: '선택한 코드에 질문', exact: true }).waitFor();
+      } else {
+        await openAiSection(entry === 'settings' ? '설정' : '질문하기');
+      }
+      await until(async () => (await calls()).length === 1);
+      assert.deepEqual(await calls(), [{ automatic: true }]);
+      const panel = page.locator('.ai-panel');
+      if (entry === 'question') {
+        await page.getByTestId('send-blocked').getByText('로컬 AI 설치를 확인하는 중이에요.', { exact: true }).waitFor();
+        await openAiSection('설정');
+        assert.equal(await panel.getByRole('button', { name: '설치 확인 중…', exact: true }).isDisabled(), true);
+        // A second entry during the held request must share that check.
+        await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+        await page.getByRole('button', { name: 'order.ts', exact: true }).click();
+        await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).click();
+        await page.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
+        assert.deepEqual(await calls(), [{ automatic: true }]);
+        await app.evaluate(() => globalThis.testReleaseInspection());
+      }
+      await until(async () => !await panel.getByRole('button', { name: '설치 확인 중…', includeHidden: true }).count());
+      if (entry === 'ipc-failure' || entry === 'ipc-rejection') {
+        await panel.getByRole('alert').waitFor();
+        assert.equal((await calls()).length, 1);
+      } else {
+        assert.match(await panel.getByRole('group', { name: 'AI 연결', exact: true }).innerText(),
+          entry === 'unusable' || entry === 'missing' ? /사용할 수 없음/ : /준비됨/);
+      }
+      if (['ipc-failure', 'ipc-rejection', 'unusable', 'missing'].includes(entry)) {
+        // No render-triggered retry: only closing and opening the question requests another check.
+        await panel.getByRole('button', { name: '질문하기', exact: true }).click();
+        assert.equal((await calls()).length, 1);
+        await openAiSection('질문하기');
+        const expected = entry === 'missing' ? 1 : 2;
+        await until(async () => (await calls()).length === expected);
+        await until(async () => !await panel.getByRole('button', { name: '설치 확인 중…', includeHidden: true }).count());
+        assert.deepEqual(await calls(), Array.from({ length: expected }, () => ({ automatic: true })));
+        if (entry !== 'missing') await panel.getByText('AI · 로컬 워커 · 준비됨', { exact: true }).waitFor();
+      }
+      if (entry === 'question') {
+        const note = panel.getByText('자동 확인은 Codex·Antigravity만 해요. Claude Code까지 보려면 ‘로컬 AI 설치 확인’을 눌러요.', { exact: true });
+        await note.waitFor();
+        await panel.getByRole('button', { name: '설정', exact: true }).click();
+        await openAiSection('설정');
+        await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+        await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+        await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).click();
+        await page.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
+        assert.equal((await calls()).length, 1);
+        // The shared result survives a project switch.
+        await dialogTo(second);
+        await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+        await page.getByRole('heading', { name: '다른 프로젝트', exact: true }).waitFor();
+        await openAiSection('설정');
+        assert.equal((await calls()).length, 1);
+        await panel.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
+        await panel.getByRole('list', { name: '로컬 AI 설치 상태' }).getByText(/^Claude Code ·/).waitFor();
+        assert.deepEqual(await calls(), [{ automatic: true }, undefined]);
+        assert.equal(await note.count(), 0);
+      }
+      assert.deepEqual(await app.evaluate(() => globalThis.testUnexpectedAiCalls), []);
+    });
+    await app.close();
+  }
   await launch();
   await check('SQLite uses isolated profile; renderer is sandboxed', async () => {
     const state = await app.evaluate(({ app, BrowserWindow }) => {
@@ -2613,37 +2790,8 @@ try {
     await page.getByRole('heading', { name: '다른 프로젝트', exact: true }).waitFor();
     assert.equal(await page.getByText('작업을 취소했습니다.', { exact: true }).count(), 0);
   });
-  await check('Local worker defaults, real installation inspection and real IPC readiness/input gates', async () => {
-    // Real IPC gates, before any installation check in this app run. The local worker opens only once a
-    // check has found both Codex and Antigravity, so a valid request here must be refused. Never send a
-    // valid one after the check: it would start the real AI CLIs (this test profile's app homes have no
-    // login, so they would fail at sign-in, but they would run).
+  await check('Local worker defaults, automatic and manual installation inspection', async () => {
     await dialogTo(fixture);
-    const gate = await page.evaluate(async () => {
-      const opened = await window.learning.openProject();
-      if (!opened.ok || !opened.value) throw new Error('fixture open failed');
-      const file = opened.value.files.find(item => item.relativePath === 'order.ts');
-      if (!file) throw new Error('fixture file absent');
-      const source = await window.learning.readSource({ projectId: opened.value.id, fileId: file.id });
-      if (!source.ok) throw new Error('fixture source failed');
-      const evidence = source.value.analysis.symbols[0].evidence;
-      const request = { projectId: evidence.projectId, evidenceId: evidence.id, expectedFileHash: evidence.fileHash,
-        question: '값을 설명해 주세요', mode: 'local-worker', consent: true };
-      const ready = await window.learning.startExplanation(request);
-      // Should the gate ever open here, stop that job at once; the assertion below then fails.
-      if (ready.ok) await window.learning.cancelExplanation({ jobId: ready.value.jobId });
-      return {
-        ready,
-        single: await window.learning.startExplanation({ ...request, mode: 'codex' }),
-        consent: await window.learning.startExplanation({ ...request, consent: false }),
-        path: await window.learning.startExplanation({ ...request, path: '/etc/passwd' }),
-      };
-    });
-    assert.equal(gate.ready.ok, false); assert.equal(gate.ready.code, 'AI_UNAVAILABLE');
-    assert.equal(gate.single.ok, false); assert.equal(gate.single.code, 'AI_UNAVAILABLE');
-    assert.equal(gate.consent.ok, false); assert.equal(gate.consent.code, 'INVALID_REQUEST');
-    assert.equal(gate.path.ok, false); assert.equal(gate.path.code, 'INVALID_REQUEST');
-    // Restore renderer/main agreement after direct IPC fixture setup.
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
     await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
@@ -2651,7 +2799,8 @@ try {
     await page.getByRole('button', { name: '주문', exact: true }).click();
     await openAiSection('질문하기');
     const blocked = page.getByTestId('send-blocked');
-    await blocked.getByText('먼저 ‘설정’에서 ‘로컬 AI 설치 확인’을 눌러 주세요.', { exact: true }).waitFor();
+    await until(async () => !await page.locator('.ai-panel').getByRole('button', { name: '설치 확인 중…', includeHidden: true }).count());
+    assert.match(await blocked.innerText(), /^(질문을 적어 주세요\.|지금 고른 AI 방식은 쓸 수 없어요\.)/);
     const send = page.getByRole('button', { name: '질문 보내기', exact: true });
     assert.equal(await send.isDisabled(), true);
     assert.equal(await send.getAttribute('aria-describedby'), await blocked.getAttribute('id'));
@@ -2664,7 +2813,7 @@ try {
     assert.equal(await blocked.isVisible(), true);
     assert.equal(await page.getByRole('button', { name: '설정', exact: true }).getAttribute('aria-expanded'), 'false');
     assert.equal(await page.getByRole('combobox', { name: 'AI 사용 방식' }).isVisible(), false);
-    await page.getByText('AI · 로컬 워커 · 설치 확인 필요', { exact: true }).waitFor();
+    assert.match(await page.getByRole('group', { name: 'AI 연결', exact: true }).innerText(), /AI · 로컬 워커 · (준비됨|사용할 수 없음)/);
     await openAiSection('설정');
     const selector = page.getByRole('combobox', { name: 'AI 사용 방식' });
     assert.equal(await selector.inputValue(), 'local-worker');
@@ -2676,7 +2825,8 @@ try {
     await openAiSection('설정');
     await page.locator('.ai-panel').getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
     const installs = page.getByRole('list', { name: '로컬 AI 설치 상태' });
-    await installs.waitFor({ timeout: 35_000 });
+    await installs.getByText(/^Claude Code ·/).waitFor({ timeout: 35_000 });
+    await until(async () => await page.locator('.ai-panel').getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).isEnabled());
     // With both workers installed (as on the development Mac) the local worker is ready and states its
     // known limits; otherwise it says both are needed. Sending still waits for consent.
     const listed = await installs.innerText();

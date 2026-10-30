@@ -44,6 +44,21 @@ beforeEach(() => {
 });
 
 describe('local connection readiness', () => {
+  it('automatically probes only Codex and Antigravity without looking for Claude Code', async () => {
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
+    const report = await runtime.checkConnections({ automatic: true });
+    expect(report.providers.map(item => item.provider)).toEqual(['codex', 'antigravity']);
+    expect(vi.mocked(realpath).mock.calls.some(([name]) => String(name).endsWith('/claude'))).toBe(false);
+    expect(vi.mocked(access).mock.calls.some(([name]) => String(name).endsWith('/claude'))).toBe(false);
+    expect(runProcess).toHaveBeenCalledTimes(2);
+    for (const [request] of vi.mocked(runProcess).mock.calls) {
+      expect(request.executable).toBe('/usr/bin/sandbox-exec');
+      expect(inner(request).args).toEqual(['--version']);
+      expect(inner(request).executable).not.toMatch(/\/claude$/);
+    }
+    expect(report.modes.find(item => item.mode === 'claude-code')).toMatchObject({ ready: false, reason: CLAUDE_CODE_CLOSED });
+    expect((await runtime.checkConnections()).providers.map(item => item.provider)).toEqual(['codex', 'antigravity', 'claude-code']);
+  });
   it('uses fixed install locations, never the selected project or a shell command', () => {
     expect(executableCandidates('codex', '/Users/test')).toEqual([
       '/Users/test/.local/bin/codex', '/Users/test/.npm-global/bin/codex', '/opt/homebrew/bin/codex', '/usr/local/bin/codex',

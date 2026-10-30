@@ -6,7 +6,7 @@ import { GEMINI_MODEL, type FeatureGuideResult } from '../src/shared/ai';
 
 const props = { projectId: 'p', routesId: 'r', result: null, mode: 'local-worker' as const,
   locked: false, running: false, checking: false, connections: null,
-  onInspect: async () => null, onResult() {}, onRunning() {} };
+  onInspect: async () => null, onEnsure: async () => null, onResult() {}, onRunning() {} };
 it('starts with only a preparation button and locks it while stale or another AI is running', () => {
   const html = renderToStaticMarkup(React.createElement(FeatureGuideCard, props));
   expect(html).toContain('AI로 기능 정리하기');

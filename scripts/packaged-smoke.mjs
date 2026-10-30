@@ -144,7 +144,7 @@ try {
   await page.getByRole('button', { name: '설정', exact: true }).click();
   assert.equal(await page.getByRole('combobox', { name: 'AI 사용 방식' }).inputValue(), 'local-worker');
   await page.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
-  await page.getByRole('list', { name: '로컬 AI 설치 상태' }).waitFor({ timeout: 35_000 });
+  await page.getByRole('list', { name: '로컬 AI 설치 상태' }).getByText(/^Claude Code ·/).waitFor({ timeout: 35_000 });
   // The version check runs inside the fence: a CLI installed in a fixed location must still show its version.
   const statuses = await page.getByRole('list', { name: '로컬 AI 설치 상태' }).innerText();
   const installed = binary => [path.join(os.homedir(), '.local/bin'), path.join(os.homedir(), '.npm-global/bin'), '/opt/homebrew/bin', '/usr/local/bin']

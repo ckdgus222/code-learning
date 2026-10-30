@@ -7,6 +7,7 @@ import { Reader, type ReaderHandle } from './reader';
 import { Icon } from './icons';
 import { ancestorFolderPaths, buildFileTree, filterFileTree, type TreeFolder } from './file-tree';
 import { AiPanel } from './ai-panel';
+import { inspectionBlockedReason, needsAutomaticInspection } from './connections';
 import { FileGuideCard } from './file-guide';
 import { fileUses } from './screen-groups';
 import { aiFunctionSummaries, functionDoes, importersOf } from './guide-facts';
@@ -91,6 +92,7 @@ function App() {
   // The AI installation check, shared by the question panel and the overview card.
   const [connections, setConnections] = useState<ConnectionReport | null>(null);
   const [checking, setChecking] = useState(false);
+  const inspectionPending = useRef(false);
   const [mode, setMode] = useState<LearningMode>('local-worker');
   const [featureGuideRunning, setFeatureGuideRunning] = useState(false);
   const [questionRunning, setQuestionRunning] = useState(false);
@@ -536,17 +538,34 @@ function App() {
     setDraft(current => ({ text, id: (current?.id ?? 0) + 1, ...(topic ? { topic } : {}) }));
   }
 
-  /** Resolves to an error message, or null; the result is shared with the overview card. */
-  async function inspectConnections(): Promise<string | null> {
+  function connectionCheckBlockedReason(): string | null {
     // A check starts main's list of AI programs over: the overview's next stage would find none.
-    if (overviewAi?.status === 'running') return '개요를 만드는 동안에는 설치를 다시 확인할 수 없어요.';
-    if (fileExplanationRunning || questionRunning || featureGuideRunning) return 'AI 작업이 진행 중인 동안에는 설치를 다시 확인할 수 없어요.';
+    return inspectionBlockedReason({ overviewRunning: overviewAi?.status === 'running',
+      fileExplanationRunning, questionRunning, featureGuideRunning });
+  }
+  async function ensureConnections(): Promise<string | null> {
+    if (!needsAutomaticInspection(connections, inspectionPending.current, connectionCheckBlockedReason())) return null;
+    return inspectConnections({ automatic: true });
+  }
+  /** Resolves to an error message, or null; the result is shared with the overview card. */
+  async function inspectConnections(request?: { automatic: true }): Promise<string | null> {
+    const blocked = connectionCheckBlockedReason();
+    if (blocked) return blocked;
+    if (inspectionPending.current) return null;
+    inspectionPending.current = true;
     setChecking(true);
-    const result = await window.learning.checkConnections();
-    setChecking(false);
-    if (!result.ok) return result.message;
-    setConnections(result.value);
-    return null;
+    try {
+      const result = await window.learning.checkConnections(request);
+      if (!result.ok) { setConnections(null); return result.message; }
+      setConnections(result.value);
+      return null;
+    } catch {
+      setConnections(null);
+      return '로컬 AI 설치를 확인하지 못했어요. 다시 시도해 주세요.';
+    } finally {
+      inspectionPending.current = false;
+      setChecking(false);
+    }
   }
   function forgetOverview() {
     setMarks(null); savingMarks.current = []; setPendingMarks([]);
@@ -1055,7 +1074,7 @@ function App() {
             </section>}
             <FeatureChooser key={project.files[0]?.id ?? project.id} project={project} state={features}
               mode={mode} running={questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running'}
-              checking={checking} connections={connections} onInspect={inspectConnections} onRunning={setFeatureGuideRunning}
+              checking={checking} connections={connections} onInspect={inspectConnections} onEnsure={ensureConnections} onRunning={setFeatureGuideRunning}
               revision={revision.current} locked={busy} onFollow={(index, start) => void followFeatureRoute(index, start)} />
             {view === 'overview' && <details key={overviewCard} className="card card--wide" aria-label="더 알아보기"
               // Once an overview was asked for, its progress, result or error stays in view (the prop never turns false again).
@@ -1282,7 +1301,7 @@ function App() {
           <button className="btn btn--ghost btn--icon" aria-label="AI 칸 접기" title="AI 칸 접기" onClick={() => setPanelOpen(false)}><Icon name="collapse" /></button>
         </div>
         <AiPanel key={project.id} projectId={project.id} evidence={questionEvidence} stale={stale} draft={draft}
-          connections={connections} checking={checking} otherRunning={overviewAi?.status === 'running' || fileExplanationRunning || featureGuideRunning} onInspect={inspectConnections}
+          connections={connections} checking={checking} otherRunning={overviewAi?.status === 'running' || fileExplanationRunning || featureGuideRunning} onInspect={inspectConnections} onEnsure={ensureConnections}
           mode={mode} onMode={setMode} onRunning={setQuestionRunning}
           relativePath={project.files.find(file => file.id === questionEvidence?.fileId)?.relativePath ?? ''}
           onEvidence={next => { setView('code'); void showEvidence(next, null, 'answer'); }} />
@@ -1296,6 +1315,7 @@ function App() {
             state={sourceExplanationState} stale={fileExplanationStale}
             mode={mode} locked={busy} running={questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running'}
             checking={checking} connections={connections}
+            onEnsure={() => { void ensureConnections().then(message => { if (message) setError(message); }); }}
             onInspect={() => { void inspectConnections().then(message => { if (message) setError(message); }); }}
             onStart={() => void startFileExplanation()} onCancel={() => void cancelFileExplanation()}
             onShow={range => void showFileExplanationRange(range)} />

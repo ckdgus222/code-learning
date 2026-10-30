@@ -7,7 +7,7 @@ import { channels, learningSpotSchema, saveLearningSpotSchema, saveLearningMarkS
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { ProjectSession, workersStopped } from './project-session';
-import { explainRequestSchema, cancelExplanationSchema, overviewRequestSchema, fileExplanationRequestSchema, featureGuideRequestSchema } from '../shared/ai';
+import { checkConnectionsSchema, explainRequestSchema, cancelExplanationSchema, overviewRequestSchema, fileExplanationRequestSchema, featureGuideRequestSchema } from '../shared/ai';
 import { LocalAiRuntime } from '../core/ai/runtime';
 import { LocalWorkerWorkflow } from '../core/ai/workflow';
 import { ProjectAiContext } from '../core/ai/context';
@@ -387,7 +387,7 @@ app.whenReady().then(async () => {
     return result;
   });
   handle(channels.cancel, async argument => { z.undefined().parse(argument); await dispose(); return null; });
-  handle(channels.connections, async argument => { z.undefined().parse(argument); return aiRuntime.checkConnections(); });
+  handle(channels.connections, async argument => aiRuntime.checkConnections(checkConnectionsSchema.parse(argument)));
   handle(channels.explain, async argument => {
     const input = explainRequestSchema.parse(argument);
     if (opening) throw new AppError('INVALID_REQUEST', '프로젝트를 연 뒤 질문해 주세요.');
