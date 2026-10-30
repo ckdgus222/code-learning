@@ -705,10 +705,10 @@ function App() {
               {project.overview.notes.map(note => <p key={note} className="hint">{note}</p>)}
             </section>
             <OverviewAi key={ai.overviewCard} project={project} state={ai.overview} locked={busy || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning}
-              stale={ai.overview?.status === 'done' && ai.overview.revision !== revision.current}
+              stale={ai.overview?.status === 'done' && (ai.overview.revision !== revision.current || ai.overview.changed)}
               readiness={ai.connections?.modes.find(item => item.mode === 'local-worker') ?? null} checking={ai.checking}
               revealAnchor={learning.topic?.anchor ?? null} topicName={learning.topic ? learning.topic.name.trim() || learning.topic.original : null} onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
-              onStart={startFileId => void ai.startOverview(startFileId)} onCancel={() => void ai.cancelOverview()}
+              onStart={startFileId => void ai.startOverview(startFileId)} onCancel={() => void ai.cancelOverview()} onDelete={() => void ai.deleteOverview()}
               onEvidence={next => { setView('code'); void showEvidence(next, null, 'overview'); }}
               onFollow={followFeature} onFunction={(name, at) => void showNamedFunction(name, at)} />
             <section className="card card--wide">

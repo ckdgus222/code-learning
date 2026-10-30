@@ -157,4 +157,22 @@ describe('app-mediated project AI reads with real temporary files', () => {
     expect(snapshot).toEqual(before);
   });
 
+  it.each(['missing', 'changed'])('restores no evidence when one of several sources is %s', async kind => {
+    const f = await fixture();
+    const snapshot = await f.context.captureOverview(f.id('main.ts'), 0, f.controller.signal);
+    await f.context.expand(snapshot, [f.id('helper.ts')], f.controller.signal);
+    const saved = snapshot.files.map(({ evidence, relativePath }) => ({ evidence, relativePath }));
+    if (kind === 'missing') await unlink(path.join(f.root, 'helper.ts'));
+    if (kind === 'changed') await writeFile(path.join(f.root, 'helper.ts'), 'export const helper = () => 43;\n');
+    const reopened = await scanProject(f.root, f.project.id);
+    const context = new ProjectAiContext(f.root, reopened);
+    const restored = await context.restoreSources(saved);
+    expect(restored.changed).toBe(true);
+    expect(restored.sources[0].evidence.fileId).toBe(reopened.files.find(file => file.relativePath === 'main.ts')!.id);
+    expect(restored.sources[0].evidence.fileId).not.toBe(saved[0].evidence.fileId);
+    expect(restored.sources[1].evidence.fileId).toBe(kind === 'missing' ? saved[1].evidence.fileId
+      : reopened.files.find(file => file.relativePath === 'helper.ts')!.id);
+    for (const source of saved) expect(context.lookup(source.evidence.id)).toBeUndefined();
+  });
+
 });

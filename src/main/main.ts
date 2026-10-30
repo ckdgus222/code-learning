@@ -7,7 +7,7 @@ import { channels, learningSpotSchema, saveLearningSpotSchema, saveLearningMarkS
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { ProjectSession, workersStopped } from './project-session';
-import { fileExplanationResultSchema, saveFileExplanationSchema, checkConnectionsSchema, explainRequestSchema, cancelExplanationSchema, overviewRequestSchema, fileExplanationRequestSchema, featureGuideRequestSchema } from '../shared/ai';
+import { overviewResultSchema, saveOverviewSchema, type OverviewResult, fileExplanationResultSchema, saveFileExplanationSchema, checkConnectionsSchema, explainRequestSchema, cancelExplanationSchema, overviewRequestSchema, fileExplanationRequestSchema, featureGuideRequestSchema } from '../shared/ai';
 import { LocalAiRuntime } from '../core/ai/runtime';
 import { maskSecrets } from '../core/ai/secrets';
 import { LocalWorkerWorkflow } from '../core/ai/workflow';
@@ -94,6 +94,16 @@ function validateSender(event: IpcMainInvokeEvent) {
 function current(projectId: string) {
   if (!session || session.id !== projectId) throw new AppError('PROJECT_CLOSED', '현재 선택한 프로젝트가 아닙니다.');
   return session;
+}
+
+function overviewReferencesMatch(projectId: string, result: OverviewResult): boolean {
+  const { overview, sources } = result;
+  const allowed = new Set(sources.map(source => source.evidence.id));
+  const references = [...overview.intro?.evidenceIds ?? [],
+    ...overview.features.flatMap(feature => [...feature.evidenceIds, feature.start.evidenceId]),
+    ...overview.roles.flatMap(role => [...role.evidenceIds, ...role.functions.map(item => item.evidenceId)])];
+  return result.projectId === projectId && sources.every(source => source.evidence.projectId === projectId) &&
+    allowed.size === sources.length && references.every(id => allowed.has(id));
 }
 
 async function readEvidence(active: ProjectSession, evidenceId: string) {
@@ -232,6 +242,34 @@ app.whenReady().then(async () => {
     // A damaged or older value shows no card and stays stored.
     const parsed = learningSpotSchema.safeParse(saved.spot);
     return parsed.success ? { spot: parsed.data, savedAt: saved.savedAt } : null;
+  });
+  handle(channels.savedOverview, async argument => {
+    const { projectId } = projectRequestSchema.parse(argument);
+    const active = current(projectId);
+    const context = aiContext;
+    if (!context) throw new AppError('PROJECT_CLOSED', '현재 선택한 프로젝트가 아닙니다.');
+    const saved = storage.overviewOf(projectId);
+    if (!saved) return null;
+    const parsed = overviewResultSchema.safeParse(saved.result);
+    if (!parsed.success || !overviewReferencesMatch(projectId, parsed.data)) return null;
+    const { sources, changed } = await context.restoreSources(parsed.data.sources);
+    if (session !== active || aiContext !== context) throw new AppError('PROJECT_CLOSED', '현재 선택한 프로젝트가 아닙니다.');
+    return { result: { ...parsed.data, sources }, savedAt: saved.savedAt, changed };
+  });
+  handle(channels.saveOverview, async argument => {
+    const { projectId, result } = saveOverviewSchema.parse(argument);
+    const active = current(projectId);
+    if (!overviewReferencesMatch(projectId, result) ||
+        result.sources.some(source => active.relativePathOf(source.evidence.fileId) !== source.relativePath)) {
+      throw new AppError('NOT_ALLOWED', '현재 프로젝트에서 확인한 근거의 개요만 저장할 수 있어요.');
+    }
+    return { savedAt: storage.saveOverview(projectId, result) };
+  });
+  handle(channels.deleteOverview, async argument => {
+    const { projectId } = projectRequestSchema.parse(argument);
+    current(projectId);
+    storage.deleteOverview(projectId);
+    return null;
   });
   handle(channels.savedFileExplanation, async argument => {
     const { projectId, fileId } = sourceRequestSchema.parse(argument);

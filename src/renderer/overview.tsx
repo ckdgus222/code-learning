@@ -3,11 +3,11 @@ import type { Evidence, LearningSpot, ProjectFile, ProjectView, SavedSpot } from
 import type { LearningPhase, OverviewFeature, OverviewResult } from '../shared/ai';
 import { SourceButtons } from './ai-panel';
 
-/** Plan G1: the AI overview of the opened folder, asked for by the user and kept until the folder is opened again. */
+/** Plan G1: the AI overview of the opened folder, asked for by the user and saved for the next visit. */
 export type OverviewState =
   | { status: 'running'; phase: LearningPhase | null; revision: number }
   | { status: 'failed'; message: string; cancelled: boolean }
-  | { status: 'done'; result: OverviewResult; revision: number };
+  | { status: 'done'; result: OverviewResult; revision: number; savedAt: string | null; changed: boolean };
 
 /**
  * Plan F1: where learning started and under what name. A start whose place is known (a start candidate, the chosen
@@ -103,7 +103,7 @@ const phases: Record<LearningPhase, string> = {
 const SHOWN = 6;
 const documentFile = /\.(?:md|txt)$/i;
 
-export function OverviewAi({ project, state, stale, locked, readiness, checking, revealAnchor, topicName, onInspect, onStart, onCancel,
+export function OverviewAi({ project, state, stale, locked, readiness, checking, revealAnchor, topicName, onInspect, onStart, onCancel, onDelete,
   onEvidence, onFollow, onFunction }: {
   project: ProjectView; state: OverviewState | null; stale: boolean; locked: boolean;
   /** The topic's name, searched with the overview's items. */
@@ -111,7 +111,7 @@ export function OverviewAi({ project, state, stale, locked, readiness, checking,
   readiness: { ready: boolean; reason: string } | null; checking: boolean;
   /** A feature card to keep shown even past the first six, as the focus returns to it. */
   revealAnchor: string | null;
-  onInspect(): void; onStart(startFileId: string | null): void; onCancel(): void;
+  onInspect(): void; onStart(startFileId: string | null): void; onCancel(): void; onDelete(): void;
   onEvidence(evidence: Evidence): void;
   onFollow(feature: OverviewFeature, anchor: string): void;
   onFunction(name: string, at: Evidence): void;
@@ -157,6 +157,10 @@ export function OverviewAi({ project, state, stale, locked, readiness, checking,
     {!state && <p className="unknown"><span className="tag tag--unknown">개요 미생성</span>아직 AI 개요를 만들지 않았어요. 위의 시작점 후보와 코드 읽기로 먼저 살펴볼 수 있어요.</p>}
     {running && <p role="status" className="hint">{state.phase ? phases[state.phase] : '개요 작업 시작 중'}</p>}
     {state?.status === 'failed' && <p role={state.cancelled ? 'status' : 'alert'} className={state.cancelled ? 'hint' : 'notice'}>{state.message}</p>}
+    {state?.status === 'done' && <p className="hint">
+      {state.savedAt && <>저장됨 · {new Date(state.savedAt).toLocaleDateString('ko-KR', { month: 'long', day: 'numeric' })} </>}
+      <button className="btn btn--small" disabled={locked || checking} onClick={onDelete}>지우기</button>
+    </p>}
     {state?.status === 'done' && <OverviewAnswer result={state.result} stale={stale} locked={locked} revealAnchor={revealAnchor} topicName={topicName}
       onEvidence={onEvidence} onFollow={onFollow} onFunction={onFunction} />}
   </section>;

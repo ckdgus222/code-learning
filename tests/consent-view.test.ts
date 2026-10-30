@@ -41,7 +41,7 @@ describe('folded AI consent disclosures', () => {
     const html = renderToStaticMarkup(React.createElement(OverviewAi, {
       project, state: null, stale: false, locked: false, readiness: { ready, reason: 'test' }, checking: false,
       revealAnchor: null, topicName: null,
-      onInspect() {}, onStart() {}, onCancel() {}, onEvidence() {}, onFollow() {}, onFunction() {},
+      onInspect() {}, onStart() {}, onCancel() {}, onDelete() {}, onEvidence() {}, onFollow() {}, onFunction() {},
     }));
     checkDisclosure(html, '프로젝트 파일 목록, 고른 시작 파일, Codex가 고른 관련 파일(최대 4개)을 Codex와 Gemini에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.', ready);
     expect(html).toMatch(/<button[^>]*disabled="">개요 만들기<\/button>/);
