@@ -566,7 +566,7 @@ const chooserProps: Parameters<typeof FeatureChooser>[0] = {
     setSearch() {}, setGuideResult() {}, find() {}, cancelFind() {},
   } as unknown as Parameters<typeof FeatureChooser>[0]['state'],
   revision: 0, locked: false, mode: 'local-worker', running: false, checking: false, connections: null,
-  onFollow() {}, async onInspect() { return null; }, onRunning() {},
+  onFollow() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onRunning() {},
 };
 it.each([
   { grouped: false, deleteLinks: 1, expected: 2 },

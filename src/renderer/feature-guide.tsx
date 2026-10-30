@@ -11,10 +11,10 @@ const phases: Record<LearningPhase, string> = {
 };
 
 /** Mounted for one routesId/revision only; leaving that result cancels even an IPC start still in flight. */
-export function FeatureGuideCard({ projectId, routesId, result, mode, locked, running, checking, connections, onInspect, onResult, onRunning }: {
+export function FeatureGuideCard({ projectId, routesId, result, mode, locked, running, checking, connections, onInspect, onEnsure, onResult, onRunning }: {
   projectId: string; routesId: string; result: FeatureGuideResult | null; mode: LearningMode;
   locked: boolean; running: boolean; checking: boolean; connections: ConnectionReport | null;
-  onInspect(): Promise<string | null>; onResult(result: FeatureGuideResult): void; onRunning(value: boolean): void;
+  onEnsure(): Promise<string | null>; onInspect(): Promise<string | null>; onResult(result: FeatureGuideResult): void; onRunning(value: boolean): void;
 }) {
   const [preparing, setPreparing] = useState(false);
   const [consent, setConsent] = useState(false);
@@ -72,7 +72,7 @@ export function FeatureGuideCard({ projectId, routesId, result, mode, locked, ru
     if (id) void window.learning.cancelExplanation({ jobId: id });
   }
   return <div className="feature-guide-ai" aria-label="AI 기능 정리">
-    {!preparing && !working && <button className="btn" disabled={locked || running} onClick={() => setPreparing(true)}>AI로 기능 정리하기</button>}
+    {!preparing && !working && <button className="btn" disabled={locked || running} onClick={() => { setPreparing(true); setError(''); void onEnsure().then(message => setError(message ?? '')); }}>AI로 기능 정리하기</button>}
     {preparing && !working && <div>
       <p>{modes[mode]}</p>
       <p className="hint">방식은 오른쪽 AI 칸의 ‘설정’에서 고를 수 있어요. 답변 생성은 AI 제공자 서버에서 이뤄져요.

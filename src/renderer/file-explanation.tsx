@@ -22,10 +22,10 @@ const phases: Record<LearningPhase, string> = {
   explaining: '설명 요청 중', reviewing: 'Codex가 원본 코드와 대조 중', validating: '파일 변경 여부 확인 중',
 };
 
-export function FileExplanationCard({ source, entry, state, stale, mode, locked, running, checking, connections, onInspect, onStart, onCancel, onShow }: {
+export function FileExplanationCard({ source, entry, state, stale, mode, locked, running, checking, connections, onInspect, onEnsure, onStart, onCancel, onShow }: {
   source: SourceView; entry: FileExplanationEntry | null; state: FileExplanationState | null; stale: boolean;
   mode: LearningMode; locked: boolean; running: boolean; checking: boolean; connections: ConnectionReport | null;
-  onInspect(): void; onStart(): void; onCancel(): void; onShow(range: FileExplanationRange): void;
+  onEnsure(): void; onInspect(): void; onStart(): void; onCancel(): void; onShow(range: FileExplanationRange): void;
 }) {
   const [preparing, setPreparing] = useState(false);
   const [consent, setConsent] = useState(false);
@@ -43,7 +43,7 @@ export function FileExplanationCard({ source, entry, state, stale, mode, locked,
     {stale && result && <p className="notice notice--warn">다시 확인 필요: 설명을 만든 뒤 코드가 바뀌었어요.</p>}
     {tooLarge && <p className="hint">파일이 32 KiB를 넘어 설명을 만들지 않았어요.</p>}
     {!preparing && !working && <button className="btn" disabled={locked || running || tooLarge}
-      onClick={() => setPreparing(true)}>이 파일 설명 만들기</button>}
+      onClick={() => { setPreparing(true); onEnsure(); }}>이 파일 설명 만들기</button>}
     {preparing && !working && <div>
       <p>{source.relativePath} · {modes[mode]}</p>
       <p className="hint">방식은 오른쪽 AI 칸의 ‘설정’에서 고를 수 있어요. 답변 생성은 AI 제공자 서버에서 이뤄져요.

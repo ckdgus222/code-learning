@@ -48,7 +48,7 @@ describe('file explanation result retention and display', () => {
       relativePath: 'file.ts', text: 'const value = 1;', guide: null, analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] } };
     const html = renderToStaticMarkup(React.createElement(FileExplanationCard, { source, entry: saved, state: null,
       stale: true, mode: 'codex', locked: false, running: false, checking: false, connections: null,
-      onInspect() {}, onStart() {}, onCancel() {}, onShow() {} }));
+      onInspect() {}, onEnsure() {}, onStart() {}, onCancel() {}, onShow() {} }));
     expect(html).toContain('설명 없음');
     expect(html.match(/>코드 보기<\/button>/g)).toHaveLength(6);
     expect(html).toContain('더 보기');

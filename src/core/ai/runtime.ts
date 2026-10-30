@@ -236,19 +236,20 @@ export class LocalAiRuntime {
   }
   private inspection?: { controller: AbortController; done: Promise<ConnectionReport> };
 
-  checkConnections(): Promise<ConnectionReport> {
+  checkConnections(request?: { automatic: true }): Promise<ConnectionReport> {
     if (this.inspection) return this.inspection.done;
     const controller = new AbortController();
-    const done = this.inspect(controller.signal).finally(() => { if (this.inspection?.controller === controller) this.inspection = undefined; });
+    const done = this.inspect(controller.signal, request?.automatic === true).finally(() => { if (this.inspection?.controller === controller) this.inspection = undefined; });
     this.inspection = { controller, done };
     return done;
   }
-  private async inspect(signal: AbortSignal): Promise<ConnectionReport> {
+  private async inspect(signal: AbortSignal, automatic: boolean): Promise<ConnectionReport> {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'code-learning-check-'));
     const connections: ProviderConnection[] = [];
     this.launches.clear();
     try {
       for (const { provider, binary } of providers) {
+        if (automatic && provider === 'claude-code') continue;
         if (signal.aborted) throw new AppError('CANCELLED', '연결 확인을 취소했습니다.');
         let executable: string | undefined;
         // Try the official/common installation locations in order.

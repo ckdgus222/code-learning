@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest, FeatureGuideRequest, FileChunk, FileExplanationRange } from './ai';
+import type { CheckConnectionsRequest, ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest, FeatureGuideRequest, FileChunk, FileExplanationRange } from './ai';
 
 export const idSchema = z.string().uuid();
 export const sourceRequestSchema = z.object({ projectId: idSchema, fileId: idSchema }).strict();
@@ -521,7 +521,7 @@ export interface LearningApi {
   projectChanges(input: z.infer<typeof changesRequestSchema>): Promise<Result<ProjectChanges>>;
   fileDiff(input: z.infer<typeof diffRequestSchema>): Promise<Result<FileDiff>>;
   cancelChanges(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
-  checkConnections(): Promise<Result<ConnectionReport>>;
+  checkConnections(request?: CheckConnectionsRequest): Promise<Result<ConnectionReport>>;
   startExplanation(input: ExplainRequest): Promise<Result<{ jobId: string }>>;
   startOverview(input: OverviewRequest): Promise<Result<{ jobId: string }>>;
   startFileExplanation(input: FileExplanationRequest): Promise<Result<{ jobId: string }>>;

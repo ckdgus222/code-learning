@@ -5,6 +5,8 @@ export const GEMINI_MODEL = 'gemini-3.8-flash-high';
 export const learningModeSchema = z.enum(['local-worker', 'codex', 'claude-code', 'antigravity']);
 export type LearningMode = z.infer<typeof learningModeSchema>;
 export type ProviderId = Exclude<LearningMode, 'local-worker'>;
+export const checkConnectionsSchema = z.object({ automatic: z.literal(true) }).strict().optional();
+export type CheckConnectionsRequest = z.infer<typeof checkConnectionsSchema>;
 export const explainRequestSchema = z.object({
   projectId: idSchema, evidenceId: idSchema,
   expectedFileHash: z.string().regex(/^[a-f0-9]{64}$/),

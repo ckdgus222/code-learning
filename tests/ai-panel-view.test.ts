@@ -18,7 +18,7 @@ describe('compact AI panel', () => {
       const html = renderToStaticMarkup(React.createElement(AiPanel, {
         projectId: 'project', evidence: null, relativePath: '', stale: false, draft: null,
         connections, checking: false, otherRunning: false, mode,
-        onMode() {}, onRunning() {}, async onInspect() { return null; }, onEvidence() {},
+        onMode() {}, onRunning() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onEvidence() {},
       }));
       expect(html).toContain('class="ai-line" role="group" aria-label="AI 연결"');
       expect(html).toContain(`AI · ${label} · ${ready === null ? '설치 확인 필요' : ready ? '준비됨' : '사용할 수 없음'}`);
@@ -35,22 +35,38 @@ describe('compact AI panel', () => {
     const html = renderToStaticMarkup(React.createElement(AiPanel, {
       projectId: 'project', evidence: null, relativePath: '', stale: false, draft: null,
       connections: null, checking: true, otherRunning: false, mode: 'local-worker',
-      onMode() {}, onRunning() {}, async onInspect() { return null; }, onEvidence() {},
+      onMode() {}, onRunning() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onEvidence() {},
     }));
     const actions = html.match(/<div class="ai-actions">(.*?)<\/div>/)?.[1];
     expect(actions).toBeDefined();
     const descriptionId = actions?.match(/<button[^>]*aria-describedby="([^"]+)"/)?.[1];
     expect(descriptionId).toBeTruthy();
-    expect(actions).toContain(`>질문 보내기</button><p class="hint" id="${descriptionId}" data-testid="send-blocked">먼저 ‘설정’에서 ‘로컬 AI 설치 확인’을 눌러 주세요.</p>`);
+    expect(actions).toContain(`>질문 보내기</button><p class="hint" id="${descriptionId}" data-testid="send-blocked">로컬 AI 설치를 확인하는 중이에요.</p>`);
     expect(html.match(/data-testid="send-blocked"/g)).toHaveLength(1);
     expect(html).not.toContain('함수나 구문을 선택하면 질문할 코드 범위가 정해집니다.');
     expect(html).not.toContain('코드가 바뀌었습니다. 파일을 다시 읽고 근거를 선택해 주세요.');
+  });
+
+  it('explains the automatic subset only when a report omits Claude Code', () => {
+    const automatic: ConnectionReport = { checkedAt: '2026-10-30T00:00:00.000Z', modes: [], providers: [
+      { provider: 'codex', installation: 'missing', version: null, authentication: 'unchecked', isolation: 'unverified', message: 'test' },
+    ] };
+    const manual: ConnectionReport = { ...automatic, providers: [...automatic.providers,
+      { ...automatic.providers[0], provider: 'claude-code' }] };
+    for (const connections of [null, automatic, manual]) {
+      const html = renderToStaticMarkup(React.createElement(AiPanel, {
+        projectId: 'project', evidence: null, relativePath: '', stale: false, draft: null,
+        connections, checking: false, otherRunning: false, mode: 'local-worker',
+        onMode() {}, onRunning() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onEvidence() {},
+      }));
+      expect(html.includes('자동 확인은 Codex·Antigravity만 해요. Claude Code까지 보려면 ‘로컬 AI 설치 확인’을 눌러요.')).toBe(connections === automatic);
+    }
   });
 });
 
 describe('sendBlockedReason', () => {
   const sendable = {
-    checked: true, ready: true, readyReason: null, hasEvidence: true, stale: false,
+    checked: true, checking: false, ready: true, readyReason: null, hasEvidence: true, stale: false,
     running: false, otherRunning: false, question: '이 함수는 무슨 일을 하나요?', consent: true,
   };
 
@@ -89,16 +105,17 @@ describe('sendBlockedReason', () => {
   });
 
   const combinations = [
-    { checked: false, ready: false }, { checked: true, ready: false }, { checked: true, ready: true },
-  ].flatMap(readiness => Array.from({ length: 64 }, (_, flags) => ({
-    ...sendable, ...readiness, hasEvidence: Boolean(flags & 1), stale: Boolean(flags & 2),
+    { checked: false, ready: false }, { checked: true, ready: false }, { checked: true, checking: false, ready: true },
+  ].flatMap(readiness => Array.from({ length: 128 }, (_, flags) => ({
+    ...sendable, ...readiness, checking: Boolean(flags & 64), hasEvidence: Boolean(flags & 1), stale: Boolean(flags & 2),
     running: Boolean(flags & 4), otherRunning: Boolean(flags & 8),
     question: flags & 16 ? sendable.question : ' \n\t ', consent: Boolean(flags & 32),
   })));
 
-  it.each(combinations)('matches the unchanged send gate for state %#', state => {
-    const disabled = !state.ready || !state.hasEvidence || state.stale || !state.consent
+  it.each(combinations)('matches the send gate including an installation check for state %#', state => {
+    const disabled = state.checking || !state.ready || !state.hasEvidence || state.stale || !state.consent
       || state.running || state.otherRunning || !state.question.trim();
+    if (state.checking) expect(sendBlockedReason(state)).toBe('로컬 AI 설치를 확인하는 중이에요.');
     expect(sendBlockedReason(state) === null && !state.running).toBe(!disabled);
   });
 });

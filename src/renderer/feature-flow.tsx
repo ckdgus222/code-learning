@@ -838,10 +838,10 @@ export function FeatureList({ groups, routes, selected, disabled, onFollow, sear
   </section>;
 }
 
-export function FeatureChooser({ project, state, revision, locked, onFollow, mode, running, checking, connections, onInspect, onRunning }: {
+export function FeatureChooser({ project, state, revision, locked, onFollow, mode, running, checking, connections, onInspect, onEnsure, onRunning }: {
   project: ProjectView; state: FeatureFlows; revision: number; locked: boolean; onFollow(routeIndex: number, start?: FlowStart): void;
   mode: LearningMode; running: boolean; checking: boolean; connections: ConnectionReport | null;
-  onInspect(): Promise<string | null>; onRunning(value: boolean): void;
+  onInspect(): Promise<string | null>; onEnsure(): Promise<string | null>; onRunning(value: boolean): void;
 }) {
   const { routes, stale, guide, setGuideResult } = state;
   const feature = routes ? recommendedFeature(state.groups, routes) : null;
@@ -868,7 +868,7 @@ export function FeatureChooser({ project, state, revision, locked, onFollow, mod
         <FeatureList {...state.groupingProps} search={state.search} setSearch={state.setSearch} groups={state.groups} routes={routes} selected={state.selected} disabled={disabled} onFollow={onFollow}>
           <FeatureGuideCard key={`${routes.routesId}:${revision}`} projectId={project.id} routesId={routes.routesId}
             result={guide} mode={mode} locked={disabled} running={running} checking={checking} connections={connections}
-            onInspect={onInspect} onResult={setGuideResult} onRunning={onRunning} />
+            onInspect={onInspect} onEnsure={onEnsure} onResult={setGuideResult} onRunning={onRunning} />
         </FeatureList>
       </>}
     </>}

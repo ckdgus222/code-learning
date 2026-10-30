@@ -21,9 +21,10 @@ const phases: Record<LearningPhase, string> = {
 
 const documentFile = /\.(?:md|txt)$/i;
 export function sendBlockedReason(state: {
-  checked: boolean; ready: boolean; readyReason: string | null; hasEvidence: boolean; stale: boolean;
+  checked: boolean; checking: boolean; ready: boolean; readyReason: string | null; hasEvidence: boolean; stale: boolean;
   running: boolean; otherRunning: boolean; question: string; consent: boolean;
 }): string | null {
+  if (state.checking) return '로컬 AI 설치를 확인하는 중이에요.';
   if (!state.checked) return '먼저 ‘설정’에서 ‘로컬 AI 설치 확인’을 눌러 주세요.';
   if (!state.ready) return '지금 고른 AI 방식은 쓸 수 없어요. ‘설정’에서 다른 방식을 골라 보세요.'
     + (state.readyReason ? ` (이유: ${state.readyReason})` : '');
@@ -58,7 +59,7 @@ export function SourceButtons({ ids, sources, selectionId, stale, label, onEvide
   </li>)}</ul>;
 }
 
-export function AiPanel({ projectId, evidence, relativePath, stale, draft, connections, checking, otherRunning, mode, onMode, onRunning, onInspect, onEvidence }: {
+export function AiPanel({ projectId, evidence, relativePath, stale, draft, connections, checking, otherRunning, mode, onMode, onRunning, onInspect, onEnsure, onEvidence }: {
   projectId: string; evidence: Evidence | null; relativePath: string; stale: boolean;
   /**
    * A question to put in the box, put again whenever the id changes (not on mount). A feature question (plan F1) also
@@ -72,6 +73,7 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
   mode: LearningMode; onMode(mode: LearningMode): void; onRunning(running: boolean): void;
   /** Runs the check; resolves to an error message, or null. */
   onInspect(): Promise<string | null>;
+  onEnsure(): Promise<string | null>;
   onEvidence(evidence: Evidence): void;
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -104,6 +106,7 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
     draftShown.current = draft.id;
     setQuestion(draft.text);
     setQuestionOpen(true);
+    void ensure();
     if (draft.topic) {
       // A feature question is a new question: one still on its way is cancelled and its answer not shown (integrated
       // plan T10). It asks for its material and consent again, and starts a new conversation.
@@ -173,13 +176,16 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
     }
   }, [projectId, evidence?.id, evidence?.fileHash, stale, mode]);
 
-  async function inspect() {
+  /** Runs an installation check, automatic (`onEnsure`) or asked for (`onInspect`), and shows why it could not run. */
+  async function check(run: () => Promise<string | null>) {
     setError('');
-    const message = await onInspect();
+    const message = await run();
     if (message && mounted.current) setError(message);
   }
+  const ensure = () => check(onEnsure);
+  const inspect = () => check(onInspect);
   async function ask() {
-    if (!evidence || stale || !consent || !ready?.ready || running || otherRunning || !question.trim()) return;
+    if (checking || !evidence || stale || !consent || !ready?.ready || running || otherRunning || !question.trim()) return;
     const token = ++sequence.current;
     starting.current = true; queued.current = [];
     setRunning(true); setError(''); setStatus('AI 작업 시작 중');
@@ -213,15 +219,15 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
 
   const answerScope = running || answers.length > 0;
   const blockedReason = sendBlockedReason({
-    checked: connections !== null, ready: ready?.ready ?? false, readyReason: ready?.reason ?? null,
+    checked: connections !== null, checking, ready: ready?.ready ?? false, readyReason: ready?.reason ?? null,
     hasEvidence: evidence !== null, stale, running, otherRunning, question, consent,
   });
   const questionScope = evidence && <p className="hint" data-testid="question-scope">질문 기준: {relativePath} · {evidence.startLine}–{evidence.endLine}행</p>;
   return <div className="panel__body ai-panel">
     <div className="ai-line" role="group" aria-label="AI 연결">
       <span>AI · {shortModes[mode]} · {ready?.ready ? '준비됨' : connections ? '사용할 수 없음' : '설치 확인 필요'}</span>
-      <button className="btn btn--small" aria-expanded={questionOpen} onClick={() => setQuestionOpen(open => !open)}>질문하기</button>
-      <button className="btn btn--small" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}>설정</button>
+      <button className="btn btn--small" aria-expanded={questionOpen} onClick={() => { if (!questionOpen) void ensure(); setQuestionOpen(!questionOpen); }}>질문하기</button>
+      <button className="btn btn--small" aria-expanded={settingsOpen} onClick={() => { if (!settingsOpen) void ensure(); setSettingsOpen(!settingsOpen); }}>설정</button>
     </div>
     {answerScope && questionScope}
     {status && <p role="status" className="hint">{status}</p>}
@@ -242,6 +248,8 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
           <p>{item.message}</p>
         </li>)}
       </ul>}
+      {connections && !connections.providers.some(item => item.provider === 'claude-code') &&
+        <p className="hint">자동 확인은 Codex·Antigravity만 해요. Claude Code까지 보려면 ‘로컬 AI 설치 확인’을 눌러요.</p>}
       <p className="hint" data-testid="ai-readiness">{ready?.reason ?? '먼저 설치 상태를 확인해 주세요. 설치 확인만으로 로그인이나 실제 AI 연결이 검증되는 것은 아닙니다.'}</p>
       <p className="hint">{mode === 'local-worker' ? `Codex 정리 → Gemini 3.8 Flash · High (${GEMINI_MODEL}) 설명 → Codex 대조`
         : mode === 'claude-code' ? '단독 실행은 후속 단계에서 연결합니다.'
