@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, expect, it } from 'vitest';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import * as projectFiles from '../src/core/project/files';
 import { scanProject } from '../src/core/project/files';
 import { findProjectRoutes } from '../src/core/analysis/routes';
 import { buildFeatureFlow, buildFeatureFlows } from '../src/core/analysis/feature-flow';
@@ -958,4 +959,33 @@ it('uses branch paths when the conditional expression starts with a quote', asyn
   await put('client.ts', `function send(mode) { fetch("new" === mode ? "/api/a" : "/api/b", {method: 'POST'}); }`);
   const { flow } = await analyze();
   expect(flow.nodes.filter(node => node.side === 'request').map(node => node.name)).toEqual(['POST /api/a']);
+});
+
+it('follows aliases across a screen, hook, request and server function', async () => {
+  await fixture();
+  await put('web/tsconfig.json', '{"compilerOptions":{"paths":{"@/*":["*"]}}}');
+  for (const [name, before, after] of [
+    ['web/app/dogs/page.tsx', '../../components/DogList', '@/components/DogList'],
+    ['web/components/DogList.tsx', '../lib/dogs', '@/lib/dogs'],
+    ['web/lib/dogs.ts', './auth', '@/lib/auth'],
+  ]) await put(name, (await readFile(path.join(root, name), 'utf8')).replace(before, after));
+  const { flow } = await analyze();
+  expect(flow.nodes.map(node => node.name)).toEqual(expect.arrayContaining(['DogsPage', 'DogList', 'useDeleteDog', 'DogsController.remove', 'DogsService.remove']));
+  expect(flow.edges.map(edge => edge.kind)).toEqual(expect.arrayContaining(['placed', 'hook', 'route', 'calls']));
+  expect(flow.edges.some(edge => !edge.sure)).toBe(false);
+});
+
+it('reads alias configs once across all routes and nested call searches', async () => {
+  await fixture();
+  await put('web/tsconfig.json', '{"compilerOptions":{"paths":{"@/*":["*"]}}}');
+  await put('api/another.controller.ts', "@Controller('cats') export class Cats { @Get() list() { return []; } }");
+  const project = await scanProject(root, randomUUID());
+  const routes = await findProjectRoutes(root, project.id, project.files);
+  expect(routes.routes).toHaveLength(2);
+  const read = vi.spyOn(projectFiles, 'readAllowed');
+  try {
+    const flows = await buildFeatureFlows(root, project.id, project.files, routes);
+    expect(flows).toHaveLength(2);
+    expect(read.mock.calls.filter(([, name]) => name === 'web/tsconfig.json')).toHaveLength(1);
+  } finally { read.mockRestore(); }
 });

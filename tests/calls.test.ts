@@ -593,3 +593,15 @@ export class AuthController { constructor(${modifier} auth: AuthService) {} logi
     expect((await callsOf(_label === 'reexport' ? 'actual.ts' : 'target.ts', 'A.m')).typedCallers).toEqual([]);
   });
 });
+
+it('follows alias imports and refuses competing candidates', async () => {
+  await writeFile(path.join(root, 'tsconfig.json'), '{"compilerOptions":{"paths":{"@/*":["src/*"]}}}');
+  await writeFile(path.join(root, 'src/alias-entry.ts'), "import { save } from '@/store'; export function aliasRun() { save('x'); }");
+  project = await scanProject(root, project.id);
+  const linked = await callsOf('src/alias-entry.ts', 'aliasRun');
+  expect(linked.calls[0]).toMatchObject({ status: 'linked', target: { fileId: idOf('src/store.ts'), name: 'save' } });
+  await writeFile(path.join(root, 'src/store.js'), 'export function save() {}');
+  project = await scanProject(root, project.id);
+  const uncertain = await callsOf('src/alias-entry.ts', 'aliasRun');
+  expect(uncertain.calls[0]).toMatchObject({ status: 'unknown', detail: '경로 별칭이 가리키는 파일을 하나로 정하지 못했어요.' });
+});

@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type Parser from 'tree-sitter';
 import type { CallSite, ProjectFile, ProjectRoutes, Request, Route, ValueSite } from '../../shared/contracts';
+import { readPathAliases, resolveImport } from './path-aliases';
 import { AppError } from '../../shared/errors';
 import { MAX_FILE_BYTES, readAllowed } from '../project/files';
-import { candidatesFor, codeFile, isRelative, MAP_LIMITS, type MapLimits } from './project-map';
+import { codeFile, MAP_LIMITS, type MapLimits } from './project-map';
 import { formatNextPath, nextRouteOf } from './next-routes';
 import { firstLine, hasUnsupportedCertainty, lineRange, nearest, readFacts, reassigned, sameRange, simpleProperties, type CallFact, type FileFacts, type Scope } from './names';
 import { functionName, functionTypes } from './syntax';
@@ -85,7 +86,9 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
   const known = new Map(files.map(file => [file.relativePath, file]));
   const facts = new Map<string, FileFacts>();
   const trees = new Map<string, Node[]>();
-  let bytes = 0;
+  const aliases = await readPathAliases(root, files, limits.bytes, shouldStop);
+  result.notes.push(...aliases.notes);
+  let bytes = aliases.bytesRead;
   let count = 0;
   let incomplete = false;
   let omitted = false;
@@ -140,12 +143,15 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
   };
   const imported = (info: FileFacts, scope: Scope, name: string, pkg: string, exported: string) => {
     const item = declaration(info, scope, name);
-    return item?.kind === 'import' && item.specifier === pkg && item.imported === exported;
+    return item?.kind === 'import' && item.specifier === pkg && item.imported === exported
+      && resolveImport(info.file.relativePath, item.specifier, known, aliases).kind === 'external';
   };
   const importedFacts = (info: FileFacts, specifier: string | null) => {
-    if (!specifier || !isRelative(specifier)) return null;
-    const candidates = candidatesFor(info.file.relativePath, specifier, known);
-    return candidates?.length === 1 ? facts.get(known.get(candidates[0])!.id) ?? null : null;
+    if (!specifier) return null;
+    const resolved = resolveImport(info.file.relativePath, specifier, known, aliases);
+    if (resolved.kind !== 'project' || !resolved.sure) return null;
+    const { candidates } = resolved;
+    return candidates.length === 1 ? facts.get(known.get(candidates[0])!.id) ?? null : null;
   };
   const resolveFunction = (info: FileFacts, scope: Scope, node: Node): { info: FileFacts; fn: Node } | null => {
     if (functionTypes.has(node.type)) return { info, fn: node };

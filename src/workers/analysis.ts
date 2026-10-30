@@ -2,8 +2,9 @@ import { parentPort, workerData } from 'node:worker_threads';
 import type { ProjectRoutes, FeatureFlow, Evidence, FileDiff, FunctionCalls, GitHistory, ProjectChanges, ProjectFile, ProjectMap, ProjectView, Result, ShapeQuery, SourceView,
   ValueShapes } from '../shared/contracts';
 import { AppError, failure } from '../shared/errors';
-import { readAllowed, scanProject } from '../core/project/files';
+import { MAX_FILE_BYTES, readAllowed, scanProject } from '../core/project/files';
 import { analyzeSource } from '../core/analysis/syntax';
+import { readPathAliases } from '../core/analysis/path-aliases';
 import { describeFile } from '../core/analysis/file-guide';
 import { buildOverview } from '../core/analysis/overview';
 import { buildProjectMap, MAP_LIMITS } from '../core/analysis/project-map';
@@ -43,12 +44,12 @@ async function readSource(fileId: string): Promise<SourceView> {
   const { text, hash } = await readAllowed(root, file.relativePath);
   const previous = sources.get(fileId);
   sources.delete(fileId);
-  if (previous?.hash === hash) { sources.set(fileId, previous); return previous; }
   if (stopped()) throw new AppError('CANCELLED', '작업을 취소했습니다.');
-  const analysis = analyzeSource(text, file.relativePath, { projectId, fileId, fileHash: hash });
+  const aliases = await readPathAliases(root, project!.files, MAX_FILE_BYTES, stopped);
+  const analysis = previous?.hash === hash ? previous.analysis : analyzeSource(text, file.relativePath, { projectId, fileId, fileHash: hash });
   let guide: SourceView['guide'] = null;
   if (analysis.language !== 'text') {
-    try { guide = describeFile(text, file.relativePath, fileId, hash, analysis, project!.files); }
+    try { guide = describeFile(text, file.relativePath, fileId, hash, analysis, project!.files, aliases); }
     catch { /* A guide is optional: a failed description must not prevent reading the source. */ }
   }
   const result: SourceView = { projectId, fileId, relativePath: file.relativePath, text, hash, analysis, guide };

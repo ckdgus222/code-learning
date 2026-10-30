@@ -6,12 +6,13 @@ import { COMPLEXITY_LIMITS, type MapExport, type MapFile, type MapImport, type P
 import { AppError } from '../../shared/errors';
 import { assertAllowedFile, MAX_FILE_BYTES, readAllowed, textExtensions } from '../project/files';
 import { functionName, functionTypes, importOf, measureFunction } from './syntax';
+import { readPathAliases, resolveImport } from './path-aliases';
 import { scriptFilesOf, unusedFiles } from './unused-files';
 
 export const codeFile = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
 // Plan v2.3 A: a relative path without an extension may name one of these files or its folder's index file.
 // TS importers also consider the TS counterpart of an explicit JS extension; multiple files stay ambiguous.
-const EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
+export const EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
 const MAX_TEXT = 300;
 
 export interface MapLimits { files: number; bytes: number; nodesPerFile: number }
@@ -181,7 +182,11 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
   };
 
   let filesRead = 0;
-  let bytesRead = 0;
+  const aliases = await readPathAliases(root, files, limits.bytes, shouldStop);
+  map.notes.push(...aliases.notes);
+  const aliasCount = aliases.configs.filter(config => config.readable && (config.paths.length || config.baseUrl !== null)).length;
+  if (aliasCount) map.notes.push(`tsconfig ${aliasCount}개의 경로 별칭을 따라갔어요.`);
+  let bytesRead = aliases.bytesRead;
   const codeFiles = files.filter(file => codeFile.test(file.relativePath))
     .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   for (const file of codeFiles) {
@@ -221,9 +226,15 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
       if (kind !== 'static') { map.unresolved.push({ ...item, reason: kind, candidates: [] }); continue; }
       if (specifier === null) { map.unresolved.push({ ...item, reason: 'unreadable', candidates: [] }); continue; }
       if (specifier.startsWith('/')) { map.unresolved.push({ ...item, reason: 'outside', candidates: [] }); continue; }
-      if (!isRelative(specifier)) { map.external.push(item); continue; }
-      const named = candidatesFor(file.relativePath, specifier, known);
-      if (named === null) { map.unresolved.push({ ...item, reason: 'outside', candidates: [] }); continue; }
+      const resolved = resolveImport(file.relativePath, specifier, known, aliases);
+      if (resolved.kind === 'external') { map.external.push(item); continue; }
+      if (resolved.kind === 'outside') { map.unresolved.push({ ...item, reason: 'outside', candidates: [] }); continue; }
+      const named = resolved.candidates;
+      if (!resolved.sure) {
+        map.unresolved.push({ ...item, reason: 'ambiguous', candidates: named,
+          reasonText: '경로 별칭이 가리키는 파일을 하나로 정하지 못했어요.' });
+        continue;
+      }
       const usable: string[] = [];
       for (const name of named) if (await available(name)) usable.push(name);
       if (usable.length === 1) {
@@ -250,5 +261,5 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
   if (map.limited) map.notes.push(`지도는 파일 ${limits.files}개·합계 ${limits.bytes / 1024 / 1024} MiB까지만 읽어요. 나머지 파일의 연결은 보지 않았어요.`);
   map.files = [...placed.values()].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   const scripts = await scriptFilesOf(root, files, known, limits.bytes - bytesRead, shouldStop);
-  return { ...map, unused: unusedFiles(map, scripts) };
+  return { ...map, unused: unusedFiles(map, scripts, aliases) };
 }

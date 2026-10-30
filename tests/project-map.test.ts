@@ -453,3 +453,50 @@ it('maps every overview entry before candidate limits without excluding learning
   expect(result.unused.excluded).toContainEqual({ kind: 'start', count: 3 });
   expect(result.unused.exports.candidates.map(item => item.name)).toEqual(['helper']);
 });
+
+describe('path aliases in the map', () => {
+  it('connects an alias and removes its target from unused candidates', async () => {
+    await put('tsconfig.json', '{"compilerOptions":{"paths":{"@/*":["src/*"]}}}');
+    await put('src/alias-entry.ts', "import { value } from '@/alias-target';");
+    await put('src/alias-target.ts', 'export const value = 1;');
+    const project = await scanProject(root, randomUUID());
+    const map = await mapOf(project);
+    expect(readable(project, map).edges).toContainEqual(['src/alias-entry.ts', 1, 'src/alias-target.ts']);
+    expect(map.unused.candidates.map(file => file.relativePath)).not.toContain('src/alias-target.ts');
+    expect(map.notes).toContain('tsconfig 1개의 경로 별칭을 따라갔어요.');
+  });
+  it('keeps every ambiguous alias target unsure instead of unused', async () => {
+    await put('tsconfig.json', '{"compilerOptions":{"paths":{"@/*":["src/*"]}}}');
+    await put('src/alias-entry.ts', "import { value } from '@/alias-target';");
+    await put('src/alias-target.ts', 'export const value = 1;');
+    await put('src/alias-target.js', 'export const value = 2;');
+    const project = await scanProject(root, randomUUID());
+    const map = await mapOf(project);
+    const item = map.unresolved.find(item => item.specifier === '@/alias-target');
+    expect(item).toMatchObject({ reason: 'ambiguous', candidates: ['src/alias-target.ts', 'src/alias-target.js'],
+      reasonText: '경로 별칭이 가리키는 파일을 하나로 정하지 못했어요.' });
+    expect(map.edges.some(item => item.specifier === '@/alias-target')).toBe(false);
+    expect(map.unused.unsure.map(file => file.relativePath)).toEqual(expect.arrayContaining(['src/alias-target.ts', 'src/alias-target.js']));
+    expect(map.unused.candidates.map(file => file.relativePath)).not.toEqual(expect.arrayContaining(['src/alias-target.ts']));
+    expect(map.unused.candidates.map(file => file.relativePath)).not.toEqual(expect.arrayContaining(['src/alias-target.js']));
+  });
+  it.each([{ moduleSuffixes: ['.native', ''] }, { module: 'nodenext' }, { moduleResolution: 'NodeNext' }, { moduleResolution: 'node16' }])(
+    'does not draw aliases under %j', async options => {
+      await put('tsconfig.json', JSON.stringify({ compilerOptions: { ...options, paths: { '@/*': ['src/*', 'fallback.ts'] } } }));
+      await put('src/alias-entry.ts', "import { value } from '@/alias-target';");
+      await put('src/alias-target.ts', 'export const value = 1;');
+      await put('fallback.ts', 'export const value = 2;');
+      const project = await scanProject(root, randomUUID());
+      const map = await mapOf(project);
+      expect(map.edges.some(item => item.specifier === '@/alias-target')).toBe(false);
+      expect(map.notes.join(' ')).toContain('경로 별칭을 따라가지 않았어요.');
+    });
+  it('subtracts config bytes from the existing map budget', async () => {
+    await put('tsconfig.json', '{}');
+    const project = await scanProject(root, randomUUID());
+    const map = await mapOf(project, [], { ...MAP_LIMITS, bytes: 2 });
+    expect(map.limited).toBe(true);
+    expect(map.files.every(file => file.checked === 'skipped')).toBe(true);
+    expect(map.edges).toEqual([]);
+  });
+});

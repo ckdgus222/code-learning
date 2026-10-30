@@ -355,3 +355,15 @@ function other() { function same() { throw new Error('other'); prisma.cat.count(
     expect(result.functions[0].storesOmitted).toBe(1);
   });
 });
+
+it('describes alias targets and preserves uncertainty and config notes', () => {
+  const text = "import { a } from '@/api'; import { b } from '@/both'; import { c } from '@/missing';";
+  const files = ['src/api.ts', 'src/both.ts', 'src/both.js'].map(relativePath => ({ id: relativePath, relativePath, size: 0 }));
+  const analysis = analyzeSource(text, 'main.ts', { projectId: randomUUID(), fileId, fileHash });
+  const result = describeFile(text, 'main.ts', fileId, fileHash, analysis, files, { bytesRead: 0, notes: ['config note'],
+    configs: [{ folder: '', readable: true, baseUrl: null, paths: [{ pattern: '@/*', targets: ['src/*'] }] }] });
+  expect(result.imports.map(item => [item.status, item.target?.relativePath ?? null])).toEqual([
+    ['project', 'src/api.ts'], ['ambiguous', null], ['not-found', null],
+  ]);
+  expect(result.notes).toContain('config note');
+});

@@ -259,7 +259,7 @@ export interface ProjectMap {
   files: MapFile[];
   /** Static imports that lead to exactly one file. An arrow means "uses", not an execution order. */
   edges: (MapImport & { toFileId: string; names: string[] | 'all' })[];
-  unresolved: (MapImport & { reason: MapUnresolvedReason; candidates: string[] })[];
+  unresolved: (MapImport & { reason: MapUnresolvedReason; reasonText?: string; candidates: string[] })[];
   /** Non-relative specifiers: a package and a path alias cannot be told apart from the import alone. */
   external: MapImport[];
   /** Functions over a complexity limit in the files the map read, in path and then source order. */

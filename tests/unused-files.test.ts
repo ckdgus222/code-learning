@@ -453,3 +453,13 @@ describe('unused value exports', () => {
     expect(empty.exports).toEqual({ candidates: [], unsure: [], notes: [result.notes[0]] });
   });
 });
+
+it('resolves dynamic alias candidates without counting them as computed paths', () => {
+  const result = unusedFiles(mapOf([file('from.ts'), file('src/api.ts'), file('src/api.js')], {
+    unresolved: [{ ...imported('@/api'), reason: 'not-static', candidates: [] }],
+  }), scripts(), { bytesRead: 0, notes: [], configs: [{ folder: '', readable: true, baseUrl: null,
+    paths: [{ pattern: '@/*', targets: ['src/*'] }] }] });
+  expect(result.unsure.map(item => item.relativePath)).toEqual(['src/api.js', 'src/api.ts']);
+  expect(result.candidates.map(item => item.relativePath)).toEqual(['from.ts']);
+  expect(result.notes.some(note => note.includes('코드로 정하는'))).toBe(false);
+});

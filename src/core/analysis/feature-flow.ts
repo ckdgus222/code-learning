@@ -1,8 +1,9 @@
 import type Parser from 'tree-sitter';
 import type { CallTarget, FeatureFlow, FlowEdge, FlowAfter, FlowAsk, FlowControl, FlowNode, FlowStop, FlowStore, FunctionCalls, ProjectFile, ProjectRoutes, ValueSite } from '../../shared/contracts';
+import { readPathAliases, resolveImport, type PathAliases } from './path-aliases';
 import { AppError } from '../../shared/errors';
 import { findFunctionCalls, type CallsCache } from './calls';
-import { candidatesFor, isRelative, MAP_LIMITS, type MapLimits } from './project-map';
+import { MAP_LIMITS, type MapLimits } from './project-map';
 import { formatNextPath, nextRouteOf } from './next-routes';
 import { firstCode, firstLine, hasToken, hasUnsupportedCertainty, lineRange, nearest, reassigned, sameRange, simpleProperties, unwrapped, propertyName, type CallFact, type Declaration, type FileFacts } from './names';
 import { functionName, functionTypes } from './syntax';
@@ -408,11 +409,12 @@ function frontFacts(fn: Node, facts: FileFacts, toward: ValueSite, inside: boole
 /** A bounded graph for one receiving route. All arrows describe code, not observed execution. */
 export async function buildFeatureFlow(root: string, projectId: string, files: ProjectFile[], routes: ProjectRoutes, routeIndex: number,
   limits: MapLimits = MAP_LIMITS, shouldStop: () => boolean = () => false,
-  cache: CallsCache = { texts: new Map(), parsed: new Map() }): Promise<FeatureFlow> {
+  cache: CallsCache = { texts: new Map(), parsed: new Map() }, pathAliases?: PathAliases): Promise<FeatureFlow> {
   const stop = () => { if (shouldStop()) throw new AppError('CANCELLED', '기능 흐름 찾기를 취소했어요.'); };
   const route = routes.routes[routeIndex];
   if (routes.projectId !== projectId || !route) throw new AppError('CHANGED', '기능 목록을 다시 찾아 주세요.');
-  const flow: FeatureFlow = { projectId, routesId: routes.routesId, routeIndex, nodes: [], edges: [], limited: routes.limited, notes: [...routes.notes] };
+  const aliases = pathAliases ?? await readPathAliases(root, files, limits.bytes, shouldStop);
+  const flow: FeatureFlow = { projectId, routesId: routes.routesId, routeIndex, nodes: [], edges: [], limited: routes.limited, notes: [...new Set([...routes.notes, ...aliases.notes])] };
   const parsedFiles = new Set<string>();
   cache = { ...cache, parsedFiles };
   const results = new Map<string, { found: FunctionCalls; facts: FileFacts; fn: Node }>();
@@ -438,9 +440,11 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
     return declaration?.kind === 'function' && sameRange(declaration.fn, fn);
   };
   const importsThisFile = (info: FileFacts, declaration: Declaration, local: string, facts: FileFacts, found: FunctionCalls): boolean => {
-    if (declaration.kind !== 'import' || !declaration.specifier || !isRelative(declaration.specifier)) return false;
-    const candidates = candidatesFor(info.file.relativePath, declaration.specifier, known);
-    if (candidates?.length !== 1 || known.get(candidates[0])?.id !== facts.file.id) return false;
+    if (declaration.kind !== 'import' || !declaration.specifier) return false;
+    const resolved = resolveImport(info.file.relativePath, declaration.specifier, known, aliases);
+    if (resolved.kind !== 'project' || !resolved.sure) return false;
+    const { candidates } = resolved;
+    if (candidates.length !== 1 || known.get(candidates[0])?.id !== facts.file.id) return false;
     return declaration.imported === 'default' ? found.names.exported.includes('default')
       : local === declaration.imported && found.names.exported.includes(declaration.imported);
   };
@@ -502,7 +506,7 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
     const key = keyOf(node.fileId, node.range.startUtf16, node.range.endUtf16);
     let result = results.get(key);
     if (!result) {
-      const found = await findFunctionCalls(root, projectId, files, targetOf(node), limits, shouldStop, cache);
+      const found = await findFunctionCalls(root, projectId, files, targetOf(node), limits, shouldStop, cache, aliases);
       if (found.limited || found.unexamined.length) limit('일부 파일은 끝까지 확인하지 못했어요.');
       const facts = cache.parsed.get(node.fileId)!;
       const fn = facts.functions.find(fn => fn.startIndex === node.range.startUtf16 && fn.endIndex === node.range.endUtf16)!;
@@ -528,7 +532,7 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
     if (callbacks.length > 3) limit('안쪽 함수는 함수마다 3개까지만 봐요.');
     for (const callback of callbacks.slice(0, 3)) {
       stop();
-      const nested = await findFunctionCalls(root, projectId, files, routeSite(callback, facts), limits, shouldStop, cache);
+      const nested = await findFunctionCalls(root, projectId, files, routeSite(callback, facts), limits, shouldStop, cache, aliases);
       outside.push(...nested.calls.filter(call => call.status === 'external' || call.status === 'unknown').map(call => `안쪽 함수에서 ${call.text}`));
     }
     node.outside = outside.slice(0, 6);
@@ -665,7 +669,7 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
           const key = keyOf(target.fileId, target.startUtf16, target.endUtf16);
           let hookCalls = results.get(key)?.found;
           if (!hookCalls) {
-            hookCalls = await findFunctionCalls(root, projectId, files, target, limits, shouldStop, cache);
+            hookCalls = await findFunctionCalls(root, projectId, files, target, limits, shouldStop, cache, aliases);
             results.set(key, { found: hookCalls, facts: info, fn: hook });
             if (hookCalls.limited || hookCalls.unexamined.length) limit('일부 파일은 끝까지 확인하지 못했어요.');
           }
@@ -775,10 +779,11 @@ export async function buildFeatureFlows(root: string, projectId: string, files: 
   if (routes.routes.length > FLOW_BATCH_LIMIT) throw new AppError('LIMIT', `서버 주소가 ${FLOW_BATCH_LIMIT}개를 넘어 화면별로 묶지 않았어요.`);
   if (routes.projectId !== projectId) throw new AppError('CHANGED', '기능 목록을 다시 찾아 주세요.');
   const cache: CallsCache = { texts: new Map(), parsed: new Map() };
+  const aliases = await readPathAliases(root, files, limits.bytes, shouldStop);
   const flows: FeatureFlow[] = [];
   for (let index = 0; index < routes.routes.length; index++) {
     if (shouldStop()) throw new AppError('CANCELLED', '화면별로 묶기를 취소했어요.');
-    flows.push(await buildFeatureFlow(root, projectId, files, routes, index, limits, shouldStop, cache));
+    flows.push(await buildFeatureFlow(root, projectId, files, routes, index, limits, shouldStop, cache, aliases));
   }
   if (shouldStop()) throw new AppError('CANCELLED', '화면별로 묶기를 취소했어요.');
   assertResultSize(flows);
