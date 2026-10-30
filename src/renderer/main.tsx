@@ -140,7 +140,7 @@ function App() {
     }
   }), [project?.id]);
 
-  const ai = useAiJobs({ project, source, symbol, revision, setError });
+  const ai = useAiJobs({ project, source, symbol, revision, setError, setNotice });
   // Coming back to the overview puts the focus on the card the topic came from (plan U1).
   useEffect(() => {
     if (view !== 'overview' || !focusAnchor) return;
@@ -927,6 +927,7 @@ function App() {
             onEnsure={() => { void ai.ensureConnections().then(message => { if (message) setError(message); }); }}
             onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
             onStart={() => void ai.startFileExplanation()} onCancel={() => void ai.cancelFileExplanation()}
+            onDelete={() => void ai.deleteFileExplanation()}
             onShow={range => void showFileExplanationRange(range)} />
         </details>}
       </aside>

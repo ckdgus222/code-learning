@@ -7,8 +7,9 @@ import { channels, learningSpotSchema, saveLearningSpotSchema, saveLearningMarkS
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { ProjectSession, workersStopped } from './project-session';
-import { checkConnectionsSchema, explainRequestSchema, cancelExplanationSchema, overviewRequestSchema, fileExplanationRequestSchema, featureGuideRequestSchema } from '../shared/ai';
+import { fileExplanationResultSchema, saveFileExplanationSchema, checkConnectionsSchema, explainRequestSchema, cancelExplanationSchema, overviewRequestSchema, fileExplanationRequestSchema, featureGuideRequestSchema } from '../shared/ai';
 import { LocalAiRuntime } from '../core/ai/runtime';
+import { maskSecrets } from '../core/ai/secrets';
 import { LocalWorkerWorkflow } from '../core/ai/workflow';
 import { ProjectAiContext } from '../core/ai/context';
 
@@ -231,6 +232,34 @@ app.whenReady().then(async () => {
     // A damaged or older value shows no card and stays stored.
     const parsed = learningSpotSchema.safeParse(saved.spot);
     return parsed.success ? { spot: parsed.data, savedAt: saved.savedAt } : null;
+  });
+  handle(channels.savedFileExplanation, async argument => {
+    const { projectId, fileId } = sourceRequestSchema.parse(argument);
+    const relativePath = current(projectId).relativePathOf(fileId);
+    const saved = storage.fileExplanationOf(projectId, relativePath);
+    if (!saved) return null;
+    const parsed = fileExplanationResultSchema.safeParse(saved.result);
+    if (!parsed.success || parsed.data.relativePath !== relativePath) return null;
+    const result = parsed.data;
+    return { result: { ...result, range: { ...result.range, fileId },
+      chunks: result.chunks.map(chunk => ({ ...chunk, range: { ...chunk.range, fileId } })) }, savedAt: saved.savedAt };
+  });
+  handle(channels.saveFileExplanation, async argument => {
+    const { projectId, result } = saveFileExplanationSchema.parse(argument);
+    const active = current(projectId);
+    if (result.projectId !== projectId || active.relativePathOf(result.range.fileId) !== result.relativePath ||
+        result.chunks.some(chunk => chunk.range.fileId !== result.range.fileId)) {
+      throw new AppError('NOT_ALLOWED', '현재 프로젝트의 같은 파일 설명만 저장할 수 있어요.');
+    }
+    // Names come straight from the code (a computed method name can hold a token), so the stored copy is masked as the AI's was.
+    const masked = { ...result, chunks: result.chunks.map(chunk => ({ ...chunk, name: maskSecrets(chunk.name).text })) };
+    return { savedAt: storage.saveFileExplanation(projectId, result.relativePath, masked) };
+  });
+  handle(channels.deleteFileExplanation, async argument => {
+    const { projectId, fileId } = sourceRequestSchema.parse(argument);
+    const relativePath = current(projectId).relativePathOf(fileId);
+    storage.deleteFileExplanation(projectId, relativePath);
+    return null;
   });
   handle(channels.learningMarks, async argument => {
     const { projectId } = projectRequestSchema.parse(argument);

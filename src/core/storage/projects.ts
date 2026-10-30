@@ -8,6 +8,9 @@ export class ProjectStorage {
     this.db = new DatabaseSync(filename);
     this.db.exec('CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, root TEXT NOT NULL UNIQUE, name TEXT NOT NULL, opened_at TEXT NOT NULL)');
     this.db.exec('CREATE TABLE IF NOT EXISTS learning_spots (project_id TEXT PRIMARY KEY REFERENCES projects(id), spot TEXT NOT NULL, saved_at TEXT NOT NULL)');
+    this.db.exec(`CREATE TABLE IF NOT EXISTS ai_file_explanations (
+      project_id TEXT NOT NULL REFERENCES projects(id), relative_path TEXT NOT NULL,
+      result TEXT NOT NULL, saved_at TEXT NOT NULL, PRIMARY KEY (project_id, relative_path))`);
     this.db.exec(`CREATE TABLE IF NOT EXISTS learning_marks (
       project_id TEXT NOT NULL REFERENCES projects(id), relative_path TEXT NOT NULL, name TEXT NOT NULL,
       occurrence INTEGER NOT NULL, state TEXT CHECK (state IN ('understood', 'review')), note TEXT NOT NULL,
@@ -42,6 +45,22 @@ export class ProjectStorage {
     if (!row) return null;
     try { return { spot: JSON.parse(row.spot), savedAt: row.savedAt }; }
     catch { return null; }
+  }
+  saveFileExplanation(projectId: string, relativePath: string, result: unknown): string {
+    const savedAt = new Date().toISOString();
+    this.db.prepare('INSERT OR REPLACE INTO ai_file_explanations VALUES (?, ?, ?, ?)')
+      .run(projectId, relativePath, JSON.stringify(result), savedAt);
+    return savedAt;
+  }
+  fileExplanationOf(projectId: string, relativePath: string): { result: unknown; savedAt: string } | null {
+    const row = this.db.prepare('SELECT result, saved_at AS savedAt FROM ai_file_explanations WHERE project_id = ? AND relative_path = ?')
+      .get(projectId, relativePath) as { result: string; savedAt: string } | undefined;
+    if (!row) return null;
+    try { return { result: JSON.parse(row.result), savedAt: row.savedAt }; }
+    catch { return null; }
+  }
+  deleteFileExplanation(projectId: string, relativePath: string): void {
+    this.db.prepare('DELETE FROM ai_file_explanations WHERE project_id = ? AND relative_path = ?').run(projectId, relativePath);
   }
   marksOf(projectId: string): unknown[] {
     return this.db.prepare(`SELECT relative_path AS relativePath, name, occurrence, state, note,

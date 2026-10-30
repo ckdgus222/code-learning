@@ -5,10 +5,13 @@ import { inspectionBlockedReason, needsAutomaticInspection } from './connections
 import { rememberFileExplanation, type FileExplanationEntry, type FileExplanationState } from './file-explanation';
 import type { OverviewState } from './overview';
 
+const EXPLANATION_SAVE_FAILED = '파일 설명을 저장하지 못했어요. 앱을 닫으면 사라져요.';
+const EXPLANATION_LOAD_FAILED = '저장된 파일 설명을 불러오지 못했어요.';
+
 // Keeps AI jobs and installation checks together so their running states block conflicting work.
-export function useAiJobs({ project, source, symbol, revision, setError }: {
+export function useAiJobs({ project, source, symbol, revision, setError, setNotice }: {
   project: ProjectView | null; source: SourceView | null; symbol: CodeSymbol | undefined;
-  revision: RefObject<number>; setError(message: string): void;
+  revision: RefObject<number>; setError(message: string): void; setNotice(message: string): void;
 }) {
   // The AI installation check, shared by the question panel and the overview card.
   const [connections, setConnections] = useState<ConnectionReport | null>(null);
@@ -20,6 +23,7 @@ export function useAiJobs({ project, source, symbol, revision, setError }: {
   const [fileExplanations, setFileExplanations] = useState<FileExplanationEntry[]>([]);
   const [fileExplanationState, setFileExplanationState] = useState<FileExplanationState | null>(null);
   const fileExplanationRequest = useRef(0);
+  const savedExplanationRequest = useRef(0);
   const fileExplanationJob = useRef<{ id: string | null; starting: boolean; queued: LearningEvent[]; revision: number }>({ id: null, starting: false, queued: [], revision: 0 });
   // Plan G1: the overview job and its result.
   const [overviewAi, setOverviewAi] = useState<OverviewState | null>(null);
@@ -75,11 +79,53 @@ export function useAiJobs({ project, source, symbol, revision, setError }: {
         setFileExplanationState({ status: 'failed', fileId: event.result.range.fileId, message: '파일이 바뀌어 다시 만들어 주세요', cancelled: false });
         return;
       }
-      setFileExplanations(previous => rememberFileExplanation(previous, { result: event.result, revision: job.revision }));
+      setFileExplanations(previous => rememberFileExplanation(previous, { result: event.result, revision: job.revision, savedAt: null }));
       setFileExplanationState(null);
+      void window.learning.saveFileExplanation({ projectId: event.projectId, result: event.result }).then(saved => {
+        if (!saved.ok) {
+          if (saved.code !== 'PROJECT_CLOSED') setNotice(EXPLANATION_SAVE_FAILED);
+          return;
+        }
+        setFileExplanations(previous => previous.map(entry => entry.result.jobId === event.result.jobId
+          ? { ...entry, savedAt: saved.value.savedAt } : entry));
+      }).catch(() => setNotice(EXPLANATION_SAVE_FAILED));
     }
   };
   useEffect(() => window.learning.onLearningEvent(event => fileExplanationReceiver.current(event)), []);
+
+  useEffect(() => {
+    const token = ++savedExplanationRequest.current;
+    if (!project || !source || fileExplanations.some(entry => entry.result.range.fileId === source.fileId)) return;
+    const fileId = source.fileId;
+    const requestedRevision = revision.current;
+    void window.learning.savedFileExplanation({ projectId: project.id, fileId }).then(saved => {
+      if (token !== savedExplanationRequest.current) return;
+      if (!saved.ok) {
+        if (saved.code !== 'PROJECT_CLOSED') setNotice(EXPLANATION_LOAD_FAILED);
+        return;
+      }
+      if (!saved.value) return;
+      const entry = { ...saved.value, revision: requestedRevision };
+      setFileExplanations(previous => previous.some(item => item.result.range.fileId === fileId)
+        ? previous : rememberFileExplanation(previous, entry));
+    }).catch(() => {
+      if (token === savedExplanationRequest.current) setNotice(EXPLANATION_LOAD_FAILED);
+    });
+    return () => { savedExplanationRequest.current++; };
+    // Load only when the opened file changes, not when a result is saved or deleted.
+  }, [project?.id, source?.fileId]);
+
+  async function deleteFileExplanation() {
+    if (!project || !source || !fileExplanation || fileExplanationRunning) return;
+    const fileId = source.fileId;
+    const jobId = fileExplanation.result.jobId;
+    savedExplanationRequest.current++;
+    try {
+      const deleted = await window.learning.deleteFileExplanation({ projectId: project.id, fileId });
+      if (!deleted.ok) { setError(deleted.message); return; }
+      setFileExplanations(previous => previous.filter(entry => entry.result.range.fileId !== fileId || entry.result.jobId !== jobId));
+    } catch { setError('파일 설명을 지우지 못했어요.'); }
+  }
 
   function connectionCheckBlockedReason(): string | null {
     // A check starts main's list of AI programs over: the overview's next stage would find none.
@@ -111,6 +157,7 @@ export function useAiJobs({ project, source, symbol, revision, setError }: {
     }
   }
   function forget() {
+    savedExplanationRequest.current++;
     fileExplanationRequest.current++;
     fileExplanationJob.current = { id: null, starting: false, queued: [], revision: revision.current };
     setFileExplanations([]); setFileExplanationState(null); setMode('local-worker');
@@ -177,7 +224,7 @@ export function useAiJobs({ project, source, symbol, revision, setError }: {
     mode, setMode, questionRunning, setQuestionRunning, featureGuideRunning, setFeatureGuideRunning,
     overview: overviewAi, overviewCard, startOverview, cancelOverview,
     fileExplanation, fileExplanationStale, fileExplanationState, fileExplanationRunning,
-    sourceExplanationState, fileExplanationOpen, functionExplanation, startFileExplanation, cancelFileExplanation,
+    sourceExplanationState, fileExplanationOpen, functionExplanation, startFileExplanation, cancelFileExplanation, deleteFileExplanation,
     forget,
   };
 }

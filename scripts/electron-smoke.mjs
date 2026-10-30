@@ -4526,7 +4526,9 @@ try {
     assert.equal(await page.getByTestId('evidence-range').count(), 0);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await openTreeFile('chunks.ts');
-    assert.equal(await card.getByTestId('file-summary').count(), 0);
+    // The saved explanation comes back after reopening, marked as made before the change, with its ranges locked.
+    await card.getByText('다시 확인 필요: 설명을 만든 뒤 코드가 바뀌었어요.', { exact: true }).waitFor();
+    assert.equal(await card.getByRole('button', { name: '파일 전체 근거', exact: true }).isDisabled(), true);
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
   });
@@ -4670,6 +4672,231 @@ try {
   // Start with real handlers again: earlier checks replace several handlers with AI fixtures.
   await app.close();
   await launch();
+  {
+    const folder = path.join(temporary, '파일 설명 저장 프로젝트');
+    await mkdir(folder);
+    const original = 'export function saved() { return 1; }\n';
+    await writeFile(path.join(folder, 'saved.ts'), original);
+    await writeFile(path.join(folder, 'other.ts'), 'export const other = 2;\n');
+    let projectId;
+    let firstResult;
+    let calls = 0;
+    const card = () => page.locator('.panel').getByRole('region', { name: '이 파일 설명', exact: true });
+    const savedDate = () => card().getByText(/저장됨 ·/);
+    const openRecent = async () => {
+      await page.getByRole('region', { name: '최근 프로젝트', exact: true }).getByRole('button').filter({ hasText: '파일 설명 저장 프로젝트' }).click();
+      await page.getByRole('heading', { name: '파일 설명 저장 프로젝트', exact: true }).waitFor();
+      await openTreeFile('saved.ts');
+    };
+    const restart = async () => { await app.close(); await launch(); await openRecent(); };
+    const assertDeleted = async () => {
+      assert.equal(await card().getByTestId('file-summary').count(), 0);
+      const count = await app.evaluate(({ app }, projectId) => {
+        const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+        const db = new DatabaseSync(process.getBuiltinModule('node:path').join(app.getPath('userData'), 'learning.sqlite'));
+        try { return db.prepare('SELECT COUNT(*) AS count FROM ai_file_explanations WHERE project_id = ? AND relative_path = ?').get(projectId, 'saved.ts').count; }
+        finally { db.close(); }
+      }, projectId);
+      assert.equal(count, 0, 'Deletion must persist in the same test profile after an app restart');
+    };
+    const installFake = async () => {
+      await app.evaluate(({ ipcMain }) => {
+        globalThis.savedExplanationCalls = 0;
+        ipcMain.removeHandler('learning:connections');
+        ipcMain.handle('learning:connections', () => ({ ok: true, value: { checkedAt: new Date().toISOString(), providers: [],
+          modes: [{ mode: 'local-worker', ready: true, reason: '저장 시험용 가짜 AI' }] } }));
+        ipcMain.removeHandler('learning:file-explanation');
+        ipcMain.handle('learning:file-explanation', async (event, request) => {
+          const read = await ipcMain._invokeHandlers.get('learning:read')(event, request && { projectId: request.projectId, fileId: request.fileId });
+          if (!read.ok) return read;
+          const source = read.value;
+          const { randomUUID } = process.getBuiltinModule('node:crypto');
+          const jobId = randomUUID();
+          const chunkId = randomUUID();
+          const range = { fileId: source.fileId, fileHash: source.hash, startUtf16: 0, endUtf16: source.text.split('\n')[0].length, startLine: 1, endLine: 1 };
+          const result = { projectId: request.projectId, jobId, relativePath: source.relativePath, range,
+            chunks: [{ id: chunkId, kind: 'function', name: 'saved', range, functionRange: null }],
+            explanation: { summary: `저장 시험 설명 ${++globalThis.savedExplanationCalls}`, chunks: [{ chunkId, summary: '저장할 함수 설명' }], unknowns: [] },
+            limitations: [], mode: request.mode, review: 'AI 검토됨', models: [] };
+          globalThis.savedExplanationResult = result;
+          event.sender.send('learning:ai-event', { kind: 'file-explanation-completed', projectId: request.projectId, jobId, result });
+          return { ok: true, value: { jobId } };
+        });
+      });
+    };
+    const generate = async () => {
+      const disclosure = page.locator('.panel > details').filter({ has: page.getByText('AI로 이 파일 설명 만들기', { exact: true }) });
+      if (!await disclosure.evaluate(element => element.open)) await disclosure.locator(':scope > summary').click();
+      await card().getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
+      await until(() => card().getByRole('checkbox').isEnabled());
+      await card().getByRole('checkbox').check();
+      const before = await app.evaluate(() => globalThis.savedExplanationCalls);
+      await card().getByRole('button', { name: '동의하고 파일 설명 만들기', exact: true }).click();
+      await until(() => app.evaluate((_electron, before) => globalThis.savedExplanationCalls > before, before));
+      await until(async () => await card().getByRole('button', { name: 'AI 작업 취소', exact: true }).count() === 0);
+      const number = await app.evaluate(() => globalThis.savedExplanationCalls);
+      await card().getByText(`저장 시험 설명 ${number}`, { exact: true }).waitFor();
+      calls++;
+    };
+    await check('Saved file explanations: automatic save, strict main guards and isolated storage', async () => {
+      assert.equal(await app.evaluate(({ app }) => app.getPath('userData')), profile);
+      await installFake();
+      await dialogTo(folder);
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      await page.getByRole('heading', { name: '파일 설명 저장 프로젝트', exact: true }).waitFor();
+      const recent = await page.evaluate(() => window.learning.recentProjects());
+      projectId = recent.value.find(item => item.root === folder).id;
+      await openTreeFile('saved.ts');
+      await generate(); await savedDate().waitFor();
+      firstResult = await app.evaluate(() => globalThis.savedExplanationResult);
+      const refused = await page.evaluate(async ({ projectId, result }) => {
+        const unknown = crypto.randomUUID();
+        const invalid = [
+          { ...result, projectId: unknown }, { ...result, range: { ...result.range, fileId: unknown } },
+          { ...result, relativePath: 'other.ts' },
+          { ...result, chunks: [{ ...result.chunks[0], range: { ...result.range, fileId: unknown } }] },
+        ];
+        return Promise.all(invalid.map(result => window.learning.saveFileExplanation({ projectId, result })));
+      }, { projectId, result: firstResult });
+      for (const result of refused) assert.equal(result.code, 'NOT_ALLOWED');
+      const badSchema = await page.evaluate(({ projectId, result }) => window.learning.saveFileExplanation({ projectId, result: { ...result, extra: true } }), { projectId, result: firstResult });
+      assert.equal(badSchema.code, 'INVALID_REQUEST');
+      assert.equal(await app.evaluate(() => globalThis.savedExplanationCalls), 1);
+    });
+    await check('Saved file explanations: restart without AI, rebind every file ID and open the saved code range', async () => {
+      await restart();
+      await card().getByText('저장 시험 설명 1', { exact: true }).waitFor(); await savedDate().waitFor();
+      assert.equal(calls, 1);
+      assert.equal(await app.evaluate(() => globalThis.savedExplanationCalls), undefined, 'No fake explanation handler installed after restart');
+      await app.evaluate(({ ipcMain }) => {
+        const read = ipcMain._invokeHandlers.get('learning:read');
+        ipcMain.removeHandler('learning:read');
+        ipcMain.handle('learning:read', async (event, input) => {
+          const result = await read(event, input);
+          if (result.ok) globalThis.restoredExplanationSource = result.value;
+          return result;
+        });
+      });
+      await card().getByRole('button', { name: '코드 보기', exact: true }).click();
+      await until(async () => /saved.ts · 1–1줄/.test(await page.getByTestId('evidence-range').innerText()));
+      const source = await app.evaluate(() => globalThis.restoredExplanationSource);
+      assert.notEqual(source.fileId, firstResult.range.fileId);
+      const restored = await page.evaluate(input => window.learning.savedFileExplanation(input), { projectId, fileId: source.fileId });
+      assert.equal(restored.value.result.range.fileId, source.fileId);
+      assert.ok(restored.value.result.chunks.every(chunk => chunk.range.fileId === source.fileId));
+      assert.equal(restored.value.result.range.fileHash, firstResult.range.fileHash);
+      await card().getByRole('button', { name: '파일 전체 근거', exact: true }).click();
+      await until(async () => /saved.ts · 1–1줄/.test(await page.getByTestId('evidence-range').innerText()));
+    });
+    await check('Saved file explanations: changed code disables evidence and deletion survives restart', async () => {
+      await app.close();
+      await writeFile(path.join(folder, 'saved.ts'), original + '// changed\n');
+      await launch(); await openRecent();
+      await card().getByText('다시 확인 필요: 설명을 만든 뒤 코드가 바뀌었어요.', { exact: true }).waitFor();
+      assert.equal(await card().getByRole('button', { name: '코드 보기', exact: true }).isDisabled(), true);
+      assert.equal(await card().getByRole('button', { name: '파일 전체 근거', exact: true }).isDisabled(), true);
+      await card().getByRole('button', { name: '지우기', exact: true }).click();
+      await until(async () => await card().getByTestId('file-summary').count() === 0);
+      await restart();
+      await assertDeleted();
+    });
+    await check('Saved file explanations: a failed new save has deletion without a date and removes the old stored row', async () => {
+      await installFake(); await generate(); await savedDate().waitFor();
+      await app.evaluate(({ ipcMain }) => {
+        globalThis.originalExplanationSave = ipcMain._invokeHandlers.get('learning:save-file-explanation');
+        ipcMain.removeHandler('learning:save-file-explanation');
+        ipcMain.handle('learning:save-file-explanation', () => ({ ok: false, code: 'IO', message: '시험용 저장 실패' }));
+      });
+      await generate();
+      await page.getByText('파일 설명을 저장하지 못했어요. 앱을 닫으면 사라져요.', { exact: true }).waitFor();
+      assert.equal(await savedDate().count(), 0);
+      await card().getByRole('button', { name: '지우기', exact: true }).click();
+      await until(async () => await card().getByTestId('file-summary').count() === 0);
+      await restart();
+      await assertDeleted();
+    });
+    await check('Saved file explanations: read failure is reported separately from an absent row', async () => {
+      await app.evaluate(({ ipcMain }) => {
+        globalThis.originalExplanationRead = ipcMain._invokeHandlers.get('learning:saved-file-explanation');
+        ipcMain.removeHandler('learning:saved-file-explanation');
+        ipcMain.handle('learning:saved-file-explanation', () => ({ ok: false, code: 'IO', message: '시험용 읽기 실패' }));
+      });
+      await openTreeFile('other.ts');
+      await page.getByText('저장된 파일 설명을 불러오지 못했어요.', { exact: true }).waitFor();
+      await app.evaluate(({ ipcMain }) => {
+        ipcMain.removeHandler('learning:saved-file-explanation');
+        ipcMain.handle('learning:saved-file-explanation', globalThis.originalExplanationRead);
+      });
+      await openTreeFile('saved.ts');
+      assert.equal(await page.getByText('저장된 파일 설명을 불러오지 못했어요.', { exact: true }).count(), 0);
+    });
+    await check('Saved file explanations: late save acknowledgements cannot mark a newer result saved', async () => {
+      await installFake();
+      await app.evaluate(({ ipcMain }) => {
+        const save = ipcMain._invokeHandlers.get('learning:save-file-explanation');
+        globalThis.heldExplanationSaves = [];
+        ipcMain.removeHandler('learning:save-file-explanation');
+        ipcMain.handle('learning:save-file-explanation', async (event, input) => {
+          const result = await save(event, input);
+          return new Promise(resolve => globalThis.heldExplanationSaves.push(() => resolve(result)));
+        });
+      });
+      await generate();
+      await until(() => app.evaluate(() => globalThis.heldExplanationSaves.length === 1));
+      await generate();
+      await until(() => app.evaluate(() => globalThis.heldExplanationSaves.length === 2));
+      await app.evaluate(() => globalThis.heldExplanationSaves[0]());
+      await page.waitForTimeout(100);
+      assert.equal(await savedDate().count(), 0);
+      assert.equal(await card().getByTestId('file-summary').innerText(), '저장 시험 설명 2');
+      await app.evaluate(() => globalThis.heldExplanationSaves[1]());
+      await savedDate().waitFor();
+    });
+    await check('Saved file explanations: late reads cannot cross files, replace a new result or survive reopening', async () => {
+      await restart();
+      await card().getByText('저장 시험 설명 2', { exact: true }).waitFor();
+      await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
+      await app.evaluate(({ ipcMain }) => {
+        const read = ipcMain._invokeHandlers.get('learning:saved-file-explanation');
+        globalThis.heldExplanationReads = [];
+        globalThis.holdExplanationRead = true;
+        ipcMain.removeHandler('learning:saved-file-explanation');
+        ipcMain.handle('learning:saved-file-explanation', async (event, input) => {
+          const result = await read(event, input);
+          if (!globalThis.holdExplanationRead) return result;
+          return new Promise(resolve => globalThis.heldExplanationReads.push(() => resolve(result)));
+        });
+      });
+      await openRecent();
+      await until(() => app.evaluate(() => globalThis.heldExplanationReads.length === 1));
+      await app.evaluate(() => { globalThis.holdExplanationRead = false; });
+      await openTreeFile('other.ts');
+      // Release only once other.ts is the file read; released earlier, the answer would still belong to saved.ts.
+      await until(async () => (await page.getByRole('navigation', { name: '현재 학습 위치', exact: true }).innerText()).includes('other.ts'));
+      await app.evaluate(() => globalThis.heldExplanationReads.shift()());
+      await page.waitForTimeout(100);
+      assert.equal(await card().getByTestId('file-summary').count(), 0);
+      await app.evaluate(() => { globalThis.holdExplanationRead = true; });
+      await openTreeFile('saved.ts');
+      await until(() => app.evaluate(() => globalThis.heldExplanationReads.length === 1));
+      await installFake(); await generate(); await savedDate().waitFor();
+      await app.evaluate(() => globalThis.heldExplanationReads.shift()());
+      await page.waitForTimeout(100);
+      assert.equal(await card().getByTestId('file-summary').innerText(), '저장 시험 설명 1');
+      await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
+      await openRecent();
+      await until(() => app.evaluate(() => globalThis.heldExplanationReads.length === 1));
+      await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
+      await app.evaluate(() => { globalThis.holdExplanationRead = false; });
+      await openRecent(); await savedDate().waitFor();
+      await card().getByRole('button', { name: '지우기', exact: true }).click();
+      await until(async () => await card().getByTestId('file-summary').count() === 0);
+      await app.evaluate(() => globalThis.heldExplanationReads.shift()());
+      await page.waitForTimeout(100);
+      assert.equal(await card().getByTestId('file-summary').count(), 0);
+    });
+    await app.close(); await launch();
+  }
   {
     const folder = path.join(temporary, '이어서 보기 프로젝트');
     const otherFolder = path.join(temporary, '이어서 보기 다른 프로젝트');

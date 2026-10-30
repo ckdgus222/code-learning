@@ -61,25 +61,33 @@ export const fileExplanationReviewSchema = z.object({
 }).strict();
 /** Stored with the explanation, independent of the AI and analysis workers' evidence caches. */
 export type FileExplanationRange = Pick<Evidence, 'fileId' | 'fileHash' | 'startUtf16' | 'endUtf16' | 'startLine' | 'endLine'>;
-export interface FileChunk {
-  id: string;
-  kind: 'imports' | 'class' | 'function' | 'field' | 'variable' | 'statement';
-  name: string;
-  range: FileExplanationRange;
-  functionRange: { startUtf16: number; endUtf16: number } | null;
-}
-export interface FileExplanationResult {
-  jobId: string;
-  projectId: string;
-  relativePath: string;
-  range: FileExplanationRange;
-  chunks: FileChunk[];
-  explanation: FileExplanation;
-  limitations: string[];
-  mode: LearningMode;
-  review: 'AI 검토됨' | 'AI 대조 없음';
-  models: ModelRun[];
-}
+// File explanations read at most 32 KiB; offsets, lines and analyzer names fit within that source.
+const fileOffset = z.number().int().min(0).max(32 * 1024);
+const fileRangeSchema = z.object({
+  fileId: idSchema, fileHash: z.string().regex(/^[a-f0-9]{64}$/),
+  startUtf16: fileOffset, endUtf16: fileOffset,
+  startLine: z.number().int().min(1).max(32 * 1024 + 1), endLine: z.number().int().min(1).max(32 * 1024 + 1),
+}).strict().refine(range => range.startUtf16 <= range.endUtf16 && range.startLine <= range.endLine);
+export const fileExplanationResultSchema = z.object({
+  jobId: idSchema, projectId: idSchema, relativePath: z.string().min(1).max(1024),
+  range: fileRangeSchema,
+  chunks: z.array(z.object({
+    id: idSchema, kind: z.enum(['imports', 'class', 'function', 'field', 'variable', 'statement']),
+    name: z.string().min(1).max(32 * 1024), range: fileRangeSchema,
+    functionRange: z.object({ startUtf16: fileOffset, endUtf16: fileOffset }).strict()
+      .refine(range => range.startUtf16 <= range.endUtf16).nullable(),
+  }).strict()).max(80),
+  explanation: fileExplanationSchema,
+  // Two chunking warnings and one masked-source notice; at most two workflow stages.
+  limitations: z.array(description).max(3), mode: learningModeSchema, review: z.enum(['AI 검토됨', 'AI 대조 없음']),
+  models: z.array(z.object({
+    stage: z.enum(['organizing', 'explaining', 'reviewing']), provider: z.enum(['codex', 'antigravity']),
+    requestedModel: z.string().min(1).max(120).nullable(), reportedModel: z.string().min(1).max(120).nullable(),
+  }).strict()).max(2),
+}).strict();
+export type FileExplanationResult = z.infer<typeof fileExplanationResultSchema>;
+export type FileChunk = FileExplanationResult['chunks'][number];
+export const saveFileExplanationSchema = z.object({ projectId: idSchema, result: fileExplanationResultSchema }).strict();
 const references = z.array(idSchema).min(1).max(16);
 export const explanationSchema = z.object({
   summary: description,

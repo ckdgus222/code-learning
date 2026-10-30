@@ -780,3 +780,11 @@ describe('screen grouping freshness and independent cancellation', () => {
     await expect(session.read('f1')).resolves.toMatchObject({ fileId: 'f1' });
   });
 });
+
+it('resolves only registered file IDs in an open project for saved explanations', async () => {
+  expect(session.relativePathOf('f1')).toBe('a.ts');
+  expect(() => session.relativePathOf(randomUUID())).toThrow(expect.objectContaining({ code: 'NOT_ALLOWED' }));
+  expect(() => session.relativePathOf('../a.ts')).toThrow(expect.objectContaining({ code: 'NOT_ALLOWED' }));
+  await session.close();
+  expect(() => session.relativePathOf('f1')).toThrow(expect.objectContaining({ code: 'PROJECT_CLOSED' }));
+});
