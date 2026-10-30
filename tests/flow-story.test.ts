@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import type { FeatureFlow, FlowEdge, FlowNode, FlowStop, FlowStore, Route, ValueSite } from '../src/shared/contracts';
-import { afterText, codeNameOf, groupNameOf, storyOf } from '../src/core/analysis/flow-story';
+import { afterText, codeNameOf, groupNameOf, storeText, storyOf } from '../src/core/analysis/flow-story';
 
 function node(id: string, side: FlowNode['side'], depth = 0, extra: Partial<FlowNode> = {}): FlowNode {
   return { id, side, depth, name: id, fileId: id, fileHash: 'hash', relativePath: `${id}.ts`,
@@ -123,7 +123,14 @@ it('keeps route uncertainty on the request step', () => {
 const site = (fileId: string, startUtf16: number): ValueSite => ({ fileId, fileHash: 'hash', startUtf16,
   endUtf16: startUtf16 + 1, startLine: 1, endLine: 1, text: 'code' });
 const stop = (fileId: string, start: number): FlowStop => ({ kind: 'Error', message: null, condition: null, site: site(fileId, start) });
-const store = (fileId: string, start: number, action: FlowStore['action']): FlowStore => ({ model: action === 'raw' ? null : 'dog', action, site: site(fileId, start) });
+const store = (fileId: string, start: number, action: FlowStore['action']): FlowStore => ({ model: action === 'raw' ? null : 'dog', action, basis: 'shape', site: site(fileId, start) });
+
+it.each([
+  ['delete', 'dog 지우기'], ['upsert', 'dog 없으면 새로 저장하고 있으면 바꾸기'], ['raw', 'SQL 직접 실행'],
+] as const)('marks name-inferred %s storage without changing shape labels', (action, text) => {
+  expect(storeText(store('server', 0, action))).toBe(text);
+  expect(storeText({ ...store('server', 0, action), basis: 'name' })).toBe(`${text} (이름으로 추정)`);
+});
 
 it('keeps handler and service errors and omitted counts on their own steps', () => {
   const receiving = { ...handler, stops: Array.from({ length: 6 }, (_, i) => stop('handler', i)), stopsOmitted: 2 };

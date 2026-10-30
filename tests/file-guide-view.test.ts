@@ -24,6 +24,24 @@ const text = "import a from './a';\nexport * from 'b';\n\nexport * from 'c';\n"
 const analysis = analyzeSource(text, 'guide.ts', { projectId: 'p', fileId: 'f', fileHash: 'h' });
 const guide = describeFile(text, 'guide.ts', 'f', 'h', analysis, [{ id: 'imported-a', relativePath: 'a.ts', size: 0 }]);
 
+it.each([
+  ['db.post.delete()', 'post 지우기'], ['db .post.delete()', 'post 지우기'],
+  ['articleREPOSITORY.save(article)', 'article 없으면 새로 저장하고 있으면 바꾸기'],
+  ['this.repo.save(article)', 'repository 없으면 새로 저장하고 있으면 바꾸기'],
+  ['dbClient.post.delete()', null],
+])('finds named stores in file guidance and labels each guess once: %s', (call, label) => {
+  const text = `export function save() { ${call}; }`;
+  const analysis = analyzeSource(text, 'service.ts', { projectId: 'p', fileId: 'f', fileHash: 'h' });
+  const guide = describeFile(text, 'service.ts', 'f', 'h', analysis, []);
+  expect(guide.functions.flatMap(fn => fn.stores)).toHaveLength(label ? 1 : 0);
+  const html = renderToStaticMarkup(React.createElement(FileGuideCard, { ...emptyFacts,
+    uses: emptyUses, onUse() {}, guide, analysis, onOpenFile() {}, busy: false, stale: false, onShow() {}, onSelect() {} }));
+  expect(html.match(/\(이름으로 추정\)/g) ?? []).toHaveLength(label ? 1 : 0);
+  if (!label) return;
+  expect(html).toContain(`${label} (이름으로 추정) (1행)`);
+  expect(html).not.toContain(`${label} (이름으로 추정) · 모양으로 판단`);
+});
+
 describe('file guide card', () => {
   it.each([false, true])('renders the disclosure with open=%s', open => {
     const html = renderToStaticMarkup(React.createElement(FileGuideCard, { ...emptyFacts, open,

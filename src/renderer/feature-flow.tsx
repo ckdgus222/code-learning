@@ -12,7 +12,7 @@ import { FeatureGuideCard } from './feature-guide';
 import { afterText, afterWhen, byWhen, codeNameOf, groupNameOf, stopText, storeText, storyOf, routeLabel, zoneOf, type StoryStep } from '../core/analysis/flow-story';
 
 export const AFTER_FLOW_NOTE = '코드 모양(onSuccess, await 다음 줄, catch)으로 찾았어요. 실제로 실행되는 순서와 여부는 확인하지 않았어요.';
-export const STORE_FLOW_NOTE = 'Prisma 호출 모양으로 찾았어요. 함수 안에서는 코드에 적힌 순서이고, 조건에 따라 일부만 실행될 수 있어요.';
+export const STORE_FLOW_NOTE = 'Prisma 호출 모양과, 흔한 DB 클라이언트·Repository 이름(db·prisma…·…Repository)으로 찾았어요. 이름으로 찾은 것은 추정이에요. 함수 안에서는 코드에 적힌 순서이고, 조건에 따라 일부만 실행될 수 있어요.';
 export const FLOW_ORDER_NOTE = '함수끼리 어떤 순서로 실행되는지는 확인하지 않았어요.';
 
 export const siteOf = (node: FlowNode): ValueSite => ({ fileId: node.fileId, fileHash: node.fileHash, ...node.range, text: node.name });
@@ -903,7 +903,7 @@ export function FlowLimits({ project, routes, flow, locked, onCode }: {
     <p className="hint">코드 글자로 찾은 흐름이에요. 실행 순서나 실제 요청을 확인한 것은 아니에요. AI 정리는 동의한 목록만 보내요.</p>
     <section aria-label="찾은 범위와 한계">
       <h3>찾은 범위와 한계</h3>
-      <p>TS/JS의 NestJS·Next API·Express 주소와 fetch·axios 요청을 찾아요. 다른 언어·서버 방식과 app.use의 주소 연결·경로 별칭은 따라가지 않아요. 추정은 확실한 연결 수에 넣지 않아요. 실패는 throw new …만, 저장소는 Prisma 모양만 찾아요.</p>
+      <p>TS/JS의 NestJS·Next API·Express 주소와 fetch·axios 요청을 찾아요. 다른 언어·서버 방식과 app.use의 주소 연결은 따라가지 않아요. tsconfig 경로 별칭은 따라가요. 추정은 확실한 연결 수에 넣지 않아요. 실패는 throw new …만, 저장소는 Prisma 모양과 흔한 DB 클라이언트·TypeORM Repository 이름으로 찾아요(이름으로 찾은 것은 추정, Mongoose·Drizzle 등은 아직 못 찾아요).</p>
       {(routes?.limited || flow?.limited) && <p>일부 흐름만 확인했어요.</p>}
       {[...new Set([...(routes?.notes ?? []), ...(flow?.notes ?? [])])].map(note => <p key={note} className="hint">{note}</p>)}
     </section>

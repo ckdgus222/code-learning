@@ -25,6 +25,47 @@ const storeActions = new Map<string, FlowStore['action']>([
   ['update', 'update'], ['updateMany', 'update'], ['upsert', 'upsert'], ['delete', 'delete'], ['deleteMany', 'delete'],
 ]);
 
+const repositoryActions = new Map<string, FlowStore['action']>([
+  ...['find', 'findOne', 'findOneBy', 'findBy', 'findOneOrFail', 'findOneByOrFail', 'findAndCount', 'findAndCountBy', 'findByIds', 'exist', 'exists', 'existsBy'].map(op => [op, 'read'] as const),
+  ['count', 'count'], ['countBy', 'count'], ['insert', 'create'], ['update', 'update'], ['upsert', 'upsert'], ['save', 'upsert'],
+  ['delete', 'delete'], ['remove', 'delete'], ['softDelete', 'delete'], ['softRemove', 'delete'], ['query', 'raw'],
+]);
+
+/** The name of a receiver written as `name` or `this.name`; anything else (`ctx.db`, a call) has none. */
+function receiverName(receiver: Node | null): string | null {
+  if (receiver?.type === 'identifier') return receiver.text;
+  if (receiver?.type !== 'member_expression' || field(receiver, 'object')?.type !== 'this') return null;
+  const property = field(receiver, 'property');
+  return property?.type === 'property_identifier' ? property.text : null;
+}
+
+/** `R.model.op(...)` with a Prisma op, or `R.$queryRaw…(...)`: what it does and its receiver R. */
+function prismaCall(callee: Node): { action: FlowStore['action']; model: string | null; receiver: Node | null } | null {
+  const op = field(callee, 'property')?.text ?? '';
+  const object = field(callee, 'object');
+  if (/^\$(?:queryRaw|executeRaw)(?:Unsafe)?$/.test(op)) return { action: 'raw', model: null, receiver: object };
+  const action = storeActions.get(op);
+  const model = object?.type === 'member_expression' ? field(object, 'property') : null;
+  if (!action || model?.type !== 'property_identifier') return null;
+  return { action, model: model.text, receiver: field(object!, 'object') };
+}
+
+/** The Prisma client by shape: `prisma` or `this.prisma`. */
+const isPrismaClient = (receiver: Node | null) => receiver?.type === 'identifier' && receiver.text === 'prisma'
+  || receiver?.type === 'member_expression' && field(receiver, 'object')?.type === 'this' && field(receiver, 'property')?.text === 'prisma';
+
+/** A common Prisma client name (`db`, `prismaService`, `readPrisma`), only a guess: an SDK such as `stripe` is not one. */
+const prismaNamed = (name: string | null) => name !== null && (name === 'db' || /^prisma|prisma$/i.test(name));
+
+/** `R.op(...)` on a receiver named like a TypeORM repository. `create` only builds an entity in memory, so it is not listed. */
+function repositoryCall(callee: Node): Omit<FlowStore, 'site'> | null {
+  const name = receiverName(field(callee, 'object'));
+  const action = repositoryActions.get(field(callee, 'property')?.text ?? '');
+  if (!name || !action || !(name === 'repo' || /repository$/i.test(name))) return null;
+  const model = action === 'raw' ? null : name === 'repo' ? 'repository' : name.replace(/repository$/i, '') || 'repository';
+  return { action, model, basis: 'name' };
+}
+
 const clip = (text: string, limit: number): string => text.length > limit ? `${text.slice(0, limit)}…` : text;
 
 function isDirectCallback(node: Node, fn: Node): boolean {
@@ -95,33 +136,22 @@ export function serverFacts(fn: Node, facts: FileFacts): Pick<FlowNode, 'stops' 
     if (node.type !== 'call_expression') continue;
     const callee = field(node, 'function');
     if (callee?.type !== 'member_expression') continue;
-    const op = field(callee, 'property')?.text ?? '';
-    let action: FlowStore['action'];
-    let model: string | null = null;
-    let receiver: Node | null;
-    if (/^\$(?:queryRaw|executeRaw)(?:Unsafe)?$/.test(op)) {
-      action = 'raw';
-      receiver = field(callee, 'object');
-    } else {
-      const modelAction = storeActions.get(op);
-      if (!modelAction) continue;
-      const modelAccess = field(callee, 'object');
-      if (modelAccess?.type !== 'member_expression') continue;
-      const property = field(modelAccess, 'property');
-      if (property?.type !== 'property_identifier') continue;
-      action = modelAction;
-      model = property.text;
-      receiver = field(modelAccess, 'object');
-    }
-    const prisma = receiver?.type === 'identifier' && receiver.text === 'prisma'
-      || receiver?.type === 'member_expression' && field(receiver, 'object')?.type === 'this' && field(receiver, 'property')?.text === 'prisma';
-    if (!prisma) {
-      if (receiver?.type !== 'identifier') continue;
+    const isTransaction = (receiver: Node | null) => {
+      if (receiver?.type !== 'identifier') return false;
       calls ??= new Map(facts.calls.map(call => [call.node.startIndex, call]));
-      if (!isTransactionParameter(receiver, calls.get(node.startIndex), facts)) continue;
+      return isTransactionParameter(receiver, calls.get(node.startIndex), facts);
+    };
+    let store: Omit<FlowStore, 'site'> | null = null;
+    const prisma = prismaCall(callee);
+    if (prisma) {
+      const { receiver, ...found } = prisma;
+      if (isPrismaClient(receiver) || isTransaction(receiver)) store = { ...found, basis: 'shape' };
+      else if (prismaNamed(receiverName(receiver))) store = { ...found, basis: 'name' };
     }
+    store ??= repositoryCall(callee);
+    if (!store) continue;
     if (stores.length === 8) { storesOmitted++; continue; }
-    stores.push({ model, action, site: routeSite(node, facts) });
+    stores.push({ ...store, site: routeSite(node, facts) });
   }
   return { stops, stopsOmitted, stores, storesOmitted };
 }

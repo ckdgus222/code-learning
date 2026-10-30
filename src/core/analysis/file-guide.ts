@@ -197,8 +197,8 @@ export function describeFile(text: string, relativePath: string, fileId: string,
     return shapes.get(key)!;
   };
   const functionFacts: GuideFunction[] = [];
-  // A stop needs `throw` and a store a `prisma` or `$transaction` receiver, so other files skip the name walk.
-  const facts = /throw|prisma|\$transaction/.test(text)
+  // Skip the name walk only when neither a stop nor a supported store receiver can occur.
+  const facts = /throw|prisma|\$transaction|\bdb\b|repositor|\brepo\b/i.test(text)
     ? readFacts({ id: fileId, relativePath, size: text.length }, text, fileHash, MAP_LIMITS.nodesPerFile) : null;
   const factFunctions = new Map(facts?.functions.map(fn => [`${fn.startIndex}:${fn.endIndex}`, fn]));
   for (const symbol of analysis.symbols) {
