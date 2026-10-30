@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { CheckConnectionsRequest, ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest, FeatureGuideRequest, FileChunk, FileExplanationRange } from './ai';
+import type { CheckConnectionsRequest, ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest, FeatureGuideRequest, FileChunk, FileExplanationRange, FileExplanationResult } from './ai';
 
 export const idSchema = z.string().uuid();
 export const sourceRequestSchema = z.object({ projectId: idSchema, fileId: idSchema }).strict();
@@ -524,6 +524,9 @@ export interface LearningApi {
   checkConnections(request?: CheckConnectionsRequest): Promise<Result<ConnectionReport>>;
   startExplanation(input: ExplainRequest): Promise<Result<{ jobId: string }>>;
   startOverview(input: OverviewRequest): Promise<Result<{ jobId: string }>>;
+  savedFileExplanation(input: z.infer<typeof sourceRequestSchema>): Promise<Result<{ result: FileExplanationResult; savedAt: string } | null>>;
+  saveFileExplanation(input: { projectId: string; result: FileExplanationResult }): Promise<Result<{ savedAt: string }>>;
+  deleteFileExplanation(input: z.infer<typeof sourceRequestSchema>): Promise<Result<null>>;
   startFileExplanation(input: FileExplanationRequest): Promise<Result<{ jobId: string }>>;
   startFeatureGuide(input: FeatureGuideRequest): Promise<Result<{ jobId: string }>>;
   cancelExplanation(input: { jobId: string }): Promise<Result<null>>;
@@ -540,6 +543,8 @@ export const channels = {
   calls: 'learning:calls', cancelCalls: 'learning:cancel-calls', shapes: 'learning:shapes', cancelShapes: 'learning:cancel-shapes',
   history: 'learning:history', changes: 'learning:changes', diff: 'learning:diff', cancelChanges: 'learning:cancel-changes',
   connections: 'learning:connections', explain: 'learning:explain', overview: 'learning:overview',
+  savedFileExplanation: 'learning:saved-file-explanation', saveFileExplanation: 'learning:save-file-explanation',
+  deleteFileExplanation: 'learning:delete-file-explanation',
   fileExplanation: 'learning:file-explanation', featureGuide: 'learning:feature-guide',
   cancelExplanation: 'learning:cancel-explanation', learningEvent: 'learning:ai-event',
 } as const;

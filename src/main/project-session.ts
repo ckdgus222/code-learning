@@ -132,6 +132,13 @@ export class ProjectSession {
     return project;
   }
 
+  relativePathOf(fileId: string): string {
+    if (this.closed || !this.project) throw new AppError('PROJECT_CLOSED', '프로젝트를 다시 열어 주세요.');
+    const file = this.project.files.find(item => item.id === fileId);
+    if (!file) throw new AppError('NOT_ALLOWED', '현재 프로젝트에 등록된 파일이 아닙니다.');
+    return file.relativePath;
+  }
+
   async read(fileId: string): Promise<SourceView> {
     const revision = this.observedChanges;
     const result = await this.request<SourceView>('read', fileId);

@@ -11,7 +11,7 @@ function entry(count = 80): FileExplanationEntry {
   const fileId = randomUUID();
   const hash = 'a'.repeat(64);
   const { chunks } = splitFileChunks(text, 'file.ts', fileId, hash);
-  return { revision: 1, result: { jobId: randomUUID(), projectId: randomUUID(), relativePath: 'file.ts', mode: 'codex',
+  return { revision: 1, savedAt: null, result: { jobId: randomUUID(), projectId: randomUUID(), relativePath: 'file.ts', mode: 'codex',
     range: { fileId, fileHash: hash, startUtf16: 0, endUtf16: text.length, startLine: 1, endLine: count },
     chunks, explanation: { summary: '상수를 선언하는 파일입니다.', chunks: chunks.slice(1).map(chunk => ({ chunkId: chunk.id, summary: `${chunk.name} 설명` })), unknowns: [] },
     limitations: [], models: [{ provider: 'codex', stage: 'explaining', requestedModel: null, reportedModel: 'test-model' }], review: 'AI 대조 없음' } };
@@ -48,7 +48,7 @@ describe('file explanation result retention and display', () => {
       relativePath: 'file.ts', text: 'const value = 1;', guide: null, analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] } };
     const html = renderToStaticMarkup(React.createElement(FileExplanationCard, { source, entry: saved, state: null,
       stale: true, mode: 'codex', locked: false, running: false, checking: false, connections: null,
-      onInspect() {}, onEnsure() {}, onStart() {}, onCancel() {}, onShow() {} }));
+      onInspect() {}, onEnsure() {}, onStart() {}, onCancel() {}, onDelete() {}, onShow() {} }));
     expect(html).toContain('설명 없음');
     expect(html.match(/>코드 보기<\/button>/g)).toHaveLength(6);
     expect(html).toContain('더 보기');
@@ -61,4 +61,23 @@ describe('file explanation result retention and display', () => {
     expect(html).toMatch(/disabled="">파일 전체 근거/);
     expect(html.match(/disabled="">코드 보기/g)).toHaveLength(6);
   });
+});
+
+it.each([null, '2026-10-30T00:00:00.000Z'])('offers deletion with a saved date only when stored: %s', savedAt => {
+  const saved = { ...entry(1), savedAt };
+  const source: SourceView = { projectId: saved.result.projectId, fileId: saved.result.range.fileId, hash: saved.result.range.fileHash,
+    relativePath: 'file.ts', text: 'const value = 1;', guide: null, analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] } };
+  const props = { source, entry: saved, state: null, stale: false, mode: 'codex' as const, locked: false,
+    running: false, checking: false, connections: null,
+    onInspect() {}, onEnsure() {}, onStart() {}, onCancel() {}, onDelete() {}, onShow() {} };
+  const html = renderToStaticMarkup(React.createElement(FileExplanationCard, props));
+  expect(html).toContain('>지우기</button>');
+  expect(html.includes('저장됨 ·')).toBe(savedAt !== null);
+  if (savedAt) expect(html).toContain(new Date(savedAt).toLocaleDateString('ko-KR', { month: 'long', day: 'numeric' }));
+  for (const blocked of [{ locked: true }, { running: true }]) {
+    expect(renderToStaticMarkup(React.createElement(FileExplanationCard, { ...props, ...blocked }))).toMatch(/disabled="">지우기/);
+  }
+  expect(renderToStaticMarkup(React.createElement(FileExplanationCard, { ...props, state: {
+    status: 'running', fileId: source.fileId, revision: 1, phase: null, mode: 'codex',
+  } }))).not.toContain('>지우기</button>');
 });

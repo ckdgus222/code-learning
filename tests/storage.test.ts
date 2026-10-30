@@ -144,3 +144,42 @@ it('rejects unknown states in SQLite and retains damaged rows while valid rows p
     expect(storage.marksOf(id)).toHaveLength(2);
   } finally { writer.close(); }
 });
+
+it('persists one file explanation per path and project, and deletes only that row', () => {
+  const filename = path.join(temp, 'app.sqlite');
+  storage = new ProjectStorage(filename);
+  const first = storage.recordOpen('/a', 'A');
+  const second = storage.recordOpen('/b', 'B');
+  expect(storage.fileExplanationOf(first, 'start.ts')).toBeNull();
+  storage.saveFileExplanation(first, 'start.ts', { summary: 'old' });
+  storage.saveFileExplanation(second, 'start.ts', { summary: 'other project' });
+  storage.saveFileExplanation(first, 'other.ts', { summary: 'other file' });
+  const savedAt = storage.saveFileExplanation(first, 'start.ts', { summary: 'new' });
+  expect(new Date(savedAt).toISOString()).toBe(savedAt);
+  storage.close();
+  storage = new ProjectStorage(filename);
+  expect(storage.fileExplanationOf(first, 'start.ts')).toEqual({ result: { summary: 'new' }, savedAt });
+  const reader = new DatabaseSync(filename);
+  try {
+    expect(reader.prepare('SELECT COUNT(*) AS count FROM ai_file_explanations').get()).toEqual({ count: 3 });
+  } finally { reader.close(); }
+  storage.deleteFileExplanation(first, 'start.ts');
+  storage.deleteFileExplanation(first, 'start.ts');
+  expect(storage.fileExplanationOf(first, 'start.ts')).toBeNull();
+  expect(storage.fileExplanationOf(second, 'start.ts')?.result).toEqual({ summary: 'other project' });
+  expect(storage.fileExplanationOf(first, 'other.ts')?.result).toEqual({ summary: 'other file' });
+});
+
+it('retains malformed file explanation JSON until an explicit replacement or deletion', () => {
+  const filename = path.join(temp, 'app.sqlite');
+  storage = new ProjectStorage(filename);
+  const projectId = storage.recordOpen('/a', 'A');
+  const writer = new DatabaseSync(filename);
+  try {
+    writer.prepare('INSERT INTO ai_file_explanations VALUES (?, ?, ?, ?)').run(projectId, 'a.ts', '{broken', 'now');
+    expect(storage.fileExplanationOf(projectId, 'a.ts')).toBeNull();
+    expect(writer.prepare('SELECT result FROM ai_file_explanations').get()).toEqual({ result: '{broken' });
+    storage.saveFileExplanation(projectId, 'a.ts', { summary: 'recovered' });
+    expect(storage.fileExplanationOf(projectId, 'a.ts')?.result).toEqual({ summary: 'recovered' });
+  } finally { writer.close(); }
+});

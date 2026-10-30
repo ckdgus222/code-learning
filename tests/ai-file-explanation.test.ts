@@ -7,7 +7,7 @@ import { ProjectAiContext, MAX_CONTEXT_FILE_BYTES } from '../src/core/ai/context
 import { LocalWorkerWorkflow, type StageRequest, type StageResponse } from '../src/core/ai/workflow';
 import { scanProject, readAllowed } from '../src/core/project/files';
 import { SECRET_MASK } from '../src/core/ai/secrets';
-import { GEMINI_MODEL, fileExplanationSchema, type FileExplanation, type FileExplanationRequest, type LearningEvent } from '../src/shared/ai';
+import { GEMINI_MODEL, fileExplanationSchema, fileExplanationResultSchema, type FileExplanation, type FileExplanationRequest, type LearningEvent } from '../src/shared/ai';
 import { AppError } from '../src/shared/errors';
 
 // Fake runners only. No installed AI program, account or network is used.
@@ -235,3 +235,14 @@ it('keeps question-only writing rules out of this task', async () => {
     expect(input.prompt).not.toContain('examples도 같은 코드와 대조한다.');
   }
 });
+
+
+it.each(['', '//' + 'x'.repeat(MAX_CONTEXT_FILE_BYTES - 2),
+  Array.from({ length: 80 }, (_, index) => `const value${index} = ${index};`).join('\n')])(
+  'accepts generated results at source and chunk boundaries in the storage contract %#', async text => {
+    const f = await fixture(text);
+    const event = await f.finish();
+    expect(event.kind).toBe('file-explanation-completed');
+    if (event.kind !== 'file-explanation-completed') throw new Error('Expected a completed fake AI result');
+    expect(fileExplanationResultSchema.parse(event.result)).toEqual(event.result);
+  });

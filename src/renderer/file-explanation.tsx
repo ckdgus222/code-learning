@@ -3,7 +3,7 @@ import type { SourceView } from '../shared/contracts';
 import { GEMINI_MODEL, type ConnectionReport, type FileExplanationRange, type FileExplanationResult,
   type LearningMode, type LearningPhase } from '../shared/ai';
 
-export interface FileExplanationEntry { result: FileExplanationResult; revision: number }
+export interface FileExplanationEntry { result: FileExplanationResult; revision: number; savedAt: string | null }
 export type FileExplanationState =
   | { status: 'running'; fileId: string; revision: number; phase: LearningPhase | null; mode: LearningMode }
   | { status: 'failed'; fileId: string; message: string; cancelled: boolean };
@@ -22,10 +22,10 @@ const phases: Record<LearningPhase, string> = {
   explaining: '설명 요청 중', reviewing: 'Codex가 원본 코드와 대조 중', validating: '파일 변경 여부 확인 중',
 };
 
-export function FileExplanationCard({ source, entry, state, stale, mode, locked, running, checking, connections, onInspect, onEnsure, onStart, onCancel, onShow }: {
+export function FileExplanationCard({ source, entry, state, stale, mode, locked, running, checking, connections, onInspect, onEnsure, onStart, onCancel, onDelete, onShow }: {
   source: SourceView; entry: FileExplanationEntry | null; state: FileExplanationState | null; stale: boolean;
   mode: LearningMode; locked: boolean; running: boolean; checking: boolean; connections: ConnectionReport | null;
-  onEnsure(): void; onInspect(): void; onStart(): void; onCancel(): void; onShow(range: FileExplanationRange): void;
+  onEnsure(): void; onInspect(): void; onStart(): void; onCancel(): void; onDelete(): void; onShow(range: FileExplanationRange): void;
 }) {
   const [preparing, setPreparing] = useState(false);
   const [consent, setConsent] = useState(false);
@@ -65,6 +65,10 @@ export function FileExplanationCard({ source, entry, state, stale, mode, locked,
       ? state.mode === 'codex' ? 'Codex에 설명 요청 중' : `Gemini 3.8 Flash · High (${GEMINI_MODEL})에 설명 요청 중`
       : state.phase ? phases[state.phase] : 'AI 작업 시작 중'} <button className="btn btn--small" onClick={onCancel}>AI 작업 취소</button></p>}
     {state?.status === 'failed' && <p role={state.cancelled ? 'status' : 'alert'}>{state.message}</p>}
+    {entry && !working && <p className="hint">
+      {entry.savedAt && <>저장됨 · {new Date(entry.savedAt).toLocaleDateString('ko-KR', { month: 'long', day: 'numeric' })} </>}
+      <button className="btn btn--small" disabled={locked || running} onClick={onDelete}>지우기</button>
+    </p>}
     {result && <>
       <p data-testid="file-summary">{result.explanation.summary}</p>
       <button className="btn btn--small" disabled={locked || stale} onClick={() => onShow(result.range)}>파일 전체 근거</button>
