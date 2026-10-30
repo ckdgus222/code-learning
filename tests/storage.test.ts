@@ -218,3 +218,36 @@ it('retains malformed overview JSON until replacement or explicit deletion', () 
     expect(writer.prepare('SELECT COUNT(*) AS count FROM ai_overviews').get()).toEqual({ count: 1 });
   } finally { writer.close(); }
 });
+
+
+it('replaces, persists and deletes one feature guide per project with its material hash', () => {
+  const filename = path.join(temp, 'app.sqlite');
+  storage = new ProjectStorage(filename);
+  const first = storage.recordOpen('/a', 'A');
+  const second = storage.recordOpen('/b', 'B');
+  expect(storage.featureGuideOf(first)).toBeNull();
+  storage.saveFeatureGuide(first, { summary: 'old' }, 'a'.repeat(64));
+  storage.saveFeatureGuide(second, { summary: 'other' }, 'b'.repeat(64));
+  const savedAt = storage.saveFeatureGuide(first, { summary: 'new' }, 'c'.repeat(64));
+  expect(new Date(savedAt).toISOString()).toBe(savedAt);
+  storage.close(); storage = new ProjectStorage(filename);
+  expect(storage.featureGuideOf(first)).toEqual({ result: { summary: 'new' }, materialHash: 'c'.repeat(64), savedAt });
+  storage.deleteFeatureGuide(first); storage.deleteFeatureGuide(first);
+  expect(storage.featureGuideOf(first)).toBeNull();
+  expect(storage.featureGuideOf(second)?.result).toEqual({ summary: 'other' });
+});
+
+it('keeps malformed feature guide JSON until replacement or deletion', () => {
+  const filename = path.join(temp, 'app.sqlite');
+  storage = new ProjectStorage(filename);
+  const projectId = storage.recordOpen('/a', 'A');
+  const writer = new DatabaseSync(filename);
+  try {
+    writer.prepare('INSERT INTO ai_feature_guides VALUES (?, ?, ?, ?)').run(projectId, '{broken', 'a'.repeat(64), 'now');
+    expect(storage.featureGuideOf(projectId)).toBeNull();
+    expect(writer.prepare('SELECT result FROM ai_feature_guides').get()).toEqual({ result: '{broken' });
+    storage.saveFeatureGuide(projectId, { summary: 'recovered' }, 'b'.repeat(64));
+    expect(storage.featureGuideOf(projectId)?.result).toEqual({ summary: 'recovered' });
+    expect(writer.prepare('SELECT COUNT(*) AS count FROM ai_feature_guides').get()).toEqual({ count: 1 });
+  } finally { writer.close(); }
+});

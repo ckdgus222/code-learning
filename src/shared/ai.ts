@@ -44,10 +44,6 @@ export type FeatureGuide = z.infer<typeof featureGuideSchema>;
 export const featureGuideReviewSchema = z.object({
   accepted: z.boolean(), issues: z.array(z.string().trim().min(1).max(2000)).max(16), guide: featureGuideSchema,
 }).strict();
-export interface FeatureGuideResult {
-  jobId: string; projectId: string; routesId: string; guide: FeatureGuide; limitations: string[];
-  mode: LearningMode; review: 'AI 검토됨' | 'AI 대조 없음'; models: ModelRun[];
-}
 
 const description = z.string().trim().min(1).max(2000);
 export const fileExplanationSchema = z.object({
@@ -72,6 +68,14 @@ const modelRunSchema = z.object({
   stage: z.enum(['organizing', 'explaining', 'reviewing']), provider: z.enum(['codex', 'antigravity']),
   requestedModel: z.string().min(1).max(120).nullable(), reportedModel: z.string().min(1).max(120).nullable(),
 }).strict();
+export const featureGuideResultSchema = z.object({
+  jobId: idSchema, projectId: idSchema, routesId: idSchema, guide: featureGuideSchema,
+  // Metadata-only notice, byte limit, analysis limit and masked-value notice; two workflow stages.
+  limitations: z.array(description).max(4), mode: learningModeSchema, review: z.enum(['AI 검토됨', 'AI 대조 없음']),
+  models: z.array(modelRunSchema).max(2),
+}).strict();
+export type FeatureGuideResult = z.infer<typeof featureGuideResultSchema>;
+export const saveFeatureGuideSchema = z.object({ projectId: idSchema, result: featureGuideResultSchema }).strict();
 export const fileExplanationResultSchema = z.object({
   jobId: idSchema, projectId: idSchema, relativePath: z.string().min(1).max(1024),
   range: fileRangeSchema,

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { CheckConnectionsRequest, ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest, FeatureGuideRequest, FileChunk, FileExplanationRange, FileExplanationResult, OverviewResult } from './ai';
+import type { CheckConnectionsRequest, ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest, FeatureGuideRequest, FeatureGuideResult, FileChunk, FileExplanationRange, FileExplanationResult, OverviewResult } from './ai';
 
 export const idSchema = z.string().uuid();
 export const sourceRequestSchema = z.object({ projectId: idSchema, fileId: idSchema }).strict();
@@ -531,6 +531,9 @@ export interface LearningApi {
   saveFileExplanation(input: { projectId: string; result: FileExplanationResult }): Promise<Result<{ savedAt: string }>>;
   deleteFileExplanation(input: z.infer<typeof sourceRequestSchema>): Promise<Result<null>>;
   startFileExplanation(input: FileExplanationRequest): Promise<Result<{ jobId: string }>>;
+  savedFeatureGuide(input: z.infer<typeof featureFlowsRequestSchema>): Promise<Result<{ result: FeatureGuideResult; savedAt: string; changed: boolean } | null>>;
+  saveFeatureGuide(input: { projectId: string; result: FeatureGuideResult }): Promise<Result<{ savedAt: string }>>;
+  deleteFeatureGuide(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
   startFeatureGuide(input: FeatureGuideRequest): Promise<Result<{ jobId: string }>>;
   cancelExplanation(input: { jobId: string }): Promise<Result<null>>;
   onLearningEvent(listener: (event: LearningEvent) => void): () => void;
@@ -549,6 +552,7 @@ export const channels = {
   savedOverview: 'learning:saved-overview', saveOverview: 'learning:save-overview', deleteOverview: 'learning:delete-overview',
   savedFileExplanation: 'learning:saved-file-explanation', saveFileExplanation: 'learning:save-file-explanation',
   deleteFileExplanation: 'learning:delete-file-explanation',
+  savedFeatureGuide: 'learning:saved-feature-guide', saveFeatureGuide: 'learning:save-feature-guide', deleteFeatureGuide: 'learning:delete-feature-guide',
   fileExplanation: 'learning:file-explanation', featureGuide: 'learning:feature-guide',
   cancelExplanation: 'learning:cancel-explanation', learningEvent: 'learning:ai-event',
 } as const;

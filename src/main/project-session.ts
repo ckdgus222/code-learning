@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { lstat, readlink } from 'node:fs/promises';
 import path from 'node:path';
@@ -201,10 +202,14 @@ export class ProjectSession {
     return saved;
   }
 
-  captureFeatureGuide(routesId: string, revision: number): FeatureGuideSnapshot {
+  captureFeatureGuide(routesId: string, revision: number): FeatureGuideSnapshot & { materialHash: string } {
     const saved = this.currentRoutes(routesId, revision);
     const { material, limitations } = featureGuideMaterial(this.project!, saved.result);
-    return { projectId: this.id, routesId, revision, material, limitations };
+    const materialHash = createHash('sha256').update(JSON.stringify({ material,
+      handlerHashes: saved.result.routes.map(route => route.handler.fileHash),
+      requestHashes: saved.result.requests.map(request => request.fileHash),
+    })).digest('hex');
+    return { projectId: this.id, routesId, revision, material, limitations, materialHash };
   }
 
   validateFeatureGuide(routesId: string, revision: number): void { this.currentRoutes(routesId, revision); }

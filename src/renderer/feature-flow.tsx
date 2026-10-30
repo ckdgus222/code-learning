@@ -8,7 +8,7 @@ import { routeEdges, LANE_TITLES, layoutFlow, type FlowLane } from './flow-layou
 import { Snippet } from './flow';
 import { isNextConfig, nextRouteOf } from '../core/analysis/next-routes';
 import type { ConnectionReport, FeatureGuide, FeatureGuideResult, LearningMode } from '../shared/ai';
-import { FeatureGuideCard } from './feature-guide';
+import { FeatureGuideCard, type SavedFeatureGuide } from './feature-guide';
 import { afterText, afterWhen, byWhen, codeNameOf, groupNameOf, stopText, storeText, storyOf, routeLabel, zoneOf, type StoryStep } from '../core/analysis/flow-story';
 
 export const AFTER_FLOW_NOTE = '코드 모양(onSuccess, await 다음 줄, catch)으로 찾았어요. 실제로 실행되는 순서와 여부는 확인하지 않았어요.';
@@ -567,7 +567,7 @@ type GroupingState = { status: 'idle' } | { status: 'running' } | { status: 'fai
   | { status: 'done'; routesId: string; revision: number; flows: FeatureFlow[] };
 
 export function useFeatureFlows(project: ProjectView | null, revision: number) {
-  const [guideResult, setGuideResult] = useState<FeatureGuideResult | null>(null);
+  const [guideResult, setGuideResult] = useState<SavedFeatureGuide | null>(null);
   const [entry, setEntry] = useState<{ result: ProjectRoutes; revision: number } | null>(null);
   const [grouping, setGrouping] = useState<GroupingState>({ status: 'idle' });
   const [flow, setFlow] = useState<FeatureFlow | null>(null);
@@ -577,8 +577,11 @@ export function useFeatureFlows(project: ProjectView | null, revision: number) {
   const [finding, setFinding] = useState(false);
   const [following, setFollowing] = useState(false);
   const [error, setError] = useState('');
+  // Saving or loading the AI guide is reported in its own card, not as a failed route search.
+  const [guideError, setGuideError] = useState('');
   const [search, setSearch] = useState('');
   const started = useRef(false);
+  const guideRun = useRef(0);
   const routesRun = useRef(0);
   const flowRun = useRef(0);
   const flowsRun = useRef(0);
@@ -589,13 +592,14 @@ export function useFeatureFlows(project: ProjectView | null, revision: number) {
     && grouping.revision === revision ? grouping.flows : null;
   const guide = !stale && guideResult?.routesId === entry?.result.routesId ? guideResult : null;
   useEffect(() => {
+    guideRun.current++;
     started.current = false;
-    setEntry(null); setGuideResult(null); setFlow(null); setWalk(firstWalk); setSelected(null);
+    setEntry(null); setGuideResult(null); setGuideError(''); setFlow(null); setWalk(firstWalk); setSelected(null);
     setSummaries(new Map());
     setFinding(false); setFollowing(false); setError(''); setSearch('');
     resetGrouping();
     return () => {
-      routesRun.current++; flowRun.current++; flowsRun.current++;
+      guideRun.current++; routesRun.current++; flowRun.current++; flowsRun.current++;
       if (project) void window.learning.cancelRoutes({ projectId: project.id });
     };
   }, [project]);
@@ -607,6 +611,44 @@ export function useFeatureFlows(project: ProjectView | null, revision: number) {
     }
     if (entry?.result.routes.length) void groupFlows();
   }, [entry, revision]);
+  useEffect(() => {
+    if (!project || !entry || stale) return;
+    const run = ++guideRun.current;
+    void window.learning.savedFeatureGuide({ projectId: project.id, routesId: entry.result.routesId }).then(response => {
+      if (run !== guideRun.current) return;
+      if (!response.ok) {
+        if (response.code !== 'PROJECT_CLOSED') setGuideError('저장된 AI 기능 정리를 불러오지 못했어요.');
+        return;
+      }
+      const saved = response.value;
+      if (saved) setGuideResult(previous => previous ?? { ...saved.result, savedAt: saved.savedAt, changed: saved.changed });
+    });
+    return () => { guideRun.current++; };
+  }, [project, entry, stale]);
+  async function acceptGuide(result: FeatureGuideResult) {
+    if (!project || result.projectId !== project.id || result.routesId !== entry?.result.routesId || stale) return;
+    const run = ++guideRun.current;
+    setGuideResult({ ...result, savedAt: null, changed: false }); setGuideError('');
+    const response = await window.learning.saveFeatureGuide({ projectId: project.id, result });
+    if (run !== guideRun.current) return;
+    if (!response.ok) {
+      if (response.code !== 'PROJECT_CLOSED') setGuideError('AI 기능 정리를 저장하지 못했어요. 앱을 닫으면 사라져요.');
+      return;
+    }
+    setGuideResult(previous => previous?.jobId === result.jobId ? { ...previous, savedAt: response.value.savedAt } : previous);
+  }
+  async function deleteGuide() {
+    if (!project || !guide) return;
+    const run = ++guideRun.current;
+    const jobId = guide.jobId;
+    const response = await window.learning.deleteFeatureGuide({ projectId: project.id });
+    if (run !== guideRun.current) return;
+    if (!response.ok) {
+      if (response.code !== 'PROJECT_CLOSED') setGuideError('AI 기능 정리를 지우지 못했어요.');
+      return;
+    }
+    setGuideResult(previous => previous?.jobId === jobId ? null : previous); setGuideError('');
+  }
   function resetGrouping(message = '') {
     flowsRun.current++;
     setGrouping(message ? { status: 'failed', message } : { status: 'idle' });
@@ -630,6 +672,7 @@ export function useFeatureFlows(project: ProjectView | null, revision: number) {
   async function find() {
     if (!project) return;
     const run = ++routesRun.current;
+    guideRun.current++; setGuideResult(null); setGuideError('');
     flowRun.current++;
     const atRevision = revision;
     setFinding(true); setFollowing(false); setError(''); setEntry(null); setFlow(null); setSelected(null); setWalk(firstWalk);
@@ -680,11 +723,12 @@ export function useFeatureFlows(project: ProjectView | null, revision: number) {
     return walkSelection(flow, next).currentNode;
   }
   const routes = entry?.result;
-  const groups = useMemo(() => project && routes ? featureGroups(project, routes, guide?.guide) : [], [project, routes, guide]);
+  const applicableGuide = guide?.changed ? undefined : guide?.guide;
+  const groups = useMemo(() => project && routes ? featureGroups(project, routes, applicableGuide) : [], [project, routes, guide]);
   const index = useMemo(() => {
     if (!project || !routes || !flows) return null;
     const paths = new Map(project.files.map(file => [file.id, file.relativePath]));
-    return featureIndex(routes, flows, fileId => paths.get(fileId) ?? '', guide?.guide);
+    return featureIndex(routes, flows, fileId => paths.get(fileId) ?? '', applicableGuide);
   }, [project?.files, routes, flows, guide]);
   const selection = useMemo(() => walkSelection(flow, walk), [flow, walk]);
   const handler = selection.steps.find(step => step.kind === 'handler')?.representative;
@@ -705,9 +749,9 @@ export function useFeatureFlows(project: ProjectView | null, revision: number) {
   // Only an AI-named feature has a name and sentence of its own.
   const selectedFeature = useMemo(() => flow ? groups.flatMap(group => group.features).find(feature => feature.ai && feature.routes.includes(flow.routeIndex)) : undefined,
     [flow, groups]);
-  return { routes, finding, stale, error, groupingProps: { flows, index, guide: guide?.guide,
+  return { routes, finding, stale, error, groupingProps: { flows, index, guide: applicableGuide,
     grouping: grouping.status === 'running', groupError: grouping.status === 'failed' ? grouping.message : '',
-    onRegroup: groupFlows, onCancelGrouping: cancelGrouping }, search, setSearch, guide, setGuideResult, groups, flow, following, selected, walk,
+    onRegroup: groupFlows, onCancelGrouping: cancelGrouping }, search, setSearch, guide, guideError, setGuideResult: acceptGuide, deleteGuide, groups, flow, following, selected, walk,
     selection, currentNode: selection.currentNode, selectedFeature, summary, setSummary,
     start, find, cancelFind, follow, cancelFollow, clearFlow,
     setStory: (storyId: string) => changeWalk({ through: walk.through, storyId, step: 0, nodeId: null, site: null }),
@@ -848,10 +892,14 @@ export function FeatureChooser({ project, state, revision, locked, onFollow, mod
   const disabled = locked || stale;
   const index = state.groupingProps.index;
   const indexed = index?.flatMap(group => group.features).find(item => item.routeIndex === feature?.routes[0]);
+  const guideCard = routes && <FeatureGuideCard key={`${routes.routesId}:${revision}`} projectId={project.id} routesId={routes.routesId}
+    result={guide} mode={mode} locked={disabled || routes.routes.length === 0} running={running} checking={checking} connections={connections}
+    onInspect={onInspect} onEnsure={onEnsure} onResult={setGuideResult} onRunning={onRunning} onDelete={state.deleteGuide} storageError={state.guideError} />;
   return <div className="card--wide">
     <RoutesStatus state={state} />
     {routes && <>
-      <FeatureOverview project={project} routes={routes} guide={guide?.guide} />
+      <FeatureOverview project={project} routes={routes} guide={guide?.changed ? undefined : guide?.guide} />
+      {routes.routes.length === 0 && guide && guideCard}
       {routes.routes.length === 0 ? <p className="notice">서버 코드(요청을 받는 곳)를 찾지 못해서 기능별로 따라갈 수 없어요. 아래 ‘어디부터 읽을까요?’에서 시작 파일을 골라 읽어 보세요.</p> : <>
         {feature && <section className="card" aria-label="처음 따라갈 기능">
           <h3>처음이라면 이 기능부터 따라가 보세요</h3>
@@ -866,9 +914,7 @@ export function FeatureChooser({ project, state, revision, locked, onFollow, mod
           <button className="btn" disabled={disabled} onClick={() => onFollow(feature.routes[0], indexed?.start ?? undefined)}>이 기능부터 따라가기</button>
         </section>}
         <FeatureList {...state.groupingProps} search={state.search} setSearch={state.setSearch} groups={state.groups} routes={routes} selected={state.selected} disabled={disabled} onFollow={onFollow}>
-          <FeatureGuideCard key={`${routes.routesId}:${revision}`} projectId={project.id} routesId={routes.routesId}
-            result={guide} mode={mode} locked={disabled} running={running} checking={checking} connections={connections}
-            onInspect={onInspect} onEnsure={onEnsure} onResult={setGuideResult} onRunning={onRunning} />
+          {guideCard}
         </FeatureList>
       </>}
     </>}

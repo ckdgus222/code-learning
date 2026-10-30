@@ -1333,3 +1333,20 @@ it('uses the original snippet button name by default and respects UTF-16 ranges'
   expect(html).not.toContain('before');
   expect(html).not.toContain('after');
 });
+
+
+it('keeps a changed saved guide visible and deletable when no server routes remain', () => {
+  const empty = { ...routes, routes: [], requests: [], links: [] };
+  const state = { ...chooserProps.state, routes: empty, groups: [], guide: {
+    jobId: 'job', projectId: project.id, routesId: empty.routesId, mode: 'codex' as const, review: 'AI 대조 없음' as const,
+    guide: { summary: '예전 요약', groups: [{ name: '예전 묶음', about: '설명', features: [] }], unknowns: [] },
+    limitations: [], models: [], savedAt: '2026-10-30T00:00:00.000Z', changed: true,
+  }, deleteGuide: async () => {} };
+  const html = renderToStaticMarkup(React.createElement(FeatureChooser, { ...chooserProps, state }));
+  expect(html).toContain('서버 코드(요청을 받는 곳)를 찾지 못해서');
+  expect(html).toContain('기능 정리를 만든 뒤 서버 주소나 그 코드가 바뀌었어요');
+  expect(html).toContain('예전 요약'); expect(html).toContain('저장됨 ·');
+  expect(html).not.toContain('예전 묶음');
+  expect(html).toContain('<button class="btn btn--small">지우기</button>');
+  expect(html).toMatch(/<button[^>]*disabled="">AI로 기능 정리하기<\/button>/);
+});
