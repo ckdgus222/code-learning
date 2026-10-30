@@ -3,7 +3,8 @@ import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Dim
   type NodeTypes } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { ChangeKind, FileChange, MapExport, MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectChanges, ProjectMap, ProjectView, UnusedExcludeKind } from '../shared/contracts';
-import { boxName, boxPlace, closeArea, expandableIds, folderArrows, folderName, linkedArrows, visibleGraph, type MapArrow, type MapBox } from './map-layout';
+import { boxName, boxPlace, closeArea, expandableIds, FILE_VIEW_LIMIT, fileViewFolder, fileViewOf, folderArrows, folderName,
+  foldersWithFiles, linkedArrows, visibleGraph, type MapArrow, type MapBox } from './map-layout';
 import { COMPLEXITY_NOTE, ComplexityTags } from './complexity';
 import { ChangeList, kindLabels } from './changes';
 
@@ -101,8 +102,11 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
   onShowFunction(item: MapFunction | MapExport): void; onShowChange(change: FileChange): void;
 }) {
   const expandable = useMemo(() => expandableIds(map), [map]);
+  const folders = useMemo(() => foldersWithFiles(map), [map]);
   const paths = useMemo(() => new Map(map.files.map(file => [file.id, file.relativePath])), [map]);
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
+  const large = map.files.length > FILE_VIEW_LIMIT;
+  const fileFolder = large ? fileViewFolder(opened, folders, expandable) : null;
   const [selected, setSelected] = useState<MapArrow | null>(null);
   const [focus, setFocus] = useState<{ id: string; opened: ReadonlySet<string> } | null>(null);
   const [hovered, setHovered] = useState<{ id: string; opened: ReadonlySet<string> } | null>(null);
@@ -165,7 +169,15 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
   return <>
     <div className="map-actions" role="group" aria-label="지도 보기">
       <button className="btn btn--small" aria-pressed={opened.size === 0} onClick={() => setOpened(new Set())}>설계 보기</button>
-      <button className="btn btn--small" aria-pressed={graph.boxes.every(box => box.kind === 'file')} onClick={() => setOpened(new Set(expandable))}>파일 보기</button>
+      {large ? <>
+        <label>파일 볼 폴더 <select aria-label="파일 볼 폴더" value={fileFolder === null ? '' : `folder:${fileFolder}`}
+          onChange={event => setOpened(event.target.value ? fileViewOf(event.target.value.slice('folder:'.length), expandable) : new Set())}>
+          <option value="">폴더 고르기</option>
+          {folders.map(({ folder, count }) => <option key={folder} value={`folder:${folder}`}>{folderName(folder)} · 파일 {count}개</option>)}
+        </select></label>
+        <span className="hint">파일이 {map.files.length}개라 한 번에 그리면 선이 엉켜요. 폴더를 고르면 그 폴더의 파일을 상자로 보여 줘요.</span>
+      </> : <button className="btn btn--small" aria-pressed={graph.boxes.every(box => box.kind === 'file')}
+        onClick={() => setOpened(new Set(expandable))}>파일 보기</button>}
       <span className="hint">상자를 누르면 그 안을 한 단계 펼쳐요. 위 ‘접기’로 다시 접어요. 파일 상자를 누르면 코드를 열어요. 점선은 오른쪽에서 왼쪽으로 거꾸로 가는 연결이라, 서로 가져다 쓰는 곳일 수 있어요. 상자에 마우스를 올리면 그 상자의 화살표가 진해져요. ‘이어진 것만’을 누르면 그 상자와 이어진 화살표만 남아요. 펼치거나 접으면 다시 모두 보여요.</span>
     </div>
     {openChips.length > 0 && <div className="map-actions" role="group" aria-label="펼친 곳">

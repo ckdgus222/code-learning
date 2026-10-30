@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { boxName, boxPlace, closeArea, expandableIds, folderArrows, linkedArrows, matchCallStep, matchFunction, matchImport, visibleGraph } from '../src/renderer/map-layout';
+import { boxName, boxPlace, closeArea, expandableIds, FILE_VIEW_LIMIT, fileViewFolder, fileViewOf, folderArrows, foldersWithFiles,
+  linkedArrows, matchCallStep, matchFunction, matchImport, visibleGraph } from '../src/renderer/map-layout';
 import { buildProjectMap } from '../src/core/analysis/project-map';
 import { analyzeSource } from '../src/core/analysis/syntax';
 import { readAllowed, scanProject } from '../src/core/project/files';
@@ -17,6 +18,64 @@ const map: ProjectMap = { projectId: 'p', files: [file('a1', 'a'), file('a2', 'a
   edges: [edge('a1', 'b1'), edge('a2', 'b1'), edge('b2', 'a1'), edge('a1', 'a2')], unresolved: [], external: [], complexFunctions: [], exports: [], unused: { exports: { candidates: [], unsure: [], notes: [] }, candidates: [], unsure: [], excluded: [], notes: [] }, limited: false, notes: [] };
 const summary = (graph: ReturnType<typeof visibleGraph>) => graph.arrows.map(arrow => [arrow.source, arrow.target, arrow.items.length]);
 const backs = (graph: ReturnType<typeof visibleGraph>) => graph.arrows.filter(arrow => arrow.back).map(arrow => arrow.id);
+
+describe('file view of one folder', () => {
+  const nested: ProjectMap = { ...map, files: [file('other', 'web'), file('child', 'api/src/child'), file('main', 'api/src'),
+    file('root', ''), file('config', 'api'), file('helper', 'api/src'), file('sibling', 'api/test')], edges: [] };
+  const expandable = expandableIds(nested);
+
+  it('counts direct files in path order without adding folders that have only descendants', () => {
+    const source = { ...nested, files: [...nested.files, file('deep', 'packages/lib/src')] };
+    expect(foldersWithFiles(source)).toEqual([
+      { folder: '', count: 1 }, { folder: 'api', count: 1 }, { folder: 'api/src', count: 2 },
+      { folder: 'api/src/child', count: 1 }, { folder: 'api/test', count: 1 },
+      { folder: 'packages/lib/src', count: 1 }, { folder: 'web', count: 1 },
+    ]);
+    expect(foldersWithFiles({ ...map, files: [] })).toEqual([]);
+  });
+
+  it.each([80, 81])('keeps all %i direct files when a folder is opened, without truncating at the limit', count => {
+    expect(FILE_VIEW_LIMIT).toBe(80);
+    const source = { ...map, files: Array.from({ length: count }, (_, index) => file(`file${index}`, 'src')), edges: [] };
+    const graph = visibleGraph(source, fileViewOf('src', expandableIds(source)));
+    expect(graph.boxes).toHaveLength(count);
+    expect(graph.boxes.every(box => box.kind === 'file')).toBe(true);
+  });
+
+  it('opens ancestors and the chosen direct-file group while leaving every other file grouped', () => {
+    const opened = fileViewOf('api/src', expandable);
+    expect(opened).toEqual(new Set(['folder:api', 'folder:api/src', 'files:api/src']));
+    const boxes = visibleGraph(nested, opened).boxes;
+    expect(boxes.filter(box => box.kind === 'file').map(box => box.id).sort()).toEqual(['helper', 'main']);
+    expect(boxes.filter(box => box.kind === 'folder').map(box => box.id).sort())
+      .toEqual(['files:', 'files:api', 'folder:api/src/child', 'folder:api/test', 'folder:web']);
+  });
+
+  it('opens leaf files without inventing a direct-file group or opening a sibling', () => {
+    const opened = fileViewOf('api/test', expandable);
+    expect(opened).toEqual(new Set(['folder:api', 'folder:api/test']));
+    expect(visibleGraph(nested, opened).boxes.filter(box => box.kind === 'file').map(box => box.id)).toEqual(['sibling']);
+    expect(fileViewOf('removed', expandable)).toEqual(new Set());
+  });
+
+  it('opens only the root direct-file group when choosing the root', () => {
+    const opened = fileViewOf('', expandable);
+    expect(opened).toEqual(new Set(['files:']));
+    expect(visibleGraph(nested, opened).boxes.map(box => box.id).sort()).toEqual(['folder:api', 'folder:web', 'root']);
+  });
+
+  it('recognizes exactly matching file views independent of set order, including the root', () => {
+    const folders = foldersWithFiles(nested);
+    for (const { folder } of folders) {
+      expect(fileViewFolder(new Set([...fileViewOf(folder, expandable)].reverse()), folders, expandable)).toBe(folder);
+    }
+    expect(fileViewFolder(new Set(), folders, expandable)).toBeNull();
+    expect(fileViewFolder(new Set(['folder:api', 'folder:api/src']), folders, expandable)).toBeNull();
+    expect(fileViewFolder(new Set(['folder:api', 'folder:api/src', 'folder:web']), folders, expandable)).toBeNull();
+    expect(fileViewFolder(new Set([...fileViewOf('api/src', expandable), 'folder:api/test']), folders, expandable)).toBeNull();
+    expect(fileViewFolder(new Set(), [], new Set())).toBeNull();
+  });
+});
 
 describe('box names in connection lists', () => {
   const named: ProjectMap = { ...map, files: [file('root', ''), file('index', 'web'),

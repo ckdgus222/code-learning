@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { ReactFlow, type Edge, type Node } from '@xyflow/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ARROW_MARKER, MapCanvas, ProjectMapView, type MapChanges } from '../src/renderer/project-map';
-import { boxName, boxPlace, expandableIds, visibleGraph, type MapArrow } from '../src/renderer/map-layout';
+import { boxName, boxPlace, expandableIds, fileViewOf, visibleGraph, type MapArrow } from '../src/renderer/map-layout';
 import type { MapFile, ProjectMap, ProjectView } from '../src/shared/contracts';
 
 vi.mock('react', async importOriginal => {
@@ -118,6 +118,58 @@ describe('project map area controls', () => {
     expect(vi.mocked(ReactFlow).mock.calls.at(-1)![0].edges).toEqual([]);
     expect(html).toContain('폴더 사이 연결(설계) · 1개');
     expect(html).toContain('web/app → web/lib · import 1개');
+  });
+});
+
+describe('large project file view controls', () => {
+  const large: ProjectMap = { ...map, files: [...map.files, ...Array.from({ length: 76 }, (_, index) => file(`extra${index}`, 'web/app'))] };
+  const expandable = expandableIds(large);
+
+  it.each([80, 81])('uses the file count to choose the control for %i files even when only a few boxes are visible', count => {
+    const source = { ...large, files: large.files.slice(0, count) };
+    const html = render(new Set(), null, null, source);
+    expect(drawnNodes()).toHaveLength(3);
+    expect(html.includes('>파일 보기</button>')).toBe(count === 80);
+    expect(html.includes('<select aria-label="파일 볼 폴더"')).toBe(count === 81);
+    expect(html.includes(`파일이 ${count}개라 한 번에 그리면 선이 엉켜요. 폴더를 고르면 그 폴더의 파일을 상자로 보여 줘요.`)).toBe(count === 81);
+    if (count === 80) {
+      expect(render(expandableIds(source), null, null, source)).toContain('aria-pressed="true">파일 보기</button>');
+      expect(drawnNodes()).toHaveLength(80);
+      expect(drawnNodes().every(node => node.className?.includes('map-box--file'))).toBe(true);
+    }
+  });
+
+  it('lists direct-file counts in path order and distinguishes no selection from the root', () => {
+    const html = render(new Set(), null, null, large);
+    expect(html.match(/<option[^>]*>.*?<\/option>/g)).toEqual([
+      '<option value="" selected="">폴더 고르기</option>',
+      '<option value="folder:">(최상위 폴더) · 파일 1개</option>',
+      '<option value="folder:web">web · 파일 1개</option>',
+      '<option value="folder:web/app">web/app · 파일 77개</option>',
+      '<option value="folder:web/lib">web/lib · 파일 1개</option>',
+      '<option value="folder:website">website · 파일 1개</option>',
+    ]);
+  });
+
+  it('selects only the root option for root files and restores the placeholder in design view', () => {
+    const html = render(fileViewOf('', expandable), null, null, large);
+    expect(html).toContain('<option value="folder:" selected="">(최상위 폴더) · 파일 1개</option>');
+    expect(html).toContain('<option value="">폴더 고르기</option>');
+    expect(html.match(/<option[^>]* selected=""/g)).toHaveLength(1);
+    expect(drawnNodes().filter(node => node.className?.includes('map-box--file')).map(node => node.id)).toEqual(['root']);
+    const folded = render(new Set(), null, null, large);
+    expect(folded).toContain('<option value="" selected="">폴더 고르기</option>');
+    expect(folded.match(/<option[^>]* selected=""/g)).toHaveLength(1);
+  });
+
+  it('derives the selection from opened areas and clears it after manual changes', () => {
+    const opened = fileViewOf('web/app', expandable);
+    const html = render(opened, null, null, large);
+    expect(html).toContain('<option value="folder:web/app" selected="">web/app · 파일 77개</option>');
+    expect(drawnNodes().filter(node => node.className?.includes('map-box--file'))).toHaveLength(77);
+    for (const current of [new Set([...opened, 'folder:website']), new Set(['folder:web'])]) {
+      expect(render(current, null, null, large)).toContain('<option value="" selected="">폴더 고르기</option>');
+    }
   });
 });
 

@@ -27,6 +27,7 @@ export function linkedArrows(arrows: MapArrow[], id: string):
 const COLUMN_WIDTH = 320;
 // Room between stacked boxes for an arrow inside one folder.
 const ROW_HEIGHT = 112;
+export const FILE_VIEW_LIMIT = 80;
 export const folderName = (folder: string) => folder || '(최상위 폴더)';
 
 /** Full names distinguish boxes in accessible labels and other path-based displays. */
@@ -62,6 +63,30 @@ export function expandableIds(map: ProjectMap): Set<string> {
     if (!file.folder || parents.has(file.folder)) ids.add(`files:${file.folder}`);
   }
   return ids;
+}
+
+/** Count only files directly inside each folder, including the root. */
+export function foldersWithFiles(map: ProjectMap): { folder: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const file of map.files) counts.set(file.folder, (counts.get(file.folder) ?? 0) + 1);
+  return [...counts].sort(([a], [b]) => a.localeCompare(b)).map(([folder, count]) => ({ folder, count }));
+}
+
+/** Open one folder's direct files and the ancestors needed to reach it. */
+export function fileViewOf(folder: string, expandable: Set<string>): Set<string> {
+  const opened = new Set(ancestorsOf(folder).map(path => `folder:${path}`).filter(id => expandable.has(id)));
+  if (expandable.has(`files:${folder}`)) opened.add(`files:${folder}`);
+  return opened;
+}
+
+/** A manual open or fold clears the selection unless it exactly matches another folder's file view. */
+export function fileViewFolder(opened: ReadonlySet<string>, folders: { folder: string; count: number }[],
+  expandable: Set<string>): string | null {
+  for (const { folder } of folders) {
+    const expected = fileViewOf(folder, expandable);
+    if (opened.size === expected.size && [...expected].every(id => opened.has(id))) return folder;
+  }
+  return null;
 }
 
 /** Closing an area also closes its descendants; closing a file group affects only that group. */
