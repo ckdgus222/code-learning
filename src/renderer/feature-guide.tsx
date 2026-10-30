@@ -10,12 +10,17 @@ const phases: Record<LearningPhase, string> = {
   explaining: '기능 정리 요청 중', reviewing: 'Codex가 주소·함수 이름과 대조 중', validating: '기능 목록 변경 여부 확인 중',
 };
 
+export type SavedFeatureGuide = FeatureGuideResult & { savedAt: string | null; changed: boolean };
+
 /** Mounted for one routesId/revision only; leaving that result cancels even an IPC start still in flight. */
-export function FeatureGuideCard({ projectId, routesId, result, mode, locked, running, checking, connections, onInspect, onEnsure, onResult, onRunning }: {
-  projectId: string; routesId: string; result: FeatureGuideResult | null; mode: LearningMode;
+export function FeatureGuideCard({ projectId, routesId, result, mode, locked, running, checking, connections, onInspect, onEnsure, onResult, onRunning, onDelete, storageError = '' }: {
+  projectId: string; routesId: string; result: SavedFeatureGuide | null; mode: LearningMode;
   locked: boolean; running: boolean; checking: boolean; connections: ConnectionReport | null;
-  onEnsure(): Promise<string | null>; onInspect(): Promise<string | null>; onResult(result: FeatureGuideResult): void; onRunning(value: boolean): void;
+  onEnsure(): Promise<string | null>; onInspect(): Promise<string | null>; onResult(result: FeatureGuideResult): void; onRunning(value: boolean): void; onDelete(): Promise<void>;
+  /** A failed save, load or deletion of the stored guide. */
+  storageError?: string;
 }) {
+  const [deleting, setDeleting] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [consent, setConsent] = useState(false);
   const [working, setWorking] = useState(false);
@@ -50,7 +55,7 @@ export function FeatureGuideCard({ projectId, routesId, result, mode, locked, ru
   useEffect(() => { setPreparing(false); setConsent(false); }, [mode]);
   const ready = connections?.modes.find(item => item.mode === mode);
   async function start() {
-    if (locked || running || checking || !consent || !ready?.ready) return;
+    if (locked || running || deleting || checking || !consent || !ready?.ready) return;
     const token = ++sequence.current;
     job.current = { id: null, starting: true, queued: [] };
     setConsent(false); setWorking(true); onRunning(true); setPhase(null); setError(''); setCancelled(false);
@@ -72,7 +77,7 @@ export function FeatureGuideCard({ projectId, routesId, result, mode, locked, ru
     if (id) void window.learning.cancelExplanation({ jobId: id });
   }
   return <div className="feature-guide-ai" aria-label="AI 기능 정리">
-    {!preparing && !working && <button className="btn" disabled={locked || running} onClick={() => { setPreparing(true); setError(''); void onEnsure().then(message => setError(message ?? '')); }}>AI로 기능 정리하기</button>}
+    {!preparing && !working && <button className="btn" disabled={locked || running || deleting} onClick={() => { setPreparing(true); setError(''); void onEnsure().then(message => setError(message ?? '')); }}>AI로 기능 정리하기</button>}
     {preparing && !working && <div>
       <p>{modes[mode]}</p>
       <p className="hint">방식은 오른쪽 AI 칸의 ‘설정’에서 고를 수 있어요. 답변 생성은 AI 제공자 서버에서 이뤄져요.
@@ -86,17 +91,31 @@ export function FeatureGuideCard({ projectId, routesId, result, mode, locked, ru
           {mode === 'local-worker' ? ' Gemini와 Codex' : mode === 'codex' ? ' Codex' : mode === 'antigravity' ? ' Gemini(Antigravity)' : ' Claude Code'}에 보내는 데 동의합니다.
           코드 원문은 보내지 않습니다. 비밀값처럼 보이는 부분은 가리지만 모두 찾는다고 보장하지 않습니다.</p>
       </details>
-      <button className="btn btn--primary" disabled={!consent || !ready?.ready || locked || running || checking} onClick={() => void start()}>동의하고 정리하기</button>
+      <button className="btn btn--primary" disabled={!consent || !ready?.ready || locked || running || deleting || checking} onClick={() => void start()}>동의하고 정리하기</button>
     </div>}
     {working && <p role="status">{phase === 'explaining'
       ? mode === 'codex' ? 'Codex에 정리 요청 중' : `Gemini 3.8 Flash · High (${GEMINI_MODEL})에 정리 요청 중`
       : phase ? phases[phase] : 'AI 작업 시작 중'} <button className="btn btn--small" onClick={cancel}>AI 작업 취소</button></p>}
     {error && <p role={cancelled ? 'status' : 'alert'}>{error}</p>}
+    {storageError && <p role="alert">{storageError}</p>}
     {result && <>
+      {result.changed && <>
+        <p role="alert" className="notice notice--warn">다시 확인 필요: 기능 정리를 만든 뒤 서버 주소나 그 코드가 바뀌었어요. 다시 정리해 주세요.</p>
+        <p>{result.guide.summary}</p>
+      </>}
+      {!working && !running && <p>
+        {result.savedAt && <span className="hint">저장됨 · {new Date(result.savedAt).toLocaleDateString('ko-KR', { month: 'long', day: 'numeric' })} </span>}
+        <button className="btn btn--small" disabled={deleting} onClick={() => {
+          if (running || working || deleting) return;
+          setDeleting(true); void onDelete().finally(() => setDeleting(false));
+        }}>지우기</button>
+      </p>}
+      {!result.changed && <>
       <p className="hint">AI 정리 · 정확성을 보장하지 않아요 · {modes[result.mode]} · {result.review}</p>
       <ul className="hint">{result.models.map((model, index) => <li key={index}>{model.provider === 'codex' ? 'Codex' : 'Gemini 3.8 Flash · High'}
         {' · '}{model.stage === 'reviewing' ? '대조' : '정리'} · 요청 모델: {model.requestedModel ?? '실행기 기본값'} · 응답 모델: {model.reportedModel ?? '알려 주지 않음'}</li>)}</ul>
       {result.limitations.map((item, index) => <p className="hint" key={index}>{item}</p>)}
+      </>}
       {result.guide.unknowns.length > 0 && <details><summary>확인하지 못한 것</summary><ul>{result.guide.unknowns.map((item, index) => <li key={index}>{item}</li>)}</ul></details>}
     </>}
   </div>;

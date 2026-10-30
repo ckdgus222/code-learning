@@ -7,8 +7,9 @@ import { channels, learningSpotSchema, saveLearningSpotSchema, saveLearningMarkS
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { ProjectSession, workersStopped } from './project-session';
-import { overviewResultSchema, saveOverviewSchema, type OverviewResult, fileExplanationResultSchema, saveFileExplanationSchema, checkConnectionsSchema, explainRequestSchema, cancelExplanationSchema, overviewRequestSchema, fileExplanationRequestSchema, featureGuideRequestSchema } from '../shared/ai';
+import { featureGuideResultSchema, saveFeatureGuideSchema, overviewResultSchema, saveOverviewSchema, type OverviewResult, fileExplanationResultSchema, saveFileExplanationSchema, checkConnectionsSchema, explainRequestSchema, cancelExplanationSchema, overviewRequestSchema, fileExplanationRequestSchema, featureGuideRequestSchema } from '../shared/ai';
 import { LocalAiRuntime } from '../core/ai/runtime';
+import { checkFeatureGuideRoutes } from '../core/ai/feature-guide';
 import { maskSecrets } from '../core/ai/secrets';
 import { LocalWorkerWorkflow } from '../core/ai/workflow';
 import { ProjectAiContext } from '../core/ai/context';
@@ -269,6 +270,35 @@ app.whenReady().then(async () => {
     const { projectId } = projectRequestSchema.parse(argument);
     current(projectId);
     storage.deleteOverview(projectId);
+    return null;
+  });
+  handle(channels.savedFeatureGuide, async argument => {
+    const { projectId, routesId } = featureFlowsRequestSchema.parse(argument);
+    const snapshot = current(projectId).captureFeatureGuide(routesId, projectRevision);
+    const saved = storage.featureGuideOf(projectId);
+    if (!saved) return null;
+    const parsed = featureGuideResultSchema.safeParse(saved.result);
+    if (!parsed.success || parsed.data.projectId !== projectId) return null;
+    const changed = saved.materialHash !== snapshot.materialHash;
+    if (!changed) {
+      try { checkFeatureGuideRoutes(parsed.data.guide, snapshot.material.routes.map(route => route.index)); }
+      catch { return null; }
+    }
+    return { result: { ...parsed.data, routesId }, savedAt: saved.savedAt, changed };
+  });
+  handle(channels.saveFeatureGuide, async argument => {
+    const { projectId, result } = saveFeatureGuideSchema.parse(argument);
+    const active = current(projectId);
+    if (result.projectId !== projectId) throw new AppError('NOT_ALLOWED', '현재 프로젝트의 기능 정리만 저장할 수 있어요.');
+    const snapshot = active.captureFeatureGuide(result.routesId, projectRevision);
+    try { checkFeatureGuideRoutes(result.guide, snapshot.material.routes.map(route => route.index)); }
+    catch { throw new AppError('NOT_ALLOWED', '현재 자료에 있는 주소 번호만 저장할 수 있어요.'); }
+    return { savedAt: storage.saveFeatureGuide(projectId, result, snapshot.materialHash) };
+  });
+  handle(channels.deleteFeatureGuide, async argument => {
+    const { projectId } = projectRequestSchema.parse(argument);
+    current(projectId);
+    storage.deleteFeatureGuide(projectId);
     return null;
   });
   handle(channels.savedFileExplanation, async argument => {

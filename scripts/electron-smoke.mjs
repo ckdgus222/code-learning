@@ -4643,18 +4643,25 @@ try {
     await page.getByRole('textbox', { name: '기능 검색' }).fill('DogsController.get');
     await aiFeature.getByRole('button', { name: '이 기능 따라가기', exact: true }).waitFor();
     await page.getByRole('textbox', { name: '기능 검색' }).fill('');
+    const beforeResumeGuideRoutes = await app.evaluate(() => globalThis.testGuideRoutes.routesId);
     await app.evaluate(({ powerMonitor }) => powerMonitor.emit('resume'));
     await page.getByRole('button', { name: '다시 찾기', exact: true }).click();
+    await until(() => app.evaluate((_electron, previous) => globalThis.testGuideRoutes.routesId !== previous, beforeResumeGuideRoutes));
     await openServerFeatures();
+    await list.getByRole('heading', { name: '반려견 관리', exact: true }).waitFor();
+    await list.getByText(/저장됨 ·/).waitFor();
+    // Delete the restored guide so the following check can distinguish a rejected late AI result.
+    await list.getByRole('button', { name: '지우기', exact: true }).click();
     await list.getByText('지우기 · /api/dogs/:id', { exact: true }).waitFor();
-    assert.equal(await list.getByRole('heading', { name: '반려견 관리', exact: true }).count(), 0);
     await app.evaluate(() => { globalThis.testGuideHold = true; });
     await list.getByRole('button', { name: 'AI로 기능 정리하기', exact: true }).click();
     await list.getByRole('checkbox').check(); await send.click();
     await list.getByRole('button', { name: 'AI 작업 취소', exact: true }).waitFor();
     await until(async () => await app.evaluate(() => typeof globalThis.testGuideLate === 'function'));
+    const beforeLateGuideRoutes = await app.evaluate(() => globalThis.testGuideRoutes.routesId);
     await app.evaluate(({ powerMonitor }) => powerMonitor.emit('resume'));
     await page.getByRole('button', { name: '다시 찾기', exact: true }).click();
+    await until(() => app.evaluate((_electron, previous) => globalThis.testGuideRoutes.routesId !== previous, beforeLateGuideRoutes));
     await openServerFeatures();
     await list.getByText('지우기 · /api/dogs/:id', { exact: true }).waitFor();
     await app.evaluate(() => { globalThis.testGuideLate(); globalThis.testGuideHold = false; });
@@ -4664,17 +4671,207 @@ try {
     await list.getByRole('button', { name: 'AI로 기능 정리하기', exact: true }).click();
     await list.getByRole('checkbox').check(); await send.click();
     await list.getByRole('heading', { name: '반려견 관리', exact: true }).waitFor();
+    await list.getByText(/저장됨 ·/).waitFor();
     await writeFile(path.join(featureFlowFixture, 'api/controller.ts'), featureFlowFiles['api/controller.ts'] + '\n// changed\n');
     await openServerFeatures();
     await list.getByText('지우기 · /api/dogs/:id', { exact: true }).waitFor();
     assert.equal(await list.getByRole('heading', { name: '반려견 관리', exact: true }).count(), 0);
     assert.equal(await list.getByRole('button', { name: 'AI로 기능 정리하기', exact: true }).isDisabled(), true);
+    const beforeChangedGuideRoutes = await app.evaluate(() => globalThis.testGuideRoutes.routesId);
+    await page.getByRole('button', { name: '다시 찾기', exact: true }).click();
+    await until(() => app.evaluate((_electron, previous) => globalThis.testGuideRoutes.routesId !== previous, beforeChangedGuideRoutes));
+    await openServerFeatures();
+    await list.getByText('다시 확인 필요: 기능 정리를 만든 뒤 서버 주소나 그 코드가 바뀌었어요. 다시 정리해 주세요.', { exact: true }).waitFor();
+    assert.equal(await list.getByRole('heading', { name: '반려견 관리', exact: true }).count(), 0);
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
   });
   // Start with real handlers again: earlier checks replace several handlers with AI fixtures.
   await app.close();
   await launch();
+  {
+    const folder = path.join(temporary, '기능 정리 저장 프로젝트');
+    for (const [name, text] of Object.entries(featureFlowFiles)) {
+      await mkdir(path.dirname(path.join(folder, name)), { recursive: true });
+      await writeFile(path.join(folder, name), text);
+    }
+    let projectId;
+    const card = () => page.locator('.feature-guide-ai');
+    const savedDate = () => card().getByText(/저장됨 ·/);
+    const warning = () => card().getByText('다시 확인 필요: 기능 정리를 만든 뒤 서버 주소나 그 코드가 바뀌었어요. 다시 정리해 주세요.', { exact: true });
+    const closeProject = async () => {
+      await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
+      await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+    };
+    // Observe the real read without creating a second routes search or a second restore request.
+    const observeReads = async () => {
+      await app.evaluate(({ ipcMain }) => {
+        const read = ipcMain._invokeHandlers.get('learning:saved-feature-guide');
+        globalThis.guideReads = 0;
+        ipcMain.removeHandler('learning:saved-feature-guide');
+        ipcMain.handle('learning:saved-feature-guide', async (event, input) => {
+          const result = await read(event, input);
+          globalThis.guideReads++;
+          return result;
+        });
+      });
+    };
+    const openRecent = async (empty = false) => {
+      await page.getByRole('region', { name: '최근 프로젝트', exact: true }).getByRole('button').filter({ hasText: '기능 정리 저장 프로젝트' }).click();
+      await page.getByRole('heading', { name: '기능 정리 저장 프로젝트', exact: true }).waitFor();
+      if (empty) await page.getByText('서버 코드(요청을 받는 곳)를 찾지 못해서 기능별로 따라갈 수 없어요.', { exact: false }).waitFor();
+      else await openServerFeatures();
+    };
+    const restart = async (empty = false) => {
+      await app.close(); await launch(); await observeReads(); await openRecent(empty);
+      await until(() => app.evaluate(() => globalThis.guideReads === 1));
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    };
+    const installFake = async () => {
+      await app.evaluate(({ ipcMain }) => {
+        globalThis.savedGuideCalls = 0;
+        ipcMain.removeHandler('learning:connections');
+        ipcMain.handle('learning:connections', () => ({ ok: true, value: { checkedAt: new Date().toISOString(), providers: [],
+          modes: [{ mode: 'local-worker', ready: true, reason: '저장 시험용 가짜 AI' }] } }));
+        ipcMain.removeHandler('learning:feature-guide');
+        ipcMain.handle('learning:feature-guide', (event, request) => {
+          const { randomUUID } = process.getBuiltinModule('node:crypto');
+          const jobId = randomUUID();
+          const number = ++globalThis.savedGuideCalls;
+          const result = { jobId, projectId: request.projectId, routesId: request.routesId, mode: request.mode,
+            guide: { summary: `저장 시험 기능 요약 ${number}`, groups: [{ name: `저장 시험 묶음 ${number}`, about: '저장한 묶음 설명',
+              features: [{ name: `저장 시험 기능 ${number}`, about: '저장한 기능 설명', routes: [0] }] }], unknowns: ['실행은 확인하지 않았어요.'] },
+            limitations: [], review: 'AI 검토됨', models: [] };
+          event.sender.send('learning:ai-event', { kind: 'feature-guide-completed', jobId, projectId: request.projectId, result });
+          return { ok: true, value: { jobId } };
+        });
+      });
+    };
+    const generate = async () => {
+      await card().getByRole('button', { name: 'AI로 기능 정리하기', exact: true }).click();
+      await until(() => card().getByRole('checkbox').isEnabled());
+      await card().getByRole('checkbox').check();
+      const before = await app.evaluate(() => globalThis.savedGuideCalls);
+      await card().getByRole('button', { name: '동의하고 정리하기', exact: true }).click();
+      await until(() => app.evaluate((_electron, before) => globalThis.savedGuideCalls > before, before));
+      await page.getByRole('heading', { name: `저장 시험 묶음 ${before + 1}`, exact: true }).waitFor();
+      await card().getByRole('button', { name: '지우기', exact: true }).waitFor();
+    };
+    const assertDeleted = async () => {
+      await until(async () => await card().getByRole('button', { name: '지우기', exact: true }).count() === 0);
+      assert.equal(await savedDate().count(), 0);
+      assert.equal(await app.evaluate(({ app }, projectId) => {
+        const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+        const db = new DatabaseSync(process.getBuiltinModule('node:path').join(app.getPath('userData'), 'learning.sqlite'));
+        try { return db.prepare('SELECT COUNT(*) AS count FROM ai_feature_guides WHERE project_id = ?').get(projectId).count; }
+        finally { db.close(); }
+      }, projectId), 0);
+    };
+    await check('Saved feature guides: automatic save and restart restores names and groups without AI', async () => {
+      assert.equal(await app.evaluate(({ app }) => app.getPath('userData')), profile);
+      await installFake(); await observeReads(); await dialogTo(folder);
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      await page.getByRole('heading', { name: '기능 정리 저장 프로젝트', exact: true }).waitFor();
+      await openServerFeatures();
+      const recent = await page.evaluate(() => window.learning.recentProjects());
+      projectId = recent.value.find(item => item.root === folder).id;
+      await generate(); await savedDate().waitFor();
+      await restart(); await savedDate().waitFor();
+      await page.getByRole('heading', { name: '저장 시험 묶음 1', exact: true }).waitFor();
+      await page.getByText('저장 시험 기능 1', { exact: true }).first().waitFor();
+      assert.equal(await app.evaluate(() => globalThis.savedGuideCalls), undefined);
+    });
+    await check('Saved feature guides: server or frontend changes disable AI grouping, and empty routes remain deletable', async () => {
+      await closeProject();
+      await writeFile(path.join(folder, 'api/controller.ts'), featureFlowFiles['api/controller.ts'].replace("@Delete(':id')", "@Delete('changed/:id')"));
+      await restart(); await warning().waitFor(); await savedDate().waitFor();
+      assert.equal(await page.getByRole('heading', { name: '저장 시험 묶음 1', exact: true }).count(), 0);
+      // The same route is also in the folded contents, so only the visible one is waited for.
+      await page.getByText('지우기 · /api/dogs/changed/:id', { exact: true }).filter({ visible: true }).first().waitFor();
+      await closeProject();
+      await writeFile(path.join(folder, 'api/controller.ts'), featureFlowFiles['api/controller.ts']);
+      await writeFile(path.join(folder, 'web/lib/dogs.ts'), featureFlowFiles['web/lib/dogs.ts'] + '\n// frontend body changed\n');
+      await restart(); await warning().waitFor();
+      assert.equal(await page.getByRole('heading', { name: '저장 시험 묶음 1', exact: true }).count(), 0);
+      // The same route is also in the folded contents, so only the visible one is waited for.
+      await page.getByText('지우기 · /api/dogs/:id', { exact: true }).filter({ visible: true }).first().waitFor();
+      await closeProject(); await writeFile(path.join(folder, 'api/controller.ts'), 'export class DogsController {}');
+      await restart(true); await warning().waitFor(); await savedDate().waitFor();
+      assert.equal(await card().getByRole('button', { name: 'AI로 기능 정리하기', exact: true }).isDisabled(), true);
+      await card().getByRole('button', { name: '지우기', exact: true }).click(); await assertDeleted();
+      await restart(true); await assertDeleted();
+      await closeProject();
+      await writeFile(path.join(folder, 'api/controller.ts'), featureFlowFiles['api/controller.ts']);
+      await writeFile(path.join(folder, 'web/lib/dogs.ts'), featureFlowFiles['web/lib/dogs.ts']);
+      await restart();
+    });
+    await check('Saved feature guides: save failure has no date and deletion removes the previous saved guide', async () => {
+      await installFake(); await generate(); await savedDate().waitFor();
+      await app.evaluate(({ ipcMain }) => {
+        ipcMain.removeHandler('learning:save-feature-guide');
+        ipcMain.handle('learning:save-feature-guide', () => ({ ok: false, code: 'IO', message: '시험용 저장 실패' }));
+      });
+      await generate();
+      await page.getByText('AI 기능 정리를 저장하지 못했어요. 앱을 닫으면 사라져요.', { exact: true }).waitFor();
+      assert.equal(await savedDate().count(), 0);
+      await card().getByRole('button', { name: '지우기', exact: true }).click(); await assertDeleted();
+      await restart(); await assertDeleted();
+    });
+    await check('Saved feature guides: read failures are visible', async () => {
+      await closeProject();
+      await app.evaluate(({ ipcMain }) => {
+        globalThis.originalGuideRead = ipcMain._invokeHandlers.get('learning:saved-feature-guide');
+        ipcMain.removeHandler('learning:saved-feature-guide');
+        ipcMain.handle('learning:saved-feature-guide', () => ({ ok: false, code: 'IO', message: '시험용 읽기 실패' }));
+      });
+      await openRecent(); await page.getByText('저장된 AI 기능 정리를 불러오지 못했어요.', { exact: true }).waitFor();
+      await app.evaluate(({ ipcMain }) => {
+        ipcMain.removeHandler('learning:saved-feature-guide');
+        ipcMain.handle('learning:saved-feature-guide', globalThis.originalGuideRead);
+      });
+    });
+    await check('Saved feature guides: an older save reply cannot date a newer guide', async () => {
+      await installFake();
+      await app.evaluate(({ ipcMain }) => {
+        const save = ipcMain._invokeHandlers.get('learning:save-feature-guide');
+        globalThis.heldGuideSaves = [];
+        ipcMain.removeHandler('learning:save-feature-guide');
+        ipcMain.handle('learning:save-feature-guide', async (event, input) => {
+          const result = await save(event, input);
+          return new Promise(resolve => globalThis.heldGuideSaves.push(() => resolve(result)));
+        });
+      });
+      await generate(); await until(() => app.evaluate(() => globalThis.heldGuideSaves.length === 1));
+      await generate(); await until(() => app.evaluate(() => globalThis.heldGuideSaves.length === 2));
+      await app.evaluate(() => globalThis.heldGuideSaves[0]()); await page.waitForTimeout(100);
+      assert.equal(await savedDate().count(), 0);
+      await page.getByRole('heading', { name: '저장 시험 묶음 2', exact: true }).waitFor();
+      await app.evaluate(() => globalThis.heldGuideSaves[1]()); await savedDate().waitFor();
+    });
+    await check('Saved feature guides: held reads cannot replace a new guide or resurrect a deleted guide', async () => {
+      await restart(); await savedDate().waitFor(); await closeProject();
+      await app.evaluate(({ ipcMain }) => {
+        const read = ipcMain._invokeHandlers.get('learning:saved-feature-guide');
+        globalThis.heldGuideReads = [];
+        ipcMain.removeHandler('learning:saved-feature-guide');
+        ipcMain.handle('learning:saved-feature-guide', async (event, input) => {
+          const result = await read(event, input);
+          return new Promise(resolve => globalThis.heldGuideReads.push(() => resolve(result)));
+        });
+      });
+      await openRecent(); await until(() => app.evaluate(() => globalThis.heldGuideReads.length === 1));
+      await installFake(); await generate(); await savedDate().waitFor();
+      await app.evaluate(() => globalThis.heldGuideReads.shift()()); await page.waitForTimeout(100);
+      await page.getByRole('heading', { name: '저장 시험 묶음 1', exact: true }).waitFor();
+      await closeProject(); await openRecent();
+      await until(() => app.evaluate(() => globalThis.heldGuideReads.length === 1));
+      await generate(); await savedDate().waitFor();
+      await card().getByRole('button', { name: '지우기', exact: true }).click(); await assertDeleted();
+      await app.evaluate(() => globalThis.heldGuideReads.shift()()); await page.waitForTimeout(100);
+      await assertDeleted();
+    });
+    await app.close(); await launch();
+  }
   {
     const folder = path.join(temporary, '파일 설명 저장 프로젝트');
     await mkdir(folder);
