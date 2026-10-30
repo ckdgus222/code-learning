@@ -183,3 +183,38 @@ it('retains malformed file explanation JSON until an explicit replacement or del
     expect(storage.fileExplanationOf(projectId, 'a.ts')?.result).toEqual({ summary: 'recovered' });
   } finally { writer.close(); }
 });
+
+
+it('replaces one overview per project, persists it across reopening and deletes only that project', () => {
+  const filename = path.join(temp, 'app.sqlite');
+  storage = new ProjectStorage(filename);
+  const first = storage.recordOpen('/a', 'A');
+  const second = storage.recordOpen('/b', 'B');
+  expect(storage.overviewOf(first)).toBeNull();
+  storage.saveOverview(first, { summary: 'old' });
+  storage.saveOverview(second, { summary: 'other' });
+  const savedAt = storage.saveOverview(first, { summary: 'new' });
+  expect(new Date(savedAt).toISOString()).toBe(savedAt);
+  storage.close();
+  storage = new ProjectStorage(filename);
+  expect(storage.overviewOf(first)).toEqual({ result: { summary: 'new' }, savedAt });
+  storage.deleteOverview(first);
+  storage.deleteOverview(first);
+  expect(storage.overviewOf(first)).toBeNull();
+  expect(storage.overviewOf(second)?.result).toEqual({ summary: 'other' });
+});
+
+it('retains malformed overview JSON until replacement or explicit deletion', () => {
+  const filename = path.join(temp, 'app.sqlite');
+  storage = new ProjectStorage(filename);
+  const projectId = storage.recordOpen('/a', 'A');
+  const writer = new DatabaseSync(filename);
+  try {
+    writer.prepare('INSERT INTO ai_overviews VALUES (?, ?, ?)').run(projectId, '{broken', 'now');
+    expect(storage.overviewOf(projectId)).toBeNull();
+    expect(writer.prepare('SELECT result FROM ai_overviews').get()).toEqual({ result: '{broken' });
+    storage.saveOverview(projectId, { summary: 'recovered' });
+    expect(storage.overviewOf(projectId)?.result).toEqual({ summary: 'recovered' });
+    expect(writer.prepare('SELECT COUNT(*) AS count FROM ai_overviews').get()).toEqual({ count: 1 });
+  } finally { writer.close(); }
+});

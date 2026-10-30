@@ -68,6 +68,10 @@ const fileRangeSchema = z.object({
   startUtf16: fileOffset, endUtf16: fileOffset,
   startLine: z.number().int().min(1).max(32 * 1024 + 1), endLine: z.number().int().min(1).max(32 * 1024 + 1),
 }).strict().refine(range => range.startUtf16 <= range.endUtf16 && range.startLine <= range.endLine);
+const modelRunSchema = z.object({
+  stage: z.enum(['organizing', 'explaining', 'reviewing']), provider: z.enum(['codex', 'antigravity']),
+  requestedModel: z.string().min(1).max(120).nullable(), reportedModel: z.string().min(1).max(120).nullable(),
+}).strict();
 export const fileExplanationResultSchema = z.object({
   jobId: idSchema, projectId: idSchema, relativePath: z.string().min(1).max(1024),
   range: fileRangeSchema,
@@ -80,10 +84,7 @@ export const fileExplanationResultSchema = z.object({
   explanation: fileExplanationSchema,
   // Two chunking warnings and one masked-source notice; at most two workflow stages.
   limitations: z.array(description).max(3), mode: learningModeSchema, review: z.enum(['AI 검토됨', 'AI 대조 없음']),
-  models: z.array(z.object({
-    stage: z.enum(['organizing', 'explaining', 'reviewing']), provider: z.enum(['codex', 'antigravity']),
-    requestedModel: z.string().min(1).max(120).nullable(), reportedModel: z.string().min(1).max(120).nullable(),
-  }).strict()).max(2),
+  models: z.array(modelRunSchema).max(2),
 }).strict();
 export type FileExplanationResult = z.infer<typeof fileExplanationResultSchema>;
 export type FileChunk = FileExplanationResult['chunks'][number];
@@ -181,17 +182,19 @@ export interface LearningResult {
   review: 'AI 검토됨' | 'AI 대조 없음';
   models: ModelRun[];
 }
-export interface OverviewResult {
-  jobId: string;
-  projectId: string;
-  overview: ProjectOverviewAnswer;
-  /** The files actually read for it; a name only seen in the file list was not read. */
-  sources: { evidence: Evidence; relativePath: string }[];
-  limitations: string[];
-  /** With nothing read no overview is written, so nothing was checked either. */
-  review: 'AI 검토됨' | '개요 작성 안 함';
-  models: ModelRun[];
-}
+export const overviewResultSchema = z.object({
+  jobId: idSchema, projectId: idSchema, overview: overviewSchema,
+  // One start file and at most four related files, each limited to 32 KiB.
+  sources: z.array(z.object({
+    evidence: fileRangeSchema.safeExtend({ id: idSchema, projectId: idSchema }),
+    relativePath: z.string().min(1).max(1024),
+  }).strict()).max(5),
+  // List + exploration notices, five skipped/masked files, eight starts and 8 × 5 role names.
+  limitations: z.array(description).max(55), review: z.enum(['AI 검토됨', '개요 작성 안 함']),
+  models: z.array(modelRunSchema).max(3),
+}).strict();
+export type OverviewResult = z.infer<typeof overviewResultSchema>;
+export const saveOverviewSchema = z.object({ projectId: idSchema, result: overviewResultSchema }).strict();
 export type LearningEvent =
   | { kind: 'progress'; jobId: string; projectId: string; phase: LearningPhase }
   | { kind: 'completed'; jobId: string; projectId: string; result: LearningResult }

@@ -3593,7 +3593,7 @@ try {
     await roleFunctions.getByRole('button', { name: 'run · dup.ts', exact: true }).click();
     await page.getByText('이 파일에 ‘run’ 함수가 2개라 하나로 정하지 못했어요. 왼쪽에서 직접 골라 주세요.', { exact: true }).waitFor();
   });
-  await check('Topic: code chosen to ask about stays usable after another file is read; a change stales the overview; reopening clears it', async () => {
+  await check('Topic: code chosen to ask about stays usable after another file is read; a change stales the overview; reopening restores the saved overview', async () => {
     const opened = await app.evaluate(() => ({ projectId: globalThis.testOpenedProject.id,
       banner: globalThis.testOpenedProject.files.find(file => file.relativePath === 'banner.ts').id,
       settings: globalThis.testOpenedProject.files.find(file => file.relativePath === 'settings.ts').id }));
@@ -3628,10 +3628,13 @@ try {
       && (await page.getByTestId('evidence-range').innerText()).startsWith('근거: banner.ts'));
     assert.equal(await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).count(), 0);
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
-    // Opening the same folder again gives new file IDs: the overview and the topic go, and so does the consent.
+    // Reopening gives new file IDs: the saved overview returns, while the topic and consent are cleared.
     await card.getByRole('checkbox').check();
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
-    await card.getByText('개요 미생성', { exact: true }).waitFor();
+    // The overview made before stays on screen until the folder has opened again, so wait for the reopening first.
+    await until(async () => await page.getByRole('region', { name: '학습 주제' }).count() === 0 && !await page.locator('.busy').count());
+    await card.getByText('배너를 등록하고 보여 주는 앱이에요.', { exact: true }).waitFor();
+    await card.getByText(/저장됨 ·/).waitFor();
     assert.equal(await card.getByRole('checkbox').isChecked(), false);
     assert.equal(await page.getByRole('region', { name: '학습 주제' }).count(), 0);
   });
@@ -3669,7 +3672,7 @@ try {
     const back = topicBar.getByRole('button', { name: '이전 위치', exact: true });
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
     await card.getByRole('checkbox').check();
-    await card.getByRole('button', { name: '개요 만들기', exact: true }).click();
+    await card.getByRole('button', { name: '개요 다시 만들기', exact: true }).click();
     await card.getByText('배너를 등록하고 보여 주는 앱이에요.', { exact: true }).waitFor();
     // Search: this overview's items and the topic's name only.
     const search = card.getByRole('searchbox', { name: '기능·역할 찾기' });
@@ -4894,6 +4897,189 @@ try {
       await app.evaluate(() => globalThis.heldExplanationReads.shift()());
       await page.waitForTimeout(100);
       assert.equal(await card().getByTestId('file-summary').count(), 0);
+    });
+    await app.close(); await launch();
+  }
+  {
+    const folder = path.join(temporary, '개요 저장 프로젝트');
+    await mkdir(folder);
+    const original = 'export function saved() { return 1; }\n';
+    await writeFile(path.join(folder, 'saved.ts'), original);
+    let projectId;
+    let firstResult;
+    const card = () => page.getByRole('region', { name: '기능과 구성 (AI 개요)', exact: true });
+    const savedDate = () => card().getByText(/저장됨 ·/);
+    const closeProject = async () => {
+      await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
+      await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+    };
+    const openRecent = async () => {
+      await page.getByRole('region', { name: '최근 프로젝트', exact: true }).getByRole('button').filter({ hasText: '개요 저장 프로젝트' }).click();
+      await page.getByRole('heading', { name: '개요 저장 프로젝트', exact: true }).waitFor();
+      await until(async () => !await page.locator('.busy').count());
+    };
+    const restart = async () => { await app.close(); await launch(); await openRecent(); };
+    const assertDeleted = async () => {
+      await card().getByText('개요 미생성', { exact: true }).waitFor();
+      const count = await app.evaluate(({ app }, projectId) => {
+        const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+        const db = new DatabaseSync(process.getBuiltinModule('node:path').join(app.getPath('userData'), 'learning.sqlite'));
+        try { return db.prepare('SELECT COUNT(*) AS count FROM ai_overviews WHERE project_id = ?').get(projectId).count; }
+        finally { db.close(); }
+      }, projectId);
+      assert.equal(count, 0);
+    };
+    const installFake = async () => {
+      await app.evaluate(({ ipcMain }) => {
+        globalThis.savedOverviewCalls = 0;
+        ipcMain.removeHandler('learning:connections');
+        ipcMain.handle('learning:connections', () => ({ ok: true, value: { checkedAt: new Date().toISOString(), providers: [],
+          modes: [{ mode: 'local-worker', ready: true, reason: '저장 시험용 가짜 AI' }] } }));
+        ipcMain.removeHandler('learning:overview');
+        ipcMain.handle('learning:overview', async (event, request) => {
+          const read = await ipcMain._invokeHandlers.get('learning:read')(event, { projectId: request.projectId, fileId: request.startFileId });
+          if (!read.ok) return read;
+          const source = read.value;
+          const { randomUUID } = process.getBuiltinModule('node:crypto');
+          const jobId = randomUUID();
+          const evidence = { id: randomUUID(), projectId: request.projectId, fileId: source.fileId, fileHash: source.hash,
+            startUtf16: 0, endUtf16: source.text.length, startLine: 1, endLine: source.text.trimEnd().split('\n').length };
+          const result = { projectId: request.projectId, jobId, sources: [{ evidence, relativePath: source.relativePath }],
+            overview: { intro: { text: `저장 시험 개요 ${++globalThis.savedOverviewCalls}`, evidenceIds: [evidence.id] },
+              features: [{ name: '저장 기능', summary: '저장된 코드로 이동해요.', evidenceIds: [evidence.id], start: { evidenceId: evidence.id, functionName: 'saved' } }],
+              roles: [], unknowns: [] }, limitations: [], review: 'AI 검토됨', models: [] };
+          globalThis.savedOverviewResult = result;
+          event.sender.send('learning:ai-event', { kind: 'overview-completed', projectId: request.projectId, jobId, result });
+          return { ok: true, value: { jobId } };
+        });
+      });
+    };
+    const generate = async () => {
+      // openTreeFile only clicks: wait until the selected file has actually been read before returning to the overview.
+      await openTreeFile('saved.ts');
+      await until(async () => (await page.getByRole('navigation', { name: '현재 학습 위치', exact: true }).innerText()).includes('saved.ts')
+        && !await page.locator('.busy').count());
+      await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+      const inspect = card().getByRole('button', { name: '로컬 AI 설치 확인', exact: true });
+      if (await inspect.count()) await inspect.click();
+      await until(() => card().getByRole('checkbox').isEnabled());
+      // The same file appears in both recommended and all-files groups; either option carries the current ID.
+      const fileId = await card().getByRole('combobox').locator('option').filter({ hasText: /^saved.ts/ }).first().getAttribute('value');
+      await card().getByRole('combobox').selectOption(fileId);
+      await card().getByRole('checkbox').check();
+      const before = await app.evaluate(() => globalThis.savedOverviewCalls);
+      await card().getByRole('button', { name: /^(개요 만들기|개요 다시 만들기)$/ }).click();
+      await card().getByText(`저장 시험 개요 ${before + 1}`, { exact: true }).waitFor();
+    };
+    await check('Saved overviews: accepted results are automatically saved in the test profile', async () => {
+      assert.equal(await app.evaluate(({ app }) => app.getPath('userData')), profile);
+      await installFake(); await dialogTo(folder);
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      await page.getByRole('heading', { name: '개요 저장 프로젝트', exact: true }).waitFor();
+      const recent = await page.evaluate(() => window.learning.recentProjects());
+      projectId = recent.value.find(item => item.root === folder).id;
+      await generate(); await savedDate().waitFor();
+      firstResult = await app.evaluate(() => globalThis.savedOverviewResult);
+      assert.equal(await app.evaluate(() => globalThis.savedOverviewCalls), 1);
+    });
+    await check('Saved overviews: restart restores the dated overview without AI and reopens evidence and feature starts', async () => {
+      await restart();
+      await card().getByText('저장 시험 개요 1', { exact: true }).waitFor(); await savedDate().waitFor();
+      assert.equal(await app.evaluate(() => globalThis.savedOverviewCalls), undefined, 'No fake AI has been called after restart');
+      assert.equal(await card().getByRole('checkbox').isChecked(), false);
+      const restored = await page.evaluate(projectId => window.learning.savedOverview({ projectId }), projectId);
+      assert.equal(restored.value.changed, false);
+      assert.notEqual(restored.value.result.sources[0].evidence.fileId, firstResult.sources[0].evidence.fileId);
+      assert.equal(restored.value.result.sources[0].evidence.id, firstResult.sources[0].evidence.id);
+      await card().getByRole('list', { name: '소개의 근거' }).getByRole('button').click();
+      await until(async () => /saved.ts · 1–1줄/.test(await page.getByTestId('evidence-range').innerText()));
+      await until(async () => (await page.locator('.cm-line').allTextContents()).join('\n').includes('export function saved'));
+      await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+      await card().getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+      await page.getByRole('region', { name: '학습 주제' }).waitFor();
+      await until(async () => await page.getByRole('button', { name: 'saved', exact: true }).getAttribute('aria-pressed') === 'true');
+    });
+    await check('Saved overviews: changed code blocks navigation and deletion survives restart', async () => {
+      await app.close(); await writeFile(path.join(folder, 'saved.ts'), original.replace('1', '2'));
+      await launch(); await openRecent();
+      await card().getByText('다시 확인 필요:', { exact: false }).waitFor();
+      assert.equal(await card().getByRole('list', { name: '소개의 근거' }).getByRole('button').isDisabled(), true);
+      assert.equal(await card().getByRole('button', { name: '이 기능 따라가기', exact: true }).isDisabled(), true);
+      await card().getByRole('button', { name: '지우기', exact: true }).click(); await assertDeleted();
+      await restart(); await assertDeleted();
+    });
+    await check('Saved overviews: failed saves omit the date but allow deleting the previously stored overview', async () => {
+      await installFake(); await generate(); await savedDate().waitFor();
+      await app.evaluate(({ ipcMain }) => {
+        ipcMain.removeHandler('learning:save-overview');
+        ipcMain.handle('learning:save-overview', () => ({ ok: false, code: 'IO', message: '시험용 저장 실패' }));
+      });
+      await generate();
+      await page.getByText('AI 개요를 저장하지 못했어요. 앱을 닫으면 사라져요.', { exact: true }).waitFor();
+      assert.equal(await savedDate().count(), 0);
+      await card().getByRole('button', { name: '지우기', exact: true }).click(); await assertDeleted();
+      await restart(); await assertDeleted();
+    });
+    await check('Saved overviews: failed reads show a separate notice', async () => {
+      await closeProject();
+      await app.evaluate(({ ipcMain }) => {
+        globalThis.originalOverviewRead = ipcMain._invokeHandlers.get('learning:saved-overview');
+        ipcMain.removeHandler('learning:saved-overview');
+        ipcMain.handle('learning:saved-overview', () => ({ ok: false, code: 'IO', message: '시험용 읽기 실패' }));
+      });
+      await openRecent();
+      await page.getByText('저장된 AI 개요를 불러오지 못했어요.', { exact: true }).waitFor();
+      await app.evaluate(({ ipcMain }) => {
+        ipcMain.removeHandler('learning:saved-overview');
+        ipcMain.handle('learning:saved-overview', globalThis.originalOverviewRead);
+      });
+    });
+    await check('Saved overviews: an old save acknowledgement cannot add a date to a newer result', async () => {
+      await installFake();
+      await app.evaluate(({ ipcMain }) => {
+        const save = ipcMain._invokeHandlers.get('learning:save-overview');
+        globalThis.heldOverviewSaves = [];
+        ipcMain.removeHandler('learning:save-overview');
+        ipcMain.handle('learning:save-overview', async (event, input) => {
+          const result = await save(event, input);
+          return new Promise(resolve => globalThis.heldOverviewSaves.push(() => resolve(result)));
+        });
+      });
+      await generate(); await until(() => app.evaluate(() => globalThis.heldOverviewSaves.length === 1));
+      await generate(); await until(() => app.evaluate(() => globalThis.heldOverviewSaves.length === 2));
+      await app.evaluate(() => globalThis.heldOverviewSaves[0]()); await page.waitForTimeout(100);
+      assert.equal(await savedDate().count(), 0);
+      await card().getByText('저장 시험 개요 2', { exact: true }).waitFor();
+      await app.evaluate(() => globalThis.heldOverviewSaves[1]()); await savedDate().waitFor();
+    });
+    await check('Saved overviews: a held read cannot restore a result after generating and deleting a new overview', async () => {
+      await restart(); await savedDate().waitFor(); await closeProject();
+      await app.evaluate(({ ipcMain }) => {
+        const read = ipcMain._invokeHandlers.get('learning:saved-overview');
+        globalThis.heldOverviewReads = [];
+        globalThis.holdOverviewRead = true;
+        ipcMain.removeHandler('learning:saved-overview');
+        ipcMain.handle('learning:saved-overview', async (event, input) => {
+          const result = await read(event, input);
+          if (!globalThis.holdOverviewRead) return result;
+          return new Promise(resolve => globalThis.heldOverviewReads.push(() => resolve(result)));
+        });
+      });
+      await openRecent(); await until(() => app.evaluate(() => globalThis.heldOverviewReads.length === 1));
+      await installFake(); await generate(); await savedDate().waitFor();
+      await card().getByRole('button', { name: '지우기', exact: true }).click(); await assertDeleted();
+      await app.evaluate(() => globalThis.heldOverviewReads.shift()()); await page.waitForTimeout(100);
+      await assertDeleted();
+    });
+    await check('Saved overviews: a held read cannot cross closing and reopening the same folder', async () => {
+      await generate(); await savedDate().waitFor(); await closeProject();
+      await openRecent(); await until(() => app.evaluate(() => globalThis.heldOverviewReads.length === 1));
+      await closeProject();
+      await app.evaluate(() => { globalThis.holdOverviewRead = false; });
+      await openRecent(); await savedDate().waitFor();
+      await card().getByRole('button', { name: '지우기', exact: true }).click(); await assertDeleted();
+      await app.evaluate(() => globalThis.heldOverviewReads.shift()()); await page.waitForTimeout(100);
+      await assertDeleted();
     });
     await app.close(); await launch();
   }

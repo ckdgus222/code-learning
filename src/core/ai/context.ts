@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto';
 import type { Evidence, ProjectFiles, SourceView } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 import { readAllowed } from '../project/files';
-import type { FileChunk, FileExplanationRequest } from '../../shared/ai';
+import type { FileChunk, FileExplanationRequest, OverviewResult } from '../../shared/ai';
 import { splitFileChunks } from '../analysis/file-chunks';
 
 export const MAX_CONTEXT_FILE_BYTES = 32 * 1024;
+// The last line number of a whole-file range; an empty file still has line 1.
+const lastLine = (text: string) => Math.max(1, text.split('\n').length - (text.endsWith('\n') ? 1 : 0));
 export const MAX_CONTEXT_BYTES = 128 * 1024;
 export const MAX_RELATED_FILES = 4;
 export interface ContextFile { evidence: Evidence; relativePath: string; code: string }
@@ -45,6 +47,24 @@ export class ProjectAiContext {
    */
   keep(evidence: Evidence): void { this.remember(evidence); }
   clear(): void { this.evidence.clear(); }
+
+  async restoreSources(saved: OverviewResult['sources']): Promise<{ sources: OverviewResult['sources']; changed: boolean }> {
+    let changed = false;
+    const sources: OverviewResult['sources'] = [];
+    for (const source of saved) {
+      const file = this.project.files.find(item => item.relativePath === source.relativePath);
+      if (!file) { sources.push(source); changed = true; continue; }
+      const evidence = { ...source.evidence, fileId: file.id };
+      sources.push({ ...source, evidence });
+      try {
+        const { text, hash } = await readAllowed(this.root, file.relativePath);
+        if (hash !== evidence.fileHash || evidence.startUtf16 >= evidence.endUtf16 ||
+            evidence.endUtf16 > text.length || evidence.endLine > lastLine(text)) changed = true;
+      } catch { changed = true; }
+    }
+    if (!changed) sources.forEach(source => this.remember(source.evidence));
+    return { sources, changed };
+  }
 
   async capture(source: SourceView, evidence: Evidence, revision: number, signal: AbortSignal): Promise<EvidenceSnapshot> {
     checkCancelled(signal);
@@ -88,7 +108,7 @@ export class ProjectAiContext {
     // This range is returned with the result. It is never registered in the bounded evidence cache.
     const evidence: Evidence = { id: randomUUID(), projectId: this.project.id, fileId: file.id, fileHash: hash,
       startUtf16: 0, endUtf16: text.length, startLine: 1,
-      endLine: Math.max(1, text.split('\n').length - (text.endsWith('\n') ? 1 : 0)) };
+      endLine: lastLine(text) };
     return { projectId: this.project.id, revision, files: [{ evidence, relativePath: file.relativePath, code: text }],
       availableFiles: [], chunks, limitations };
   }
