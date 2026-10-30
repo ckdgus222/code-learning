@@ -27,7 +27,10 @@ const storeVerbs: Record<FlowStore['action'], string> = {
   read: '읽기', count: '세기', create: '새로 저장하기', update: '바꾸기',
   upsert: '없으면 새로 저장하고 있으면 바꾸기', delete: '지우기', raw: 'SQL 직접 실행',
 };
-export const storeText = (store: FlowStore): string => store.action === 'raw' ? storeVerbs.raw : `${store.model} ${storeVerbs[store.action]}`;
+export function storeText(store: FlowStore): string {
+  const text = store.action === 'raw' ? storeVerbs.raw : `${store.model} ${storeVerbs[store.action]}`;
+  return store.basis === 'name' ? `${text} (이름으로 추정)` : text;
+}
 
 const stopNames: Record<string, string> = {
   NotFoundException: '찾을 수 없음', BadRequestException: '잘못된 요청', UnauthorizedException: '로그인 필요',

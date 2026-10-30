@@ -1153,6 +1153,24 @@ try {
     await page.waitForFunction(() => document.querySelector('.files button[aria-label="폴더 api"]')?.getAttribute('aria-expanded') === 'false');
     assert.equal(await main.isVisible(), false);
   });
+  await check('Feature guide marks storage found by a DB client name as inferred', async () => {
+    const namedStoreFixture = path.join(temporary, '저장소 이름 프로젝트');
+    await mkdir(namedStoreFixture);
+    await writeFile(path.join(namedStoreFixture, 'server.ts'), "@Controller('posts') class PostsController { @Post() create() { return db.post.create({}); } }");
+    await dialogTo(namedStoreFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '저장소 이름 프로젝트', exact: true }).waitFor();
+    await openServerFeatures();
+    await page.getByRole('region', { name: '기능 목록', exact: true }).getByRole('listitem')
+      .filter({ hasText: '/posts' }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+    const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
+    await story.getByText('전체 그림과 단계 보기', { exact: true }).click();
+    await story.getByRole('button', { name: /단계 저장소$/ }).click();
+    // Each store line holds its text and a '이 줄 보기' button, so the line is found by the text it contains.
+    await story.getByRole('region', { name: '저장소 호출', exact: true }).getByRole('listitem')
+      .filter({ hasText: 'post 새로 저장하기 (이름으로 추정)' }).waitFor();
+  });
+
   await check('Feature guide: overview, seven story steps, route search, diagram, code and question preservation', async () => {
     await dialogTo(featureFlowFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
@@ -1322,7 +1340,7 @@ try {
     await story.getByText('6 / 7 · 저장소', { exact: true }).waitFor();
     await story.getByRole('heading', { name: '저장소(DB)를 써요', exact: true }).waitFor();
     const storage = story.getByRole('region', { name: '저장소 호출', exact: true });
-    const storeNote = await storage.getByText('Prisma 호출 모양으로 찾았어요.', { exact: false }).innerText();
+    const storeNote = await storage.getByText('Prisma 호출 모양과, 흔한 DB 클라이언트·Repository 이름', { exact: false }).innerText();
     await page.getByTestId('story-step').getByText(storeNote, { exact: true }).waitFor();
     await storage.getByRole('button', { name: '이 줄 보기', exact: true }).first().click();
     await until(async () => /api\/service.ts · 4–4줄/.test(await story.getByTestId('evidence-range').innerText()));

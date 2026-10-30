@@ -239,6 +239,67 @@ it('recognizes Prisma-shaped model and raw calls, including a transaction parame
   ]);
   expect(node.storesOmitted).toBe(0);
   expect(node.stores.map(store => store.site.startLine)).toEqual([2, 4, 5, 6, 8, 9, 10, 11]);
+  expect(node.stores.map(store => store.basis)).toEqual(Array(8).fill('shape'));
+});
+
+it.each([
+  ['db.post.delete()', 'post', 'delete'],
+  ['this.db.post.create()', 'post', 'create'],
+  ['this.prismaService.user.findMany()', 'user', 'read'],
+  ['prismaClient.user.update()', 'user', 'update'],
+  ['PRISMAService.user.findMany()', 'user', 'read'],
+  ['readPrisma.post.count()', 'post', 'count'],
+  ['this.readPRISMA.post.count()', 'post', 'count'],
+  ['db.$queryRaw`SELECT 1`', null, 'raw'],
+  ['this.db.$executeRawUnsafe("SQL")', null, 'raw'],
+  ['this.articleRepository.save(article)', 'article', 'upsert'],
+  ['articleREPOSITORY.save(article)', 'article', 'upsert'],
+  ['userRepository.findOne({})', 'user', 'read'],
+  ['repo.delete({})', 'repository', 'delete'],
+  ['repository.find()', 'repository', 'read'],
+  ['this.repository.query("SQL")', null, 'raw'],
+])('infers storage only from supported client and repository names: %s', async (call, model, action) => {
+  await put('server.ts', `@Controller('x') class C { @Get() get() { ${call}; } }`);
+  const node = (await analyze()).flow.nodes[0];
+  expect(node.stores.map(({ site, ...store }) => store)).toEqual([{ model, action, basis: 'name' }]);
+  expect(node.stores[0].site.text).toBe(call);
+});
+
+it.each([
+  ['find', 'read'], ['findOne', 'read'], ['findOneBy', 'read'], ['findBy', 'read'],
+  ['findOneOrFail', 'read'], ['findOneByOrFail', 'read'], ['findAndCount', 'read'], ['findAndCountBy', 'read'],
+  ['findByIds', 'read'], ['exist', 'read'], ['exists', 'read'], ['existsBy', 'read'],
+  ['count', 'count'], ['countBy', 'count'], ['insert', 'create'], ['update', 'update'],
+  ['upsert', 'upsert'], ['save', 'upsert'], ['delete', 'delete'], ['remove', 'delete'],
+  ['softDelete', 'delete'], ['softRemove', 'delete'], ['query', 'raw'],
+])('maps TypeORM %s to %s', async (op, action) => {
+  await put('server.ts', `@Controller('x') class C { @Get() get() { this.articleRepository.${op}(); } }`);
+  expect((await analyze()).flow.nodes[0].stores.map(({ site, ...store }) => store))
+    .toEqual([{ model: action === 'raw' ? null : 'article', action, basis: 'name' }]);
+});
+
+it.each([
+  'stripe.customers.create()', 'openai.files.create()', 'client.users.update()', 'api.users.delete()',
+  'dbClient.post.delete()', 'database.post.delete()', 'ctx.db.post.create()', 'ctx.userRepository.save({})',
+  'this.repo.create({})', 'repo.merge({})', 'repository.preload({})', 'this.repo.createQueryBuilder()',
+  'db.select().from(t)', 'db.insert(t).values(v)', 'db.query.users.findMany()',
+  "this.db.collection('x').insertOne()", 'this.repo.dog.delete()',
+])('does not infer unsupported storage calls: %s', async call => {
+  await put('server.ts', `@Controller('x') class C { @Get() get() { ${call}; this.repo.save(article); } }`);
+  const node = (await analyze()).flow.nodes[0];
+  expect(node.stores.map(({ site, ...store }) => store)).toEqual([{ model: 'repository', action: 'upsert', basis: 'name' }]);
+  expect(node.stores[0].site.text).toBe('this.repo.save(article)');
+});
+
+it('shares the eight-call limit across shape and name matches in code order', async () => {
+  const calls = ['prisma.post.create()', 'this.prisma.x.update()', 'db.post.delete()', 'repo.save(article)',
+    'this.prisma.$transaction(tx => tx.post.count())', 'readPrisma.user.findMany()',
+    'userRepository.findOne()', 'db.$queryRaw`SELECT 1`', 'repo.remove(article)', 'prisma.post.delete()'];
+  await put('server.ts', `@Controller('x') class C { @Get() get() { ${calls.join(';')}; } }`);
+  const node = (await analyze()).flow.nodes[0];
+  expect(node.stores.map(store => store.site.text)).toEqual([...calls.slice(0, 4), 'tx.post.count()', ...calls.slice(5, 8)]);
+  expect(node.stores.map(store => store.basis)).toEqual(['shape', 'shape', 'name', 'name', 'shape', 'name', 'name', 'name']);
+  expect(node.storesOmitted).toBe(2);
 });
 
 it.each([

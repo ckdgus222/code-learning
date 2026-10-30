@@ -336,9 +336,11 @@ export interface FlowStop {
   site: ValueSite;
 }
 export interface FlowStore {
-  /** The Prisma model property; null for raw SQL. */
+  /** The Prisma model property or the TypeORM repository name without `Repository`; null for raw SQL. */
   model: string | null;
   action: 'read' | 'count' | 'create' | 'update' | 'upsert' | 'delete' | 'raw';
+  /** 'shape': Prisma or a $transaction client; 'name': guessed from a common client or repository name. */
+  basis: 'shape' | 'name';
   site: ValueSite;
 }
 /** The element whose event starts the flow, read from JSX. */

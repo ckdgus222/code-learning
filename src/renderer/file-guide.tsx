@@ -176,7 +176,7 @@ export function FileGuideCard({ open, onToggle, guide, analysis, busy, stale, us
             </li>)}
             {actions?.after.map((action, index) => <li key={`after${index}`}>{action.text} · 모양으로 판단 ({action.line}행)</li>)}
             {fact?.stops.map((stop, index) => <li key={`stop${index}`}>{stopText(stop)}{stop.condition ? ` · 조건: ${stop.condition}` : ''} ({stop.site.startLine}행)</li>)}
-            {fact?.stores.map((store, index) => <li key={`store${index}`}>{storeText(store)} · 모양으로 판단 ({store.site.startLine}행)</li>)}
+            {fact?.stores.map((store, index) => <li key={`store${index}`}>{storeText(store)}{store.basis === 'shape' ? ' · 모양으로 판단' : ''} ({store.site.startLine}행)</li>)}
           </ul>
           {actions?.afterPartly && <p className="hint">요청 뒤 할 일 일부 생략</p>}
           {!!fact?.stopsOmitted && <p className="hint">오류 외 {fact.stopsOmitted}개</p>}

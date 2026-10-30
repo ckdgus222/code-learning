@@ -81,7 +81,7 @@ const fullStoryFlow: FeatureFlow = { ...flow, nodes: [
   ...nodes,
   { ...nodes[2], id: 'prepare', name: 'prepare', event: null, after: [{ when: 'success', action: 'call', target: 'done',
     site: { fileId: 'f', fileHash: 'h', ...nodes[2].range, text: 'done()' } }] },
-  { ...nodes[0], id: 'service', depth: 1, stores: [{ model: 'dog', action: 'delete',
+  { ...nodes[0], id: 'service', depth: 1, stores: [{ model: 'dog', action: 'delete', basis: 'shape',
     site: { fileId: 'f', fileHash: 'h', ...nodes[0].range, text: 'db.dog.delete()' } }] },
 ], edges: [flow.edges[0], { ...flow.edges[1], to: 'prepare' }, { ...flow.edges[1], from: 'prepare' }, flow.edges[2],
   { ...flow.edges[0], from: 'back', to: 'service', kind: 'calls' }] };
@@ -365,8 +365,8 @@ it('renders written errors, easy names, conditions and omitted counts without cl
 it('shows storage groups with the same name separately and explains code order and omissions', () => {
   const site = { fileId: 'f', fileHash: 'h', startUtf16: 1, endUtf16: 2, startLine: 1, endLine: 1, text: 'prisma.dog.\nupsert()' };
   const changed: FeatureFlow = { ...flow, edges: [], nodes: [
-    { ...nodes[0], name: 'save', stores: [{ model: 'dog', action: 'upsert', site }], storesOmitted: 3 },
-    { ...nodes[0], id: 'service', depth: 1, name: 'save', stores: [{ model: null, action: 'raw', site: { ...site, fileId: 'other', text: 'prisma.$queryRaw`SQL`' } }] },
+    { ...nodes[0], name: 'save', stores: [{ model: 'dog', action: 'upsert', basis: 'shape', site }], storesOmitted: 3 },
+    { ...nodes[0], id: 'service', depth: 1, name: 'save', stores: [{ model: null, action: 'raw', basis: 'shape', site: { ...site, fileId: 'other', text: 'prisma.$queryRaw`SQL`' } }] },
   ] };
   const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: changed, walk: { ...walkProps.walk, step: 2 }, locked: true }));
   expect(html).toContain('aria-label="저장소 호출"');
@@ -375,16 +375,25 @@ it('shows storage groups with the same name separately and explains code order a
   expect(html).toContain('SQL 직접 실행');
   expect(html).toContain('<code>prisma.dog. upsert()</code>');
   expect(html).toContain('외 3개 더');
-  expect(html).toContain('Prisma 호출 모양으로 찾았어요. 함수 안에서는 코드에 적힌 순서이고, 조건에 따라 일부만 실행될 수 있어요.');
+  expect(html).toContain('Prisma 호출 모양과, 흔한 DB 클라이언트·Repository 이름(db·prisma…·…Repository)으로 찾았어요. 이름으로 찾은 것은 추정이에요. 함수 안에서는 코드에 적힌 순서이고, 조건에 따라 일부만 실행될 수 있어요.');
   expect(html).toContain('함수끼리 어떤 순서로 실행되는지는 확인하지 않았어요.');
   expect(html.match(/<button[^>]*>이 줄 보기<\/button>/g)!.every(button => button.includes('disabled=""'))).toBe(true);
+});
+
+it('shows name-inferred storage in the flow with its uncertainty label', () => {
+  const changed: FeatureFlow = { ...fullStoryFlow, nodes: fullStoryFlow.nodes.map(node => ({ ...node,
+    stores: node.stores.map(store => ({ ...store, basis: 'name' })),
+  })) };
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: changed, walk: { ...walkProps.walk, step: 5 } }));
+  expect(html).toContain('aria-label="저장소 호출"');
+  expect(html).toContain('dog 지우기 (이름으로 추정)');
 });
 
 it('renders the sixth step button and folded outside calls with their total count', () => {
   const site = { fileId: 'f', fileHash: 'h', startUtf16: 1, endUtf16: 2, startLine: 1, endLine: 1, text: 'prisma.dog.delete()' };
   const changed: FeatureFlow = { ...flow, nodes: [...nodes,
     { ...nodes[2], id: 'prepare', name: 'prepare', event: null },
-    { ...nodes[0], id: 'service', depth: 1, outside: ['external()'], outsideOmitted: 4, stores: [{ model: 'dog', action: 'delete', site }] },
+    { ...nodes[0], id: 'service', depth: 1, outside: ['external()'], outsideOmitted: 4, stores: [{ model: 'dog', action: 'delete', basis: 'shape', site }] },
   ], edges: [flow.edges[0], { ...flow.edges[1], to: 'prepare' }, { ...flow.edges[1], from: 'prepare' }, flow.edges[2],
     { ...flow.edges[0], from: 'back', to: 'service' }] };
   const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: changed, walk: { ...walkProps.walk, step: 4 } }));
@@ -737,6 +746,8 @@ it.each([undefined, { ...routes, requests: [], links: [] }, {
   const html = renderToStaticMarkup(React.createElement(FlowLimits, { project, routes, flow, locked: false, onCode() {} }));
   expect(html).toMatch(/^<details class="card"><summary>이 흐름을 찾은 방법과 한계<\/summary><p class="hint">코드 글자로 찾은 흐름이에요/);
   expect(html).toContain('찾은 범위와 한계');
+  expect(html).toContain('app.use의 주소 연결은 따라가지 않아요. tsconfig 경로 별칭은 따라가요.');
+  expect(html).toContain('저장소는 Prisma 모양과 흔한 DB 클라이언트·TypeORM Repository 이름으로 찾아요(이름으로 찾은 것은 추정, Mongoose·Drizzle 등은 아직 못 찾아요)');
   expect(html).not.toContain('이을 주소를 못 찾은 요청');
   expect(html).not.toContain('다른 서버 주소 요청');
   expect(html.match(/<details/g)).toHaveLength(1);
