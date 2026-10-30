@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { FlowNode, CallSite, ValueSite, CodeSymbol, Evidence, MapExport, MapFunction, MapImport, ProjectView, SourceView,
-  StartCandidate, LearningMark, MarkKey, LearningSpot, RecentProject, SavedSpot } from '../shared/contracts';
+  StartCandidate, LearningMark } from '../shared/contracts';
 import { showsFiles, useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
 import { Icon } from './icons';
@@ -12,7 +12,7 @@ import { fileUses } from './screen-groups';
 import { aiFunctionSummaries, functionDoes, importersOf } from './guide-facts';
 import { FileExplanationCard } from './file-explanation';
 import { Flow } from './flow';
-import { markKeysOf, sameMarkKey, nextMark, type MarkChange } from './marks';
+import { markKeysOf, sameMarkKey } from './marks';
 import { LearningMarksCard } from './learning-marks';
 import { ProjectMapView } from './project-map';
 import { FeatureChooser, FeatureList, FlowLimits, FlowPicture, FlowWalk, hasFlowCode, RoutesStatus, siteOf, useFeatureFlows, type FlowStart } from './feature-flow';
@@ -26,7 +26,8 @@ import { useChanges } from './use-changes';
 import { useMap } from './use-map';
 import { callsKey, useCalls } from './use-calls';
 import { useAiJobs } from './use-ai-jobs';
-import { ResumeCard, restoreSpot, spotOf, OverviewAi, TopicBar, recordPlace, type Place, type Topic } from './overview';
+import { useLearning } from './use-learning';
+import { ResumeCard, restoreSpot, OverviewAi, TopicBar, type Place, type Topic } from './overview';
 import type { OverviewFeature, FileExplanationRange } from '../shared/ai';
 import './styles.css';
 
@@ -41,7 +42,6 @@ const candidateReasons: Record<StartCandidate['reason'], string> = {
   exported: '다른 파일에서 쓰도록 내보낸(export) 함수',
 };
 // Plan v2.3 C-1: the AI is only asked; the app never changes the code.
-const SAVE_FAILED = '학습 위치를 저장하지 못했어요. 다음에 이어서 보기가 예전 위치일 수 있어요.';
 const SIMPLER_QUESTION = '이 함수를 더 단순하고 읽기 쉽게 쓸 수 있을까요? 바꾼다면 어디를 어떻게 바꾸면 좋을지 알려 주세요.';
 // Plan G1·F1: the question a topic prepares about its feature; only put in the box, sent by the user.
 const featureQuestion = (name: string) => `‘${name}’ 기능이 이 함수에서 어떻게 시작하는지, 어떤 입력을 받고 어느 코드에서 주요 처리를 하며 `
@@ -92,16 +92,8 @@ function App() {
   const [panelOpen, setPanelOpen] = useState(true);
   const [fileGuideOpen, setFileGuideOpen] = useState(false);
   const [draft, setDraft] = useState<{ text: string; id: number; topic?: { name: string; evidenceId: string } } | null>(null);
-  const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
-  const [resume, setResume] = useState<{ projectId: string; saved: SavedSpot } | null>(null);
   const openedAt = useRef(0);
-  const [marks, setMarks] = useState<{ projectId: string; list: LearningMark[] } | null>(null);
-  const [pendingMarks, setPendingMarks] = useState<MarkKey[]>([]);
-  const savingMarks = useRef<MarkKey[]>([]);
-  // Plan F1: the topic being learned and where '한눈에 보기로' puts the focus.
-  const [topic, setTopic] = useState<Topic | null>(null);
-  // The places looked at under the topic (the last 20).
-  const [places, setPlaces] = useState<Place[]>([]);
+  // Plan F1: where '한눈에 보기로' puts the focus.
   const [focusAnchor, setFocusAnchor] = useState<string | null>(null);
   // Reading settings live as long as the window: they stay across files and views, not across restarts.
   const [codeSize, setCodeSize] = useState(CODE_SIZE.start);
@@ -160,41 +152,7 @@ function App() {
     setFocusAnchor(null);
   }, [view, focusAnchor, ai.overview]);
 
-  // Plan F1: while a topic is open, each settled place in the code views is recorded.
-  // A change notice clears the marks, which is no move: nothing is recorded while the code waits for a re-read.
-  useEffect(() => {
-    if (!topic || busy || stale || !source || (view !== 'function' && view !== 'code')) return;
-    const range = evidence && evidence.fileId === source.fileId
-      ? { startUtf16: evidence.startUtf16, endUtf16: evidence.endUtf16, startLine: evidence.startLine, endLine: evidence.endLine } : null;
-    const place: Place = { view, fileId: source.fileId, fileHash: source.hash, range,
-      symbol: symbol ? { name: symbol.name, startUtf16: symbol.evidence.startUtf16, step: step ? symbol.steps.indexOf(step) : null } : null };
-    setPlaces(previous => recordPlace(previous, place));
-  }, [topic === null, busy, stale, view, source?.fileId, source?.hash, symbol?.id, stepId, evidence?.id]);
-
-  useEffect(() => {
-    if (project) return;
-    let cancelled = false;
-    void window.learning.recentProjects().then(result => {
-      if (!cancelled && result.ok) setRecentProjects(result.value);
-    });
-    return () => { cancelled = true; };
-  }, [project]);
-
-  const lastPlace = places.at(-1) ?? null;
-  useEffect(() => {
-    // Opening or closing a folder clears the topic in memory, never its saved location.
-    if (!project || !topic) return;
-    try { void saveSpot(project.id, spotOf(topic, lastPlace, project.files)); }
-    catch { setNotice(SAVE_FAILED); }
-  }, [project, topic, lastPlace]);
-
-  async function saveSpot(projectId: string, spot: LearningSpot | null) {
-    try {
-      const result = await window.learning.saveLearningSpot({ projectId, spot });
-      if (result.ok || result.code === 'PROJECT_CLOSED') return;
-    } catch { /* An unavailable IPC connection is also a save failure. */ }
-    setNotice(SAVE_FAILED);
-  }
+  const learning = useLearning({ project, openedAt, view, busy, stale, source, symbol, step, stepId, evidence, setNotice });
 
   // A newly opened project starts from its overview, not the previous project's view.
   useEffect(() => setView('overview'), [project, setView]);
@@ -222,46 +180,7 @@ function App() {
     setExpandedFolders(new Set());
     setProject(result.value); setSource(null); setEvidence(null); setStale(false); setOverviewStale(false); setWatchError(false); setSearch(''); selectSymbol(null);
     const id = result.value.id;
-    await Promise.all([
-      window.learning.learningSpot({ projectId: id }).then(saved => {
-        if (opening !== openedAt.current) return;
-        if (saved.ok && saved.value) setResume({ projectId: id, saved: saved.value });
-      }),
-      window.learning.learningMarks({ projectId: id }).then(saved => {
-        if (opening !== openedAt.current) return;
-        if (saved.ok) setMarks({ projectId: id, list: saved.value });
-        else if (saved.code !== 'PROJECT_CLOSED') setNotice('학습 기록을 불러오지 못했어요.');
-      }),
-    ]);
-  }
-
-  async function saveMark(key: MarkKey, change: MarkChange, currentHash: string) {
-    if (!project || marks?.projectId !== project.id || busy || stale || savingMarks.current.some(item => sameMarkKey(item, key))) return;
-    const opening = openedAt.current;
-    const mark = nextMark(marks.list.find(item => sameMarkKey(item, key)), change, currentHash, key);
-    savingMarks.current = [...savingMarks.current, key];
-    setPendingMarks(savingMarks.current);
-    try {
-      const result = await window.learning.saveLearningMark({ projectId: project.id, mark });
-      if (opening !== openedAt.current) return;
-      if (!result.ok) {
-        if (result.code !== 'PROJECT_CLOSED') setNotice('학습 기록을 저장하지 못했어요.');
-        return;
-      }
-      setMarks(previous => {
-        if (previous?.projectId !== project.id) return previous;
-        const list = previous.list.filter(item => !sameMarkKey(item, key));
-        if (result.value) list.push(result.value);
-        return { projectId: project.id, list };
-      });
-    } catch {
-      if (opening === openedAt.current) setNotice('학습 기록을 저장하지 못했어요.');
-    } finally {
-      if (opening === openedAt.current) {
-        savingMarks.current = savingMarks.current.filter(item => !sameMarkKey(item, key));
-        setPendingMarks(savingMarks.current);
-      }
-    }
+    await learning.load(id, opening);
   }
 
   async function openMark(mark: LearningMark) {
@@ -307,19 +226,17 @@ function App() {
       start: { fileId: candidate.fileId, fileHash: candidate.fileHash, relativePath: candidate.relativePath, functionName: candidate.name,
         startUtf16: candidate.name === null ? null : candidate.startUtf16 },
       anchor: `start:${candidate.fileId}:${candidate.startUtf16}` };
-    beginTopic(next);
+    learning.beginTopic(next);
     await openStart(next);
   }
-  /** A new topic (or none) starts with no places looked at. */
-  function beginTopic(next: Topic | null) { setTopic(next); setPlaces([]); }
   /**
    * Back to the place before (plan F1): the file is read again, and only while it is as it was are its function and
    * step chosen again (by name and place, by range) and its range marked. A range of no step is for looking only.
    */
   async function goBack() {
-    const target = places.at(-2);
+    const target = learning.places.at(-2);
     if (!target) return;
-    setPlaces(previous => previous.slice(0, -1));
+    learning.setPlaces(previous => previous.slice(0, -1));
     await goTo(target, '그 뒤 파일이 바뀌어 위치를 되살리지 않았어요. 파일만 열었어요.');
   }
 
@@ -329,7 +246,7 @@ function App() {
     const opened = await readFile(target.fileId);
     if (!opened || revision.current !== atRevision) return;
     // Where it lands stands for the place gone back to (a file changed since too), whatever view is shown meanwhile.
-    const land = (symbol: Place['symbol'], marked: Evidence | null) => setPlaces(previous => [...previous.slice(0, -1), {
+    const land = (symbol: Place['symbol'], marked: Evidence | null) => learning.setPlaces(previous => [...previous.slice(0, -1), {
       view: target.view, fileId: opened.fileId, fileHash: opened.hash, symbol,
       range: marked && { startUtf16: marked.startUtf16, endUtf16: marked.endUtf16, startLine: marked.startLine, endLine: marked.endLine } }]);
     const { range, symbol: chosen } = target;
@@ -382,23 +299,18 @@ function App() {
     selectSymbol(found[0].id);
     setReaderEvidence(found[0].evidence);
     // Found once by name, the start is kept by place, so returning to it finds this very function.
-    if (startUtf16 === null) setTopic(current => current === target ? { ...target, start: { ...target.start, startUtf16: found[0].evidence.startUtf16 } } : current);
+    if (startUtf16 === null) learning.setTopic(current => current === target ? { ...target, start: { ...target.start, startUtf16: found[0].evidence.startUtf16 } } : current);
   }
 
   async function resumeLearning() {
-    if (!project || !resume || resume.projectId !== project.id || busy || topic) return;
-    const restored = restoreSpot(resume.saved.spot, project.files);
+    if (!project || !learning.resume || learning.resume.projectId !== project.id || busy || learning.topic) return;
+    const restored = restoreSpot(learning.resume.saved.spot, project.files);
     if ('missingStart' in restored) return;
     // Restore both together before reading: a failed or cancelled read must keep the saved step.
-    setTopic(restored.topic); setPlaces(restored.place ? [restored.place] : []); setResume(null);
+    learning.setTopic(restored.topic); learning.setPlaces(restored.place ? [restored.place] : []); learning.setResume(null);
     const changedNotice = '지난번 본 뒤로 이 파일이 바뀌었어요. 이 부분은 다시 확인해 주세요. 파일만 열었어요.';
     if (restored.place) { await goTo(restored.place, changedNotice); return; }
     await openStart(restored.topic, changedNotice);
-  }
-
-  function closeTopic() {
-    beginTopic(null); setResume(null);
-    if (project) void saveSpot(project.id, null);
   }
 
   /**
@@ -446,10 +358,9 @@ function App() {
   }
 
   function forgetOverview() {
-    setMarks(null); savingMarks.current = []; setPendingMarks([]);
-    setResume(null);
+    learning.forget();
     ai.forget();
-    beginTopic(null); setFocusAnchor(null);
+    setFocusAnchor(null);
   }
   function showFileGuideRange(range: FileExplanationRange) {
     if (busy || stale || !source) return;
@@ -475,20 +386,20 @@ function App() {
     const next: Topic = { name: feature.name, original: feature.name, origin: 'ai', anchor,
       start: { fileId: start.evidence.fileId, fileHash: start.evidence.fileHash, relativePath: start.relativePath,
         functionName: feature.start.functionName, startUtf16: null } };
-    beginTopic(next);
+    learning.beginTopic(next);
     void openStart(next);
   }
   function startTopicHere() {
     if (!source || !symbol) return;
-    beginTopic({ name: symbol.name, original: symbol.name, origin: 'function', anchor: null,
+    learning.beginTopic({ name: symbol.name, original: symbol.name, origin: 'function', anchor: null,
       start: { fileId: source.fileId, fileHash: source.hash, relativePath: source.relativePath, functionName: symbol.name,
         startUtf16: symbol.evidence.startUtf16 } });
   }
   // The function now shown becomes the question's code (a new question target), then the box is filled.
   async function prepareTopicQuestion() {
-    if (!topic || !symbol) return;
+    if (!learning.topic || !symbol) return;
     const target = symbol;
-    const name = topic.name.trim() || topic.original;
+    const name = learning.topic.name.trim() || learning.topic.original;
     if (!await showEvidence(target.evidence, null)) return;
     openQuestion(featureQuestion(name), { name, evidenceId: target.evidence.id });
   }
@@ -710,9 +621,9 @@ function App() {
     {!project ? <main className="welcome">
       <h2>프로젝트를 열어 코드를 읽어 보세요</h2>
       <p className="welcome__lead">폴더 하나를 고르면 어떤 파일이 있는지 보여주고, 함수 안의 조건·반환 같은 부분을 실제 코드 위치와 함께 짚어 줘요.</p>
-      {recentProjects.length > 0 && <section className="welcome__recent" aria-label="최근 프로젝트">
+      {learning.recentProjects.length > 0 && <section className="welcome__recent" aria-label="최근 프로젝트">
         <h3>최근 프로젝트</h3>
-        <ul className="recent-projects">{recentProjects.map(recent => <li key={recent.id}>
+        <ul className="recent-projects">{learning.recentProjects.map(recent => <li key={recent.id}>
           <button className="btn" disabled={busy} onClick={() => void openProject(recent.id)}>
             <b>{recent.name}</b><small>{recent.root}</small>
             <small>{new Date(recent.openedAt).toLocaleDateString('ko-KR', { month: 'long', day: 'numeric' })}</small>
@@ -747,18 +658,18 @@ function App() {
       </aside>}
 
       <main className="center">
-        <TopicBar topic={topic} places={places.length} canStartHere={(view === 'function' || view === 'code') && !!source && !!symbol}
-          canAsk={!!symbol && !stale} locked={busy || stale} onRename={name => setTopic(current => current && { ...current, name })}
-          onStartHere={startTopicHere} onStart={() => { if (topic) void openStart(topic); }} onBack={() => void goBack()}
+        <TopicBar topic={learning.topic} places={learning.places.length} canStartHere={(view === 'function' || view === 'code') && !!source && !!symbol}
+          canAsk={!!symbol && !stale} locked={busy || stale} onRename={name => learning.setTopic(current => current && { ...current, name })}
+          onStartHere={startTopicHere} onStart={() => { if (learning.topic) void openStart(learning.topic); }} onBack={() => void goBack()}
           onAsk={() => void prepareTopicQuestion()}
-          onOverview={() => { setView('overview'); setFocusAnchor(topic?.anchor ?? 'overview'); }} onClose={closeTopic} />
+          onOverview={() => { setView('overview'); setFocusAnchor(learning.topic?.anchor ?? 'overview'); }} onClose={learning.closeTopic} />
         <div className="page" hidden={view !== 'overview'}>
           <h2 className="page__title" tabIndex={-1} data-anchor="overview">한눈에 보기</h2>
           {overviewStale && <p className="notice notice--warn overview-stale"><b>다시 확인 필요:</b> 프로젝트를 연 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 아래 소개와 후보는 폴더를 열 때 읽은 내용이에요. 폴더를 다시 열면 새로 계산해요.</p>}
           <div className="cards">
-            {resume?.projectId === project.id && !topic && <ResumeCard saved={resume.saved} files={project.files} locked={busy}
+            {learning.resume?.projectId === project.id && !learning.topic && <ResumeCard saved={learning.resume.saved} files={project.files} locked={busy}
               onResume={() => void resumeLearning()} />}
-            {marks?.projectId === project.id && <LearningMarksCard marks={marks.list} files={project.files} locked={busy}
+            {learning.marks?.projectId === project.id && <LearningMarksCard marks={learning.marks.list} files={project.files} locked={busy}
               onOpen={mark => void openMark(mark)} />}
             {view === 'overview' && <section className="card card--wide" aria-labelledby="overview-intro">
               <h3 id="overview-intro">이 프로젝트는 무엇을 하나요?</h3>
@@ -796,7 +707,7 @@ function App() {
             <OverviewAi key={ai.overviewCard} project={project} state={ai.overview} locked={busy || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning}
               stale={ai.overview?.status === 'done' && ai.overview.revision !== revision.current}
               readiness={ai.connections?.modes.find(item => item.mode === 'local-worker') ?? null} checking={ai.checking}
-              revealAnchor={topic?.anchor ?? null} topicName={topic ? topic.name.trim() || topic.original : null} onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
+              revealAnchor={learning.topic?.anchor ?? null} topicName={learning.topic ? learning.topic.name.trim() || learning.topic.original : null} onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
               onStart={startFileId => void ai.startOverview(startFileId)} onCancel={() => void ai.cancelOverview()}
               onEvidence={next => { setView('code'); void showEvidence(next, null, 'overview'); }}
               onFollow={followFeature} onFunction={(name, at) => void showNamedFunction(name, at)} />
@@ -885,8 +796,8 @@ function App() {
         </div>}
 
         {view === 'function' && ai.functionExplanation && <p className="function-explanation" data-testid="function-chunk-summary">{ai.functionExplanation}</p>}
-        {view === 'function' && <Flow marks={marks?.projectId === project.id ? marks.list : null} pendingMarks={pendingMarks}
-          onSaveMark={(key, change, hash) => void saveMark(key, change, hash)} source={source} symbol={symbol} step={step} evidence={evidence} locked={busy || stale}
+        {view === 'function' && <Flow marks={learning.marks?.projectId === project.id ? learning.marks.list : null} pendingMarks={learning.pendingMarks}
+          onSaveMark={(key, change, hash) => void learning.saveMark(key, change, hash)} source={source} symbol={symbol} step={step} evidence={evidence} locked={busy || stale}
           onSymbol={item => { selectSymbol(item.id); void showEvidence(item.evidence, null); }}
           onStep={next => {
             if (next) void showEvidence(next.evidence, next.id);
