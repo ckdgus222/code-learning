@@ -24,6 +24,63 @@ beforeEach(async () => {
 afterEach(async () => { await rm(sandbox, { recursive: true, force: true }); });
 
 describe('README introduction', () => {
+  it('skips the whole taxonomy notice and keeps the introduction source lines', async () => {
+    await put('README.md', [
+      '> [!NOTE]', '> This project has been officially archived and will no longer receive updates.',
+      '> ', '> Use a newer template.', '', '# Taxonomy', '',
+      'An open source application built using the new router, server components and everything new in Next.js 13.',
+    ].join('\n'));
+    expect((await overview()).intro).toMatchObject({ title: 'Taxonomy',
+      text: 'An open source application built using the new router, server components and everything new in Next.js 13.',
+      startLine: 8, endLine: 8 });
+  });
+
+  it('takes the NestJS quoted introduction before the later installation prose', async () => {
+    await put('README.md', [
+      '# ![Node/Express/Mongoose Example App](project-logo.png)', '',
+      '[![Build Status](https://travis-ci.org/anishkny/node-express-realworld-example-app.svg?branch=master)](https://travis-ci.org/anishkny/node-express-realworld-example-app)', '',
+      '> ### NestJS codebase containing real world examples (CRUD, auth, advanced patterns, etc) that adheres to the [RealWorld](https://github.com/gothinkster/realworld-example-apps) API spec.',
+      '', '', '----------', '', '# Getting started', '', '## Installation', '', 'Clone the repository',
+    ].join('\n'));
+    expect((await overview()).intro).toMatchObject({ title: 'Node/Express/Mongoose Example App',
+      text: 'NestJS codebase containing real world examples (CRUD, auth, advanced patterns, etc) that adheres to the RealWorld API spec.',
+      startLine: 5, endLine: 5 });
+  });
+
+  it('removes display markup while preserving words, arithmetic, URLs and inline HTML', async () => {
+    await put('README.md', '# **Title** [link](u) `code`\n\n**굵게** __굵게__ *기울임* _기울임_ [링크](u) `코드` ![그림](image.png)\nsnake_case a*b*c 2*3*4 https://example.com/_path_/*name* <strong>HTML</strong>');
+    expect((await overview()).intro).toMatchObject({ title: 'Title link code',
+      text: '굵게 굵게 기울임 기울임 링크 코드 그림\nsnake_case a*b*c 2*3*4 https://example.com/_path_/*name* <strong>HTML</strong>',
+      startLine: 3, endLine: 4 });
+    await put('README.md', '<a title="[link](u) *tag*">HTML</a> https://example.com/[path](u)');
+    expect((await overview()).intro?.text).toBe('<a title="[link](u) *tag*">HTML</a> https://example.com/[path](u)');
+  });
+
+  it.each(['NOTE', 'TIP', 'IMPORTANT', 'WARNING', 'CAUTION'])('excludes an isolated %s alert and its continuation', async kind => {
+    await put('README.md', `   > [!${kind}]\n   > Notice text\n\n> Actual introduction\n> on two lines\n\nLater prose`);
+    expect((await overview()).intro).toMatchObject({ text: 'Actual introduction\non two lines', startLine: 4, endLine: 5 });
+    await put('README.md', `> [!${kind}]`);
+    expect((await overview()).intro).toBeNull();
+  });
+
+  it('keeps prose and non-alert quotes in document order', async () => {
+    await put('README.md', 'First prose\n\n> Quoted text');
+    expect((await overview()).intro).toMatchObject({ text: 'First prose', startLine: 1, endLine: 1 });
+    await put('README.md', '> [!NOTE] is part of this sentence\n\nLater prose');
+    expect((await overview()).intro).toMatchObject({ text: '[!NOTE] is part of this sentence', startLine: 1 });
+    await put('README.md', '    > Indented code\n\nReal introduction');
+    expect((await overview()).intro).toMatchObject({ text: 'Real introduction', startLine: 3 });
+    await put('README.md', '> Introduction\n----------\nLater prose');
+    expect((await overview()).intro).toMatchObject({ text: 'Introduction', startLine: 1, endLine: 1 });
+  });
+
+  it('skips headings and paragraphs whose display text is empty', async () => {
+    await put('README.md', '# ![](logo.png)\n\n# [Title](u)\n\n> ### []()\n\n[]()\n\nReal introduction');
+    expect((await overview()).intro).toMatchObject({ title: 'Title', text: 'Real introduction', startLine: 9, endLine: 9 });
+    await put('README.md', '# ![](logo.png)\n\n[]()');
+    expect((await overview()).intro).toBeNull();
+  });
+
   it('takes the first heading and the first prose paragraph with its lines', async () => {
     await put('README.md', '﻿# 주문 예제\r\n\r\n[![build](https://x/y.svg)](https://x)\r\n\r\n주문 수량을 확인하는\r\n작은 자료입니다. 📦\r\n\r\n## 설치\r\n다른 문단');
     expect((await overview()).intro).toMatchObject({

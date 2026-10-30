@@ -719,10 +719,13 @@ export function useFeatureFlows(project: ProjectView | null, revision: number) {
 
 type FeatureFlows = ReturnType<typeof useFeatureFlows>;
 
-export function recommendedFeature(groups: ReturnType<typeof featureGroups>): GuideFeature | null {
+export function recommendedFeature(groups: ReturnType<typeof featureGroups>, routes: ProjectRoutes): GuideFeature | null {
   let recommended: GuideFeature | null = null;
   for (const feature of groups.flatMap(group => group.features)) {
-    if (feature.sure > (recommended?.sure ?? 0)) recommended = feature;
+    if (feature.sure <= 0) continue;
+    if (!recommended || feature.sure > recommended.sure
+      || feature.sure === recommended.sure && routes.routes[feature.routes[0]]?.method === 'GET'
+        && routes.routes[recommended.routes[0]]?.method !== 'GET') recommended = feature;
   }
   return recommended;
 }
@@ -769,7 +772,7 @@ export function FeatureList({ groups, routes, selected, disabled, onFollow, sear
         </>}
         {feature.routes.length > 1 && <div className="map-actions">{feature.routes.map(index => <button key={index} className="btn btn--small"
           aria-pressed={selected === index} disabled={disabled} onClick={() => onFollow(index)}>{routeLabel(routes.routes[index])}</button>)}</div>}
-        <LinkTag feature={feature} />
+        {routes.requests.length > 0 && <LinkTag feature={feature} />}
         <details className="feature-more"><summary>코드 이름·연결 근거</summary>
           {!feature.ai && <p className="hint">{feature.about}</p>}
           <p className="hint">프론트 요청 확실 {feature.sure}곳 · 추정 {feature.inferred}곳</p>
@@ -786,6 +789,7 @@ export function FeatureList({ groups, routes, selected, disabled, onFollow, sear
   </details>;
   return <section aria-label="기능 목록">
     <h3>기능 고르기</h3>
+    {routes.requests.length === 0 && <p className="hint">이 프로젝트에서는 서버에 요청을 보내는 코드를 찾지 못했어요. 서버 쪽 흐름만 따라갈 수 있어요.</p>}
     {grouping && <p role="status">화면별로 묶는 중… <button className="btn btn--small" onClick={onCancelGrouping}>취소</button></p>}
     {groupError && <p role="alert">화면별로 묶지 못했어요: {groupError.replace(/[.。]$/, '')}. 서버 주소 기준으로 보여 줘요.{' '}
       <button className="btn btn--small" disabled={disabled} onClick={onRegroup}>다시 묶기</button></p>}
@@ -840,7 +844,7 @@ export function FeatureChooser({ project, state, revision, locked, onFollow, mod
   onInspect(): Promise<string | null>; onRunning(value: boolean): void;
 }) {
   const { routes, stale, guide, setGuideResult } = state;
-  const feature = recommendedFeature(state.groups);
+  const feature = routes ? recommendedFeature(state.groups, routes) : null;
   const disabled = locked || stale;
   const index = state.groupingProps.index;
   const indexed = index?.flatMap(group => group.features).find(item => item.routeIndex === feature?.routes[0]);
@@ -858,7 +862,7 @@ export function FeatureChooser({ project, state, revision, locked, onFollow, mod
           </>}
           {feature.about && <p className="hint">{feature.about}</p>}
           <p>이 기능에 요청을 보내는 코드 {feature.sure}곳을 확실히 찾았어요. 요청을 보내는 쪽부터 서버까지 따라가 볼 수 있어요.</p>
-          <p className="hint">고른 기준: 요청을 보내는 코드와 확실히 이어진 곳이 가장 많은 기능</p>
+          <p className="hint">고른 기준: 요청을 보내는 코드와 확실히 이어진 곳이 가장 많은 기능(같으면 정보를 보기만 하는 GET 기능 먼저)</p>
           <button className="btn" disabled={disabled} onClick={() => onFollow(feature.routes[0], indexed?.start ?? undefined)}>이 기능부터 따라가기</button>
         </section>}
         <FeatureList {...state.groupingProps} search={state.search} setSearch={state.setSearch} groups={state.groups} routes={routes} selected={state.selected} disabled={disabled} onFollow={onFollow}>

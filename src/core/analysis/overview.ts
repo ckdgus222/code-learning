@@ -87,7 +87,25 @@ export async function buildOverview(root: string, project: ProjectFiles, shouldS
   return { intro, entryFileIds, candidates: candidates.slice(0, MAX_CANDIDATES), checkedFiles, limited: examined < order.length, notes };
 }
 
-/** The first heading and the first prose paragraph of a root README, as written. */
+// README display text loses its Markdown marks in three passes. A URL or an HTML tag is matched first in the
+// later two and kept as written, so marks inside it (`a_b`, `*`) are left alone.
+/** `#` heading marks at a line start (a heading inside a quote keeps them in the text). */
+const headingMark = /^ {0,3}#{1,6}(?:\s+|$)/gm;
+/** `![alt](src)` and `[text](href)`, which keep only their label. */
+const urlTagOrLink = /https?:\/\/[^\s<>]+|<[^>\n]+>|!?\[([^\]\n]*)\]\((?:[^()\n]|\([^()\n]*\))*\)/g;
+/** Inline code, and emphasis that starts and ends at a word boundary (so `snake_case` and `a*b*c` stay), keep their content. */
+const codeOrEmphasis = /(`+)([^\n]*?)\1|https?:\/\/[^\s<>]+|<[^>\n]+>|(?<![\p{L}\p{N}_*])(\*\*|__|\*|_)(?=\S)([^\n]*?\S)\3(?![\p{L}\p{N}_*])/gu;
+
+/** Plain display text only; source lines and HTML handling stay unchanged. */
+function introText(value: string): string {
+  return value.replace(headingMark, '')
+    .replace(urlTagOrLink, (match, label: string | undefined) => label ?? match)
+    .replace(codeOrEmphasis, (match, ticks: string | undefined, code: string, marker: string | undefined, content: string) =>
+      ticks ? code : marker ? content : match)
+    .trim();
+}
+
+/** The first nonempty heading and introduction paragraph of a root README. */
 async function readIntro(root: string, files: ProjectFile[]): Promise<ProjectIntro | null> {
   const readme = files.find(file => readmeName.test(file.relativePath));
   if (!readme) return null;
@@ -98,7 +116,7 @@ async function readIntro(root: string, files: ProjectFile[]): Promise<ProjectInt
   // as a heading or paragraph: open fence/HTML → blank line → open HTML or indented code →
   // block starts (indent of 3 or less) → paragraph text. An HTML block runs to the next blank
   // line; indented code ends at the first less indented line, which is then read again.
-  type Block = { start: number; lines: string[]; kind: 'prose' | 'layout' | 'html' | 'code' };
+  type Block = { start: number; lines: string[]; kind: 'prose' | 'quote' | 'layout' | 'html' | 'code' };
   let title: string | null = null;
   const blocks: Block[] = [];
   let current: Block | null = null;
@@ -146,25 +164,33 @@ async function readIntro(root: string, files: ProjectFile[]): Promise<ProjectInt
       return;
     }
     if (htmlBlockTag.test(line) || (!current && htmlTagLine.test(line))) { startBlock(index, line, 'html'); return; }
-    if (atxHeading.test(line)) { title ??= line.replace(/^#+\s*/, ''); current = null; return; }
+    if (/^ {0,3}>/.test(raw)) {
+      const quoted = raw.replace(/^ {0,3}> ?/, '');
+      if (current?.kind === 'quote') current.lines.push(quoted);
+      else startBlock(index, quoted, 'quote');
+      return;
+    }
+    if (atxHeading.test(line)) { title ??= introText(line) || null; current = null; return; }
     if (underline.test(line) || divider.test(line)) {
       // Under a paragraph `===`/`---` makes it a heading; anything else is a divider.
-      if (current && underline.test(line)) {
+      if (current && (current.kind === 'prose' || current.kind === 'layout') && underline.test(line)) {
         blocks.pop();
-        if (current.kind === 'prose') title ??= current.lines.join(' ');
+        if (current.kind === 'prose') title ??= introText(current.lines.join(' ')) || null;
       }
       current = null;
       return;
     }
     // Text right under a badge or image line shares its paragraph; keep that text as prose.
-    if (current && !(current.kind === 'layout' && !layout.test(line))) current.lines.push(line);
+    if (current && current.kind !== 'quote' && !(current.kind === 'layout' && !layout.test(line))) current.lines.push(line);
     else startBlock(index, line, layout.test(line) ? 'layout' : 'prose');
   });
-  const prose = blocks.find(block => block.kind === 'prose');
+  const prose = blocks.find(block => (block.kind === 'prose' || block.kind === 'quote')
+    && !(block.kind === 'quote' && /^\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]$/.test(block.lines[0].trim()))
+    && introText(block.lines.join('\n')));
   if (!title && !prose) return null;
   return {
     fileId: readme.id, relativePath: readme.relativePath, title: title === null ? null : clip(title, 120),
-    text: prose ? clip(prose.lines.join('\n'), MAX_INTRO) : null,
+    text: prose ? clip(introText(prose.lines.join('\n')), MAX_INTRO) : null,
     startLine: prose?.start ?? null, endLine: prose ? prose.start + prose.lines.length - 1 : null,
   };
 }
