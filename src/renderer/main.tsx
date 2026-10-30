@@ -7,11 +7,10 @@ import { Reader, type ReaderHandle } from './reader';
 import { Icon } from './icons';
 import { ancestorFolderPaths, buildFileTree, filterFileTree, type TreeFolder } from './file-tree';
 import { AiPanel } from './ai-panel';
-import { inspectionBlockedReason, needsAutomaticInspection } from './connections';
 import { FileGuideCard } from './file-guide';
 import { fileUses } from './screen-groups';
 import { aiFunctionSummaries, functionDoes, importersOf } from './guide-facts';
-import { FileExplanationCard, rememberFileExplanation, type FileExplanationEntry, type FileExplanationState } from './file-explanation';
+import { FileExplanationCard } from './file-explanation';
 import { Flow } from './flow';
 import { markKeysOf, sameMarkKey, nextMark, type MarkChange } from './marks';
 import { LearningMarksCard } from './learning-marks';
@@ -26,8 +25,9 @@ import { ChangesView } from './changes';
 import { useChanges } from './use-changes';
 import { useMap } from './use-map';
 import { callsKey, useCalls } from './use-calls';
-import { ResumeCard, restoreSpot, spotOf, OverviewAi, TopicBar, recordPlace, type OverviewState, type Place, type Topic } from './overview';
-import type { ConnectionReport, LearningEvent, OverviewFeature, LearningMode, FileExplanationRange } from '../shared/ai';
+import { useAiJobs } from './use-ai-jobs';
+import { ResumeCard, restoreSpot, spotOf, OverviewAi, TopicBar, recordPlace, type Place, type Topic } from './overview';
+import type { OverviewFeature, FileExplanationRange } from '../shared/ai';
 import './styles.css';
 
 const views: { id: Exclude<View, 'function'>; label: string; more?: true }[] = [
@@ -92,29 +92,13 @@ function App() {
   const [panelOpen, setPanelOpen] = useState(true);
   const [fileGuideOpen, setFileGuideOpen] = useState(false);
   const [draft, setDraft] = useState<{ text: string; id: number; topic?: { name: string; evidenceId: string } } | null>(null);
-  // The AI installation check, shared by the question panel and the overview card.
-  const [connections, setConnections] = useState<ConnectionReport | null>(null);
-  const [checking, setChecking] = useState(false);
-  const inspectionPending = useRef(false);
-  const [mode, setMode] = useState<LearningMode>('local-worker');
-  const [featureGuideRunning, setFeatureGuideRunning] = useState(false);
-  const [questionRunning, setQuestionRunning] = useState(false);
-  const [fileExplanations, setFileExplanations] = useState<FileExplanationEntry[]>([]);
-  const [fileExplanationState, setFileExplanationState] = useState<FileExplanationState | null>(null);
-  const fileExplanationRequest = useRef(0);
-  const fileExplanationJob = useRef<{ id: string | null; starting: boolean; queued: LearningEvent[]; revision: number }>({ id: null, starting: false, queued: [], revision: 0 });
-  // Plan G1: the overview job and its result; plan F1: the topic being learned and where '한눈에 보기로' puts the focus.
-  const [overviewAi, setOverviewAi] = useState<OverviewState | null>(null);
-  // Counts opened folders (and closings): the overview card starts over, its consent unchecked, for each one.
-  const [overviewCard, setOverviewCard] = useState(0);
-  const overviewRequest = useRef(0);
-  const overviewJob = useRef<{ id: string | null; starting: boolean; queued: LearningEvent[] }>({ id: null, starting: false, queued: [] });
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
   const [resume, setResume] = useState<{ projectId: string; saved: SavedSpot } | null>(null);
   const openedAt = useRef(0);
   const [marks, setMarks] = useState<{ projectId: string; list: LearningMark[] } | null>(null);
   const [pendingMarks, setPendingMarks] = useState<MarkKey[]>([]);
   const savingMarks = useRef<MarkKey[]>([]);
+  // Plan F1: the topic being learned and where '한눈에 보기로' puts the focus.
   const [topic, setTopic] = useState<Topic | null>(null);
   // The places looked at under the topic (the last 20).
   const [places, setPlaces] = useState<Place[]>([]);
@@ -147,19 +131,6 @@ function App() {
   }, [project, view, mapTab]);
   const symbol = source?.analysis.symbols.find(item => item.id === symbolId);
   const step = symbol?.steps.find(item => item.id === stepId);
-  const fileExplanation = fileExplanations.find(entry => entry.result.range.fileId === source?.fileId) ?? null;
-  const fileExplanationStale = fileExplanation !== null &&
-    (fileExplanation.revision !== revision.current || fileExplanation.result.range.fileHash !== source?.hash);
-  const fileExplanationRunning = fileExplanationState?.status === 'running';
-  // The AI file explanation job of the file now read, if any (another file's job is shown in the top bar).
-  const sourceExplanationState = source && fileExplanationState?.fileId === source.fileId ? fileExplanationState : null;
-  const fileExplanationOpen = !!fileExplanation || (sourceExplanationState !== null &&
-    (sourceExplanationState.status === 'running' || !!sourceExplanationState.message));
-  const functionChunk = symbol && fileExplanation?.result.chunks.find(chunk =>
-    chunk.functionRange?.startUtf16 === symbol.evidence.startUtf16 && chunk.functionRange.endUtf16 === symbol.evidence.endUtf16);
-  const functionExplanation = symbol && fileExplanation && !fileExplanationStale
-    ? functionChunk ? fileExplanation.result.explanation.chunks.find(chunk => chunk.chunkId === functionChunk.id)?.summary ?? '설명 없음'
-      : '이 함수는 따로 설명한 덩어리가 없어요' : null;
 
   useEffect(() => {
     if (!source) return;
@@ -177,44 +148,7 @@ function App() {
     }
   }), [project?.id]);
 
-  const overviewReceiver = useRef((_event: LearningEvent) => {});
-  overviewReceiver.current = event => {
-    const job = overviewJob.current;
-    if (event.projectId !== project?.id) return;
-    if (job.starting) { if (job.queued.length < 16) job.queued.push(event); return; }
-    if (event.jobId !== job.id) return;
-    if (event.kind === 'progress') { setOverviewAi(state => state?.status === 'running' ? { ...state, phase: event.phase } : state); return; }
-    job.id = null;
-    if (event.kind === 'failed') setOverviewAi({ status: 'failed', message: event.error.message, cancelled: event.error.code === 'CANCELLED' });
-    else if (event.kind === 'overview-completed') {
-      setOverviewAi(state => state?.status === 'running' ? { status: 'done', result: event.result, revision: state.revision } : state);
-    }
-  };
-  useEffect(() => window.learning.onLearningEvent(event => overviewReceiver.current(event)), []);
-  const fileExplanationReceiver = useRef((_event: LearningEvent) => {});
-  fileExplanationReceiver.current = event => {
-    const job = fileExplanationJob.current;
-    if (event.projectId !== project?.id) return;
-    if (job.starting) { if (job.queued.length < 16) job.queued.push(event); return; }
-    if (event.jobId !== job.id) return;
-    if (event.kind === 'progress') {
-      setFileExplanationState(state => state?.status === 'running' ? { ...state, phase: event.phase } : state);
-      return;
-    }
-    job.id = null;
-    if (event.kind === 'failed') {
-      setFileExplanationState(state => state && { status: 'failed', fileId: state.fileId,
-        message: event.error.message, cancelled: event.error.code === 'CANCELLED' });
-    } else if (event.kind === 'file-explanation-completed') {
-      if (job.revision !== revision.current) {
-        setFileExplanationState({ status: 'failed', fileId: event.result.range.fileId, message: '파일이 바뀌어 다시 만들어 주세요', cancelled: false });
-        return;
-      }
-      setFileExplanations(previous => rememberFileExplanation(previous, { result: event.result, revision: job.revision }));
-      setFileExplanationState(null);
-    }
-  };
-  useEffect(() => window.learning.onLearningEvent(event => fileExplanationReceiver.current(event)), []);
+  const ai = useAiJobs({ project, source, symbol, revision, setError });
   // Coming back to the overview puts the focus on the card the topic came from (plan U1).
   useEffect(() => {
     if (view !== 'overview' || !focusAnchor) return;
@@ -224,7 +158,7 @@ function App() {
     }
     target?.focus();
     setFocusAnchor(null);
-  }, [view, focusAnchor, overviewAi]);
+  }, [view, focusAnchor, ai.overview]);
 
   // Plan F1: while a topic is open, each settled place in the code views is recorded.
   // A change notice clears the marks, which is no move: nothing is recorded while the code waits for a re-read.
@@ -511,96 +445,11 @@ function App() {
     setDraft(current => ({ text, id: (current?.id ?? 0) + 1, ...(topic ? { topic } : {}) }));
   }
 
-  function connectionCheckBlockedReason(): string | null {
-    // A check starts main's list of AI programs over: the overview's next stage would find none.
-    return inspectionBlockedReason({ overviewRunning: overviewAi?.status === 'running',
-      fileExplanationRunning, questionRunning, featureGuideRunning });
-  }
-  async function ensureConnections(): Promise<string | null> {
-    if (!needsAutomaticInspection(connections, inspectionPending.current, connectionCheckBlockedReason())) return null;
-    return inspectConnections({ automatic: true });
-  }
-  /** Resolves to an error message, or null; the result is shared with the overview card. */
-  async function inspectConnections(request?: { automatic: true }): Promise<string | null> {
-    const blocked = connectionCheckBlockedReason();
-    if (blocked) return blocked;
-    if (inspectionPending.current) return null;
-    inspectionPending.current = true;
-    setChecking(true);
-    try {
-      const result = await window.learning.checkConnections(request);
-      if (!result.ok) { setConnections(null); return result.message; }
-      setConnections(result.value);
-      return null;
-    } catch {
-      setConnections(null);
-      return '로컬 AI 설치를 확인하지 못했어요. 다시 시도해 주세요.';
-    } finally {
-      inspectionPending.current = false;
-      setChecking(false);
-    }
-  }
   function forgetOverview() {
     setMarks(null); savingMarks.current = []; setPendingMarks([]);
     setResume(null);
-    fileExplanationRequest.current++;
-    fileExplanationJob.current = { id: null, starting: false, queued: [], revision: revision.current };
-    setFileExplanations([]); setFileExplanationState(null); setMode('local-worker');
-    overviewRequest.current++;
-    overviewJob.current = { id: null, starting: false, queued: [] };
-    setOverviewAi(null); beginTopic(null); setFocusAnchor(null); setOverviewCard(count => count + 1);
-  }
-  async function startOverview(startFileId: string | null) {
-    if (!project || questionRunning || fileExplanationRunning || featureGuideRunning || checking) return;
-    const token = ++overviewRequest.current;
-    overviewJob.current = { id: null, starting: true, queued: [] };
-    setOverviewAi({ status: 'running', phase: null, revision: revision.current });
-    const result = await window.learning.startOverview({ projectId: project.id, startFileId, mode: 'local-worker', consent: true });
-    if (token !== overviewRequest.current) {
-      if (result.ok) void window.learning.cancelExplanation({ jobId: result.value.jobId });
-      return;
-    }
-    const queued = overviewJob.current.queued;
-    overviewJob.current = { id: result.ok ? result.value.jobId : null, starting: false, queued: [] };
-    if (!result.ok) { setOverviewAi({ status: 'failed', message: result.message, cancelled: false }); return; }
-    queued.forEach(event => overviewReceiver.current(event));
-  }
-  async function cancelOverview() {
-    overviewRequest.current++;
-    const jobId = overviewJob.current.id;
-    overviewJob.current = { id: null, starting: false, queued: [] };
-    setOverviewAi({ status: 'failed', message: '개요 작업을 취소했어요.', cancelled: true });
-    if (jobId) {
-      const result = await window.learning.cancelExplanation({ jobId });
-      if (!result.ok) setError(result.message);
-    }
-  }
-
-  async function startFileExplanation() {
-    if (!project || !source || questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running' || checking) return;
-    const token = ++fileExplanationRequest.current;
-    fileExplanationJob.current = { id: null, starting: true, queued: [], revision: revision.current };
-    setFileExplanationState({ status: 'running', fileId: source.fileId, revision: revision.current, phase: null, mode });
-    const result = await window.learning.startFileExplanation({ projectId: project.id, fileId: source.fileId,
-      expectedFileHash: source.hash, mode, consent: true });
-    if (token !== fileExplanationRequest.current) {
-      if (result.ok) void window.learning.cancelExplanation({ jobId: result.value.jobId });
-      return;
-    }
-    const queued = fileExplanationJob.current.queued;
-    fileExplanationJob.current = { ...fileExplanationJob.current, id: result.ok ? result.value.jobId : null, starting: false, queued: [] };
-    if (!result.ok) { setFileExplanationState({ status: 'failed', fileId: source.fileId, message: result.message, cancelled: false }); return; }
-    queued.forEach(event => fileExplanationReceiver.current(event));
-  }
-  async function cancelFileExplanation() {
-    fileExplanationRequest.current++;
-    const jobId = fileExplanationJob.current.id;
-    fileExplanationJob.current = { id: null, starting: false, queued: [], revision: revision.current };
-    setFileExplanationState(state => state && { status: 'failed', fileId: state.fileId, message: 'AI 작업을 취소했습니다.', cancelled: true });
-    if (jobId) {
-      const result = await window.learning.cancelExplanation({ jobId });
-      if (!result.ok) setError(result.message);
-    }
+    ai.forget();
+    beginTopic(null); setFocusAnchor(null);
   }
   function showFileGuideRange(range: FileExplanationRange) {
     if (busy || stale || !source) return;
@@ -611,7 +460,7 @@ function App() {
     setReaderEvidence({ id: crypto.randomUUID(), projectId: source.projectId, ...range });
   }
   async function showFileExplanationRange(range: FileExplanationRange) {
-    if (busy || fileExplanationStale) return;
+    if (busy || ai.fileExplanationStale) return;
     setView('code');
     const atRevision = revision.current;
     const opened = await readFile(range.fileId);
@@ -620,8 +469,8 @@ function App() {
     setReaderEvidence({ id: crypto.randomUUID(), projectId: opened.projectId, ...range });
   }
   function followFeature(feature: OverviewFeature, anchor: string) {
-    if (overviewAi?.status !== 'done') return;
-    const start = overviewAi.result.sources.find(item => item.evidence.id === feature.start.evidenceId);
+    if (ai.overview?.status !== 'done') return;
+    const start = ai.overview.result.sources.find(item => item.evidence.id === feature.start.evidenceId);
     if (!start) return;
     const next: Topic = { name: feature.name, original: feature.name, origin: 'ai', anchor,
       start: { fileId: start.evidence.fileId, fileHash: start.evidence.fileHash, relativePath: start.relativePath,
@@ -838,8 +687,8 @@ function App() {
       </nav>}
       <div className="topbar__actions">
         {busy && <span role="status" className="busy"><span className="spinner" aria-hidden="true" />처리 중…</span>}
-        {fileExplanationState?.status === 'running' && (view !== 'code' || source?.fileId !== fileExplanationState.fileId || !panelOpen) &&
-          <span role="status">파일 설명 진행 중 <button className="btn btn--small" onClick={() => void cancelFileExplanation()}>파일 설명 작업 취소</button></span>}
+        {ai.fileExplanationState?.status === 'running' && (view !== 'code' || source?.fileId !== ai.fileExplanationState.fileId || !panelOpen) &&
+          <span role="status">파일 설명 진행 중 <button className="btn btn--small" onClick={() => void ai.cancelFileExplanation()}>파일 설명 작업 취소</button></span>}
         <button className="btn" onClick={() => void openProject()} disabled={busy}>프로젝트 폴더 열기</button>
         <button className="btn btn--ghost" onClick={cancel} disabled={!project && !busy}>프로젝트 닫기</button>
       </div>
@@ -922,13 +771,13 @@ function App() {
               </> : <p className="unknown"><span className="tag tag--unknown">확인하지 못함</span>프로젝트 목적: 아직 확인하지 못했습니다.</p>}
             </section>}
             <FeatureChooser key={project.files[0]?.id ?? project.id} project={project} state={features}
-              mode={mode} running={questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running'}
-              checking={checking} connections={connections} onInspect={inspectConnections} onEnsure={ensureConnections} onRunning={setFeatureGuideRunning}
+              mode={ai.mode} running={ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'}
+              checking={ai.checking} connections={ai.connections} onInspect={ai.inspectConnections} onEnsure={ai.ensureConnections} onRunning={ai.setFeatureGuideRunning}
               revision={revision.current} locked={busy} onFollow={(index, start) => void followFeatureRoute(index, start)} />
-            {view === 'overview' && <details key={overviewCard} className="card card--wide" aria-label="더 알아보기"
+            {view === 'overview' && <details key={ai.overviewCard} className="card card--wide" aria-label="더 알아보기"
               // Once an overview was asked for, its progress, result or error stays in view (the prop never turns false again).
-              open={features.routes?.routes.length === 0 || !!features.error || overviewAi !== null}>
-            <summary onClick={event => { if (overviewAi?.status === 'running') event.preventDefault(); }}>
+              open={features.routes?.routes.length === 0 || !!features.error || ai.overview !== null}>
+            <summary onClick={event => { if (ai.overview?.status === 'running') event.preventDefault(); }}>
               더 알아보기 · 시작 파일 후보 · AI 개요 · 확인한 범위
             </summary>
             <section className="card card--wide card--accent" aria-labelledby="overview-start">
@@ -944,11 +793,11 @@ function App() {
               <p className="hint"><span className="tag tag--unknown">학습 시작점 후보</span>TS/JS 파일 {project.overview.checkedFiles}개를 살펴봤어요{project.overview.limited && '(전체 중 일부)'}. 코드 구조로 고른 후보이고, 실제 실행 시작점인지는 확인하지 않았어요.</p>
               {project.overview.notes.map(note => <p key={note} className="hint">{note}</p>)}
             </section>
-            <OverviewAi key={overviewCard} project={project} state={overviewAi} locked={busy || questionRunning || fileExplanationRunning || featureGuideRunning}
-              stale={overviewAi?.status === 'done' && overviewAi.revision !== revision.current}
-              readiness={connections?.modes.find(item => item.mode === 'local-worker') ?? null} checking={checking}
-              revealAnchor={topic?.anchor ?? null} topicName={topic ? topic.name.trim() || topic.original : null} onInspect={() => { void inspectConnections().then(message => { if (message) setError(message); }); }}
-              onStart={startFileId => void startOverview(startFileId)} onCancel={() => void cancelOverview()}
+            <OverviewAi key={ai.overviewCard} project={project} state={ai.overview} locked={busy || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning}
+              stale={ai.overview?.status === 'done' && ai.overview.revision !== revision.current}
+              readiness={ai.connections?.modes.find(item => item.mode === 'local-worker') ?? null} checking={ai.checking}
+              revealAnchor={topic?.anchor ?? null} topicName={topic ? topic.name.trim() || topic.original : null} onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
+              onStart={startFileId => void ai.startOverview(startFileId)} onCancel={() => void ai.cancelOverview()}
               onEvidence={next => { setView('code'); void showEvidence(next, null, 'overview'); }}
               onFollow={followFeature} onFunction={(name, at) => void showNamedFunction(name, at)} />
             <section className="card card--wide">
@@ -1035,7 +884,7 @@ function App() {
             onShowImport={item => void showImport(item)} onShowFunction={item => void showFunction(item)} />}
         </div>}
 
-        {view === 'function' && functionExplanation && <p className="function-explanation" data-testid="function-chunk-summary">{functionExplanation}</p>}
+        {view === 'function' && ai.functionExplanation && <p className="function-explanation" data-testid="function-chunk-summary">{ai.functionExplanation}</p>}
         {view === 'function' && <Flow marks={marks?.projectId === project.id ? marks.list : null} pendingMarks={pendingMarks}
           onSaveMark={(key, change, hash) => void saveMark(key, change, hash)} source={source} symbol={symbol} step={step} evidence={evidence} locked={busy || stale}
           onSymbol={item => { selectSymbol(item.id); void showEvidence(item.evidence, null); }}
@@ -1090,7 +939,7 @@ function App() {
             </section> : null}
             {source.guide && <FileGuideCard key={`${source.fileId}:${source.hash}`} guide={source.guide} analysis={source.analysis} busy={busy} stale={stale}
               open={fileGuideOpen} onToggle={setFileGuideOpen}
-              ai={aiFunctionSummaries(fileExplanation?.result ?? null, fileExplanationStale, source.analysis.symbols)}
+              ai={aiFunctionSummaries(ai.fileExplanation?.result ?? null, ai.fileExplanationStale, source.analysis.symbols)}
               importers={{ state: map.mapping ? 'running' : map.entry ? 'ready' : 'none',
                 stale: map.entry !== null && map.entry.revision !== revision.current, result: importers }}
               onBuildMap={() => void map.build()} onCancelMap={() => void map.cancel()} onShowImport={item => void showImport(item)}
@@ -1105,7 +954,7 @@ function App() {
               onOpenFile={fileId => { if (busy || stale) return; void readFile(fileId); }}
               onShow={showFileGuideRange} onSelect={selectGuideFunction} />}
           </section>
-          {functionExplanation && <p className="function-explanation" data-testid="function-chunk-summary">{functionExplanation}</p>}
+          {ai.functionExplanation && <p className="function-explanation" data-testid="function-chunk-summary">{ai.functionExplanation}</p>}
           <div className="reader__body">
             <section aria-label="구문과 코드" className="outline">
               <h4 className="eyebrow">함수와 구문</h4>
@@ -1150,23 +999,23 @@ function App() {
           <button className="btn btn--ghost btn--icon" aria-label="AI 칸 접기" title="AI 칸 접기" onClick={() => setPanelOpen(false)}><Icon name="collapse" /></button>
         </div>
         <AiPanel key={project.id} projectId={project.id} evidence={questionEvidence} stale={stale} draft={draft}
-          connections={connections} checking={checking} otherRunning={overviewAi?.status === 'running' || fileExplanationRunning || featureGuideRunning} onInspect={inspectConnections} onEnsure={ensureConnections}
-          mode={mode} onMode={setMode} onRunning={setQuestionRunning}
+          connections={ai.connections} checking={ai.checking} otherRunning={ai.overview?.status === 'running' || ai.fileExplanationRunning || ai.featureGuideRunning} onInspect={ai.inspectConnections} onEnsure={ai.ensureConnections}
+          mode={ai.mode} onMode={ai.setMode} onRunning={ai.setQuestionRunning}
           relativePath={project.files.find(file => file.id === questionEvidence?.fileId)?.relativePath ?? ''}
           onEvidence={next => { setView('code'); void showEvidence(next, null, 'answer'); }} />
         {view === 'code' && source && source.analysis.language !== 'text' && <details className="card"
           key={`${source.fileId}:${source.hash}`}
-          open={fileExplanationOpen}>
+          open={ai.fileExplanationOpen}>
           <summary onClick={event => {
-            if (fileExplanationOpen) event.preventDefault();
+            if (ai.fileExplanationOpen) event.preventDefault();
           }}>AI로 이 파일 설명 만들기</summary>
-          <FileExplanationCard source={source} entry={fileExplanation}
-            state={sourceExplanationState} stale={fileExplanationStale}
-            mode={mode} locked={busy} running={questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running'}
-            checking={checking} connections={connections}
-            onEnsure={() => { void ensureConnections().then(message => { if (message) setError(message); }); }}
-            onInspect={() => { void inspectConnections().then(message => { if (message) setError(message); }); }}
-            onStart={() => void startFileExplanation()} onCancel={() => void cancelFileExplanation()}
+          <FileExplanationCard source={source} entry={ai.fileExplanation}
+            state={ai.sourceExplanationState} stale={ai.fileExplanationStale}
+            mode={ai.mode} locked={busy} running={ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'}
+            checking={ai.checking} connections={ai.connections}
+            onEnsure={() => { void ai.ensureConnections().then(message => { if (message) setError(message); }); }}
+            onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
+            onStart={() => void ai.startFileExplanation()} onCancel={() => void ai.cancelFileExplanation()}
             onShow={range => void showFileExplanationRange(range)} />
         </details>}
       </aside>
