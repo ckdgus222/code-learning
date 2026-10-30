@@ -544,15 +544,19 @@ const groups: ReturnType<typeof featureGroups> = [
 const withFeatures = (patch: (feature: ReturnType<typeof featureGroups>[number]['features'][number]) => object) =>
   groups.map(group => ({ ...group, features: group.features.map(feature => ({ ...feature, ...patch(feature) })) }));
 it('recommends the feature with the most sure links across all groups', () => {
-  expect(recommendedFeature(groups)).toBe(groups[1].features[0]);
+  expect(recommendedFeature(groups, routes)).toBe(groups[1].features[0]);
 });
 it('keeps the first feature in display order when sure counts tie', () => {
   const tied = withFeatures(() => ({ sure: 2 }));
-  expect(recommendedFeature(tied)).toBe(tied[0].features[0]);
+  expect(recommendedFeature(tied, routes)).toBe(tied[0].features[0]);
+  const nonGet = { ...routes, routes: routes.routes.map(route => ({ ...route, method: 'DELETE' as const })) };
+  expect(recommendedFeature(tied, nonGet)).toBe(tied[0].features[0]);
+  const allGet = { ...routes, routes: routes.routes.map(route => ({ ...route, method: 'GET' as const })) };
+  expect(recommendedFeature(tied, allGet)).toBe(tied[0].features[0]);
 });
 it('does not recommend an empty list or features without sure links', () => {
-  expect(recommendedFeature([])).toBeNull();
-  expect(recommendedFeature(withFeatures(() => ({ sure: 0 })))).toBeNull();
+  expect(recommendedFeature([], routes)).toBeNull();
+  expect(recommendedFeature(withFeatures(() => ({ sure: 0 })), routes)).toBeNull();
 });
 
 const chooserProps: Parameters<typeof FeatureChooser>[0] = {
@@ -564,6 +568,42 @@ const chooserProps: Parameters<typeof FeatureChooser>[0] = {
   revision: 0, locked: false, mode: 'local-worker', running: false, checking: false, connections: null,
   onFollow() {}, async onInspect() { return null; }, onRunning() {},
 };
+it.each([
+  { grouped: false, deleteLinks: 1, expected: 2 },
+  { grouped: false, deleteLinks: 2, expected: 0 },
+  { grouped: true, deleteLinks: 1, expected: 2 },
+  { grouped: true, deleteLinks: 2, expected: 0 },
+])('prefers GET only for tied first-route links and opens that recommendation: %o', ({ grouped, deleteLinks, expected }) => {
+  const addresses: ProjectRoutes = { ...routes,
+    routes: ['DELETE', 'GET', 'GET'].map((method, index) => ({ ...routes.routes[0], method: method as 'DELETE' | 'GET', path: `/dogs/${index}` })),
+    links: [...Array.from({ length: deleteLinks }, (_, requestIndex) => ({ requestIndex, routeIndex: 0, sure: true, reasons: [] })),
+      { requestIndex: 3, routeIndex: 2, sure: true, reasons: [] }],
+  };
+  const guide: FeatureGuide | undefined = grouped ? { summary: '', unknowns: [], groups: [{ name: '묶음', about: '',
+    features: [{ name: '삭제와 조회', about: '', routes: [1, 0] }] }] } : undefined;
+  const features = featureGroups(project, addresses, guide);
+  if (grouped) expect(features[0].features[0].routes).toEqual([0, 1]);
+  expect(recommendedFeature(features, addresses)?.routes[0]).toBe(expected);
+  const onFollow = vi.fn();
+  let follow: (() => void) | undefined;
+  function Probe() {
+    const tree = FeatureChooser({ ...chooserProps, onFollow, state: { ...chooserProps.state, routes: addresses, groups: features } });
+    const pending: React.ReactNode[] = [tree];
+    while (pending.length) {
+      const item = pending.pop();
+      if (!React.isValidElement<{ children?: React.ReactNode; onClick?: () => void }>(item)) continue;
+      if (item.type === 'button' && item.props.children === '이 기능부터 따라가기') follow = item.props.onClick;
+      pending.push(...React.Children.toArray(item.props.children));
+    }
+    return tree;
+  }
+  const html = renderToStaticMarkup(React.createElement(Probe));
+  expect(html).toContain('같으면 정보를 보기만 하는 GET 기능 먼저');
+  expect(follow).toBeTypeOf('function');
+  follow!();
+  expect(onFollow).toHaveBeenCalledExactlyOnceWith(expected, undefined);
+  expect(addresses.routes[onFollow.mock.calls[0][0]].method).toBe(deleteLinks === 1 ? 'GET' : 'DELETE');
+});
 it('offers start files instead of recommendation, feature list and AI controls when there are no routes', () => {
   const state = { ...chooserProps.state, routes: { ...routes, routes: [], links: [] }, groups: [] };
   const html = renderToStaticMarkup(React.createElement(FeatureChooser, { ...chooserProps, state }));
@@ -578,7 +618,7 @@ it('places the recommendation before the list, moves AI controls inside the list
   expect(html.indexOf('aria-label="처음 따라갈 기능"')).toBeLessThan(html.indexOf('<h3>기능 고르기</h3>'));
   expect(html).toMatch(/<section aria-label="기능 목록"><h3>기능 고르기<\/h3>.*<details open=""><summary hidden=""><\/summary><div class="feature-guide-ai"[^>]*>.*?AI로 기능 정리하기<\/button><\/div><p>기능 목록/);
   expect(html).toContain('이 기능에 요청을 보내는 코드 3곳을 확실히 찾았어요. 요청을 보내는 쪽부터 서버까지 따라가 볼 수 있어요.');
-  expect(html).toContain('고른 기준: 요청을 보내는 코드와 확실히 이어진 곳이 가장 많은 기능');
+  expect(html).toContain('고른 기준: 요청을 보내는 코드와 확실히 이어진 곳이 가장 많은 기능(같으면 정보를 보기만 하는 GET 기능 먼저)');
   expect(html).toMatch(/<button class="btn">이 기능부터 따라가기<\/button>/);
   expect(html).not.toContain(chooserProps.project.warnings[0]);
 });
@@ -723,6 +763,17 @@ it.each([
   expect(html).toContain(`<details class="feature-more"><summary>코드 이름·연결 근거</summary><p class="hint">DogsController.remove</p><p class="hint">${counts}</p></details>`);
   expect(html.match(/DogsController.remove/g)).toHaveLength(1);
   expect(html).toContain('>이 기능 따라가기</button>');
+});
+
+it.each([0, 1])('shows one server-only notice only when the entire project has no requests: %s', requestCount => {
+  const addresses = { ...routes, requests: routes.requests.slice(0, requestCount), links: [] };
+  const html = renderToStaticMarkup(React.createElement(FeatureList, { flows: null,
+    groups: withFeatures(() => ({ sure: 0, inferred: 0 })), routes: addresses, selected: null,
+    disabled: false, search: '', setSearch() {}, onFollow() {} }));
+  const notice = '이 프로젝트에서는 서버에 요청을 보내는 코드를 찾지 못했어요. 서버 쪽 흐름만 따라갈 수 있어요.';
+  expect(html.split(notice).length - 1).toBe(requestCount === 0 ? 1 : 0);
+  expect(html.match(/요청 코드를 못 찾음/g) ?? []).toHaveLength(requestCount === 0 ? 0 : 4);
+  if (requestCount === 0) expect(html.indexOf(notice)).toBeLessThan(html.indexOf('class="map-list"'));
 });
 
 it('keeps AI feature descriptions and addresses outside the folded connection evidence', () => {

@@ -79,7 +79,6 @@ describe('one import resolver', () => {
     ['main.ts', '@/api.jsx', ['src/api.jsx', 'src/api.tsx']],
     ['main.js', '@/api.mjs', ['src/api.ts']],
     ['main.js', '@/api.cjs', ['src/api.cts']],
-    ['main.ts', '@/api.ts', ['src/api.ts']],
   ])('does not confirm explicit extensions in %s: %s', (from, specifier, names) => {
     const result = resolved(names, aliases({ '@/*': ['src/*'] }), specifier, from);
     expect(result).toEqual(project(names, false));
@@ -87,6 +86,19 @@ describe('one import resolver', () => {
   it('does not confirm an explicit target extension even when only a counterpart exists', () => {
     expect(resolved(['src/api.ts', 'fallback.ts'], aliases({ '@api': ['src/api.mjs', 'fallback.ts'] }), '@api'))
       .toEqual(project(['src/api.ts'], false));
+  });
+  it.each(['styles/mdx.css', 'env.mjs', 'api.ts'])('confirms the unique exact file %s', name => {
+    expect(resolved([name], aliases({ '@/*': ['*'] }), `@/${name}`)).toEqual(project([name]));
+    expect(resolved([name], aliases({ '@file': [name] }), '@file')).toEqual(project([name]));
+  });
+  it('does not confirm an exact file with another candidate or package boundary', () => {
+    expect(resolved(['styles/mdx.css', 'styles/mdx.css.ts'], aliases({ '@/*': ['*'] }), '@/styles/mdx.css'))
+      .toEqual(project(['styles/mdx.css', 'styles/mdx.css.ts'], false));
+    expect(resolved(['env.mjs', 'env.mjs/package.json'], aliases({ '@/*': ['*'] }), '@/env.mjs'))
+      .toEqual(project(['env.mjs'], false));
+  });
+  it.each(['api.d.ts', 'api.d.mts', 'api.d.cts'])('does not confirm an exact declaration file %s', name => {
+    expect(resolved([name], aliases({ '@/*': ['*'] }), `@/${name}`)).toEqual(project([name], false));
   });
   it.each([[[]], [['lib/index.ts']]])('stops at a package folder, preserving candidates %j', names => {
     expect(resolved(['lib/package.json', 'fallback.ts', ...names], aliases({ '@lib': ['lib', 'fallback'] }), '@lib'))

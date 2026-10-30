@@ -233,7 +233,8 @@ function aliasTarget(target: string, specifier: string, known: Map<string, Proje
   const packageFile = known.has(`${base ? `${base}/` : ''}package.json`);
   if (!candidates.length && !packageFile) return null;
   const sure = candidates.length === 1 && !/\.d\.(ts|mts|cts)$/i.test(candidates[0])
-    && !path.posix.extname(specifier) && !path.posix.extname(base) && /\.(ts|tsx|js|jsx)$/i.test(candidates[0]) && !packageFile;
+    && !packageFile && (candidates[0] === base
+      || !path.posix.extname(specifier) && !path.posix.extname(base) && /\.(ts|tsx|js|jsx)$/i.test(candidates[0]));
   return { kind: 'project', candidates, via: 'alias', sure };
 }
 
