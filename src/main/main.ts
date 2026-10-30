@@ -7,7 +7,7 @@ import { channels, learningSpotSchema, saveLearningSpotSchema, saveLearningMarkS
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { ProjectSession, workersStopped } from './project-session';
-import { featureGuideResultSchema, saveFeatureGuideSchema, overviewResultSchema, saveOverviewSchema, type OverviewResult, fileExplanationResultSchema, saveFileExplanationSchema, checkConnectionsSchema, explainRequestSchema, cancelExplanationSchema, overviewRequestSchema, fileExplanationRequestSchema, featureGuideRequestSchema } from '../shared/ai';
+import { learningResultSchema, saveAnswerSchema, savedAnswerRequestSchema, openSavedEvidenceSchema, explanationReferencesMatch, type LearningResult, featureGuideResultSchema, saveFeatureGuideSchema, overviewResultSchema, saveOverviewSchema, type OverviewResult, fileExplanationResultSchema, saveFileExplanationSchema, checkConnectionsSchema, explainRequestSchema, cancelExplanationSchema, overviewRequestSchema, fileExplanationRequestSchema, featureGuideRequestSchema } from '../shared/ai';
 import { LocalAiRuntime } from '../core/ai/runtime';
 import { checkFeatureGuideRoutes } from '../core/ai/feature-guide';
 import { maskSecrets } from '../core/ai/secrets';
@@ -105,6 +105,23 @@ function overviewReferencesMatch(projectId: string, result: OverviewResult): boo
     ...overview.roles.flatMap(role => [...role.evidenceIds, ...role.functions.map(item => item.evidenceId)])];
   return result.projectId === projectId && sources.every(source => source.evidence.projectId === projectId) &&
     allowed.size === sources.length && references.every(id => allowed.has(id));
+}
+
+function answerReferencesMatch(projectId: string, result: LearningResult): boolean {
+  const { evidence, sources } = result;
+  const allowed = new Set(sources.map(source => source.evidence.id));
+  return result.projectId === projectId && evidence.projectId === projectId &&
+    sources.every(source => source.evidence.projectId === projectId) && allowed.size === sources.length &&
+    (Object.keys(evidence) as (keyof Evidence)[]).every(key => evidence[key] === sources[0].evidence[key]) &&
+    explanationReferencesMatch(result.explanation, allowed);
+}
+
+function storedAnswer(projectId: string, jobId: string) {
+  const saved = storage.answerOf(projectId, jobId);
+  if (!saved) return null;
+  const parsed = learningResultSchema.safeParse(saved.result);
+  if (!parsed.success || parsed.data.jobId !== jobId || !answerReferencesMatch(projectId, parsed.data)) return null;
+  return { result: parsed.data, savedAt: saved.savedAt };
 }
 
 async function readEvidence(active: ProjectSession, evidenceId: string) {
@@ -243,6 +260,63 @@ app.whenReady().then(async () => {
     // A damaged or older value shows no card and stays stored.
     const parsed = learningSpotSchema.safeParse(saved.spot);
     return parsed.success ? { spot: parsed.data, savedAt: saved.savedAt } : null;
+  });
+  handle(channels.savedAnswers, async argument => {
+    const { projectId } = projectRequestSchema.parse(argument);
+    current(projectId);
+    return storage.answersOf(projectId).flatMap(row => {
+      const parsed = learningResultSchema.safeParse(row.result);
+      if (!parsed.success || parsed.data.jobId !== row.jobId || !answerReferencesMatch(projectId, parsed.data)) return [];
+      return [{ jobId: row.jobId, question: parsed.data.question, savedAt: row.savedAt }];
+    });
+  });
+  handle(channels.saveAnswer, async argument => {
+    const { projectId, result } = saveAnswerSchema.parse(argument);
+    const active = current(projectId);
+    if (!answerReferencesMatch(projectId, result) ||
+        result.sources.some(source => active.relativePathOf(source.evidence.fileId) !== source.relativePath)) {
+      throw new AppError('NOT_ALLOWED', '현재 프로젝트에서 확인한 근거의 답만 저장할 수 있어요.');
+    }
+    const masked = learningResultSchema.parse({ ...result, question: maskSecrets(result.question).text });
+    return { savedAt: storage.saveAnswer(projectId, result.jobId, masked) };
+  });
+  handle(channels.savedAnswer, async argument => {
+    const { projectId, jobId } = savedAnswerRequestSchema.parse(argument);
+    const active = current(projectId);
+    const context = aiContext;
+    if (!context) throw new AppError('PROJECT_CLOSED', '현재 선택한 프로젝트가 아닙니다.');
+    const saved = storedAnswer(projectId, jobId);
+    if (!saved) return null;
+    const { sources, changed } = await context.checkSources(saved.result.sources);
+    if (session !== active || aiContext !== context) throw new AppError('PROJECT_CLOSED', '현재 선택한 프로젝트가 아닙니다.');
+    return { result: { ...saved.result, sources, evidence: sources[0].evidence }, savedAt: saved.savedAt, changed };
+  });
+  handle(channels.openSavedEvidence, async argument => {
+    const { projectId, jobId, evidenceId } = openSavedEvidenceSchema.parse(argument);
+    const active = current(projectId);
+    const context = aiContext;
+    const revision = projectRevision;
+    if (!context) throw new AppError('PROJECT_CLOSED', '현재 선택한 프로젝트가 아닙니다.');
+    const saved = storedAnswer(projectId, jobId);
+    if (!saved || !saved.result.sources.some(source => source.evidence.id === evidenceId)) {
+      throw new AppError('NOT_ALLOWED', '저장된 답의 근거를 찾지 못했어요.');
+    }
+    const { sources, changed } = await context.checkSources(saved.result.sources);
+    if (session !== active || aiContext !== context) throw new AppError('PROJECT_CLOSED', '현재 선택한 프로젝트가 아닙니다.');
+    if (changed) throw new AppError('CHANGED', '답을 만든 뒤 코드가 바뀌어 열지 않았어요.');
+    const evidence = sources.find(source => source.evidence.id === evidenceId)!.evidence;
+    const source = await active.read(evidence.fileId);
+    if (session !== active || aiContext !== context) throw new AppError('PROJECT_CLOSED', '현재 선택한 프로젝트가 아닙니다.');
+    if (projectRevision !== revision || source.hash !== evidence.fileHash) {
+      throw new AppError('CHANGED', '답을 만든 뒤 코드가 바뀌어 열지 않았어요.');
+    }
+    return { source, evidence };
+  });
+  handle(channels.deleteAnswer, async argument => {
+    const { projectId, jobId } = savedAnswerRequestSchema.parse(argument);
+    current(projectId);
+    storage.deleteAnswer(projectId, jobId);
+    return null;
   });
   handle(channels.savedOverview, async argument => {
     const { projectId } = projectRequestSchema.parse(argument);

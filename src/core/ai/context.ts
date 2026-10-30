@@ -48,7 +48,7 @@ export class ProjectAiContext {
   keep(evidence: Evidence): void { this.remember(evidence); }
   clear(): void { this.evidence.clear(); }
 
-  async restoreSources(saved: OverviewResult['sources']): Promise<{ sources: OverviewResult['sources']; changed: boolean }> {
+  async checkSources(saved: OverviewResult['sources']): Promise<{ sources: OverviewResult['sources']; changed: boolean }> {
     let changed = false;
     const sources: OverviewResult['sources'] = [];
     for (const source of saved) {
@@ -62,8 +62,13 @@ export class ProjectAiContext {
             evidence.endUtf16 > text.length || evidence.endLine > lastLine(text)) changed = true;
       } catch { changed = true; }
     }
-    if (!changed) sources.forEach(source => this.remember(source.evidence));
     return { sources, changed };
+  }
+
+  async restoreSources(saved: OverviewResult['sources']): Promise<{ sources: OverviewResult['sources']; changed: boolean }> {
+    const checked = await this.checkSources(saved);
+    if (!checked.changed) checked.sources.forEach(source => this.remember(source.evidence));
+    return checked;
   }
 
   async capture(source: SourceView, evidence: Evidence, revision: number, signal: AbortSignal): Promise<EvidenceSnapshot> {

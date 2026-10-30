@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
-import type { Evidence } from '../shared/contracts';
+import { savedDate } from './overview';
+import type { Evidence, SourceView } from '../shared/contracts';
 import { GEMINI_MODEL, type ConnectionReport, type LearningEvent, type LearningMode, type LearningPhase, type LearningResult } from '../shared/ai';
 
 const modes: { id: LearningMode; label: string }[] = [
@@ -59,7 +60,8 @@ export function SourceButtons({ ids, sources, selectionId, stale, label, onEvide
   </li>)}</ul>;
 }
 
-export function AiPanel({ projectId, evidence, relativePath, stale, draft, connections, checking, otherRunning, mode, onMode, onRunning, onInspect, onEnsure, onEvidence }: {
+export function AiPanel({ projectId, openedAt = 0, onSavedEvidence, evidence, relativePath, stale, draft, connections, checking, otherRunning, mode, onMode, onRunning, onInspect, onEnsure, onEvidence }: {
+  openedAt?: number; onSavedEvidence?(value: { source: SourceView; evidence: Evidence }): void;
   projectId: string; evidence: Evidence | null; relativePath: string; stale: boolean;
   /**
    * A question to put in the box, put again whenever the id changes (not on mount). A feature question (plan F1) also
@@ -88,6 +90,14 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
   const [answers, setAnswers] = useState<LearningResult[]>([]);
+  const [savedAnswers, setSavedAnswers] = useState<{ jobId: string; question: string; savedAt: string }[]>([]);
+  const [openedAnswer, setOpenedAnswer] = useState<{ result: LearningResult; changed: boolean } | null>(null);
+  const [historyError, setHistoryError] = useState('');
+  const historyRequest = useRef(0);
+  const listRequest = useRef(0);
+  const historyOpening = useRef(openedAt);
+  historyOpening.current = openedAt;
+  const writes = useRef(new Map<string, number>());
   // The topic each answer's question was prepared under (integrated plan 4.4), by job.
   const [answerTopics, setAnswerTopics] = useState<Record<string, string>>({});
   const prepared = useRef<{ topic: string; evidenceId: string; text: string } | null>(null);
@@ -141,6 +151,7 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
     }
     if (stale || event.result.evidence.id !== evidence?.id || event.result.evidence.fileHash !== evidence?.fileHash) return;
     setAnswers(previous => [...previous.slice(-3), event.result]);
+    void saveAnswer(event.result);
     const topic = jobTopics.current.get(event.jobId);
     if (topic !== undefined) {
       setAnswerTopics(previous => ({ ...previous, [event.jobId]: topic }));
@@ -175,6 +186,88 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
       prepared.current = null;
     }
   }, [projectId, evidence?.id, evidence?.fileHash, stale, mode]);
+
+  useEffect(() => {
+    historyRequest.current++;
+    listRequest.current++;
+    writes.current.clear();
+    setOpenedAnswer(null); setSavedAnswers([]); setHistoryError('');
+    void loadAnswers();
+    return () => { historyRequest.current++; listRequest.current++; };
+  }, [projectId, openedAt]);
+
+  async function loadAnswers() {
+    const token = ++listRequest.current;
+    const opening = historyOpening.current;
+    const result = await window.learning.savedAnswers({ projectId });
+    if (!mounted.current || token !== listRequest.current || opening !== historyOpening.current) return;
+    if (!result.ok) {
+      if (result.code !== 'PROJECT_CLOSED') setHistoryError('지난 질문과 답을 불러오지 못했어요.');
+      return;
+    }
+    setSavedAnswers(result.value);
+    setOpenedAnswer(previous => previous && result.value.some(item => item.jobId === previous.result.jobId) ? previous : null);
+  }
+  async function saveAnswer(answer: LearningResult) {
+    historyRequest.current++; listRequest.current++;
+    const opening = historyOpening.current;
+    const token = (writes.current.get(answer.jobId) ?? 0) + 1;
+    writes.current.set(answer.jobId, token);
+    const result = await window.learning.saveAnswer({ projectId, result: answer });
+    if (!mounted.current || opening !== historyOpening.current || writes.current.get(answer.jobId) !== token) return;
+    if (!result.ok) {
+      if (result.code !== 'PROJECT_CLOSED') setError('질문과 답을 저장하지 못했어요. 앱을 닫으면 사라져요.');
+      return;
+    }
+    void loadAnswers();
+  }
+  async function openAnswer(jobId: string) {
+    const token = ++historyRequest.current;
+    const opening = historyOpening.current;
+    setOpenedAnswer(null); setHistoryError('');
+    const result = await window.learning.savedAnswer({ projectId, jobId });
+    if (!mounted.current || token !== historyRequest.current || opening !== historyOpening.current) return;
+    if (!result.ok || !result.value) {
+      if (result.ok || result.code !== 'PROJECT_CLOSED') setHistoryError('지난 답을 불러오지 못했어요.');
+      return;
+    }
+    if (result.value.result.jobId === jobId) setOpenedAnswer(result.value);
+  }
+  async function deleteAnswer(jobId: string) {
+    historyRequest.current++; listRequest.current++;
+    const opening = historyOpening.current;
+    const token = (writes.current.get(jobId) ?? 0) + 1;
+    writes.current.set(jobId, token);
+    setHistoryError('');
+    const result = await window.learning.deleteAnswer({ projectId, jobId });
+    if (!mounted.current || opening !== historyOpening.current || writes.current.get(jobId) !== token) return;
+    if (!result.ok) {
+      if (result.code !== 'PROJECT_CLOSED') setHistoryError('지난 답을 지우지 못했어요.');
+      return;
+    }
+    // Also discard a read started while this deletion was in flight.
+    historyRequest.current++;
+    setSavedAnswers(previous => previous.filter(item => item.jobId !== jobId));
+    setOpenedAnswer(previous => previous?.result.jobId === jobId ? null : previous);
+    void loadAnswers();
+  }
+  async function openEvidence(jobId: string, evidenceId: string) {
+    const token = ++historyRequest.current;
+    const opening = historyOpening.current;
+    setHistoryError('');
+    const result = await window.learning.openSavedEvidence({ projectId, jobId, evidenceId });
+    if (!mounted.current || token !== historyRequest.current || opening !== historyOpening.current) return;
+    if (!result.ok) {
+      if (result.code === 'CHANGED') {
+        setOpenedAnswer(previous => previous?.result.jobId === jobId ? { ...previous, changed: true } : previous);
+        setHistoryError('답을 만든 뒤 코드가 바뀌어 열지 않았어요.');
+        return;
+      }
+      if (result.code !== 'PROJECT_CLOSED') setHistoryError(result.message);
+      return;
+    }
+    onSavedEvidence?.(result.value);
+  }
 
   /** Runs an installation check, automatic (`onEnsure`) or asked for (`onInspect`), and shows why it could not run. */
   async function check(run: () => Promise<string | null>) {
@@ -274,51 +367,72 @@ export function AiPanel({ projectId, evidence, relativePath, stale, draft, conne
           disabled={running || blockedReason !== null}>질문 보내기</button>
         {blockedReason && <p className="hint" id={sendBlockedId} data-testid="send-blocked">{blockedReason}</p>}
       </div>
-      <p className="hint">대화는 앱 실행 중에만 보관합니다. 코드 범위를 바꾸면 새 대화로 시작합니다.</p>
+      <p className="hint">질문과 답은 최근 50개까지 이 Mac에 저장해요. 이어 묻기는 앱을 켜 둔 동안만 돼요. 코드 범위를 바꾸면 새 대화로 시작합니다.</p>
     </div>
-    {answers.map(answer => <section key={answer.jobId} className="fact" aria-label="AI 설명">
-      {answerTopics[answer.jobId] && <span className="tag tag--doc">학습 주제: {answerTopics[answer.jobId]}</span>}
-      <b>{answer.question}</b>
-      <h4>쉽게</h4><p>{answer.explanation.summary}</p>
-      <span className="tag tag--unknown">{answer.review}</span>
-      {answer.explanation.terms.length > 0 && <section aria-label="낱말 풀이">
-        <h4>낱말 풀이</h4>
-        <dl>{answer.explanation.terms.map((term, index) => <React.Fragment key={index}><dt>{term.term}</dt><dd>{term.meaning}</dd></React.Fragment>)}</dl>
-      </section>}
-      {answer.explanation.examples.length > 0 && <section aria-label="예시로 따라가기">
-        <h4>예시로 따라가기</h4>
-        <p className="hint">코드를 실제로 실행한 결과가 아니에요. AI가 코드를 읽고 만든 가상의 값이에요.</p>
-        <ol>{answer.explanation.examples.map((example, index) => <li key={index}>
-          <span className="tag tag--unknown">가상의 예시 · 실행하지 않음</span>
-          <p><b>예를 들어 {example.given}</b></p>
-          <p>→ {example.result}</p>
-          <SourceButtons ids={example.evidenceIds} sources={answer.sources} selectionId={answer.evidence.id} stale={stale}
-            label={`예시 ${index + 1}의 근거`} onEvidence={onEvidence} />
-        </li>)}</ol>
-      </section>}
-      <details>
-        <summary>자세히 보기 · 단계 {answer.explanation.steps.length}개 · 설명 {answer.explanation.claims.length}개</summary>
-        <ol>{answer.explanation.steps.map((step, index) => <li key={index}>
-          <b>{step.title}</b><p>입력: {step.input}</p><p>처리: {step.action}</p><p>결과: {step.output}</p>
-          {step.alternatives.map((alternative, i) => <p key={i}>다른 경우: {alternative}</p>)}
-          <SourceButtons ids={step.evidenceIds} sources={answer.sources} selectionId={answer.evidence.id} stale={stale}
-            label={`‘${step.title}’의 근거`} onEvidence={onEvidence} />
-        </li>)}</ol>
-        <ul>{answer.explanation.claims.map((claim, index) => <li key={index}>{claim.kind === 'concept' ? '일반 개념: ' : ''}{claim.text}
-          {claim.kind === 'code' && <SourceButtons ids={claim.evidenceIds} sources={answer.sources} selectionId={answer.evidence.id}
-            stale={stale} label="이 설명의 근거" onEvidence={onEvidence} />}
-        </li>)}</ul>
-      </details>
-      <h4>코드</h4>
-      <button className="btn btn--chip" disabled={stale} onClick={() => onEvidence(answer.evidence)}>답변 근거 코드 보기</button>
-      <ul aria-label="답변에 제공한 파일">{answer.sources.filter(item => item.evidence.id !== answer.evidence.id).map(item => <li key={item.evidence.id}>
-        <button className="btn btn--chip" disabled={stale} onClick={() => onEvidence(item.evidence)}>
-          {item.relativePath} · {item.evidence.startLine}–{item.evidence.endLine}행
-        </button>
+    {answers.map(answer => <AnswerView key={answer.jobId} answer={answer} topic={answerTopics[answer.jobId]} stale={stale} onEvidence={onEvidence} />)}
+    {historyError && <p role="alert" className="notice">{historyError}</p>}
+    <details className="saved-answers">
+      <summary>지난 질문과 답 · {savedAnswers.length}개</summary>
+      <p className="hint">지난 답의 대화는 이어지지 않아요.</p>
+      <ul aria-label="저장된 질문">{savedAnswers.map(item => <li key={item.jobId}>
+        <p className="saved-question" title={item.question}>{item.question}</p>
+        <span className="hint">저장됨 · {savedDate(item.savedAt)} </span>
+        <button className="btn btn--small" onClick={() => void openAnswer(item.jobId)}>열기</button>
+        <button className="btn btn--small" onClick={() => void deleteAnswer(item.jobId)}>지우기</button>
+        {openedAnswer?.result.jobId === item.jobId && <>
+          {openedAnswer.changed && <p className="notice">다시 확인 필요: 답을 만든 뒤 코드가 바뀌었어요.</p>}
+          <AnswerView answer={openedAnswer.result} stale={openedAnswer.changed} onEvidence={next => void openEvidence(item.jobId, next.id)} />
+        </>}
       </li>)}</ul>
-      {answer.explanation.unknowns.map((unknown, index) => <p key={index}>확인하지 못함: {unknown}</p>)}
-      {answer.limitations.map((limitation, index) => <p className="hint" key={index}>읽기 범위: {limitation}</p>)}
-      {answer.models.map(model => <p className="hint" key={model.stage}>{names[model.provider]} · {model.requestedModel ? `호출 모델 ${model.requestedModel}` : 'CLI 기본 모델 요청'} · {model.reportedModel ? `응답 모델 ${model.reportedModel}` : '응답 모델 미보고'}</p>)}
-    </section>)}
+    </details>
   </div>;
+}
+
+export function AnswerView({ answer, topic, stale, onEvidence }: {
+  answer: LearningResult; topic?: string; stale: boolean; onEvidence(evidence: Evidence): void;
+}) {
+  return <section className="fact" aria-label="AI 설명">
+    {topic && <span className="tag tag--doc">학습 주제: {topic}</span>}
+    <b>{answer.question}</b>
+    <h4>쉽게</h4><p>{answer.explanation.summary}</p>
+    <span className="tag tag--unknown">{answer.review}</span>
+    {answer.explanation.terms.length > 0 && <section aria-label="낱말 풀이">
+      <h4>낱말 풀이</h4>
+      <dl>{answer.explanation.terms.map((term, index) => <React.Fragment key={index}><dt>{term.term}</dt><dd>{term.meaning}</dd></React.Fragment>)}</dl>
+    </section>}
+    {answer.explanation.examples.length > 0 && <section aria-label="예시로 따라가기">
+      <h4>예시로 따라가기</h4>
+      <p className="hint">코드를 실제로 실행한 결과가 아니에요. AI가 코드를 읽고 만든 가상의 값이에요.</p>
+      <ol>{answer.explanation.examples.map((example, index) => <li key={index}>
+        <span className="tag tag--unknown">가상의 예시 · 실행하지 않음</span>
+        <p><b>예를 들어 {example.given}</b></p>
+        <p>→ {example.result}</p>
+        <SourceButtons ids={example.evidenceIds} sources={answer.sources} selectionId={answer.evidence.id} stale={stale}
+          label={`예시 ${index + 1}의 근거`} onEvidence={onEvidence} />
+      </li>)}</ol>
+    </section>}
+    <details>
+      <summary>자세히 보기 · 단계 {answer.explanation.steps.length}개 · 설명 {answer.explanation.claims.length}개</summary>
+      <ol>{answer.explanation.steps.map((step, index) => <li key={index}>
+        <b>{step.title}</b><p>입력: {step.input}</p><p>처리: {step.action}</p><p>결과: {step.output}</p>
+        {step.alternatives.map((alternative, i) => <p key={i}>다른 경우: {alternative}</p>)}
+        <SourceButtons ids={step.evidenceIds} sources={answer.sources} selectionId={answer.evidence.id} stale={stale}
+          label={`‘${step.title}’의 근거`} onEvidence={onEvidence} />
+      </li>)}</ol>
+      <ul>{answer.explanation.claims.map((claim, index) => <li key={index}>{claim.kind === 'concept' ? '일반 개념: ' : ''}{claim.text}
+        {claim.kind === 'code' && <SourceButtons ids={claim.evidenceIds} sources={answer.sources} selectionId={answer.evidence.id}
+          stale={stale} label="이 설명의 근거" onEvidence={onEvidence} />}
+      </li>)}</ul>
+    </details>
+    <h4>코드</h4>
+    <button className="btn btn--chip" disabled={stale} onClick={() => onEvidence(answer.evidence)}>답변 근거 코드 보기</button>
+    <ul aria-label="답변에 제공한 파일">{answer.sources.filter(item => item.evidence.id !== answer.evidence.id).map(item => <li key={item.evidence.id}>
+      <button className="btn btn--chip" disabled={stale} onClick={() => onEvidence(item.evidence)}>
+        {item.relativePath} · {item.evidence.startLine}–{item.evidence.endLine}행
+      </button>
+    </li>)}</ul>
+    {answer.explanation.unknowns.map((unknown, index) => <p key={index}>확인하지 못함: {unknown}</p>)}
+    {answer.limitations.map((limitation, index) => <p className="hint" key={index}>읽기 범위: {limitation}</p>)}
+    {answer.models.map(model => <p className="hint" key={model.stage}>{names[model.provider]} · {model.requestedModel ? `호출 모델 ${model.requestedModel}` : 'CLI 기본 모델 요청'} · {model.reportedModel ? `응답 모델 ${model.reportedModel}` : '응답 모델 미보고'}</p>)}
+  </section>;
 }

@@ -5281,6 +5281,210 @@ try {
     await app.close(); await launch();
   }
   {
+    const folder = path.join(temporary, '질문과 답 저장 프로젝트');
+    const original = 'export function saved() { return 1; }\n';
+    await mkdir(folder); await writeFile(path.join(folder, 'saved.ts'), original);
+    await writeFile(path.join(folder, 'other.ts'), 'export function other() { return 2; }\n');
+    let projectId;
+    const history = () => page.locator('.saved-answers');
+    const row = question => history().getByRole('listitem').filter({ has: page.locator('.saved-question', { hasText: question }) });
+    const showHistory = async () => {
+      const expand = page.getByRole('button', { name: 'AI 칸 펼치기', exact: true });
+      if (await expand.isVisible()) await expand.click();
+      if (!await history().evaluate(element => element.open)) await history().locator(':scope > summary').click();
+    };
+    const observeLists = () => app.evaluate(({ ipcMain }) => {
+      if (globalThis.answerListReads === undefined) {
+        globalThis.answerListReads = 0;
+        const read = ipcMain._invokeHandlers.get('learning:saved-answers');
+        ipcMain.removeHandler('learning:saved-answers');
+        ipcMain.handle('learning:saved-answers', async (event, input) => {
+          const result = await read(event, input);
+          globalThis.answerListReads++;
+          return result;
+        });
+      }
+      return globalThis.answerListReads;
+    });
+    const listFinished = async before => {
+      await until(() => app.evaluate((_electron, before) => globalThis.answerListReads > before, before));
+      await waitPaint();
+    };
+    const openRecent = async () => {
+      const before = await observeLists();
+      await page.getByRole('region', { name: '최근 프로젝트', exact: true }).getByRole('button').filter({ hasText: '질문과 답 저장 프로젝트' }).click();
+      await page.getByRole('heading', { name: '질문과 답 저장 프로젝트', exact: true }).waitFor();
+      await until(async () => !await page.locator('.busy').count());
+      await listFinished(before);
+      await showHistory();
+    };
+    const restart = async () => { await app.close(); await launch(); await openRecent(); };
+    const reopen = async () => {
+      const listBefore = await observeLists();
+      await dialogTo(folder);
+      // A read of the recent project identifies the new session even though its project ID stays the same.
+      const before = await page.evaluate(() => window.learning.recentProjects());
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      await until(async () => {
+        const after = await page.evaluate(() => window.learning.recentProjects());
+        return after.ok && before.ok && after.value[0].openedAt !== before.value[0].openedAt && !await page.locator('.busy').count();
+      });
+      await listFinished(listBefore);
+      await showHistory();
+    };
+    const installFake = async () => {
+      await app.evaluate(({ ipcMain }) => {
+        globalThis.savedAnswerRequests = [];
+        ipcMain.removeHandler('learning:connections');
+        ipcMain.handle('learning:connections', () => ({ ok: true, value: { checkedAt: new Date().toISOString(), providers: [],
+          modes: [{ mode: 'local-worker', ready: true, reason: '시험용 가짜 AI' }] } }));
+        ipcMain.removeHandler('learning:explain');
+        ipcMain.handle('learning:explain', async (event, request) => {
+          globalThis.savedAnswerRequests.push(request);
+          const read = await ipcMain._invokeHandlers.get('learning:evidence')(event, { projectId: request.projectId, evidenceId: request.evidenceId });
+          if (!read.ok) return read;
+          const { randomUUID } = process.getBuiltinModule('node:crypto');
+          const jobId = randomUUID();
+          const { source, evidence } = read.value;
+          const result = { jobId, projectId: request.projectId, conversationId: request.conversationId ?? randomUUID(), question: request.question,
+            evidence, sources: [{ evidence, relativePath: source.relativePath }], limitations: [], models: [], review: 'AI 대조 없음',
+            explanation: { summary: `저장 답: ${request.question}`, steps: [], claims: [{ kind: 'code', text: '가짜 설명', evidenceIds: [evidence.id] }], terms: [], examples: [], unknowns: [] } };
+          event.sender.send('learning:ai-event', { kind: 'completed', projectId: request.projectId, jobId, result });
+          return { ok: true, value: { jobId } };
+        });
+      });
+    };
+    const readFileInView = async name => {
+      const before = await app.evaluate(({ ipcMain }) => {
+        if (globalThis.answerSourceReads === undefined) {
+          globalThis.answerSourceReads = 0;
+          const read = ipcMain._invokeHandlers.get('learning:read');
+          ipcMain.removeHandler('learning:read');
+          ipcMain.handle('learning:read', async (event, input) => {
+            const result = await read(event, input);
+            globalThis.answerSourceReads++;
+            return result;
+          });
+        }
+        return globalThis.answerSourceReads;
+      });
+      await openTreeFile(name);
+      await until(() => app.evaluate((_electron, before) => globalThis.answerSourceReads > before, before));
+      await waitPaint();
+      await until(async () => (await page.getByRole('navigation', { name: '현재 학습 위치', exact: true }).innerText()).includes(name)
+        && !await page.locator('.busy').count());
+    };
+    const prepare = async () => {
+      await readFileInView('saved.ts');
+      await page.getByRole('button', { name: 'saved', exact: true }).click();
+      await openAiSection('질문하기');
+      await page.getByTestId('question-scope').waitFor();
+      await until(() => page.locator('.ai-question').getByRole('checkbox').isEnabled());
+    };
+    const ask = async question => {
+      await page.getByRole('textbox', { name: '선택한 코드에 질문' }).fill(question);
+      await page.locator('.ai-question').getByRole('checkbox').check();
+      await page.getByRole('button', { name: '질문 보내기', exact: true }).click();
+      await page.locator('.ai-panel > section[aria-label="AI 설명"]').getByText(`저장 답: ${question}`, { exact: true }).waitFor();
+    };
+    const savedCount = count => history().getByText(`지난 질문과 답 · ${count}개`, { exact: true }).waitFor();
+    const waitPaint = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await check('Saved answers: accepted questions automatically save, restore after restart and open evidence without continuing old chat', async () => {
+      await installFake(); await reopen();
+      const recent = await page.evaluate(() => window.learning.recentProjects());
+      assert.equal(recent.ok, true); projectId = recent.value[0].id;
+      await prepare(); await ask('첫 저장 질문'); await savedCount(1); await showHistory();
+      await row('첫 저장 질문').getByText(/저장됨 ·/).waitFor();
+      await restart(); await savedCount(1);
+      assert.equal(await app.evaluate(() => globalThis.savedAnswerRequests), undefined);
+      await row('첫 저장 질문').getByRole('button', { name: '열기', exact: true }).click();
+      await history().getByText('저장 답: 첫 저장 질문', { exact: true }).waitFor();
+      await history().getByRole('button', { name: '답변 근거 코드 보기', exact: true }).click();
+      await until(async () => (await page.locator('.cm-content').innerText()).includes('return 1'));
+      assert.equal(await page.getByTestId('question-scope').count(), 0);
+      await installFake(); await prepare(); await ask('둘째 저장 질문'); await savedCount(2);
+      const requests = await app.evaluate(() => globalThis.savedAnswerRequests);
+      assert.equal(requests.length, 1); assert.equal(requests[0].conversationId, undefined);
+      await ask('이어 묻는 질문'); await savedCount(3);
+      assert.ok((await app.evaluate(() => globalThis.savedAnswerRequests))[1].conversationId);
+    });
+    await check('Saved answers: late reads cannot replace a different answer, revive a deletion or cross reopening the same folder', async () => {
+      await showHistory();
+      await app.evaluate(({ ipcMain }) => {
+        const read = ipcMain._invokeHandlers.get('learning:saved-answer');
+        globalThis.heldAnswerReads = []; globalThis.holdAnswerReads = true;
+        ipcMain.removeHandler('learning:saved-answer');
+        ipcMain.handle('learning:saved-answer', async (event, input) => {
+          const result = await read(event, input);
+          if (!globalThis.holdAnswerReads) return result;
+          return new Promise(resolve => globalThis.heldAnswerReads.push(() => resolve(result)));
+        });
+      });
+      await row('첫 저장 질문').getByRole('button', { name: '열기', exact: true }).click();
+      await until(() => app.evaluate(() => globalThis.heldAnswerReads.length === 1));
+      await app.evaluate(() => { globalThis.holdAnswerReads = false; });
+      await row('둘째 저장 질문').getByRole('button', { name: '열기', exact: true }).click();
+      await history().getByText('저장 답: 둘째 저장 질문', { exact: true }).waitFor();
+      await app.evaluate(() => globalThis.heldAnswerReads.shift()()); await waitPaint();
+      assert.equal(await history().getByRole('region', { name: 'AI 설명', exact: true }).count(), 1);
+      assert.equal(await history().getByText('저장 답: 첫 저장 질문', { exact: true }).count(), 0);
+      await app.evaluate(() => { globalThis.holdAnswerReads = true; });
+      await row('첫 저장 질문').getByRole('button', { name: '열기', exact: true }).click();
+      await until(() => app.evaluate(() => globalThis.heldAnswerReads.length === 1));
+      await row('첫 저장 질문').getByRole('button', { name: '지우기', exact: true }).click(); await savedCount(2);
+      await app.evaluate(() => globalThis.heldAnswerReads.shift()()); await waitPaint();
+      assert.equal(await history().getByText('저장 답: 첫 저장 질문', { exact: true }).count(), 0);
+      await row('둘째 저장 질문').getByRole('button', { name: '열기', exact: true }).click();
+      await until(() => app.evaluate(() => globalThis.heldAnswerReads.length === 1));
+      await reopen(); await savedCount(2);
+      await app.evaluate(() => globalThis.heldAnswerReads.shift()()); await waitPaint();
+      assert.equal(await history().getByRole('region', { name: 'AI 설명', exact: true }).count(), 0);
+      await app.evaluate(() => { globalThis.holdAnswerReads = false; });
+    });
+    await check('Saved answers: changes detected on evidence click remain blocked after reading a different file clears global stale', async () => {
+      await row('둘째 저장 질문').getByRole('button', { name: '열기', exact: true }).click();
+      await history().getByText('저장 답: 둘째 저장 질문', { exact: true }).waitFor();
+      await writeFile(path.join(folder, 'saved.ts'), original.replace('1', '3'));
+      await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: true }).waitFor();
+      await readFileInView('other.ts');
+      await history().getByRole('button', { name: '답변 근거 코드 보기', exact: true }).click();
+      await page.getByText('답을 만든 뒤 코드가 바뀌어 열지 않았어요.', { exact: true }).waitFor();
+      await history().getByText('다시 확인 필요: 답을 만든 뒤 코드가 바뀌었어요.', { exact: true }).waitFor();
+      assert.equal(await history().getByRole('button', { name: '답변 근거 코드 보기', exact: true }).isDisabled(), true);
+    });
+    await check('Saved answers: changed answers restore with a warning and deletions persist across restart', async () => {
+      await restart(); await savedCount(2);
+      await row('둘째 저장 질문').getByRole('button', { name: '열기', exact: true }).click();
+      await history().getByText('다시 확인 필요: 답을 만든 뒤 코드가 바뀌었어요.', { exact: true }).waitFor();
+      assert.equal(await history().getByRole('button', { name: '답변 근거 코드 보기', exact: true }).isDisabled(), true);
+      await row('둘째 저장 질문').getByRole('button', { name: '지우기', exact: true }).click(); await savedCount(1);
+      await row('이어 묻는 질문').getByRole('button', { name: '지우기', exact: true }).click(); await savedCount(0);
+      await restart(); await savedCount(0);
+      const found = await page.evaluate(projectId => window.learning.savedAnswers({ projectId }), projectId);
+      assert.deepEqual(found, { ok: true, value: [] });
+    });
+    await check('Saved answers: failed saves and failed list reads show notices', async () => {
+      await installFake();
+      await app.evaluate(({ ipcMain }) => {
+        ipcMain.removeHandler('learning:save-answer');
+        ipcMain.handle('learning:save-answer', () => ({ ok: false, code: 'IO', message: '시험용 저장 실패' }));
+      });
+      await prepare(); await ask('저장 실패 질문');
+      await page.getByText('질문과 답을 저장하지 못했어요. 앱을 닫으면 사라져요.', { exact: true }).waitFor();
+      await savedCount(0);
+      await app.evaluate(({ ipcMain }) => {
+        ipcMain.removeHandler('learning:saved-answers');
+        ipcMain.handle('learning:saved-answers', () => {
+          globalThis.answerListReads++;
+          return { ok: false, code: 'IO', message: '시험용 목록 실패' };
+        });
+      });
+      await reopen();
+      await page.getByText('지난 질문과 답을 불러오지 못했어요.', { exact: true }).waitFor();
+    });
+    await app.close(); await launch();
+  }
+  {
     const folder = path.join(temporary, '이어서 보기 프로젝트');
     const otherFolder = path.join(temporary, '이어서 보기 다른 프로젝트');
     const original = 'export function begin(value: number) {\n  if (value < 0) return 0;\n  return value;\n}\n';

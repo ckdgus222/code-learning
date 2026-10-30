@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { idSchema, type Evidence } from './contracts';
+import { MAX_FILE_BYTES, idSchema, type Evidence } from './contracts';
 
 export const GEMINI_MODEL = 'gemini-3.8-flash-high';
 export const learningModeSchema = z.enum(['local-worker', 'codex', 'claude-code', 'antigravity']);
@@ -173,18 +173,30 @@ export interface ModelRun {
   requestedModel: string | null;
   reportedModel: string | null;
 }
-export interface LearningResult {
-  jobId: string;
-  conversationId: string;
-  projectId: string;
-  question: string;
-  evidence: Evidence;
-  sources: { evidence: Evidence; relativePath: string }[];
-  limitations: string[];
-  explanation: Explanation;
-  /** A single mode has no second AI checking the explanation against the code. */
-  review: 'AI 검토됨' | 'AI 대조 없음';
-  models: ModelRun[];
+// Positions can reach the end of a readable file; each selected slice is still at most 32 KiB.
+const answerEvidenceSchema = z.object({
+  id: idSchema, projectId: idSchema, fileId: idSchema, fileHash: z.string().regex(/^[a-f0-9]{64}$/),
+  startUtf16: z.number().int().min(0).max(MAX_FILE_BYTES), endUtf16: z.number().int().min(0).max(MAX_FILE_BYTES),
+  startLine: z.number().int().min(1).max(MAX_FILE_BYTES + 1), endLine: z.number().int().min(1).max(MAX_FILE_BYTES + 1),
+}).strict().refine(range => range.startUtf16 <= range.endUtf16 && range.startLine <= range.endLine &&
+  range.endUtf16 - range.startUtf16 <= 32 * 1024);
+export const learningResultSchema = z.object({
+  jobId: idSchema, conversationId: idSchema, projectId: idSchema,
+  // Masking short configuration values may expand a 2,000-character input.
+  question: z.string().min(1).max(16_000), evidence: answerEvidenceSchema,
+  sources: z.array(z.object({ evidence: answerEvidenceSchema, relativePath: z.string().min(1).max(1024) }).strict()).min(1).max(6),
+  limitations: z.array(description).max(32), explanation: explanationSchema,
+  review: z.enum(['AI 검토됨', 'AI 대조 없음']), models: z.array(modelRunSchema).max(3),
+}).strict();
+export type LearningResult = z.infer<typeof learningResultSchema>;
+export const saveAnswerSchema = z.object({ projectId: idSchema, result: learningResultSchema }).strict();
+export const savedAnswerRequestSchema = z.object({ projectId: idSchema, jobId: idSchema }).strict();
+export const openSavedEvidenceSchema = savedAnswerRequestSchema.extend({ evidenceId: idSchema }).strict();
+export function explanationReferencesMatch(explanation: Explanation, allowed: Set<string>): boolean {
+  const ids = [...explanation.steps.flatMap(step => step.evidenceIds),
+    ...explanation.claims.flatMap(claim => claim.kind === 'code' ? claim.evidenceIds : []),
+    ...explanation.examples.flatMap(example => example.evidenceIds)];
+  return ids.length > 0 && ids.every(id => allowed.has(id));
 }
 export const overviewResultSchema = z.object({
   jobId: idSchema, projectId: idSchema, overview: overviewSchema,

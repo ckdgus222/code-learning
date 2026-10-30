@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import type { CheckConnectionsRequest, ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest, FeatureGuideRequest, FeatureGuideResult, FileChunk, FileExplanationRange, FileExplanationResult, OverviewResult } from './ai';
+import type { CheckConnectionsRequest, ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest, FeatureGuideRequest, FeatureGuideResult, FileChunk, FileExplanationRange, FileExplanationResult, OverviewResult, LearningResult } from './ai';
 
+export const MAX_FILE_BYTES = 256 * 1024;
 export const idSchema = z.string().uuid();
 export const sourceRequestSchema = z.object({ projectId: idSchema, fileId: idSchema }).strict();
 export const evidenceRequestSchema = z.object({ projectId: idSchema, evidenceId: idSchema }).strict();
@@ -524,6 +525,11 @@ export interface LearningApi {
   checkConnections(request?: CheckConnectionsRequest): Promise<Result<ConnectionReport>>;
   startExplanation(input: ExplainRequest): Promise<Result<{ jobId: string }>>;
   startOverview(input: OverviewRequest): Promise<Result<{ jobId: string }>>;
+  savedAnswers(input: { projectId: string }): Promise<Result<{ jobId: string; question: string; savedAt: string }[]>>;
+  savedAnswer(input: { projectId: string; jobId: string }): Promise<Result<{ result: LearningResult; savedAt: string; changed: boolean } | null>>;
+  openSavedEvidence(input: { projectId: string; jobId: string; evidenceId: string }): Promise<Result<{ source: SourceView; evidence: Evidence }>>;
+  saveAnswer(input: { projectId: string; result: LearningResult }): Promise<Result<{ savedAt: string }>>;
+  deleteAnswer(input: { projectId: string; jobId: string }): Promise<Result<null>>;
   savedOverview(input: z.infer<typeof projectRequestSchema>): Promise<Result<{ result: OverviewResult; savedAt: string; changed: boolean } | null>>;
   saveOverview(input: { projectId: string; result: OverviewResult }): Promise<Result<{ savedAt: string }>>;
   deleteOverview(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
@@ -549,6 +555,8 @@ export const channels = {
   calls: 'learning:calls', cancelCalls: 'learning:cancel-calls', shapes: 'learning:shapes', cancelShapes: 'learning:cancel-shapes',
   history: 'learning:history', changes: 'learning:changes', diff: 'learning:diff', cancelChanges: 'learning:cancel-changes',
   connections: 'learning:connections', explain: 'learning:explain', overview: 'learning:overview',
+  savedAnswers: 'learning:saved-answers', savedAnswer: 'learning:saved-answer', openSavedEvidence: 'learning:open-saved-evidence',
+  saveAnswer: 'learning:save-answer', deleteAnswer: 'learning:delete-answer',
   savedOverview: 'learning:saved-overview', saveOverview: 'learning:save-overview', deleteOverview: 'learning:delete-overview',
   savedFileExplanation: 'learning:saved-file-explanation', saveFileExplanation: 'learning:save-file-explanation',
   deleteFileExplanation: 'learning:delete-file-explanation',

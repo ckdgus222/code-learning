@@ -1,4 +1,5 @@
 import React, { useEffect, useId, useState } from 'react';
+import { savedDate } from './overview';
 import type { SourceView } from '../shared/contracts';
 import { GEMINI_MODEL, type ConnectionReport, type FileExplanationRange, type FileExplanationResult,
   type LearningMode, type LearningPhase } from '../shared/ai';
@@ -66,7 +67,7 @@ export function FileExplanationCard({ source, entry, state, stale, mode, locked,
       : state.phase ? phases[state.phase] : 'AI 작업 시작 중'} <button className="btn btn--small" onClick={onCancel}>AI 작업 취소</button></p>}
     {state?.status === 'failed' && <p role={state.cancelled ? 'status' : 'alert'}>{state.message}</p>}
     {entry && !working && <p className="hint">
-      {entry.savedAt && <>저장됨 · {new Date(entry.savedAt).toLocaleDateString('ko-KR', { month: 'long', day: 'numeric' })} </>}
+      {entry.savedAt && <>저장됨 · {savedDate(entry.savedAt)} </>}
       <button className="btn btn--small" disabled={locked || running} onClick={onDelete}>지우기</button>
     </p>}
     {result && <>

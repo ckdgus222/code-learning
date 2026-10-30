@@ -1,4 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
+import { savedDate } from './overview';
 import { GEMINI_MODEL, type ConnectionReport, type FeatureGuideResult, type LearningEvent, type LearningMode, type LearningPhase } from '../shared/ai';
 
 const modes: Record<LearningMode, string> = {
@@ -104,7 +105,7 @@ export function FeatureGuideCard({ projectId, routesId, result, mode, locked, ru
         <p>{result.guide.summary}</p>
       </>}
       {!working && !running && <p>
-        {result.savedAt && <span className="hint">저장됨 · {new Date(result.savedAt).toLocaleDateString('ko-KR', { month: 'long', day: 'numeric' })} </span>}
+        {result.savedAt && <span className="hint">저장됨 · {savedDate(result.savedAt)} </span>}
         <button className="btn btn--small" disabled={deleting} onClick={() => {
           if (running || working || deleting) return;
           setDeleting(true); void onDelete().finally(() => setDeleting(false));
