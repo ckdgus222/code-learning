@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
-  GEMINI_MODEL, explainRequestSchema, explanationSchema, organizationSchema, overviewOrganizationSchema, overviewRequestSchema,
+  explanationReferencesMatch, GEMINI_MODEL, explainRequestSchema, explanationSchema, organizationSchema, overviewOrganizationSchema, overviewRequestSchema,
   overviewReviewSchema, overviewSchema, reviewSchema, fileExplanationRequestSchema, fileExplanationSchema, fileExplanationReviewSchema,
   featureGuideRequestSchema, featureGuideSchema, featureGuideReviewSchema, type FeatureGuideRequest,
   type FileExplanationRequest, type FileExplanation, type FileExplanationResult,
@@ -40,10 +40,7 @@ interface Job { kind: 'feature-guide' | 'other'; id: string; projectId: string; 
 
 function checkReferences(explanation: Explanation, snapshot: EvidenceSnapshot) {
   const allowed = new Set([snapshot.evidence.id, ...snapshot.files.map(file => file.evidence.id)]);
-  const ids = [...explanation.steps.flatMap(step => step.evidenceIds),
-    ...explanation.claims.flatMap(claim => claim.kind === 'code' ? claim.evidenceIds : []),
-    ...explanation.examples.flatMap(example => example.evidenceIds)];
-  if (!ids.length || ids.some(id => !allowed.has(id))) {
+  if (!explanationReferencesMatch(explanation, allowed)) {
     throw new AppError('AI_RESPONSE', '설명에 현재 코드에서 확인할 수 없는 근거가 있습니다.');
   }
 }

@@ -3,10 +3,10 @@ import { lstat, open, realpath, opendir } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import ignore, { type Ignore } from 'ignore';
-import type { ProjectFiles } from '../../shared/contracts';
+import { MAX_FILE_BYTES, type ProjectFiles } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 
-export const MAX_FILE_BYTES = 256 * 1024;
+export { MAX_FILE_BYTES } from '../../shared/contracts';
 const MAX_FILES = 1000;
 const MAX_ENTRIES = 5000;
 const MAX_DEPTH = 20;

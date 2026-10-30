@@ -3,6 +3,10 @@ import type { Evidence, LearningSpot, ProjectFile, ProjectView, SavedSpot } from
 import type { LearningPhase, OverviewFeature, OverviewResult } from '../shared/ai';
 import { SourceButtons } from './ai-panel';
 
+export function savedDate(at: string): string {
+  return new Date(at).toLocaleDateString('ko-KR', { month: 'long', day: 'numeric' });
+}
+
 /** Plan G1: the AI overview of the opened folder, asked for by the user and saved for the next visit. */
 export type OverviewState =
   | { status: 'running'; phase: LearningPhase | null; revision: number }
@@ -158,7 +162,7 @@ export function OverviewAi({ project, state, stale, locked, readiness, checking,
     {running && <p role="status" className="hint">{state.phase ? phases[state.phase] : '개요 작업 시작 중'}</p>}
     {state?.status === 'failed' && <p role={state.cancelled ? 'status' : 'alert'} className={state.cancelled ? 'hint' : 'notice'}>{state.message}</p>}
     {state?.status === 'done' && <p className="hint">
-      {state.savedAt && <>저장됨 · {new Date(state.savedAt).toLocaleDateString('ko-KR', { month: 'long', day: 'numeric' })} </>}
+      {state.savedAt && <>저장됨 · {savedDate(state.savedAt)} </>}
       <button className="btn btn--small" disabled={locked || checking} onClick={onDelete}>지우기</button>
     </p>}
     {state?.status === 'done' && <OverviewAnswer result={state.result} stale={stale} locked={locked} revealAnchor={revealAnchor} topicName={topicName}

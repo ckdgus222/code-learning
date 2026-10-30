@@ -490,3 +490,5 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .flow-nav [aria-current="step"] { background: var(--accent-soft); outline: 2px solid var(--accent); }
 /* Keep the step navigation in reach while long files scroll inside the reader. */
 .flow-walk-code { height: clamp(260px, 45vh, 540px); overflow: hidden; }
+
+.saved-question { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

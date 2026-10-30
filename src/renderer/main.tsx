@@ -27,7 +27,7 @@ import { useMap } from './use-map';
 import { callsKey, useCalls } from './use-calls';
 import { useAiJobs } from './use-ai-jobs';
 import { useLearning } from './use-learning';
-import { ResumeCard, restoreSpot, OverviewAi, TopicBar, type Place, type Topic } from './overview';
+import { savedDate, ResumeCard, restoreSpot, OverviewAi, TopicBar, type Place, type Topic } from './overview';
 import type { OverviewFeature, FileExplanationRange } from '../shared/ai';
 import './styles.css';
 
@@ -626,7 +626,7 @@ function App() {
         <ul className="recent-projects">{learning.recentProjects.map(recent => <li key={recent.id}>
           <button className="btn" disabled={busy} onClick={() => void openProject(recent.id)}>
             <b>{recent.name}</b><small>{recent.root}</small>
-            <small>{new Date(recent.openedAt).toLocaleDateString('ko-KR', { month: 'long', day: 'numeric' })}</small>
+            <small>{savedDate(recent.openedAt)}</small>
           </button>
         </li>)}</ul>
       </section>}
@@ -909,7 +909,11 @@ function App() {
         <div className="panel__head">
           <button className="btn btn--ghost btn--icon" aria-label="AI 칸 접기" title="AI 칸 접기" onClick={() => setPanelOpen(false)}><Icon name="collapse" /></button>
         </div>
-        <AiPanel key={project.id} projectId={project.id} evidence={questionEvidence} stale={stale} draft={draft}
+        <AiPanel key={project.id} projectId={project.id} openedAt={openedAt.current}
+          onSavedEvidence={value => {
+            request.current++; setBusy(false); setError(''); setNotice(''); setView('code');
+            setSource(value.source); setReaderEvidence(value.evidence); selectSymbol(null); selectStep(null);
+          }} evidence={questionEvidence} stale={stale} draft={draft}
           connections={ai.connections} checking={ai.checking} otherRunning={ai.overview?.status === 'running' || ai.fileExplanationRunning || ai.featureGuideRunning} onInspect={ai.inspectConnections} onEnsure={ai.ensureConnections}
           mode={ai.mode} onMode={ai.setMode} onRunning={ai.setQuestionRunning}
           relativePath={project.files.find(file => file.id === questionEvidence?.fileId)?.relativePath ?? ''}
