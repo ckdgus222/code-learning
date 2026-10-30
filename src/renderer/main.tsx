@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { FlowNode, CallSite, ValueSite, CodeSide, CodeSymbol, Evidence, FileChange, FunctionCalls, GitHistory, MapExport, MapFunction, MapImport, ProjectView, SourceView,
+import type { FlowNode, CallSite, ValueSite, CodeSymbol, Evidence, FunctionCalls, MapExport, MapFunction, MapImport, ProjectView, SourceView,
   StartCandidate, LearningMark, MarkKey, LearningSpot, RecentProject, SavedSpot } from '../shared/contracts';
 import { showsFiles, useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
@@ -22,7 +22,8 @@ import { matchCallStep, matchFunction, matchImport } from './map-layout';
 import { CallsFacts, type CallFunction, type CallsState } from './calls';
 import { shapeQueries, ValuesFacts, type ShapeSlot, type ShapesState } from './values';
 import { COMPLEXITY_NOTE, ComplexityTags, overLimit } from './complexity';
-import { ChangesView, type ChangesEntry, type DiffEntry, type Loaded } from './changes';
+import { ChangesView } from './changes';
+import { useChanges } from './use-changes';
 import { ResumeCard, restoreSpot, spotOf, OverviewAi, TopicBar, recordPlace, type OverviewState, type Place, type Topic } from './overview';
 import type { ConnectionReport, LearningEvent, OverviewFeature, LearningMode, FileExplanationRange } from '../shared/ai';
 import './styles.css';
@@ -137,13 +138,6 @@ function App() {
   // The value shapes for those calls (plan v2.3 V-2), asked for once the calls are found, under the same key.
   const [shapes, setShapes] = useState<{ key: string; state: ShapesState; slots: ShapeSlot[] } | null>(null);
   const shapesRequest = useRef(0);
-  // Plan v2.3 C-2: the commits of the opened folder, the comparison with the one chosen, and one change opened.
-  const [history, setHistory] = useState<Loaded<GitHistory> | null>(null);
-  const [changes, setChanges] = useState<ChangesEntry | null>(null);
-  const [diff, setDiff] = useState<DiffEntry | null>(null);
-  const historyRequest = useRef(0);
-  const changesRequest = useRef(0);
-  const diffRequest = useRef(0);
   const { view, setView, symbolId, stepId, selectSymbol, selectStep } = useSelection();
   const features = useFeatureFlows(project, revision.current);
   const importers = useMemo(() => source && projectMap ? importersOf(source.fileId, source.relativePath, projectMap.map) : null,
@@ -288,10 +282,7 @@ function App() {
   useEffect(() => {
     if (view === 'function' && calls?.state.status === 'done' && shapes?.key !== calls.key) void findShapes(calls.key, calls.state.result);
   }, [calls, view]);
-  // The changes view reads the folder's commits the first time it is looked at, then compares with HEAD.
-  useEffect(() => {
-    if (view === 'changes' && project && !history) void loadHistory();
-  }, [view, project]);
+  const git = useChanges({ project, revision, view, setView, setError });
   // The map is drawn the first time it is looked at after a folder opens.
   useEffect(() => {
     if (view === 'map' && mapTab === 'file' && project && !projectMap && !mapping) void buildMap();
@@ -305,13 +296,13 @@ function App() {
     setBusy(false);
     if (!result.ok) {
       openedAt.current++;
-      setError(result.message); setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap(); forgetCalls(); forgetChanges(); forgetOverview(); return;
+      setError(result.message); setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap(); forgetCalls(); git.forget(); forgetOverview(); return;
     }
     if (!result.value) return;
     // Cancelling the folder picker keeps this session, including its pending reads and saves.
     const opening = ++openedAt.current;
     // Reopening the same folder keeps the project ID but gives every file a new ID, so the map goes too.
-    forgetMap(); forgetCalls(); forgetChanges(); forgetOverview();
+    forgetMap(); forgetCalls(); git.forget(); forgetOverview();
     setExpandedFolders(new Set());
     setProject(result.value); setSource(null); setEvidence(null); setStale(false); setOverviewStale(false); setWatchError(false); setSearch(''); selectSymbol(null);
     const id = result.value.id;
@@ -774,71 +765,6 @@ function App() {
     if (current !== shapesRequest.current) return;
     setShapes({ key, slots, state: result.ok ? { status: 'done', result: result.value } : { status: 'failed', message: result.message } });
   }
-  function forgetChanges() {
-    historyRequest.current++; changesRequest.current++; diffRequest.current++;
-    setHistory(null); setChanges(null); setDiff(null);
-  }
-  /**
-   * Reads the folder's commits and compares again. A comparison with HEAD moves to the new HEAD after a new commit;
-   * one with an older commit keeps it while it is still listed. The first time, HEAD (first in the list).
-   */
-  async function loadHistory(previous?: { commit: string; head: boolean }) {
-    if (!project) return;
-    const current = ++historyRequest.current;
-    setHistory({ status: 'loading' });
-    const result = await window.learning.gitHistory({ projectId: project.id });
-    if (current !== historyRequest.current) return;
-    setHistory(result.ok ? { status: 'done', value: result.value } : { status: 'failed', message: result.message });
-    if (!result.ok || !result.value.available) return;
-    const { commits } = result.value;
-    const kept = previous && !previous.head && commits.some(commit => commit.oid === previous.commit) ? previous.commit : commits[0].oid;
-    void compare(kept);
-  }
-  function refreshChanges() {
-    if (!changes) return;
-    const head = history?.status === 'done' && history.value.commits.some(commit => commit.oid === changes.commit && commit.head);
-    void loadHistory({ commit: changes.commit, head });
-  }
-  async function compare(commit: string) {
-    if (!project) return;
-    const current = ++changesRequest.current;
-    diffRequest.current++;
-    setDiff(null);
-    const atRevision = revision.current;
-    setChanges({ commit, revision: atRevision, state: { status: 'loading' } });
-    // Main replaces a comparison still running.
-    const result = await window.learning.projectChanges({ projectId: project.id, commit });
-    if (current !== changesRequest.current) return;
-    setChanges({ commit, revision: atRevision, state: result.ok ? { status: 'done', value: result.value } : { status: 'failed', message: result.message } });
-  }
-  async function cancelCompare() {
-    if (!project) return;
-    changesRequest.current++;
-    setChanges(previous => previous && { ...previous, state: { status: 'failed', message: '비교를 취소했어요.' } });
-    const result = await window.learning.cancelChanges({ projectId: project.id });
-    if (!result.ok) setError(result.message);
-  }
-  /**
-   * One change side by side: the old code from the commit and the code now, each read under the app's rules by a side
-   * worker, so the file open in the reader and its evidence stay as they are.
-   */
-  async function openChange(change: FileChange) {
-    if (!project || !changes) return;
-    setView('changes');
-    const current = ++diffRequest.current;
-    const oldPath = change.kind === 'modified' || change.kind === 'renamed' || change.kind === 'deleted' ? change.oldPath ?? change.path : null;
-    setDiff({ change, old: oldPath ? { status: 'loading' } : null, now: change.fileId ? { status: 'loading' } : null });
-    const result = await window.learning.fileDiff({ projectId: project.id, commit: changes.commit, oldPath, fileId: change.fileId });
-    if (current !== diffRequest.current) return;
-    if (!result.ok) {
-      const failed: Loaded<string> = { status: 'failed', message: result.message };
-      setDiff({ change, old: oldPath ? failed : null, now: change.fileId ? failed : null });
-      return;
-    }
-    const loaded = (code: CodeSide | null): Loaded<string> | null => !code ? null
-      : 'text' in code ? { status: 'done', value: code.text } : { status: 'failed', message: code.message };
-    setDiff({ change, old: loaded(result.value.old), now: loaded(result.value.now) });
-  }
   async function cancelCalls() {
     if (!project) return;
     callsRequest.current++;
@@ -955,7 +881,7 @@ function App() {
   async function cancel() {
     openedAt.current++;
     const current = ++request.current;
-    setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap(); forgetCalls(); forgetChanges(); forgetOverview();
+    setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap(); forgetCalls(); git.forget(); forgetOverview();
     setBusy(true); setError(''); setNotice('');
     const result = await window.learning.cancel();
     if (current !== request.current) return;
@@ -1179,8 +1105,8 @@ function App() {
           </>}
           {mapTab === 'file' && <ProjectMapView project={project} entry={projectMap}
             stale={projectMap !== null && projectMap.revision !== revision.current} mapping={mapping}
-            changes={changes?.state.status === 'done' ? { result: changes.state.value, stale: changes.revision !== revision.current } : null}
-            onShowChange={change => void openChange(change)}
+            changes={git.changes?.state.status === 'done' ? { result: git.changes.state.value, stale: git.changes.revision !== revision.current } : null}
+            onShowChange={change => void git.openChange(change)}
             onBuild={() => void buildMap()} onCancel={() => void cancelMap()}
             locked={busy} onOpenFile={fileId => { if (busy) return; setView('code'); void readFile(fileId); }}
             onShowImport={item => void showImport(item)} onShowFunction={item => void showFunction(item)} />}
@@ -1205,10 +1131,10 @@ function App() {
               onShowSite={site => void showValueSite(site)} onShowFunction={target => void showCallFunction(target)} />}
           </>} />}
 
-        {view === 'changes' && <ChangesView history={history} changes={changes} diff={diff} locked={busy}
-          stale={changes !== null && changes.revision !== revision.current}
-          onRetryHistory={() => void loadHistory()} onCompare={commit => void compare(commit)} onRefresh={refreshChanges} onCancel={() => void cancelCompare()}
-          onOpen={change => void openChange(change)} onOpenCode={fileId => { if (busy) return; setView('code'); void readFile(fileId); }} />}
+        {view === 'changes' && <ChangesView history={git.history} changes={git.changes} diff={git.diff} locked={busy}
+          stale={git.changes !== null && git.changes.revision !== revision.current}
+          onRetryHistory={() => void git.loadHistory()} onCompare={commit => void git.compare(commit)} onRefresh={git.refresh} onCancel={() => void git.cancelCompare()}
+          onOpen={change => void git.openChange(change)} onOpenCode={fileId => { if (busy) return; setView('code'); void readFile(fileId); }} />}
 
         {view === 'code' && (!source ? <div className="page page--empty">
           <h2 className="page__title">코드 읽기</h2>
