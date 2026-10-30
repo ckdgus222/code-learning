@@ -131,6 +131,15 @@ for (let index = 0; index < 65; index++) {
   await mkdir(path.join(bigMapFixture, folder), { recursive: true });
   await writeFile(path.join(bigMapFixture, folder, `file${index}.ts`), `import { step } from '../part${(index + 1) % 5}/file${(index + 1) % 65}';\n${bigBody}`);
 }
+// Over the file-view limit, with three sibling folders and a distinct root option.
+const folderFileViewFixture = path.join(temporary, '폴더별 파일 지도 프로젝트');
+for (let index = 0; index < 90; index++) {
+  const folder = `src/part${index % 3}`;
+  await mkdir(path.join(folderFileViewFixture, folder), { recursive: true });
+  await writeFile(path.join(folderFileViewFixture, folder, `file${index}.ts`),
+    `import { value as next } from '../part${(index + 1) % 3}/file${(index + 1) % 90}';\nexport const value = next;\n`);
+}
+await writeFile(path.join(folderFileViewFixture, 'root.ts'), 'export const root = 1;\n');
 // Plan G1: a feature to follow, two methods of one name, and a source file that is no start candidate.
 const featureFixture = path.join(temporary, '기능 프로젝트');
 const featureFiles = {
@@ -2256,6 +2265,55 @@ try {
     await boxes.filter({ hasText: 'root.ts' }).waitFor();
     await chips.getByRole('button', { name: '(최상위 폴더) 바로 아래 파일 접기', exact: true }).click();
     await boxes.filter({ hasText: '(최상위 폴더) 바로 아래 파일 · 1개' }).waitFor();
+    assert.equal(await chips.count(), 0);
+    await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
+    await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+  });
+  await check('Large file maps select one folder, distinguish the root and track manual folds', async () => {
+    await dialogTo(folderFileViewFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '폴더별 파일 지도 프로젝트', exact: true }).waitFor();
+    await openFileMap();
+    const select = page.getByRole('combobox', { name: '파일 볼 폴더', exact: true });
+    const boxes = page.getByTestId('map-canvas').locator('.react-flow__node');
+    const chips = page.getByRole('group', { name: '펼친 곳', exact: true });
+    const connections = page.getByRole('region', { name: '상자별 연결', exact: true });
+    await select.waitFor();
+    assert.equal(await page.getByRole('button', { name: '파일 보기', exact: true }).count(), 0);
+    await page.getByText('파일이 91개라 한 번에 그리면 선이 엉켜요. 폴더를 고르면 그 폴더의 파일을 상자로 보여 줘요.', { exact: true }).waitFor();
+    assert.equal(await select.inputValue(), '');
+    assert.deepEqual(await select.locator('option').allTextContents(), [
+      '폴더 고르기', '(최상위 폴더) · 파일 1개', 'src/part0 · 파일 30개', 'src/part1 · 파일 30개', 'src/part2 · 파일 30개',
+    ]);
+    await select.selectOption('folder:src/part0');
+    await connections.getByRole('heading', { name: '상자별 연결 · 상자 33개', exact: true }).waitFor();
+    const shown = await connections.getByRole('button').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')));
+    assert.deepEqual(shown.filter(name => name.endsWith('.ts')).sort(),
+      Array.from({ length: 30 }, (_, index) => `src/part0/file${index * 3}.ts`).sort());
+    assert.deepEqual(shown.filter(name => !name.endsWith('.ts')).sort(), ['(최상위 폴더) 바로 아래 파일', 'src/part1', 'src/part2']);
+    await until(async () => await boxes.count() === 33);
+    assert.deepEqual((await page.getByTestId('map-canvas').locator('.map-box--file .map-box__label > b').allTextContents()).sort(),
+      Array.from({ length: 30 }, (_, index) => `file${index * 3}.ts`).sort());
+    assert.deepEqual(await chips.getByRole('button').allTextContents(), ['src 접기', 'src/part0 접기']);
+    assert.equal(await select.inputValue(), 'folder:src/part0');
+    // Another choice replaces the previous open folder instead of accumulating file boxes.
+    await select.selectOption('folder:src/part1');
+    assert.deepEqual(await chips.getByRole('button').allTextContents(), ['src 접기', 'src/part1 접기']);
+    assert.equal(await connections.getByRole('button', { name: /^src\/part0\/.*\.ts$/ }).count(), 0);
+    assert.equal(await connections.getByRole('button', { name: /^src\/part1\/.*\.ts$/ }).count(), 30);
+    await chips.getByRole('button', { name: 'src/part1 접기', exact: true }).click();
+    assert.equal(await select.inputValue(), '');
+    await boxes.filter({ hasText: 'src/part2 · 파일 30개' }).click();
+    assert.equal(await select.inputValue(), 'folder:src/part2');
+    // The root uses folder:, while the placeholder alone has the empty value.
+    await select.selectOption('folder:');
+    assert.equal(await select.inputValue(), 'folder:');
+    assert.deepEqual(await select.locator('option:checked').allTextContents(), ['(최상위 폴더) · 파일 1개']);
+    assert.deepEqual(await chips.getByRole('button').allTextContents(), ['(최상위 폴더) 바로 아래 파일 접기']);
+    await until(async () => await boxes.filter({ hasText: 'root.ts' }).count() === 1);
+    await page.getByRole('button', { name: '설계 보기', exact: true }).click();
+    assert.equal(await select.inputValue(), '');
+    assert.deepEqual(await select.locator('option:checked').allTextContents(), ['폴더 고르기']);
     assert.equal(await chips.count(), 0);
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
