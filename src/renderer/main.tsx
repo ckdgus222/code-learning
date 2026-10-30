@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { FlowNode, CallSite, ValueSite, CodeSymbol, Evidence, FunctionCalls, MapExport, MapFunction, MapImport, ProjectView, SourceView,
+import type { FlowNode, CallSite, ValueSite, CodeSymbol, Evidence, MapExport, MapFunction, MapImport, ProjectView, SourceView,
   StartCandidate, LearningMark, MarkKey, LearningSpot, RecentProject, SavedSpot } from '../shared/contracts';
 import { showsFiles, useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
@@ -15,15 +15,17 @@ import { FileExplanationCard, rememberFileExplanation, type FileExplanationEntry
 import { Flow } from './flow';
 import { markKeysOf, sameMarkKey, nextMark, type MarkChange } from './marks';
 import { LearningMarksCard } from './learning-marks';
-import { ProjectMapView, type MapEntry } from './project-map';
+import { ProjectMapView } from './project-map';
 import { FeatureChooser, FeatureList, FlowLimits, FlowPicture, FlowWalk, hasFlowCode, RoutesStatus, siteOf, useFeatureFlows, type FlowStart } from './feature-flow';
 import { codeNameOf } from '../core/analysis/flow-story';
 import { matchCallStep, matchFunction, matchImport } from './map-layout';
-import { CallsFacts, type CallFunction, type CallsState } from './calls';
-import { shapeQueries, ValuesFacts, type ShapeSlot, type ShapesState } from './values';
+import { CallsFacts, type CallFunction } from './calls';
+import { ValuesFacts } from './values';
 import { COMPLEXITY_NOTE, ComplexityTags, overLimit } from './complexity';
 import { ChangesView } from './changes';
 import { useChanges } from './use-changes';
+import { useMap } from './use-map';
+import { callsKey, useCalls } from './use-calls';
 import { ResumeCard, restoreSpot, spotOf, OverviewAi, TopicBar, recordPlace, type OverviewState, type Place, type Topic } from './overview';
 import type { ConnectionReport, LearningEvent, OverviewFeature, LearningMode, FileExplanationRange } from '../shared/ai';
 import './styles.css';
@@ -127,21 +129,9 @@ function App() {
   const revision = useRef(0);
   // A second notice changes no other state (stale is already set), so this redraws the screen for the map.
   const [, setRevisionShown] = useState(0);
-  // The map is drawn by its own worker, so it has its own request counter: reads may go on meanwhile.
-  const [projectMap, setProjectMap] = useState<MapEntry | null>(null);
   const [mapTab, setMapTab] = useState<'feature' | 'file'>('feature');
-  const [mapping, setMapping] = useState(false);
-  const mapRequest = useRef(0);
-  // The call search for the function chosen in the flow view (plan v2.3 F), kept per function and file hash.
-  const [calls, setCalls] = useState<{ key: string; state: CallsState; revision: number } | null>(null);
-  const callsRequest = useRef(0);
-  // The value shapes for those calls (plan v2.3 V-2), asked for once the calls are found, under the same key.
-  const [shapes, setShapes] = useState<{ key: string; state: ShapesState; slots: ShapeSlot[] } | null>(null);
-  const shapesRequest = useRef(0);
   const { view, setView, symbolId, stepId, selectSymbol, selectStep } = useSelection();
   const features = useFeatureFlows(project, revision.current);
-  const importers = useMemo(() => source && projectMap ? importersOf(source.fileId, source.relativePath, projectMap.map) : null,
-    [source?.fileId, projectMap]);
   const does = useMemo(() => functionDoes(source?.fileId ?? '', source?.hash ?? '', source?.analysis.symbols ?? [],
     features.stale ? null : features.routes ?? null, features.groupingProps.flows),
   [source?.fileId, source?.hash, features.routes, features.groupingProps.flows, features.stale]);
@@ -274,19 +264,11 @@ function App() {
 
   // A newly opened project starts from its overview, not the previous project's view.
   useEffect(() => setView('overview'), [project, setView]);
-  // Choosing a function in the flow view searches its calls; coming back to it reuses what was found.
-  useEffect(() => {
-    if (view === 'function' && source && symbol && calls?.key !== callsKey(source, symbol)) void findCalls(source, symbol);
-  }, [view, source, symbol]);
-  // The calls found lead to their value shapes; coming back to a function reuses both.
-  useEffect(() => {
-    if (view === 'function' && calls?.state.status === 'done' && shapes?.key !== calls.key) void findShapes(calls.key, calls.state.result);
-  }, [calls, view]);
+  const callSearch = useCalls({ project, revision, view, source, symbol, setError });
   const git = useChanges({ project, revision, view, setView, setError });
-  // The map is drawn the first time it is looked at after a folder opens.
-  useEffect(() => {
-    if (view === 'map' && mapTab === 'file' && project && !projectMap && !mapping) void buildMap();
-  }, [view, project, mapTab]);
+  const map = useMap({ project, revision, view, tab: mapTab, setError });
+  const importers = useMemo(() => source && map.entry ? importersOf(source.fileId, source.relativePath, map.entry.map) : null,
+    [source?.fileId, map.entry]);
 
   async function openProject(projectId?: string) {
     const current = ++request.current;
@@ -296,13 +278,13 @@ function App() {
     setBusy(false);
     if (!result.ok) {
       openedAt.current++;
-      setError(result.message); setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap(); forgetCalls(); git.forget(); forgetOverview(); return;
+      setError(result.message); setProject(null); setSource(null); setEvidence(null); selectSymbol(null); map.forget(); callSearch.forget(); git.forget(); forgetOverview(); return;
     }
     if (!result.value) return;
     // Cancelling the folder picker keeps this session, including its pending reads and saves.
     const opening = ++openedAt.current;
     // Reopening the same folder keeps the project ID but gives every file a new ID, so the map goes too.
-    forgetMap(); forgetCalls(); git.forget(); forgetOverview();
+    map.forget(); callSearch.forget(); git.forget(); forgetOverview();
     setExpandedFolders(new Set());
     setProject(result.value); setSource(null); setEvidence(null); setStale(false); setOverviewStale(false); setWatchError(false); setSearch(''); selectSymbol(null);
     const id = result.value.id;
@@ -675,26 +657,6 @@ function App() {
       : `‘${name}’은 이 파일의 함수 목록에 없어요(이름 없는 함수나 다른 종류일 수 있어요). 왼쪽에서 직접 골라 주세요.`);
   }
 
-  function forgetMap() { mapRequest.current++; setProjectMap(null); setMapping(false); }
-  async function buildMap() {
-    if (!project) return;
-    const current = ++mapRequest.current;
-    const atRevision = revision.current;
-    setMapping(true); setError('');
-    const result = await window.learning.projectMap({ projectId: project.id });
-    if (current !== mapRequest.current) return;
-    setMapping(false);
-    if (!result.ok) { if (result.code !== 'CANCELLED') setError(result.message); return; }
-    // A change notice that arrived while the map was drawn keeps it marked for a re-check.
-    setProjectMap({ map: result.value, revision: atRevision, build: current });
-  }
-  async function cancelMap() {
-    if (!project) return;
-    mapRequest.current++;
-    setMapping(false);
-    const result = await window.learning.cancelProjectMap({ projectId: project.id });
-    if (!result.ok) setError(result.message);
-  }
   // Like a start candidate: the import is highlighted only while the file has the hash it had for the map.
   async function showImport(item: MapImport) {
     // Reading now would drop a folder that is still opening, as the file list's busy lock prevents.
@@ -733,45 +695,6 @@ function App() {
       : `이 함수(${item.startLine}행)는 코드 분석 범위 밖이라 고르지 못했어요.`);
   }
 
-  const callsKey = (from: SourceView, item: CodeSymbol) => `${from.fileId}:${from.hash}:${item.evidence.startUtf16}:${item.evidence.endUtf16}`;
-  // The function card the last call search belongs to; looked up only while the file guide is drawn.
-  function guideCaller(found: NonNullable<typeof calls>) {
-    const item = source?.analysis.symbols.find(symbol => found.key === callsKey(source, symbol));
-    return item ? { symbolId: item.id, state: found.state, stale: found.revision !== revision.current } : null;
-  }
-  function forgetCalls() { callsRequest.current++; setCalls(null); forgetShapes(); }
-  // A search still running is replaced by the next one, so only its result is dropped here.
-  function forgetShapes() { shapesRequest.current++; setShapes(null); }
-  async function findCalls(from: SourceView, item: CodeSymbol) {
-    if (!project) return;
-    forgetShapes();
-    const current = ++callsRequest.current;
-    const atRevision = revision.current;
-    const key = callsKey(from, item);
-    setCalls({ key, state: { status: 'finding' }, revision: atRevision });
-    // Main replaces a search still running for another function.
-    const result = await window.learning.functionCalls({ projectId: project.id, fileId: from.fileId, fileHash: from.hash,
-      startUtf16: item.evidence.startUtf16, endUtf16: item.evidence.endUtf16 });
-    if (current !== callsRequest.current) return;
-    setCalls({ key, revision: atRevision, state: result.ok ? { status: 'done', result: result.value } : { status: 'failed', message: result.message } });
-  }
-  async function findShapes(key: string, found: FunctionCalls) {
-    if (!project) return;
-    const current = ++shapesRequest.current;
-    const { queries, slots } = shapeQueries(found.values, found.fileId);
-    setShapes({ key, slots, state: { status: 'finding' } });
-    const result = await window.learning.valueShapes({ projectId: project.id, fileId: found.fileId, fileHash: found.fileHash,
-      startUtf16: found.startUtf16, endUtf16: found.endUtf16, names: queries });
-    if (current !== shapesRequest.current) return;
-    setShapes({ key, slots, state: result.ok ? { status: 'done', result: result.value } : { status: 'failed', message: result.message } });
-  }
-  async function cancelCalls() {
-    if (!project) return;
-    callsRequest.current++;
-    setCalls(previous => previous && { ...previous, state: { status: 'failed', message: '호출 찾기를 취소했어요.' } });
-    const result = await window.learning.cancelFunctionCalls({ projectId: project.id });
-    if (!result.ok) setError(result.message);
-  }
   // Like showImport: the call is highlighted only while its file has the hash it had for the search.
   async function showCallSite(site: CallSite) {
     if (busy) return;
@@ -881,7 +804,7 @@ function App() {
   async function cancel() {
     openedAt.current++;
     const current = ++request.current;
-    setProject(null); setSource(null); setEvidence(null); selectSymbol(null); forgetMap(); forgetCalls(); git.forget(); forgetOverview();
+    setProject(null); setSource(null); setEvidence(null); selectSymbol(null); map.forget(); callSearch.forget(); git.forget(); forgetOverview();
     setBusy(true); setError(''); setNotice('');
     const result = await window.learning.cancel();
     if (current !== request.current) return;
@@ -1103,11 +1026,11 @@ function App() {
             </>}
             <FlowLimits project={project} routes={features.routes} flow={features.flow} locked={busy} onCode={site => void showValueSite(site)} />
           </>}
-          {mapTab === 'file' && <ProjectMapView project={project} entry={projectMap}
-            stale={projectMap !== null && projectMap.revision !== revision.current} mapping={mapping}
+          {mapTab === 'file' && <ProjectMapView project={project} entry={map.entry}
+            stale={map.entry !== null && map.entry.revision !== revision.current} mapping={map.mapping}
             changes={git.changes?.state.status === 'done' ? { result: git.changes.state.value, stale: git.changes.revision !== revision.current } : null}
             onShowChange={change => void git.openChange(change)}
-            onBuild={() => void buildMap()} onCancel={() => void cancelMap()}
+            onBuild={() => void map.build()} onCancel={() => void map.cancel()}
             locked={busy} onOpenFile={fileId => { if (busy) return; setView('code'); void readFile(fileId); }}
             onShowImport={item => void showImport(item)} onShowFunction={item => void showFunction(item)} />}
         </div>}
@@ -1121,13 +1044,13 @@ function App() {
             else if (symbol) void showEvidence(symbol.evidence, null);
           }}
           onOpenCode={() => setView('code')}
-          calls={calls && source && symbol && calls.key === callsKey(source, symbol) && <>
-            <CallsFacts state={calls.state} stale={calls.revision !== revision.current} locked={busy} pathOf={pathOf}
-              onRetry={() => void findCalls(source, symbol)} onCancel={() => void cancelCalls()}
+          calls={callSearch.calls && source && symbol && callSearch.calls.key === callsKey(source, symbol) && <>
+            <CallsFacts state={callSearch.calls.state} stale={callSearch.calls.revision !== revision.current} locked={busy} pathOf={pathOf}
+              onRetry={() => void callSearch.find(source, symbol)} onCancel={() => void callSearch.cancel()}
               onShowSite={site => void showCallSite(site)} onShowFunction={target => void showCallFunction(target)} />
-            {calls.state.status === 'done' && <ValuesFacts key={calls.key} result={calls.state.result} locked={busy} pathOf={pathOf}
-              shapes={shapes?.key === calls.key ? shapes : null}
-              onRetryShapes={() => { if (calls.state.status === 'done') void findShapes(calls.key, calls.state.result); }}
+            {callSearch.calls.state.status === 'done' && <ValuesFacts key={callSearch.calls.key} result={callSearch.calls.state.result} locked={busy} pathOf={pathOf}
+              shapes={callSearch.shapes?.key === callSearch.calls.key ? callSearch.shapes : null}
+              onRetryShapes={() => { if (callSearch.calls?.state.status === 'done') void callSearch.findShapes(callSearch.calls.key, callSearch.calls.state.result); }}
               onShowSite={site => void showValueSite(site)} onShowFunction={target => void showCallFunction(target)} />}
           </>} />}
 
@@ -1168,13 +1091,13 @@ function App() {
             {source.guide && <FileGuideCard key={`${source.fileId}:${source.hash}`} guide={source.guide} analysis={source.analysis} busy={busy} stale={stale}
               open={fileGuideOpen} onToggle={setFileGuideOpen}
               ai={aiFunctionSummaries(fileExplanation?.result ?? null, fileExplanationStale, source.analysis.symbols)}
-              importers={{ state: mapping ? 'running' : projectMap ? 'ready' : 'none',
-                stale: projectMap !== null && projectMap.revision !== revision.current, result: importers }}
-              onBuildMap={() => void buildMap()} onCancelMap={() => void cancelMap()} onShowImport={item => void showImport(item)}
+              importers={{ state: map.mapping ? 'running' : map.entry ? 'ready' : 'none',
+                stale: map.entry !== null && map.entry.revision !== revision.current, result: importers }}
+              onBuildMap={() => void map.build()} onCancelMap={() => void map.cancel()} onShowImport={item => void showImport(item)}
               does={does} doesState={{ routes: features.stale ? 'stale' : features.routes ? 'ready' : 'none', flows: features.groupingProps.flows !== null }}
-              callers={calls && guideCaller(calls)}
-              onFindCallers={item => void findCalls(source, item)}
-              onCancelCallers={() => void cancelCalls()} onShowCallSite={site => void showCallSite(site)} pathOf={pathOf}
+              callers={callSearch.calls && callSearch.guideCaller(callSearch.calls)}
+              onFindCallers={item => void callSearch.find(source, item)}
+              onCancelCallers={() => void callSearch.cancel()} onShowCallSite={site => void showCallSite(site)} pathOf={pathOf}
               uses={{ ...uses, routes: features.routes ?? null,
                 state: features.stale ? 'stale' : features.groupingProps.grouping ? 'running' : features.groupingProps.flows ? 'ready' : 'none' }}
               onUse={use => void followFeatureRoute(use.routeIndex, { through: use.through, storyId: use.storyId, step: use.step, nodeId: use.nodeId })}
