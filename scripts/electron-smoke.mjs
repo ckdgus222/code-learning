@@ -219,8 +219,24 @@ gitMany('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verif
 await writeFile(path.join(manyFixture, 'big.txt'), 'small now\n');
 for (let index = 0; index < 301; index++) await writeFile(path.join(manyFixture, `new${String(index).padStart(3, '0')}.txt`), `${index}\n`);
 // Test harness lives outside the shipped app. Production IPC has no path injection/test API.
+// A test-only entry: the app code is unchanged, but its windows open hidden and keep drawing, and there is no
+// Dock icon, so a test run does not cover or take focus from whatever else is on the screen.
+function bootstrapFor(userData) {
+  return `const Module = require('node:module');
+const electron = require('electron');
+// Only the options change: the window is still a plain BrowserWindow, so getAllWindows() and the app see it as before.
+const HiddenWindow = new Proxy(electron.BrowserWindow, { construct: (Window, [options = {}]) => new Window({ ...options,
+  show: false, paintWhenInitiallyHidden: true, webPreferences: { ...options.webPreferences, backgroundThrottling: false } }) });
+const hidden = new Proxy(electron, { get: (target, key) => key === 'BrowserWindow' ? HiddenWindow : Reflect.get(target, key) });
+const load = Module._load;
+Module._load = function (request, ...rest) { return request === 'electron' ? hidden : load.call(this, request, ...rest); };
+electron.app.whenReady().then(() => electron.app.dock?.hide());
+electron.app.setPath('userData', ${JSON.stringify(userData)});
+require(${JSON.stringify(path.join(root, '.vite/build/main.cjs'))});
+`;
+}
 const bootstrap = path.join(temporary, 'bootstrap.cjs');
-await writeFile(bootstrap, `const { app } = require('electron');\napp.setPath('userData', ${JSON.stringify(profile)});\nrequire(${JSON.stringify(path.join(root, '.vite/build/main.cjs'))});\n`);
+await writeFile(bootstrap, bootstrapFor(profile));
 let app;
 let page;
 const checks = [];
@@ -450,7 +466,7 @@ async function releaseWorkerMessages() {
 const inspectionProfile = path.join(temporary, 'inspection-profile');
 await mkdir(inspectionProfile);
 const inspectionBootstrap = path.join(temporary, 'inspection-bootstrap.cjs');
-await writeFile(inspectionBootstrap, `const { app } = require('electron');\napp.setPath('userData', ${JSON.stringify(inspectionProfile)});\nrequire(${JSON.stringify(path.join(root, '.vite/build/main.cjs'))});\n`);
+await writeFile(inspectionBootstrap, bootstrapFor(inspectionProfile));
 try {
   await launch(inspectionBootstrap);
   await check('Fresh app: real IPC rejects AI requests before any installation check', async () => {
@@ -627,10 +643,14 @@ try {
   await launch();
   await check('SQLite uses isolated profile; renderer is sandboxed', async () => {
     const state = await app.evaluate(({ app, BrowserWindow }) => {
-      const prefs = BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences();
-      return { profile: app.getPath('userData'), sandbox: prefs.sandbox, isolated: prefs.contextIsolation, node: prefs.nodeIntegration };
+      const [window] = BrowserWindow.getAllWindows();
+      const prefs = window.webContents.getLastWebPreferences();
+      return { profile: app.getPath('userData'), sandbox: prefs.sandbox, isolated: prefs.contextIsolation, node: prefs.nodeIntegration,
+        visible: window.isVisible() };
     });
     assert.equal(state.profile, profile); assert.equal(state.sandbox, true); assert.equal(state.isolated, true); assert.equal(state.node, false);
+    // The test entry keeps the window hidden so a run does not cover the screen.
+    assert.equal(state.visible, false);
     assert.equal(await page.evaluate(() => typeof window.require), 'undefined');
     assert.ok((await readFile(path.join(profile, 'learning.sqlite'))).length > 0);
   });
