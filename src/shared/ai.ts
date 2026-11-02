@@ -64,7 +64,7 @@ const fileRangeSchema = z.object({
   startUtf16: fileOffset, endUtf16: fileOffset,
   startLine: z.number().int().min(1).max(32 * 1024 + 1), endLine: z.number().int().min(1).max(32 * 1024 + 1),
 }).strict().refine(range => range.startUtf16 <= range.endUtf16 && range.startLine <= range.endLine);
-const modelRunSchema = z.object({
+export const modelRunSchema = z.object({
   stage: z.enum(['organizing', 'explaining', 'reviewing']), provider: z.enum(['codex', 'antigravity']),
   requestedModel: z.string().min(1).max(120).nullable(), reportedModel: z.string().min(1).max(120).nullable(),
 }).strict();

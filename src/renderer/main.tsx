@@ -78,7 +78,7 @@ function FileTreeList({ folder, expanded, searching, currentFileId, busy, onTogg
 
 function App() {
   const [project, setProject] = useState<ProjectView | null>(null);
-  const planCompare = usePlanCompare(project?.id ?? null);
+  const planCompare = usePlanCompare(project);
   const [source, setSource] = useState<SourceView | null>(null);
   const [evidence, setReaderEvidence] = useState<Evidence | null>(null);
   const [questionEvidence, setQuestionEvidence] = useState<Evidence | null>(null);

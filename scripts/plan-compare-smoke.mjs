@@ -466,3 +466,236 @@ async function checkPlanCompareResults(app, page, card, pick, temporary, showCar
     });
   }
 }
+
+// Restart uses the caller's existing hidden-window bootstrap and the same isolated profile.
+// Only AI completion and its save are fabricated; restoration, checks, deletion and evidence opening use real IPC.
+export async function checkSavedPlanCompare(app, page, temporary, restart) {
+  const root = path.join(temporary, 'saved-plan-project');
+  const planPath = path.join(temporary, 'saved-plan.md');
+  const planText = '# 저장 기획\n값을 읽는다\n직접 연결하지 않는다';
+  const code = 'export const value = 1;\n';
+  const importText = "import { value } from './main';";
+  const unread = `${importText}\nexport const result = value;\n`;
+  await mkdir(root);
+  const resetFiles = async () => {
+    await writeFile(path.join(root, 'main.ts'), code);
+    await writeFile(path.join(root, 'unread.ts'), unread);
+    await writeFile(planPath, planText);
+    await rm(path.join(root, 'new.ts'), { force: true });
+  };
+  await resetFiles();
+  let projectId;
+  const card = () => page.getByRole('region', { name: '기획과 비교', exact: true });
+  const result = () => card().locator('.plan-compare-result');
+  const flush = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const show = async () => {
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    const more = page.locator('details[aria-label="더 알아보기"]');
+    if (!await more.evaluate(element => element.open)) await more.locator(':scope > summary').click();
+    await card().waitFor();
+  };
+  const prepare = async () => {
+    const state = await app.evaluate(({ app, BrowserWindow, ipcMain }) => {
+      globalThis.savedPlanAiCalls = 0;
+      for (const channel of ['learning:plan-compare', 'learning:explain', 'learning:overview', 'learning:feature-guide', 'learning:file-explanation']) {
+        ipcMain._invokeHandlers.set(channel, async () => {
+          globalThis.savedPlanAiCalls++;
+          return { ok: false, code: 'NOT_ALLOWED', message: 'No real AI in saved plan tests' };
+        });
+      }
+      globalThis.savedPlanRead = ipcMain._invokeHandlers.get('learning:saved-plan-compare');
+      return { profile: app.getPath('userData'), visible: BrowserWindow.getAllWindows()[0].isVisible() };
+    });
+    assert.ok(state.profile.startsWith(temporary + path.sep));
+    assert.equal(state.visible, false);
+    await page.evaluate(() => Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' }));
+  };
+  const open = async () => {
+    await app.evaluate(({ dialog }, root) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [root] }); }, root);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: path.basename(root), exact: true }).waitFor();
+    await show();
+    const recent = await page.evaluate(() => window.learning.recentProjects());
+    projectId = recent.value.find(item => item.root === root).id;
+  };
+  const reboot = async change => {
+    ({ app, page } = await restart(change));
+    await prepare();
+    await open();
+  };
+  const fresh = async () => {
+    await card().getByText(/저장됨 ·/).waitFor();
+    await page.waitForFunction(() => {
+      const button = document.querySelector('.plan-compare-result button');
+      return button && !button.disabled;
+    });
+    assert.equal(await result().getByRole('alert').count(), 0);
+  };
+  const stale = async (reason, timeout = 5000) => {
+    await result().getByRole('alert').filter({ hasText: reason }).waitFor({ timeout });
+    assert.equal(await result().locator('button:not(:disabled)').count(), 0);
+  };
+  const pick = async () => {
+    await app.evaluate(({ dialog }, file) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] }); }, planPath);
+    await card().getByRole('button', { name: /^(기획 문서 고르기|다른 문서 고르기)$/ }).click();
+    await card().getByText(/^saved-plan.md ·/).waitFor();
+  };
+  const generate = async (failSave = false) => {
+    await pick();
+    const mapResponse = await page.evaluate(projectId => window.learning.projectMap({ projectId }), projectId);
+    assert.equal(mapResponse.ok, true);
+    const map = mapResponse.value;
+    const source = await page.evaluate(({ projectId, fileId }) => window.learning.readSource({ projectId, fileId }),
+      { projectId, fileId: map.files.find(file => file.relativePath === 'main.ts').id });
+    assert.equal(source.ok, true);
+    const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+    const paths = new Map(map.files.map(file => [file.id, file.relativePath]));
+    const mapHash = hash({
+      files: map.files.map(file => ({ path: file.relativePath, checked: file.checked })),
+      edges: map.edges.map(edge => ({ from: paths.get(edge.fromFileId), to: paths.get(edge.toFileId), line: edge.startLine, specifier: edge.specifier })),
+      unresolved: map.unresolved.map(edge => ({ from: paths.get(edge.fromFileId), specifier: edge.specifier, reason: edge.reason })),
+      external: map.external.map(edge => ({ from: paths.get(edge.fromFileId), specifier: edge.specifier })),
+    });
+    const { toFileId: _to, names: _names, ...site } = map.edges[0];
+    const fixture = {
+      projectId, mode: 'local-worker', structureOnly: false, models: [], review: 'AI 검토됨',
+      document: { name: 'saved-plan.md' }, plan: [{ startLine: 1, text: planText }],
+      sent: [{ startLine: 1, endLine: 3 }], excluded: [],
+      files: map.files.map(file => ({ id: file.id, relativePath: file.relativePath })),
+      read: [{ fileId: source.value.fileId, relativePath: source.value.relativePath, fileHash: source.value.hash }],
+      edges: [{ index: 0, from: 'unread.ts', to: 'main.ts', line: 1, site }],
+      compare: { items: [{ title: '저장된 판정', plan: { startLine: 2, endLine: 2 }, status: 'differs',
+        files: [source.value.fileId], difference: '기획과 다른 값', missingEvidence: null, searched: null }],
+        unrequested: [], designMismatches: [{ plan: { startLine: 3, endLine: 3 }, edge: 0, note: '직접 연결' }], unknowns: [] },
+      basis: { planHash: createHash('sha256').update(planText).digest('hex'),
+        scopeHash: hash({ paths: ['main.ts', 'unread.ts'], rules: [{ path: '.gitignore', hash: null }] }), mapHash }, limitations: [],
+    };
+    await app.evaluate(({ ipcMain, app }, { fixture, planPath, failSave }) => {
+      ipcMain._invokeHandlers.set('learning:connections', async () => ({ ok: true, value: { checkedAt: new Date().toISOString(), providers: [],
+        modes: [{ mode: 'local-worker', ready: true, reason: '저장 시험용 가짜 AI' }] } }));
+      ipcMain._invokeHandlers.set('learning:plan-compare', async (event, input) => {
+        const jobId = process.getBuiltinModule('node:crypto').randomUUID();
+        const result = { ...fixture, jobId, document: { ...fixture.document, documentId: input.selection.documentId } };
+        globalThis.savedPlanFixture = result;
+        globalThis.savedPlanAiCalls++;
+        event.sender.send('learning:ai-event', { kind: 'plan-compare-completed', projectId: input.projectId, jobId, result });
+        return { ok: true, value: { jobId } };
+      });
+      ipcMain._invokeHandlers.set('learning:save-plan-compare', async (_event, input) => {
+        if (failSave) return { ok: false, code: 'IO', message: '시험 저장 실패' };
+        const result = globalThis.savedPlanFixture;
+        if (input.jobId !== result.jobId || input.projectId !== result.projectId || Object.keys(input).length !== 2) throw new Error('Unexpected save request');
+        const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+        const db = new DatabaseSync(process.getBuiltinModule('node:path').join(app.getPath('userData'), 'learning.sqlite'));
+        const savedAt = new Date().toISOString();
+        try { db.prepare('INSERT OR REPLACE INTO plan_compares VALUES (?, ?, ?, ?)').run(input.projectId, JSON.stringify(result), planPath, savedAt); }
+        finally { db.close(); }
+        return { ok: true, value: { savedAt } };
+      });
+    }, { fixture, planPath, failSave });
+    await card().getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
+    await card().getByText('저장 시험용 가짜 AI', { exact: true }).waitFor();
+    await card().getByRole('checkbox', { name: '보낼 자료에 동의', exact: true }).check();
+    await card().getByRole('button', { name: '대조하기', exact: true }).click();
+    await result().getByText('저장된 판정', { exact: true }).waitFor();
+    if (!failSave) await fresh();
+  };
+  const openEvidence = async () => {
+    await result().getByRole('button', { name: 'main.ts', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.cm-content')?.textContent.includes('export const value = 1;'));
+    await show(); await fresh();
+    await result().getByRole('button', { name: 'unread.ts → main.ts · 1행', exact: true }).click();
+    await page.locator('.cm-selectionBackground').first().waitFor();
+    await page.locator('.cm-content').focus();
+    await page.waitForFunction(text => getSelection()?.toString() === text, importText);
+    await show(); await fresh();
+  };
+  const holdLoad = async () => {
+    await app.evaluate(({ ipcMain }) => {
+      globalThis.savedPlanPending = [];
+      ipcMain._invokeHandlers.set('learning:saved-plan-compare', async (event, input) => {
+        const response = await globalThis.savedPlanRead(event, input);
+        return new Promise(resolve => globalThis.savedPlanPending.push(() => resolve(response)));
+      });
+    });
+    await open();
+    for (let tries = 0; ; tries++) {
+      if (await app.evaluate(() => globalThis.savedPlanPending.length === 1)) break;
+      assert.ok(tries < 100, 'Restore did not reach the held response');
+      await page.waitForTimeout(50);
+    }
+  };
+  const releaseLoad = async () => {
+    await app.evaluate(({ ipcMain }) => {
+      ipcMain._invokeHandlers.set('learning:saved-plan-compare', globalThis.savedPlanRead);
+      globalThis.savedPlanPending.shift()();
+    });
+    await flush();
+  };
+
+  await prepare(); await open(); await generate();
+  await reboot(); await fresh();
+  await card().getByRole('button', { name: '기획 문서 고르기', exact: true }).waitFor();
+  assert.equal(await app.evaluate(() => globalThis.savedPlanAiCalls), 0);
+  await openEvidence();
+  console.log('PASS Saved plan: restart restores current evidence without selecting a document or calling AI');
+
+  await reboot(() => writeFile(path.join(root, 'main.ts'), 'export const value = 2;\n'));
+  await stale('대조한 뒤 코드가 바뀌었어요');
+  await reboot(async () => { await resetFiles(); await writeFile(planPath, '# changed'); });
+  await stale('기획 문서가 바뀌었어요');
+  await reboot(async () => { await resetFiles(); await rm(planPath); });
+  await stale('기획 문서를 다시 읽지 못했어요');
+  await reboot(async () => { await resetFiles(); await writeFile(path.join(root, 'new.ts'), 'export {};'); });
+  await stale('파일 목록이나 제외 규칙(.gitignore)이 바뀌었어요');
+  console.log('PASS Saved plan: offline code, document, deleted document and file-list changes lock evidence');
+
+  await reboot(async () => { await resetFiles(); await writeFile(path.join(root, 'unread.ts'), `${importText}\nexport const result = value + 2;\n`); });
+  await fresh(); await openEvidence();
+  await writeFile(planPath, '# changed after restore');
+  await stale('기획 문서가 바뀌었어요', 12_000);
+  console.log('PASS Saved plan: unread source changes refresh import evidence and periodic checks use the saved document');
+
+  await reboot(resetFiles); await fresh();
+  await holdLoad(); await pick();
+  // A selection change also invalidates the held load.
+  assert.equal(await result().count(), 0);
+  await releaseLoad();
+  assert.equal(await result().count(), 0);
+  console.log('PASS Saved plan: selecting a document discards a late restore');
+
+  await holdLoad();
+  await page.evaluate(() => {
+    globalThis.savedPlanChanged = false;
+    const off = window.learning.onProjectEvent(event => {
+      if (event.kind === 'changed') { off(); globalThis.savedPlanChanged = true; }
+    });
+  });
+  await writeFile(path.join(root, 'main.ts'), code + '// changed while loading\n');
+  await page.waitForFunction(() => globalThis.savedPlanChanged);
+  await releaseLoad();
+  await stale('대조 뒤 코드나 제외 규칙이 바뀌었어요');
+  console.log('PASS Saved plan: project events during restoration override a fresh response');
+
+  await reboot(resetFiles); await fresh();
+  await generate(true);
+  await card().getByRole('alert').filter({ hasText: '대조 결과를 저장하지 못했어요. 앱을 닫으면 사라져요.' }).waitFor();
+  await card().getByText('저장 전', { exact: false }).waitFor();
+  await reboot(); await fresh(); // Failed replacement leaves the previously saved comparison intact.
+  await app.evaluate(({ ipcMain }) => {
+    ipcMain._invokeHandlers.set('learning:saved-plan-compare', async () => ({ ok: false, code: 'IO', message: '시험 읽기 실패' }));
+  });
+  await open();
+  await card().getByRole('alert').filter({ hasText: '저장한 대조 결과를 불러오지 못했어요.' }).waitFor();
+  console.log('PASS Saved plan: save and restore failures show their recovery messages');
+
+  await reboot(); await fresh();
+  await card().getByRole('button', { name: '지우기', exact: true }).click();
+  await result().waitFor({ state: 'detached' });
+  await reboot();
+  assert.deepEqual(await page.evaluate(projectId => window.learning.savedPlanCompare({ projectId }), projectId), { ok: true, value: null });
+  assert.equal(await result().count(), 0);
+  console.log('PASS Saved plan: deletion survives restart');
+  // Reset test-only handlers before the caller continues the rest of the smoke suite.
+  ({ app, page } = await restart());
+}

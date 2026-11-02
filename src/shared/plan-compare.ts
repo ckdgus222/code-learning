@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { idSchema, type MapImport } from './contracts';
-import { learningModeSchema, type LearningMode, type ModelRun } from './ai';
+import { learningModeSchema, modelRunSchema, type LearningMode, type ModelRun } from './ai';
 import { AppError } from './errors';
 
 export const PLAN_SEND_LIMIT = 48 * 1024;
@@ -108,6 +108,34 @@ export interface PlanCompareResult {
   compare: PlanCompareAnswer;
   basis: { planHash: string; scopeHash: string; mapHash: string };
   limitations: string[];
+}
+
+export const savePlanCompareSchema = z.object({ projectId: idSchema, jobId: idSchema }).strict();
+export type SavePlanCompare = z.infer<typeof savePlanCompareSchema>;
+const mapImportSchema = z.object({
+  fromFileId: idSchema, fileHash: sha256,
+  startUtf16: z.number().int().min(0), endUtf16: z.number().int().min(0),
+  startLine: z.number().int().min(1), endLine: z.number().int().min(1),
+  text: z.string(), specifier: z.string().nullable(),
+}).strict();
+export const planCompareResultSchema = z.object({
+  jobId: idSchema, projectId: idSchema, mode: learningModeSchema,
+  review: z.enum(['AI 검토됨', 'AI 대조 없음']), models: z.array(modelRunSchema), structureOnly: z.boolean(),
+  document: z.object({ documentId: z.string(), name: z.string() }).strict(),
+  sent: z.array(planLines), excluded: z.array(planLines),
+  plan: z.array(z.object({ startLine: z.number().int().min(1), text: z.string() }).strict()),
+  files: z.array(z.object({ id: idSchema, relativePath: z.string() }).strict()),
+  edges: z.array(z.object({ index: z.number().int().min(0), from: z.string(), to: z.string(),
+    line: z.number().int().min(1), site: mapImportSchema }).strict()),
+  read: z.array(z.object({ fileId: idSchema, relativePath: z.string(), fileHash: sha256 }).strict()),
+  compare: planCompareSchema,
+  basis: z.object({ planHash: sha256, scopeHash: sha256, mapHash: sha256 }).strict(),
+  limitations: z.array(z.string()),
+}).strict();
+
+export function planPartFor(plan: PlanCompareResult['plan'], range: PlanRange) {
+  return plan.find(part => part.startLine <= range.startLine
+    && part.startLine + part.text.split('\n').length > range.endLine);
 }
 
 /** Every cited plan range must fit wholly within one range actually sent. */

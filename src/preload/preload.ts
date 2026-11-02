@@ -3,6 +3,9 @@ import { channels, type LearningApi, type ProjectEvent } from '../shared/contrac
 import type { LearningEvent } from '../shared/ai';
 
 const api: LearningApi = {
+  savedPlanCompare: input => ipcRenderer.invoke(channels.savedPlanCompare, input),
+  savePlanCompare: input => ipcRenderer.invoke(channels.savePlanCompare, input),
+  deletePlanCompare: input => ipcRenderer.invoke(channels.deletePlanCompare, input),
   startPlanCompare: input => ipcRenderer.invoke(channels.planCompare, input),
   checkPlanCompare: input => ipcRenderer.invoke(channels.planCompareCheck, input),
   pickPlanDocument: () => ipcRenderer.invoke(channels.pickPlanDocument),

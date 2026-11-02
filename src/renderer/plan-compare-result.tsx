@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import type { MapImport } from '../shared/contracts';
 import type { LearningMode } from '../shared/ai';
-import type { PlanCompareResult, PlanRange } from '../shared/plan-compare';
+import { planPartFor, type PlanCompareResult, type PlanRange } from '../shared/plan-compare';
 import type { PlanCompareFreshness } from './use-plan-compare';
 
 export const PLAN_COMPARE_CHECK_MS = 10_000;
@@ -38,8 +38,7 @@ export function PlanCompareResultView({ result, freshness, locked, recheck, onFi
     { key: 'matches', title: '기획대로 있음', count: count('matches') },
   ];
   function excerpt(range: PlanRange) {
-    const part = result.plan.find(part => part.startLine <= range.startLine
-      && part.startLine + part.text.split('\n').length > range.endLine)!;
+    const part = planPartFor(result.plan, range)!;
     const offset = range.startLine - part.startLine;
     const lineCount = range.endLine - range.startLine + 1;
     const lines = part.text.split('\n').slice(offset, offset + Math.min(lineCount, 6));

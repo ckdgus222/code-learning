@@ -2,11 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { checkPlanCompare, planCompareSchema, planStructureCompareSchema, type PlanCompareAnswer, type PlanCompareRequest, type PlanSelection } from '../src/shared/plan-compare';
+import { checkPlanCompare, planCompareResultSchema, planCompareSchema, type PlanCompareResult, planStructureCompareSchema, type PlanCompareAnswer, type PlanCompareRequest, type PlanSelection } from '../src/shared/plan-compare';
 import { planSections } from '../src/core/analysis/plan-sections';
 import { buildProjectMap } from '../src/core/analysis/project-map';
 import { ProjectAiContext } from '../src/core/ai/context';
-import { capturePlanCompare, checkPlanCompareBasis, planMapHash, revalidatePlanCompare, waitForPlan, type PickedPlan } from '../src/core/ai/plan-compare';
+import { capturePlanCompare, checkPlanCompareBasis, planMapHash, restorePlanCompare, revalidatePlanCompare, waitForPlan, type PickedPlan } from '../src/core/ai/plan-compare';
 import { LocalWorkerWorkflow, type StageRequest, type StageResponse, type WorkflowDependencies } from '../src/core/ai/workflow';
 import { readStable, scanProject } from '../src/core/project/files';
 import { AppError } from '../src/shared/errors';
@@ -29,7 +29,7 @@ async function fixture(text = '# 장\n기획대로\n다름\n확인 못 함\n못 
     hash: (await readStable(base, 'plan.md')).hash, bytes: Buffer.byteLength(text), ...planSections(text) };
   const project = await scanProject(root, randomUUID());
   const context = new ProjectAiContext(root, project);
-  const source = { projectId: project.id, root, context, map: vi.fn(() => buildProjectMap(root, project.id, project.files, [])), cancelMap: vi.fn() };
+  const source = { projectId: project.id, root, context, map: vi.fn(() => buildProjectMap(root, project.id, project.files, [])), restoreMap: vi.fn(() => buildProjectMap(root, project.id, project.files, [])), cancelMap: vi.fn() };
   const signal = new AbortController().signal;
   const selection = { documentId: document.documentId, startLine: 1, endLine: document.lines };
   const capture = (chosen: PlanSelection = selection, cancellation = signal) => capturePlanCompare(source, document, chosen, 7, cancellation);
@@ -119,7 +119,7 @@ describe('plan material and currentness', () => {
     ['deleted plan', ['기획 문서를 다시 읽지 못했어요']],
     ['new file', ['폴더에 새 파일이 생겼거나 없어졌어요. 폴더를 다시 열어 주세요']],
     ['deleted file', ['폴더에 새 파일이 생겼거나 없어졌어요. 폴더를 다시 열어 주세요']],
-    ['ignore', ['제외 규칙(.gitignore)이 바뀌었어요']],
+    ['ignore', ['파일 목록이나 제외 규칙(.gitignore)이 바뀌었어요']],
   ])('checks %s without rebuilding the map', async (kind, reasons) => {
     const f = await fixture(undefined, { 'main.ts': 'export {};', '.gitignore': '# original' });
     const snapshot = await f.capture();
@@ -129,7 +129,7 @@ describe('plan material and currentness', () => {
     if (kind === 'new file') await writeFile(path.join(f.root, 'new.ts'), 'export {};');
     if (kind === 'deleted file') await rm(path.join(f.root, 'main.ts'));
     if (kind === 'ignore') await writeFile(path.join(f.root, '.gitignore'), '# same files, changed rule text');
-    expect(await checkPlanCompareBasis(f.source, f.document, snapshot.basis)).toEqual(reasons);
+    expect(await checkPlanCompareBasis(f.source, f.document.path, snapshot.basis)).toEqual(reasons);
     expect(f.source.map).not.toHaveBeenCalled();
   });
   it('propagates scope errors other than CHANGED', async () => {
@@ -137,7 +137,7 @@ describe('plan material and currentness', () => {
     const snapshot = await f.capture();
     const error = new AppError('INTERNAL', 'scope failed');
     vi.spyOn(f.context, 'paths').mockImplementation(() => { throw error; });
-    await expect(checkPlanCompareBasis(f.source, f.document, snapshot.basis)).rejects.toBe(error);
+    await expect(checkPlanCompareBasis(f.source, f.document.path, snapshot.basis)).rejects.toBe(error);
   });
   it('keeps CRLF and original Korean line positions, merges overlapping sections, and computes excluded ranges', async () => {
     const f = await fixture('머리\r\n# 첫 장\r\n본문\r\n## 하위 절\r\n내용\r\n# 다음 장\r\n끝');
@@ -413,4 +413,129 @@ it.each([100, 400])('checks the actual review prompt size with 16,384 short line
   const review = w.run.mock.calls.find(([request]) => request.stage === 'reviewing')![0];
   expect(Buffer.byteLength(review.prompt) + Buffer.byteLength(JSON.stringify(review.schema))).toBeLessThanOrEqual(384 * 1024);
   expect(Buffer.byteLength(review.prompt)).toBeGreaterThan(300 * 1024);
+});
+
+// Save the actual workflow output, then scan again so every file has a new session ID.
+async function restorationFixture() {
+  const f = await fixture(undefined, { 'main.ts': 'export const value = 1;',
+    'unread.ts': "import { value } from './main';\nexport const result = value;\n", 'other.ts': 'export {};' });
+  const event = await workflow(f, () => ({ ...empty(), items: [item(f.id('main.ts'))],
+    unrequested: [{ title: '후보', note: '기획 밖', files: [f.id('other.ts')] }],
+    designMismatches: [{ plan: { startLine: 6, endLine: 6 }, edge: 0, note: '직접 연결' }],
+  }), [f.id('main.ts')]).finish();
+  if (event.kind !== 'plan-compare-completed') throw new Error('Missing comparison');
+  const saved = event.result;
+  const reopen = async () => {
+    const project = await scanProject(f.root, f.project.id);
+    return { ...f.source, context: new ProjectAiContext(f.root, project),
+      restoreMap: vi.fn(() => buildProjectMap(f.root, project.id, project.files, [])) };
+  };
+  return { ...f, saved, reopen };
+}
+
+describe('saved comparison schema and restoration', () => {
+  it('accepts actual workflow output and rejects unknown fields and malformed hashes at every level', async () => {
+    const { saved } = await restorationFixture();
+    const parsed: PlanCompareResult = planCompareResultSchema.parse(saved);
+    expect(parsed).toEqual(saved);
+    const objects = [saved, saved.document, saved.sent[0], saved.plan[0], saved.files[0], saved.edges[0],
+      saved.edges[0].site, saved.read[0], saved.basis, saved.models[0], saved.compare,
+      saved.compare.items[0], saved.compare.items[0].plan, saved.compare.unrequested[0], saved.compare.designMismatches[0]];
+    for (const object of objects) {
+      Object.assign(object, { unexpected: true });
+      expect(planCompareResultSchema.safeParse(saved).success).toBe(false);
+      delete (object as unknown as Record<string, unknown>).unexpected;
+    }
+    for (const field of ['planHash', 'scopeHash', 'mapHash'] as const) {
+      expect(planCompareResultSchema.safeParse({ ...saved, basis: { ...saved.basis, [field]: 'invalid' } }).success).toBe(false);
+    }
+    expect(planCompareResultSchema.safeParse({ ...saved, read: [{ ...saved.read[0], fileHash: 'invalid' }] }).success).toBe(false);
+    expect(planCompareResultSchema.safeParse({ ...saved, edges: [{ ...saved.edges[0], site: { ...saved.edges[0].site, fileHash: 'invalid' } }] }).success).toBe(false);
+  });
+  it('remaps all five ID locations, including an edge source outside the truncated file list', async () => {
+    const f = await restorationFixture();
+    f.saved.files = f.saved.files.filter(file => file.relativePath !== 'unread.ts');
+    const original = structuredClone(f.saved);
+    const source = await f.reopen();
+    const { result, reasons } = await restorePlanCompare(source, f.saved, f.document.path);
+    expect(reasons).toEqual([]);
+    for (const file of result.files) {
+      expect(file.id).toBe(source.context.fileIdOf(file.relativePath));
+      expect(file.id).not.toBe(f.id(file.relativePath));
+    }
+    expect(result.compare.items[0].files).toEqual([source.context.fileIdOf('main.ts')]);
+    expect(result.compare.unrequested[0].files).toEqual([source.context.fileIdOf('other.ts')]);
+    expect(result.read[0].fileId).toBe(source.context.fileIdOf('main.ts'));
+    expect(result.edges[0].site.fromFileId).toBe(source.context.fileIdOf('unread.ts'));
+    expect(f.saved).toEqual(original);
+    // The path-based remap must also work when stale results skip rebuilding the map.
+    await writeFile(f.document.path, '# changed');
+    source.restoreMap.mockClear();
+    expect((await restorePlanCompare(source, f.saved, f.document.path)).result.edges[0].site.fromFileId)
+      .toBe(source.context.fileIdOf('unread.ts'));
+    expect(source.restoreMap).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['read code', '대조한 뒤 코드가 바뀌었어요'],
+    ['deleted code', '대조한 뒤 코드가 바뀌었어요'],
+    ['unreadable code', '대조한 뒤 코드가 바뀌었어요'],
+    ['plan', '기획 문서가 바뀌었어요. 문서를 다시 고른 뒤 대조해 주세요'],
+    ['deleted plan', '기획 문서를 다시 읽지 못했어요'],
+    ['new file', '파일 목록이나 제외 규칙(.gitignore)이 바뀌었어요'],
+    ['ignore', '파일 목록이나 제외 규칙(.gitignore)이 바뀌었어요'],
+  ])('retains %s results as stale and skips the map', async (kind, reason) => {
+    const f = await restorationFixture();
+    if (kind === 'read code') await writeFile(path.join(f.root, 'main.ts'), 'export const value = 2;');
+    if (kind === 'deleted code') await rm(path.join(f.root, 'main.ts'));
+    if (kind === 'unreadable code') await writeFile(path.join(f.root, 'main.ts'), Buffer.from('bad\0text'));
+    if (kind === 'plan') await writeFile(f.document.path, '# changed');
+    if (kind === 'deleted plan') await rm(f.document.path);
+    if (kind === 'new file') await writeFile(path.join(f.root, 'new.ts'), 'export {};');
+    if (kind === 'ignore') await writeFile(path.join(f.root, '.gitignore'), '# changed');
+    const source = await f.reopen();
+    const { result, reasons } = await restorePlanCompare(source, f.saved, f.document.path);
+    expect(reasons).toContain(reason);
+    expect(reasons.filter(value => value === reason)).toHaveLength(1);
+    expect(result.jobId).toBe(f.saved.jobId);
+    expect(source.restoreMap).not.toHaveBeenCalled();
+    if (kind === 'deleted code') expect(result.read[0].fileId).toBe(f.saved.read[0].fileId);
+  });
+  it('detects changed connections in an unread file', async () => {
+    const f = await restorationFixture();
+    await writeFile(path.join(f.root, 'unread.ts'), "import './other';");
+    const source = await f.reopen();
+    const { reasons } = await restorePlanCompare(source, f.saved, f.document.path);
+    expect(reasons).toEqual(['대조한 뒤 파일 사이 연결이 바뀌었어요']);
+    expect(source.restoreMap).toHaveBeenCalledOnce();
+  });
+  it('refreshes import hashes and offsets when only unread source text changes', async () => {
+    const f = await restorationFixture();
+    await writeFile(path.join(f.root, 'unread.ts'), "/* prefix */ import { value } from './main';\nexport const result = value + 1;\n");
+    const source = await f.reopen();
+    const { result, reasons } = await restorePlanCompare(source, f.saved, f.document.path);
+    const map = await source.restoreMap();
+    const { toFileId: _to, names: _names, ...site } = map.edges[0];
+    expect(reasons).toEqual([]);
+    expect(result.edges[0].site).toEqual(site);
+    expect(site.fileHash).not.toBe(f.saved.edges[0].site.fileHash);
+    expect(site.startUtf16).not.toBe(f.saved.edges[0].site.startUtf16);
+  });
+  it.each([
+    ['CHANGED', '확인하는 동안 코드가 바뀌었어요'],
+    ['LIMIT', '파일 사이 연결을 다시 확인하지 못했어요'],
+    ['INTERNAL', '파일 사이 연결을 다시 확인하지 못했어요'],
+    ['INVALID_REQUEST', '파일 사이 연결을 다시 확인하지 못했어요'],
+  ] as const)('keeps the result when the map fails with %s', async (code, reason) => {
+    const f = await restorationFixture();
+    const source = await f.reopen();
+    source.restoreMap.mockRejectedValue(new AppError(code, 'map failed'));
+    expect(await restorePlanCompare(source, f.saved, f.document.path))
+      .toMatchObject({ result: { jobId: f.saved.jobId }, reasons: [reason] });
+  });
+  it.each(['CANCELLED', 'PROJECT_CLOSED'] as const)('propagates %s instead of showing a closed project', async code => {
+    const f = await restorationFixture();
+    const source = await f.reopen();
+    source.restoreMap.mockRejectedValue(new AppError(code, 'closed'));
+    await expect(restorePlanCompare(source, f.saved, f.document.path)).rejects.toMatchObject({ code });
+  });
 });

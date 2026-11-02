@@ -7,10 +7,10 @@ import { planSections } from '../src/core/analysis/plan-sections';
 import { PlanCompareResultView } from '../src/renderer/plan-compare-result';
 import type { PlanCompareResult, PlanSelection } from '../src/shared/plan-compare';
 
-function render(text: string | null, selection: PlanSelection | null = null) {
+function render(text: string | null, selection: PlanSelection | null = null, saved: { result: PlanCompareResult; savedAt: string | null } | null = null) {
   const state: ReturnType<typeof usePlanCompare> = {
     document: text === null ? null : { documentId: 'doc', name: 'plan.md', bytes: Buffer.byteLength(text), ...planSections(text) },
-    freshness: { status: 'fresh', reasons: [] }, async recheck() {}, running: false, phase: null, result: null, consent: false, setConsent() {}, async start() {}, cancel() {},
+    freshness: { status: 'fresh', reasons: [] }, async recheck() {}, running: false, phase: null, result: saved?.result ?? null, savedAt: saved?.savedAt ?? null, async remove() {}, consent: false, setConsent() {}, async start() {}, cancel() {},
     selection: selection ?? (text === null ? null : { documentId: 'doc', startLine: 1, endLine: text.split('\n').length }), setSelection() {}, picking: false, error: '', async pick() {}, forget() {},
   };
   return renderToStaticMarkup(React.createElement(PlanCompare, { state, locked: false, mode: 'local-worker', checking: false, readiness: null, onInspect() {}, onFile() {}, onImport() {} }));
@@ -159,4 +159,14 @@ it('locks fresh evidence during other work and otherwise enables every button', 
   expect(renderResult()).not.toContain('disabled=""');
   expect([...renderResult(comparison(), { status: 'fresh', reasons: [] }, true).matchAll(/<button([^>]*)>/g)]
     .every(match => match[1].includes('disabled=""'))).toBe(true);
+});
+
+
+it('shows a restored result, saved date and delete action without selecting a document', () => {
+  const html = render(null, null, { result: comparison(), savedAt: '2026-11-02T03:00:00.000Z' });
+  expect(html).toContain('기획 문서 고르기');
+  expect(html).toContain('저장됨 · 11월 2일');
+  expect(html).toMatch(/<button class="btn btn--small">지우기<\/button>/);
+  expect(html).toContain('대조 결과 · 기획대로 1');
+  expect(render(null, null, { result: comparison(), savedAt: null })).toContain('저장 전');
 });

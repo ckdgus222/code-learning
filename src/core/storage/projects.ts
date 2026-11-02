@@ -14,6 +14,7 @@ export class ProjectStorage {
     this.db.exec(`CREATE TABLE IF NOT EXISTS ai_answers (
       project_id TEXT NOT NULL REFERENCES projects(id), job_id TEXT NOT NULL,
       result TEXT NOT NULL, saved_at TEXT NOT NULL, PRIMARY KEY (project_id, job_id))`);
+    this.db.exec('CREATE TABLE IF NOT EXISTS plan_compares (project_id TEXT PRIMARY KEY REFERENCES projects(id), result TEXT NOT NULL, plan_path TEXT NOT NULL, saved_at TEXT NOT NULL)');
     this.db.exec('CREATE TABLE IF NOT EXISTS ai_overviews (project_id TEXT PRIMARY KEY REFERENCES projects(id), result TEXT NOT NULL, saved_at TEXT NOT NULL)');
     this.db.exec(`CREATE TABLE IF NOT EXISTS ai_file_explanations (
       project_id TEXT NOT NULL REFERENCES projects(id), relative_path TEXT NOT NULL,
@@ -82,6 +83,22 @@ export class ProjectStorage {
   }
   deleteAnswer(projectId: string, jobId: string): void {
     this.db.prepare('DELETE FROM ai_answers WHERE project_id = ? AND job_id = ?').run(projectId, jobId);
+  }
+  savePlanCompare(projectId: string, result: unknown, planPath: string): string {
+    const savedAt = new Date().toISOString();
+    this.db.prepare('INSERT OR REPLACE INTO plan_compares VALUES (?, ?, ?, ?)')
+      .run(projectId, JSON.stringify(result), planPath, savedAt);
+    return savedAt;
+  }
+  planCompareOf(projectId: string): { result: unknown; planPath: string; savedAt: string } | null {
+    const row = this.db.prepare('SELECT result, plan_path AS planPath, saved_at AS savedAt FROM plan_compares WHERE project_id = ?')
+      .get(projectId) as { result: string; planPath: string; savedAt: string } | undefined;
+    if (!row) return null;
+    try { return { ...row, result: JSON.parse(row.result) }; }
+    catch { return null; }
+  }
+  deletePlanCompare(projectId: string): void {
+    this.db.prepare('DELETE FROM plan_compares WHERE project_id = ?').run(projectId);
   }
   saveOverview(projectId: string, result: unknown): string {
     const savedAt = new Date().toISOString();

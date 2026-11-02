@@ -59,7 +59,7 @@ describe('Plan comparison through the app runtime (real account, non-secret fixt
         unused: { exports: { candidates: [], unsure: [], notes: [] }, candidates: [], unsure: [], excluded: [], notes: [] },
       };
       const context = new ProjectAiContext(root, project);
-      const source = { projectId: project.id, root, context, map: async () => map, cancelMap() {} };
+      const source = { projectId: project.id, root, context, map: async () => map, restoreMap: async () => map, cancelMap() {} };
       const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
       const connections = await runtime.checkConnections();
       console.log(`[${mode}] readiness:`, connections.modes.find(item => item.mode === mode));

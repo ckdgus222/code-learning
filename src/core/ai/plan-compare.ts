@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { ProjectMap } from '../../shared/contracts';
 import { CODE_SEND_LIMIT, planSelection, type PlanDocument, type PlanRange, type PlanSelection, type PlanCompareResult } from '../../shared/plan-compare';
 import { AppError } from '../../shared/errors';
-import { readStable, scanProject } from '../project/files';
+import { readAllowed, readStable, scanProject } from '../project/files';
 import { maskSecrets } from './secrets';
 import type { ContextSnapshot, ProjectAiContext } from './context';
 
@@ -21,6 +21,7 @@ export interface PlanCompareSource {
   root: string;
   context: ProjectAiContext;
   map(): Promise<ProjectMap>;
+  restoreMap(): Promise<ProjectMap>;
   cancelMap(): void;
 }
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -123,23 +124,61 @@ export async function capturePlanCompare(source: PlanCompareSource, document: Pi
 }
 
 /** Check the unobserved plan document and file scope; project events cover code and map changes. */
-export async function checkPlanCompareBasis(source: PlanCompareSource, document: PickedPlan,
+export async function checkPlanCompareBasis(source: PlanCompareSource, planPath: string,
   basis: Pick<PlanCompareResult['basis'], 'planHash' | 'scopeHash'>): Promise<string[]> {
   const reasons: string[] = [];
   try {
-    const current = await readStable(path.dirname(document.path), path.basename(document.path));
+    const current = await readStable(path.dirname(planPath), path.basename(planPath));
     if (current.hash !== basis.planHash) reasons.push('기획 문서가 바뀌었어요. 문서를 다시 고른 뒤 대조해 주세요');
   } catch {
     reasons.push('기획 문서를 다시 읽지 못했어요');
   }
   try {
     const scopeHash = await planScope(source, new AbortController().signal);
-    if (scopeHash !== basis.scopeHash) reasons.push('제외 규칙(.gitignore)이 바뀌었어요');
+    if (scopeHash !== basis.scopeHash) reasons.push('파일 목록이나 제외 규칙(.gitignore)이 바뀌었어요');
   } catch (error) {
     if (!(error instanceof AppError) || error.code !== 'CHANGED') throw error;
     reasons.push('폴더에 새 파일이 생겼거나 없어졌어요. 폴더를 다시 열어 주세요');
   }
   return reasons;
+}
+
+export async function restorePlanCompare(source: PlanCompareSource, saved: PlanCompareResult,
+  planPath: string): Promise<{ result: PlanCompareResult; reasons: string[] }> {
+  const ids = new Map(saved.files.map(file => [file.id, source.context.fileIdOf(file.relativePath) ?? file.id]));
+  const result: PlanCompareResult = {
+    ...saved,
+    files: saved.files.map(file => ({ ...file, id: ids.get(file.id)! })),
+    compare: { ...saved.compare,
+      items: saved.compare.items.map(item => ({ ...item, files: item.files.map(id => ids.get(id) ?? id) })),
+      unrequested: saved.compare.unrequested.map(item => ({ ...item, files: item.files.map(id => ids.get(id) ?? id) })),
+    },
+    read: saved.read.map(file => ({ ...file, fileId: source.context.fileIdOf(file.relativePath) ?? file.fileId })),
+    edges: saved.edges.map(edge => ({ ...edge, site: { ...edge.site,
+      fromFileId: source.context.fileIdOf(edge.from) ?? edge.site.fromFileId } })),
+  };
+  const reasons = await checkPlanCompareBasis(source, planPath, saved.basis);
+  for (const file of saved.read) {
+    const changed = !source.context.fileIdOf(file.relativePath) || await readAllowed(source.root, file.relativePath)
+      .then(current => current.hash !== file.fileHash, () => true);
+    if (changed) { reasons.push('대조한 뒤 코드가 바뀌었어요'); break; }
+  }
+  if (reasons.length) return { result, reasons };
+  try {
+    const map = await source.restoreMap();
+    if (planMapHash(map) !== saved.basis.mapHash) {
+      reasons.push('대조한 뒤 파일 사이 연결이 바뀌었어요');
+      return { result, reasons };
+    }
+    result.edges = result.edges.map(edge => {
+      const { fromFileId, fileHash, startUtf16, endUtf16, startLine, endLine, text, specifier } = map.edges[edge.index];
+      return { ...edge, site: { fromFileId, fileHash, startUtf16, endUtf16, startLine, endLine, text, specifier } };
+    });
+  } catch (error) {
+    if (!(error instanceof AppError) || error.code === 'CANCELLED' || error.code === 'PROJECT_CLOSED') throw error;
+    reasons.push(error.code === 'CHANGED' ? '확인하는 동안 코드가 바뀌었어요' : '파일 사이 연결을 다시 확인하지 못했어요');
+  }
+  return { result, reasons };
 }
 
 export async function revalidatePlanCompare(source: PlanCompareSource, snapshot: PlanCompareSnapshot, signal: AbortSignal, final: boolean): Promise<void> {
