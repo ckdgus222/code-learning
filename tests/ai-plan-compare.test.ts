@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { checkPlanCompare, planCompareResultSchema, planCompareSchema, type PlanCompareResult, planStructureCompareSchema, type PlanCompareAnswer, type PlanCompareRequest, type PlanSelection } from '../src/shared/plan-compare';
+import { checkPlanCompare, planCompareResultSchema, planCompareSchema, type PlanCompareResult, type PlanCompareAnswer, type PlanCompareRequest, type PlanSelection } from '../src/shared/plan-compare';
 import { planSections } from '../src/core/analysis/plan-sections';
 import { buildProjectMap } from '../src/core/analysis/project-map';
 import { ProjectAiContext } from '../src/core/ai/context';
@@ -104,12 +104,7 @@ describe('plan comparison references', () => {
     { designMismatches: [{ plan: { startLine: 2, endLine: 3 }, edge: 1, note: '연결' }] },
     { designMismatches: [{ plan: { startLine: 3, endLine: 6 }, edge: 2, note: '연결' }] },
   ])('refuses other invalid references %j', change => expect(() => check({ ...empty(), ...change })).toThrow(AppError));
-  it('rejects structure-only matches by both schema and the read-file guard', () => {
-    const answer = { ...empty(), items: [item(file)] };
-    expect(planStructureCompareSchema.safeParse(answer).success).toBe(false);
-    expect(() => check(answer, [])).toThrow(AppError);
-    expect(planStructureCompareSchema.safeParse({ ...empty(), items: [{ ...item(file), status: 'differs', difference: '다름' }] }).success).toBe(false);
-  });
+
 });
 
 describe('plan material and currentness', () => {
@@ -216,22 +211,17 @@ describe('plan material and currentness', () => {
 });
 
 describe('plan workflow with fake AI only', () => {
-  it.each(['local-worker', 'codex', 'antigravity'] as const)('clarifies connection items and structure-only judgments in %s prompts', async mode => {
+  it.each(['local-worker', 'codex', 'antigravity'] as const)('clarifies connection items without structure-only instructions in %s prompts', async mode => {
     const f = await fixture();
     const w = workflow(f, empty, [], mode);
     expect(await w.finish()).toMatchObject({ kind: 'plan-compare-completed' });
-    expect(w.run).toHaveBeenCalledTimes(mode === 'local-worker' ? 3 : 1);
+    expect(w.run).toHaveBeenCalledTimes(mode === 'local-worker' ? 3 : 2);
     const connectionInstruction = '어느 파일이 어느 파일을 불러오는지에 관한 기획 문장도 items에 한 항목으로 적고, 보낸 edges 중 그 문장과 어긋나는 연결이 있으면 designMismatches에도 그 edge 번호로 적는다. ';
-    const structureInstruction = '코드를 읽지 않은 구조 비교다. unverified·missing만 쓰고 구현 일치·차이를 판정하지 않는다. '
-      + '기획 문장마다 관련돼 보이는 파일이 availableFiles에 있으면 그 파일 ID로 unverified, 없으면 missing으로 적는다. '
-      + '시키지 않은 작업 후보는 파일 이름만으로 기획과 관계없음이 분명할 때만 적는다.';
     for (const [request] of w.run.mock.calls) {
       expect(request.prompt).toContain(connectionInstruction);
-      if (mode === 'local-worker') {
-        expect(request.prompt).not.toContain(structureInstruction);
-        continue;
-      }
-      expect(request.prompt).toContain(structureInstruction);
+      expect(request.prompt).not.toContain('코드를 읽지 않은 구조 비교');
+      expect(request.prompt).not.toContain('unverified·missing만 쓰고');
+      expect(request.prompt).not.toContain('structureOnly');
     }
   });
   it('returns masked plan text and import sites while sending exactly four edge fields to AI', async () => {
@@ -290,15 +280,57 @@ describe('plan workflow with fake AI only', () => {
       expect(request.prompt).toContain('[MASKED_SECRET]/store.ts');
     }
   });
-  it.each(['codex', 'antigravity'] as const)('runs %s once with only the structure schema', async mode => {
+  it.each(['codex', 'antigravity'] as const)('runs %s picking and comparison with the same AI and no review', async mode => {
     const f = await fixture();
-    const w = workflow(f, empty, [], mode);
+    const fileId = f.id('main.ts');
+    const w = workflow(f, () => ({ ...empty(), items: [item(fileId)] }), [fileId], mode);
     const result = await w.finish();
-    expect(result).toMatchObject({ kind: 'plan-compare-completed', result: { structureOnly: true, review: 'AI 대조 없음', read: [] } });
-    expect(w.run).toHaveBeenCalledOnce();
-    expect(w.run.mock.calls[0][0]).toMatchObject({ stage: 'explaining', provider: mode });
-    const schema = JSON.stringify(w.run.mock.calls[0][0].schema);
-    expect(schema).not.toContain('"matches"'); expect(schema).not.toContain('"differs"');
+    expect(result).toMatchObject({ kind: 'plan-compare-completed', result: {
+      structureOnly: false, review: 'AI 대조 없음', read: [{ fileId, relativePath: 'main.ts' }],
+    } });
+    expect(w.run.mock.calls.map(([request]) => [request.stage, request.provider])).toEqual([
+      ['organizing', mode], ['explaining', mode],
+    ]);
+    const [organizing, explaining] = w.run.mock.calls.map(([request]) => request);
+    const material = (prompt: string) => JSON.parse(prompt.split('\n자료:\n')[1].split('\n과제:\n')[0]);
+    expect(material(organizing.prompt).files).toEqual([]);
+    expect(material(explaining.prompt).files).toEqual([{ id: fileId, path: 'main.ts', code: 'export const x = 1;' }]);
+    expect(explaining.prompt).toContain('기획과 읽은 코드를 대조하라.');
+    const schema = JSON.stringify(explaining.schema);
+    expect(schema).toContain('"matches"'); expect(schema).toContain('"differs"');
+    expect(w.events.filter(event => event.kind === 'progress').map(event => event.phase)).toEqual([
+      'collecting', 'organizing', 'reading-related', 'explaining', 'validating',
+    ]);
+  });
+  describe.each(['codex', 'antigravity'] as const)('%s code comparison guards', mode => {
+    it.each(['unknown', 'duplicate', 'nine files'])('rejects %s file selections before comparison', async kind => {
+      const files = Object.fromEntries(Array.from({ length: 9 }, (_, index) => [`f${index}.ts`, 'export {};']));
+      const f = await fixture(undefined, files);
+      const ids = Object.keys(files).map(f.id);
+      const requested = kind === 'unknown' ? [randomUUID()] : kind === 'duplicate' ? [ids[0], ids[0]] : ids;
+      const w = workflow(f, empty, requested, mode);
+      expect(await w.finish()).toMatchObject({ kind: 'failed', error: { code: 'AI_RESPONSE' } });
+      expect(w.run.mock.calls.map(([request]) => request.stage)).toEqual(['organizing']);
+    });
+    it.each(['matches', 'differs'] as const)('rejects %s evidence from an unread file', async status => {
+      const f = await fixture(undefined, { 'main.ts': 'export {};', 'unread.ts': 'export {};' });
+      const answer = { ...empty(), items: [{ ...item(f.id('unread.ts')), status, difference: '다름' }] };
+      const w = workflow(f, () => answer, [f.id('main.ts')], mode);
+      expect(await w.finish()).toMatchObject({ kind: 'failed', error: { code: 'AI_RESPONSE' } });
+      expect(w.run).toHaveBeenCalledTimes(2);
+    });
+    it('rejects plan changes after picking before comparison', async () => {
+      const f = await fixture();
+      const w = workflow(f, empty, [f.id('main.ts')], mode);
+      const original = w.run.getMockImplementation()!;
+      w.run.mockImplementation(async input => {
+        const result = await original(input);
+        if (input.stage === 'organizing') await writeFile(f.document.path, '# changed');
+        return result;
+      });
+      expect(await w.finish()).toMatchObject({ kind: 'failed', error: { code: 'CHANGED' } });
+      expect(w.run.mock.calls.map(([request]) => request.stage)).toEqual(['organizing']);
+    });
   });
   it.each([{ accepted: false, issues: [] }, { accepted: true, issues: ['남은 문제'] }])('discards an unresolved review %j', async verdict => {
     const f = await fixture(); const w = workflow(f);
@@ -378,7 +410,7 @@ describe('plan workflow with fake AI only', () => {
     controller.abort();
     await expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
   });
-  it('passes the five fixture cases and design mismatch through fake AI, and rejects that answer in a single mode', async () => {
+  it.each(['local-worker', 'codex', 'antigravity'] as const)('passes the five fixture cases and design mismatch through fake AI in %s', async mode => {
     const base = await mkdtemp('/private/tmp/plan-fixtures-'); temporary.push(base);
     await cp(path.resolve('tests/fixtures/plan-compare'), base, { recursive: true });
     const files: Record<string, string> = {};
@@ -394,9 +426,8 @@ describe('plan workflow with fake AI only', () => {
       { ...item(f.id('order.ts')), title: '취소', plan: { startLine: 5, endLine: 5 }, status: 'missing', files: [], searched: '파일 목록과 주문 코드' },
     ], unrequested: [{ title: '추천', files: [f.id('extra.ts')], note: '기획에서 찾지 못한 후보' }],
     designMismatches: [{ plan: { startLine: 6, endLine: 6 }, edge, note: '화면에서 저장소를 직접 불러옴' }], unknowns: [] };
-    const w = workflow(f, () => answer, [f.id('order.ts'), f.id('extra.ts'), f.id('screen.ts')]);
+    const w = workflow(f, () => answer, [f.id('order.ts'), f.id('extra.ts'), f.id('screen.ts')], mode);
     expect(await w.finish()).toMatchObject({ kind: 'plan-compare-completed', result: { compare: answer } });
-    expect(await workflow(f, () => answer, [], 'codex').finish()).toMatchObject({ kind: 'failed', error: { code: 'AI_RESPONSE' } });
   });
 });
 

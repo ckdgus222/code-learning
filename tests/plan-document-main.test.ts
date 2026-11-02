@@ -13,7 +13,8 @@ import { AppError } from '../src/shared/errors';
 const host = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, input: unknown) => Promise<Result<unknown>>>(),
   folder: '', profile: '', projectId: '', closeStorage: () => {}, events: [] as LearningEvent[],
-  run: vi.fn(async () => ({ value: { items: [], unrequested: [], designMismatches: [], unknowns: [] }, reportedModel: null })),
+  run: vi.fn(async (request: { stage: string }) => ({ value: request.stage === 'organizing' ? { focus: '대조', requestedFileIds: [] }
+    : { items: [], unrequested: [], designMismatches: [], unknowns: [] }, reportedModel: null })),
   picker: vi.fn<(...args: unknown[]) => Promise<{ canceled: boolean; filePaths: string[] }>>(),
   contents: { send: (_channel: string, event: LearningEvent) => host.events.push(event), mainFrame: { url: 'http://learning.test/' }, setWindowOpenHandler() {}, on() {},
     session: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, on() {} } },
