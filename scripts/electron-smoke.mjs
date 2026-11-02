@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, rename, symlink } from 'node:f
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { checkPlanCompare } from './plan-compare-smoke.mjs';
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, '..');
@@ -645,6 +646,9 @@ try {
     assert.equal(await page.locator('.topbar').getByText('AI는 동의한 질문만').count(), 0);
   });
   await dialogTo(fixture);
+  await check('Plan document picker, sections, byte limits and persistent selection without AI', async () => {
+    await checkPlanCompare(app, page, temporary, fixture);
+  });
   await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
   await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
   await check('Open a real folder; secret filenames excluded', async () => {

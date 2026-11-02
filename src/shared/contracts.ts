@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { PlanDocument } from './plan-compare';
 import type { CheckConnectionsRequest, ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest, FeatureGuideRequest, FeatureGuideResult, FileChunk, FileExplanationRange, FileExplanationResult, OverviewResult, LearningResult } from './ai';
 
 export const MAX_FILE_BYTES = 256 * 1024;
@@ -496,6 +497,7 @@ export type Result<T> = { ok: true; value: T } | { ok: false; code: AppErrorCode
 export type ProjectEvent = { projectId: string; kind: 'changed' | 'watch-error' };
 
 export interface LearningApi {
+  pickPlanDocument(): Promise<Result<PlanDocument | null>>;
   openProject(): Promise<Result<ProjectView | null>>;
   recentProjects(): Promise<Result<RecentProject[]>>;
   openRecent(input: z.infer<typeof projectRequestSchema>): Promise<Result<ProjectView | null>>;
@@ -547,6 +549,7 @@ export interface LearningApi {
 }
 
 export const channels = {
+  pickPlanDocument: 'learning:pick-plan-document',
   recentProjects: 'learning:recent-projects', openRecent: 'learning:open-recent',
   learningSpot: 'learning:spot', saveLearningSpot: 'learning:save-spot',
   learningMarks: 'learning:marks', saveLearningMark: 'learning:save-mark',

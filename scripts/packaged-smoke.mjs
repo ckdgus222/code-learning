@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { checkPlanCompare } from './plan-compare-smoke.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const temp = await mkdtemp('/private/tmp/code-learning-package-');
@@ -63,6 +64,7 @@ try {
     await app.evaluate(({ nativeTheme }) => { nativeTheme.themeSource = 'system'; });
   }
   assert.equal(await page.locator('.files h3').count(), 0);
+  await checkPlanCompare(app, page, temp, project);
   await app.evaluate(({ dialog }, project) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [project] }); }, project);
   await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
   await page.getByRole('button', { name: '코드 읽기', exact: true }).click();

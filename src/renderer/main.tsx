@@ -27,6 +27,8 @@ import { useMap } from './use-map';
 import { callsKey, useCalls } from './use-calls';
 import { useAiJobs } from './use-ai-jobs';
 import { useLearning } from './use-learning';
+import { usePlanCompare } from './use-plan-compare';
+import { PlanCompare } from './plan-compare';
 import { savedDate, ResumeCard, restoreSpot, OverviewAi, TopicBar, type Place, type Topic } from './overview';
 import type { OverviewFeature, FileExplanationRange } from '../shared/ai';
 import './styles.css';
@@ -75,6 +77,7 @@ function FileTreeList({ folder, expanded, searching, currentFileId, busy, onTogg
 }
 
 function App() {
+  const planCompare = usePlanCompare();
   const [project, setProject] = useState<ProjectView | null>(null);
   const [source, setSource] = useState<SourceView | null>(null);
   const [evidence, setReaderEvidence] = useState<Evidence | null>(null);
@@ -358,6 +361,7 @@ function App() {
   }
 
   function forgetOverview() {
+    planCompare.forget();
     learning.forget();
     ai.forget();
     setFocusAnchor(null);
@@ -711,6 +715,7 @@ function App() {
               onStart={startFileId => void ai.startOverview(startFileId)} onCancel={() => void ai.cancelOverview()} onDelete={() => void ai.deleteOverview()}
               onEvidence={next => { setView('code'); void showEvidence(next, null, 'overview'); }}
               onFollow={followFeature} onFunction={(name, at) => void showNamedFunction(name, at)} />
+            <PlanCompare state={planCompare} locked={busy} />
             <section className="card card--wide">
               <h3>확인한 범위와 모르는 부분</h3>
               <p className="stat">읽을 수 있는 파일 <b>{project.files.length}</b>개</p>

@@ -3,6 +3,7 @@ import type { ProjectFile, ProjectFiles, ProjectIntro, ProjectOverview, StartCan
 import { AppError } from '../../shared/errors';
 import { readAllowed } from '../project/files';
 import { analyzeSource } from './syntax';
+import { closesMarkdownFence, openMarkdownFence, type MarkdownFence } from './markdown-fence';
 
 // Opening a project waits for this, so only a bounded number of files is read and parsed.
 const MAX_CHECKED_FILES = 20;
@@ -16,8 +17,6 @@ const atxHeading = /^#{1,6}(?:\s|$)/;
 // `===`/`---` under a line makes it a heading; on its own, `---` is a divider like `***`.
 const underline = /^(?:=+|-+)$/;
 const divider = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
-const fenceOpening = /^(`{3,}|~{3,})/;
-const fenceClosing = /^(`{3,}|~{3,})\s*$/;
 // Paragraphs that are layout rather than prose: images and badges, tables.
 const layout = /^(?:!\[|\[!|\|)/;
 // CommonMark 4.6 type 6: a block-level tag starts an HTML block that runs to the next blank line.
@@ -120,7 +119,7 @@ async function readIntro(root: string, files: ProjectFile[]): Promise<ProjectInt
   let title: string | null = null;
   const blocks: Block[] = [];
   let current: Block | null = null;
-  let fence: { char: string; length: number } | null = null;
+  let fence: MarkdownFence | null = null;
   let htmlUntil: string[] | null = null;
   const closes = (line: string, markers: string[], from = 0) => markers.some(marker => line.toLowerCase().includes(marker, from));
   const startBlock = (index: number, line: string, kind: Block['kind']) => {
@@ -134,8 +133,7 @@ async function readIntro(root: string, files: ProjectFile[]): Promise<ProjectInt
     // counts; inside marker-closed HTML only its marker. Blank lines do not end either, and an
     // unclosed one hides the rest of the file.
     if (fence) {
-      const closing = indent < 4 ? fenceClosing.exec(line) : null;
-      if (closing && closing[1][0] === fence.char && closing[1].length >= fence.length) fence = null;
+      if (closesMarkdownFence(raw, fence)) fence = null;
       return;
     }
     if (htmlUntil) {
@@ -154,8 +152,8 @@ async function readIntro(root: string, files: ProjectFile[]): Promise<ProjectInt
       else startBlock(index, line, 'code');
       return;
     }
-    const opening = fenceOpening.exec(line);
-    if (opening) { fence = { char: opening[1][0], length: opening[1].length }; current = null; return; }
+    const opening = openMarkdownFence(raw);
+    if (opening) { fence = opening; current = null; return; }
     const markers = closingMarkers(line);
     if (markers) {
       // Offset 2 skips the opening `<!`/`<?`/`<p` so an opener cannot close itself.
