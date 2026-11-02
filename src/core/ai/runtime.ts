@@ -208,6 +208,7 @@ export function parseStageOutput(provider: 'codex' | 'antigravity', stdout: stri
 
 export class LocalAiRuntime {
   private launches = new Map<ProviderId, Launch>();
+  private agySupportsDisableSlashCommands = false;
   /**
    * App-only folders keep the user's own AI settings out of app runs.
    * `codexHome`: even with `--ignore-user-config`, codex-cli 0.162.1 read the user's global
@@ -247,6 +248,7 @@ export class LocalAiRuntime {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'code-learning-check-'));
     const connections: ProviderConnection[] = [];
     this.launches.clear();
+    this.agySupportsDisableSlashCommands = false;
     try {
       for (const { provider, binary } of providers) {
         if (automatic && provider === 'claude-code') continue;
@@ -287,6 +289,10 @@ export class LocalAiRuntime {
           const version = output.stdout.match(/(?:^|\s)(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)(?:\s|$)/)?.[1] ?? null;
           if (output.exitCode !== 0 || !version) throw new Error('unusable');
           this.launches.set(provider, launch);
+          if (provider === 'antigravity') {
+            const [major, minor, patch] = version.split('.').map(part => Number.parseInt(part, 10));
+            this.agySupportsDisableSlashCommands = major > 1 || (major === 1 && (minor > 4 || (minor === 4 && patch >= 12)));
+          }
           connections.push({ ...base, installation: 'found', version, message: '설치를 확인했습니다. 로그인·실제 응답·접근 제한은 아직 미검증입니다.'
             + (provider === 'codex' ? ` 앱은 개인 Codex 설정과 분리된 앱 전용 위치를 쓰므로, 처음 한 번 터미널에서 로그인이 필요할 수 있어요: CODEX_HOME="${this.codexHome}" codex login` : '') });
         } catch (error) {
@@ -355,6 +361,9 @@ export class LocalAiRuntime {
         // No --json-schema: agy 1.3.5 then forces an extra internal tool call to shape the answer,
         // which the no-tools rule rejects. The schema goes into the prompt and the app checks the JSON.
         : ['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', GEMINI_MODEL, '--mode', 'plan', '--sandbox',
+          // Keep plan mode, but stop /plan expansion from requesting planning documents and approval.
+          // Only from agy 1.4.12, where the option was seen; an agy that does not know it would refuse every run.
+          ...(this.agySupportsDisableSlashCommands ? ['--disable-slash-commands'] : []),
           '--print-timeout', `${timeoutMs / 1000}s`];
       const stdin = request.provider === 'codex' ? request.prompt : `${JSON.stringify({ event: 'user', message: {
         content: `${request.prompt}\n\n응답은 아래 JSON schema를 따르는 JSON 하나만 출력한다. 코드 울타리나 다른 글을 붙이지 않는다.\n${JSON.stringify(request.schema)}`,

@@ -295,6 +295,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     expect(request.executable).toBe('/usr/bin/sandbox-exec');
     const agyArgs = request.args.slice(3);
     expect(agyArgs).toEqual(expect.arrayContaining(['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', GEMINI_MODEL, '--mode', 'plan', '--sandbox']));
+    expect(agyArgs).not.toContain('--disable-slash-commands');
     expect(agyArgs).not.toContain('-p');
     // --json-schema makes agy force an extra internal tool call, so the schema travels in the prompt.
     expect(agyArgs).not.toContain('--json-schema');
@@ -304,8 +305,61 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     expect(message.message.content.startsWith(prompt)).toBe(true);
     expect(message.message.content).toContain(JSON.stringify(schema));
   });
+  it.each([
+    ['1.4.12', true], ['1.4.13', true], ['1.5.0', true], ['1.10.0', true], ['2.0.0', true],
+    ['1.4.12-beta', true], ['1.4.12+build.1', true],
+    ['1.4.11', false], ['1.3.5', false], ['0.10.20', false],
+  ])('uses the agy version %s to decide whether to disable slash expansion (%s)', async (version, supported) => {
+    vi.mocked(runProcess).mockResolvedValue({ stdout: `agy ${version}\n`, stderr: '', exitCode: 0 });
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
+    await runtime.checkConnections();
+    expect(runProcess).toHaveBeenCalledTimes(3);
+    for (const [request] of vi.mocked(runProcess).mock.calls) expect(inner(request).args).toEqual(['--version']);
+    vi.mocked(runProcess).mockClear();
+    vi.mocked(runProcess).mockResolvedValue({ stdout: agy(init(GEMINI_MODEL), ok), stderr: '', exitCode: 0 });
+    await runtime.run({ stage: 'explaining', provider: 'antigravity', prompt: 'PROMPT', schema: {}, signal: new AbortController().signal });
+    expect(runProcess).toHaveBeenCalledTimes(1);
+    const args = inner(vi.mocked(runProcess).mock.calls[0][0]).args;
+    expect(args).toEqual(['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', GEMINI_MODEL,
+      '--mode', 'plan', '--sandbox', ...(supported ? ['--disable-slash-commands'] : []), '--print-timeout', '120s']);
+  });
+  it('drops the slash expansion option when the same runtime rechecks agy 1.4.12 as 1.4.11', async () => {
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
+    for (const version of ['1.4.12', '1.4.11']) {
+      vi.mocked(runProcess).mockResolvedValue({ stdout: `agy ${version}\n`, stderr: '', exitCode: 0 });
+      await runtime.checkConnections();
+      vi.mocked(runProcess).mockClear();
+      vi.mocked(runProcess).mockResolvedValue({ stdout: agy(init(GEMINI_MODEL), ok), stderr: '', exitCode: 0 });
+      await runtime.run({ stage: 'explaining', provider: 'antigravity', prompt: 'PROMPT', schema: {}, signal: new AbortController().signal });
+      expect(runProcess).toHaveBeenCalledTimes(1);
+      expect(inner(vi.mocked(runProcess).mock.calls[0][0]).args.includes('--disable-slash-commands')).toBe(version === '1.4.12');
+    }
+  });
+  it.each(['missing', 'nonzero exit', 'unreadable version', 'process failure'])('refuses agy after a successful check followed by %s', async failure => {
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
+    vi.mocked(runProcess).mockResolvedValue({ stdout: 'agy 1.4.12\n', stderr: '', exitCode: 0 });
+    await runtime.checkConnections();
+    expect(() => runtime.assertReady('antigravity')).not.toThrow();
+    vi.mocked(realpath).mockImplementation(async name => {
+      if (failure === 'missing' && String(name).endsWith('/agy')) throw new Error('missing');
+      return String(name);
+    });
+    vi.mocked(runProcess).mockImplementation(async request => {
+      if (!inner(request).executable.endsWith('/agy')) return { stdout: 'cli 1.2.3\n', stderr: '', exitCode: 0 };
+      if (failure === 'process failure') throw new Error('version check failed');
+      return { stdout: failure === 'unreadable version' ? 'agy unknown\n' : 'agy 1.4.12\n', stderr: '', exitCode: failure === 'nonzero exit' ? 1 : 0 };
+    });
+    const report = await runtime.checkConnections();
+    expect(report.providers.find(item => item.provider === 'antigravity')).toMatchObject({ installation: failure === 'missing' ? 'missing' : 'unusable', version: null });
+    expect(report.modes.find(item => item.mode === 'antigravity')).toMatchObject({ ready: false });
+    vi.mocked(runProcess).mockClear();
+    await expect(runtime.run({ stage: 'explaining', provider: 'antigravity', prompt: 'PROMPT', schema: {}, signal: new AbortController().signal }))
+      .rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: SINGLE_NEEDS.antigravity });
+    expect(runProcess).not.toHaveBeenCalled();
+  });
   it('passes explicit Codex restrictions for shell, hooks, agents, images, image generation, history notes, web, apps and plugins', async () => {
     const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
+    vi.mocked(runProcess).mockResolvedValue({ stdout: 'cli 1.4.12\n', stderr: '', exitCode: 0 });
     await runtime.checkConnections();
     vi.mocked(runProcess).mockClear();
     const events = [{ type: 'item.completed', item: { type: 'agent_message', text: '{"summary":"example"}' } }, { type: 'turn.completed' }];
@@ -313,6 +367,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     await (runtime as unknown as { executeVerifiedStage(request: object): Promise<unknown> })
       .executeVerifiedStage({ stage: 'organizing', provider: 'codex', prompt: 'PROMPT', schema: {}, signal: new AbortController().signal });
     const args = vi.mocked(runProcess).mock.calls[0][0].args.join(' ');
+    expect(args).not.toContain('--disable-slash-commands');
     for (const feature of ['hooks', 'shell_tool', 'multi_agent', 'multi_agent_v2', 'view_image', 'image_generation', 'token_budget', 'context_management', 'apps', 'plugins']) {
       expect(args).toContain(`--disable ${feature}`);
     }
