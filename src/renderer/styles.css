@@ -142,6 +142,13 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .tag--unknown::before { content: "? "; }
 .eyebrow { display: block; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .02em; }
 .hint { color: var(--muted); font-size: 14px; }
+.plan-compare fieldset > label { display: inline-flex; gap: 6px; margin: 8px 16px 8px 0; }
+.plan-compare__sections { list-style: none; padding: 0; max-height: 320px; overflow: auto; }
+.plan-compare__sections li { margin-block: 8px; overflow-wrap: anywhere; }
+.plan-compare__sections input { margin-inline-end: 8px; }
+.plan-compare__lines { display: flex; flex-wrap: wrap; gap: 16px; margin-block: 8px; }
+.plan-compare__lines label { display: flex; align-items: center; gap: 8px; }
+.plan-compare__lines input { width: 100px; }
 
 /* Notices */
 .notices { grid-area: notice; display: grid; gap: 6px; padding: 8px 16px 0; }

@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor, type IpcMainInvokeEvent } from 'electron';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { mkdir, realpath, stat } from 'node:fs/promises';
 import { z } from 'zod';
@@ -13,6 +14,9 @@ import { checkFeatureGuideRoutes } from '../core/ai/feature-guide';
 import { maskSecrets } from '../core/ai/secrets';
 import { LocalWorkerWorkflow } from '../core/ai/workflow';
 import { ProjectAiContext } from '../core/ai/context';
+import { MAX_FILE_BYTES, readStable } from '../core/project/files';
+import { planSections } from '../core/analysis/plan-sections';
+import type { PlanDocument } from '../shared/plan-compare';
 
 let window: BrowserWindow | null = null;
 let session: ProjectSession | undefined;
@@ -24,6 +28,10 @@ let quitting = false;
 let quitReady = false;
 let projectRevision = 0;
 let aiContext: ProjectAiContext | undefined;
+// The one plan document picked this run, kept for the comparison step; exported for main tests.
+// Its path and text never cross to the renderer, which only gets the name, sizes and sections.
+export let planDocument: (PlanDocument & { path: string; text: string; hash: string }) | null = null;
+let pickingPlan = false;
 // App-only Codex and Antigravity folders keep the user's own AI settings out of app runs.
 const aiRuntime = new LocalAiRuntime(path.join(app.getPath('userData'), 'codex-home'), path.join(app.getPath('userData'), 'agy-home'));
 const learning = new LocalWorkerWorkflow({
@@ -147,6 +155,7 @@ function handle<T>(channel: string, action: (argument: unknown) => Promise<T>) {
 
 async function dispose() {
   generation++;
+  planDocument = null;
   const previous = session;
   session = undefined;
   aiContext = undefined;
@@ -164,6 +173,7 @@ async function openFolder(selectRoot: (requestedAt: number) => Promise<string | 
     const root = await selectRoot(requestedAt);
     if (generation !== requestedAt) throw new AppError('CANCELLED', '폴더 열기를 취소했습니다.');
     if (root === null) return null;
+    planDocument = null;
     const previous = session;
     session = undefined;
     aiContext = undefined;
@@ -236,6 +246,33 @@ app.whenReady().then(async () => {
       if (selected.canceled || !selected.filePaths[0]) return null;
       return realpath(selected.filePaths[0]);
     });
+  });
+  handle(channels.pickPlanDocument, async argument => {
+    z.undefined().parse(argument);
+    if (!session) throw new AppError('PROJECT_CLOSED', '프로젝트를 먼저 열어 주세요.');
+    if (quitting || opening || pickingPlan) throw new AppError('INVALID_REQUEST', '다른 선택 작업이 끝난 뒤 다시 골라 주세요.');
+    const requestedAt = generation;
+    pickingPlan = true;
+    try {
+      const selected = await dialog.showOpenDialog(window!, { properties: ['openFile'], title: '대조할 기획 문서 선택',
+        filters: [{ name: '기획 문서', extensions: ['md', 'markdown', 'txt'] }] });
+      if (generation !== requestedAt) throw new AppError('CANCELLED', '프로젝트가 바뀌어 문서 선택을 취소했어요.');
+      if (selected.canceled || selected.filePaths.length === 0) return null;
+      if (selected.filePaths.length !== 1) throw new AppError('INVALID_REQUEST', '기획 문서는 하나만 골라 주세요.');
+      const file = selected.filePaths[0];
+      if (!['.md', '.markdown', '.txt'].includes(path.extname(file).toLowerCase())) {
+        throw new AppError('UNSUPPORTED', 'Markdown·텍스트 파일(.md, .markdown, .txt)만 고를 수 있어요.');
+      }
+      const source = await readStable(path.dirname(file), path.basename(file), MAX_FILE_BYTES);
+      if (generation !== requestedAt) throw new AppError('CANCELLED', '프로젝트가 바뀌어 문서 선택을 취소했어요.');
+      const document: PlanDocument = { documentId: randomUUID(), name: maskSecrets(path.basename(file)).text,
+        bytes: Buffer.byteLength(source.text, 'utf8'), ...planSections(source.text) };
+      planDocument = { ...document, path: file, ...source };
+      return document;
+    } catch (error) {
+      if (error instanceof AppError && error.code === 'LIMIT') throw new AppError('LIMIT', '문서가 256 KiB를 넘어 고를 수 없어요.');
+      throw error;
+    } finally { pickingPlan = false; }
   });
   handle(channels.recentProjects, async argument => {
     z.undefined().parse(argument);
