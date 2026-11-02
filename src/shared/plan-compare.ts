@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { idSchema } from './contracts';
+import { learningModeSchema, type LearningMode, type ModelRun } from './ai';
 import { AppError } from './errors';
 
 export const PLAN_SEND_LIMIT = 48 * 1024;
@@ -23,15 +25,15 @@ export interface PlanDocument {
   sections: PlanSection[];
 }
 
-const selectionSchema = z.union([
+export const planSelectionSchema = z.union([
   z.object({ documentId: z.string(), sectionIds: z.array(z.string()) }).strict(),
   z.object({ documentId: z.string(), startLine: z.number().int().positive(), endLine: z.number().int().positive() }).strict(),
 ]);
-export type PlanSelection = z.infer<typeof selectionSchema>;
+export type PlanSelection = z.infer<typeof planSelectionSchema>;
 
 /** Count each selected source line once, including its original LF or CRLF. */
 export function selectionBytes(document: PlanDocument, input: PlanSelection): number {
-  const parsed = selectionSchema.safeParse(input);
+  const parsed = planSelectionSchema.safeParse(input);
   if (!parsed.success) throw new AppError('INVALID_REQUEST', '기획 범위를 다시 골라 주세요.');
   const selection = parsed.data;
   if (selection.documentId !== document.documentId) throw new AppError('INVALID_REQUEST', '현재 고른 기획 문서가 아닙니다.');
@@ -64,4 +66,57 @@ export function planSelection(document: PlanDocument, selection: PlanSelection):
   if ('sectionIds' in selection && selection.sectionIds.length === 0) throw new AppError('INVALID_REQUEST', '대조할 장·절을 골라 주세요.');
   if (bytes > PLAN_SEND_LIMIT) throw new AppError('LIMIT', '고른 범위가 48 KiB를 넘어요. 범위를 줄여 주세요.');
   return bytes;
+}
+
+export const planCompareRequestSchema = z.object({
+  projectId: idSchema, selection: planSelectionSchema, mode: learningModeSchema, consent: z.literal(true),
+}).strict();
+export type PlanCompareRequest = z.infer<typeof planCompareRequestSchema>;
+const planLines = z.object({ startLine: z.number().int().min(1), endLine: z.number().int().min(1) }).strict();
+export type PlanRange = z.infer<typeof planLines>;
+const text = z.string().trim().min(1).max(400);
+const item = z.object({
+  title: text, plan: planLines, status: z.enum(['matches', 'differs', 'unverified', 'missing']),
+  files: z.array(idSchema).max(6), difference: text.nullable(), missingEvidence: text.nullable(), searched: text.nullable(),
+}).strict();
+export const planCompareSchema = z.object({
+  items: z.array(item).max(40),
+  unrequested: z.array(z.object({ title: text, files: z.array(idSchema).min(1).max(6), note: text }).strict()).max(20),
+  designMismatches: z.array(z.object({ plan: planLines, edge: z.number().int().min(0), note: text }).strict()).max(20),
+  unknowns: z.array(text).max(10),
+}).strict();
+export const planStructureCompareSchema = planCompareSchema.extend({
+  items: z.array(item.extend({ status: z.enum(['unverified', 'missing']) }).strict()).max(40),
+}).strict();
+export const planCompareReviewSchema = z.object({ accepted: z.boolean(), issues: z.array(text).max(16), compare: planCompareSchema }).strict();
+export const planCompareOrganizationSchema = z.object({ focus: text, requestedFileIds: z.array(idSchema).max(8) }).strict();
+export type PlanCompareAnswer = z.infer<typeof planCompareSchema>;
+export interface PlanCompareResult {
+  jobId: string; projectId: string; mode: LearningMode; review: 'AI 검토됨' | 'AI 대조 없음'; models: ModelRun[];
+  structureOnly: boolean;
+  document: Pick<PlanDocument, 'documentId' | 'name'>;
+  sent: PlanRange[]; excluded: PlanRange[];
+  files: { id: string; relativePath: string }[];
+  edges: { index: number; from: string; to: string; line: number }[];
+  read: { fileId: string; relativePath: string; fileHash: string }[];
+  compare: PlanCompareAnswer;
+  basis: { planHash: string; scopeHash: string; mapHash: string };
+  limitations: string[];
+}
+
+/** Every cited plan range must fit wholly within one range actually sent. */
+export function checkPlanCompare(compare: PlanCompareAnswer, sent: PlanRange[], files: string[], read: string[], edges: number[]): void {
+  const invalid = () => { throw new AppError('AI_RESPONSE', '대조 결과에 이번 자료로 확인할 수 없는 근거가 있어 표시하지 않았어요.'); };
+  const rangeAllowed = (range: PlanRange) => range.startLine <= range.endLine && sent.some(part =>
+    range.startLine >= part.startLine && range.endLine <= part.endLine);
+  const filesAllowed = (ids: string[]) => new Set(ids).size === ids.length && ids.every(id => files.includes(id));
+  for (const item of compare.items) {
+    if (!rangeAllowed(item.plan) || !filesAllowed(item.files)) invalid();
+    if ((item.status === 'matches' || item.status === 'differs') && (!item.files.length || item.files.some(id => !read.includes(id)))) invalid();
+    if (item.status === 'differs' && !item.difference?.trim()) invalid();
+    if (item.status === 'unverified' && (!item.files.length || !item.missingEvidence?.trim())) invalid();
+    if (item.status === 'missing' && (item.files.length || !item.searched?.trim())) invalid();
+  }
+  if (compare.unrequested.some(item => !item.files.length || !filesAllowed(item.files))) invalid();
+  if (compare.designMismatches.some(item => !rangeAllowed(item.plan) || !edges.includes(item.edge))) invalid();
 }

@@ -18,6 +18,7 @@ export interface ContextSnapshot {
   files: ContextFile[];
   availableFiles: { id: string; relativePath: string }[];
   limitations: string[];
+  limits?: { files: number; bytes: number };
 }
 /** A question about selected code: the selection, then the files read for it. An overview has no selection. */
 export interface EvidenceSnapshot extends ContextSnapshot, ContextFile {}
@@ -33,6 +34,8 @@ function checkCancelled(signal: AbortSignal) {
 export class ProjectAiContext {
   private evidence = new Map<string, Evidence>();
   constructor(private readonly root: string, private readonly project: ProjectFiles) {}
+
+  paths(): string[] { return this.project.files.map(file => file.relativePath).sort(); }
 
   private remember(evidence: Evidence): Evidence {
     this.evidence.delete(evidence.id);
@@ -133,12 +136,12 @@ export class ProjectAiContext {
 
   async expand(snapshot: ContextSnapshot, ids: string[], signal: AbortSignal): Promise<void> {
     checkCancelled(signal);
-    if (ids.length > MAX_RELATED_FILES || new Set(ids).size !== ids.length ||
+    if (ids.length > (snapshot.limits?.files ?? MAX_RELATED_FILES) || new Set(ids).size !== ids.length ||
         ids.some(id => !snapshot.availableFiles.some(file => file.id === id))) {
       throw new AppError('AI_RESPONSE', 'AI가 허용된 파일 목록 밖의 파일을 요청했습니다.');
     }
     for (const id of ids) await this.addFile(snapshot, id, signal);
-    snapshot.limitations.push('관련 파일 탐색은 한 번, 최대 4개입니다. 제공되지 않은 파일의 동작은 확인하지 않았습니다.');
+    snapshot.limitations.push(`관련 파일 탐색은 한 번, 최대 ${snapshot.limits?.files ?? MAX_RELATED_FILES}개입니다. 제공되지 않은 파일의 동작은 확인하지 않았습니다.`);
   }
 
   private async addFile(snapshot: ContextSnapshot, fileId: string, signal: AbortSignal): Promise<void> {
@@ -155,7 +158,7 @@ export class ProjectAiContext {
     const size = Buffer.byteLength(text);
     const selected = hasSelection(snapshot) ? Buffer.byteLength(snapshot.code) : 0;
     if (!text.length || size > MAX_CONTEXT_FILE_BYTES ||
-        size + selected + snapshot.files.reduce((sum, item) => sum + Buffer.byteLength(item.code), 0) > MAX_CONTEXT_BYTES) {
+        size + selected + snapshot.files.reduce((sum, item) => sum + Buffer.byteLength(item.code), 0) > (snapshot.limits?.bytes ?? MAX_CONTEXT_BYTES)) {
       snapshot.limitations.push(`${file.relativePath}: 비어 있거나 자료 크기 제한을 넘어 전체 파일을 포함하지 않았습니다.`);
       return;
     }

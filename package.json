@@ -14,6 +14,7 @@
     "test:packaged": "node scripts/packaged-smoke.mjs",
     "test:ai-sandbox": "node scripts/ai-sandbox-smoke.mjs",
     "test:codex-live": "vitest run --config vitest.live.config.ts tests/live/codex.live.ts",
+    "test:plan-live": "vitest run --config vitest.live.config.ts tests/live/plan-compare.live.ts",
     "test:agy-live": "vitest run --config vitest.live.config.ts tests/live/antigravity.live.ts"
   },
   "devDependencies": {

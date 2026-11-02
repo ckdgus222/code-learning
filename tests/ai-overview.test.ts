@@ -90,7 +90,7 @@ function fake(snapshot: ContextSnapshot, answer: (snapshot: ContextSnapshot) => 
   const assertReady = vi.fn();
   const capture = vi.fn(async () => { throw new Error('not a question test'); });
   const captureOverview = vi.fn(async () => snapshot);
-  const workflow = new LocalWorkerWorkflow({ captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); }, assertReady, capture, captureOverview, captureFile: async () => { throw new Error('not a file explanation test'); }, expand, revalidate, run, emit: event => events.push(event) });
+  const workflow = new LocalWorkerWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); }, assertReady, capture, captureOverview, captureFile: async () => { throw new Error('not a file explanation test'); }, expand, revalidate, run, emit: event => events.push(event) });
   const request: OverviewRequest = { projectId: snapshot.projectId, startFileId: null, mode: 'local-worker', consent: true };
   const finish = async (input = request) => {
     const { jobId } = workflow.startOverview(input);
@@ -244,7 +244,7 @@ describe('overview with the real app reads and fake stages', () => {
         roles: [{ name: '재고', summary: '남은 수', evidenceIds: [id('stock.ts')], functions: [{ name: 'missing', evidenceId: id('stock.ts') }] }], unknowns: [] };
       return { reportedModel: null, value: request.stage === 'explaining' ? answer : { accepted: true, issues: [], overview: answer } };
     };
-    const workflow = new LocalWorkerWorkflow({ captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); }, assertReady: () => {}, run, emit: event => events.push(event),
+    const workflow = new LocalWorkerWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); }, assertReady: () => {}, run, emit: event => events.push(event),
       capture: async () => { throw new Error('not a question test'); },
       captureOverview: (request, signal) => f.context.captureOverview(request.startFileId, 1, signal),
       captureFile: (request, signal) => f.context.captureFile(request, 1, signal),

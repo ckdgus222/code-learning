@@ -9,18 +9,19 @@ import type { PlanSelection } from '../src/shared/plan-compare';
 function render(text: string | null, selection: PlanSelection | null = null) {
   const state: ReturnType<typeof usePlanCompare> = {
     document: text === null ? null : { documentId: 'doc', name: 'plan.md', bytes: Buffer.byteLength(text), ...planSections(text) },
-    selection, setSelection() {}, picking: false, error: '', async pick() {}, forget() {},
+    running: false, phase: null, result: null, consent: false, setConsent() {}, async start() {}, cancel() {},
+    selection: selection ?? (text === null ? null : { documentId: 'doc', startLine: 1, endLine: text.split('\n').length }), setSelection() {}, picking: false, error: '', async pick() {}, forget() {},
   };
-  return renderToStaticMarkup(React.createElement(PlanCompare, { state, locked: false }));
+  return renderToStaticMarkup(React.createElement(PlanCompare, { state, locked: false, mode: 'local-worker', checking: false, readiness: null, onInspect() {} }));
 }
 
-it('shows the picker and a whole-document message for small documents without an AI action', () => {
+it('shows the picker and a whole-document message for small documents with a disabled comparison action until consent', () => {
   expect(render(null)).toContain('기획 문서 고르기');
   const html = render('# 작은 문서');
   expect(html).toContain('문서 전체를 보내요.');
   expect(html).toContain('다른 문서 고르기');
-  expect(html).not.toContain('type="checkbox"');
-  expect(html).not.toContain('대조하기');
+  expect(html).toContain('보낼 자료에 동의');
+  expect(html).toMatch(/<button[^>]+disabled=""[^>]*>대조하기<\/button>/);
 });
 
 it('shows sections with inherited checks, their union size and the uncovered parent body', () => {
