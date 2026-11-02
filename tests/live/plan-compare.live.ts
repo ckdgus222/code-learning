@@ -104,10 +104,12 @@ describe('Plan comparison through the app runtime (real account, non-secret fixt
       expect.soft(result.sent, `[${mode}] expected plan lines 1–6`).toEqual([{ startLine: 1, endLine: 6 }]);
       expect.soft(result.files.map(file => file.relativePath), `[${mode}] settings.ts must remain excluded`).not.toContain('settings.ts');
       expect.soft(result.read.map(file => file.relativePath), `[${mode}] settings.ts must not be read`).not.toContain('settings.ts');
-      expect.soft(unrequested, `[${mode}] expected extra.ts in unrequested`).toEqual(expect.arrayContaining([
-        expect.objectContaining({ files: expect.arrayContaining(['extra.ts']) }),
-      ]));
       const lineItems = (line: number) => items.filter(item => item.plan.startLine <= line && item.plan.endLine >= line);
+      expect.soft(lineItems(6).length, `[${mode}] plan line 6 must be covered by an item`).toBeGreaterThan(0);
+      expect.soft(designMismatches.filter(item => item.plan.startLine <= 6 && item.plan.endLine >= 6),
+        `[${mode}] plan line 6 must flag the screen.ts → store.ts connection`).toEqual(expect.arrayContaining([
+        expect.objectContaining({ edge: expect.objectContaining({ from: 'screen.ts', to: 'store.ts', line: 1 }) }),
+      ]));
       if (mode !== 'local-worker') {
         expect.soft(result.structureOnly, `[${mode}] expected structureOnly: true`).toBe(true);
         expect.soft(items.filter(item => item.status === 'matches'), `[${mode}] matches must be empty`).toEqual([]);
@@ -121,6 +123,9 @@ describe('Plan comparison through the app runtime (real account, non-secret fixt
         return;
       }
       expect.soft(result.structureOnly, '[local-worker] expected code comparison').toBe(false);
+      expect.soft(unrequested, '[local-worker] expected extra.ts in unrequested').toEqual(expect.arrayContaining([
+        expect.objectContaining({ files: expect.arrayContaining(['extra.ts']) }),
+      ]));
       expect.soft(lineItems(2), '[local-worker] plan line 2 must match order.ts').toEqual(expect.arrayContaining([
         expect.objectContaining({ status: 'matches', files: expect.arrayContaining(['order.ts']) }),
       ]));
@@ -132,10 +137,6 @@ describe('Plan comparison through the app runtime (real account, non-secret fixt
       ]));
       expect.soft(lineItems(5), '[local-worker] plan line 5 must be missing').toEqual(expect.arrayContaining([
         expect.objectContaining({ status: 'missing' }),
-      ]));
-      expect.soft(designMismatches.filter(item => item.plan.startLine <= 6 && item.plan.endLine >= 6),
-        '[local-worker] plan line 6 must flag the screen.ts → store.ts connection').toEqual(expect.arrayContaining([
-        expect.objectContaining({ edge: expect.objectContaining({ from: 'screen.ts', to: 'store.ts', line: 1 }) }),
       ]));
     } catch (error) {
       console.error(`[${mode}] failed:`, recordedFailure(error));
