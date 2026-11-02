@@ -1,19 +1,18 @@
 import React, { useEffect } from 'react';
 import { GEMINI_MODEL, type LearningMode, type LearningPhase, type ConnectionReport } from '../shared/ai';
-import { PLAN_SEND_LIMIT, selectionBytes, type PlanCompareAnswer } from '../shared/plan-compare';
+import { PLAN_SEND_LIMIT, selectionBytes } from '../shared/plan-compare';
+import { PlanCompareResultView, modes } from './plan-compare-result';
+import type { MapImport } from '../shared/contracts';
 import type { usePlanCompare } from './use-plan-compare';
 
-const modes: Record<LearningMode, string> = { 'local-worker': '로컬 워커 · Codex → Gemini → Codex', codex: 'Codex 단독', antigravity: 'Antigravity 단독', 'claude-code': 'Claude Code 단독 · 준비 중' };
 const phases: Record<LearningPhase, string> = { collecting: '대조 자료 모으는 중', organizing: 'Codex가 파일 고르는 중', 'reading-related': '고른 코드 읽는 중', explaining: '기획 대조 작성 중', reviewing: 'Codex가 대조 검토 중', validating: '자료가 바뀌었는지 확인 중' };
 
-export function PlanCompare({ state, locked, mode, checking, readiness, onInspect }: {
+export function PlanCompare({ state, locked, mode, checking, readiness, onInspect, onFile, onImport }: {
   state: ReturnType<typeof usePlanCompare>; locked: boolean; mode: LearningMode; checking: boolean;
-  readiness: ConnectionReport['modes'][number] | null; onInspect(): void;
+  readiness: ConnectionReport['modes'][number] | null; onInspect(): void; onFile(fileId: string): void; onImport(site: MapImport): void;
 }) {
   useEffect(() => { state.setConsent(false); }, [mode]);
   const { document, selection, setSelection, picking, error } = state;
-  const count = (status: PlanCompareAnswer['items'][number]['status']) =>
-    state.result?.compare.items.filter(item => item.status === status).length ?? 0;
   const large = !!document && document.bytes > PLAN_SEND_LIMIT;
   const hasHeadings = !!document?.sections.some(section => section.level > 0);
   const byLines = selection && 'startLine' in selection;
@@ -93,11 +92,8 @@ export function PlanCompare({ state, locked, mode, checking, readiness, onInspec
           onClick={() => void state.start(mode)}>대조하기</button>
       </div>}
       {state.running && <p role="status">{state.phase ? phases[state.phase] : '대조 작업 시작 중'} <button className="btn" onClick={state.cancel}>대조 작업 취소</button></p>}
-      {state.result && <div>
-        <p role="status">대조 결과 · 기획대로 {count('matches')} · 다름 {count('differs')} · 확인 못 함 {count('unverified')} · 못 찾음 {count('missing')} · 시키지 않은 작업 후보 {state.result.compare.unrequested.length} · 설계와 다른 연결 {state.result.compare.designMismatches.length}
-          {state.result.structureOnly && ' · 코드를 읽지 않은 구조 비교'} · 대조한 범위: {state.result.sent.map(range => `${range.startLine}–${range.endLine}줄`).join(', ')}</p>
-        <p className="hint">자세한 결과 화면은 준비 중이에요</p>
-      </div>}
+      {state.result && <PlanCompareResultView result={state.result} freshness={state.freshness} locked={locked}
+        recheck={state.recheck} onFile={onFile} onImport={onImport} />}
     </>}
   </section>;
 }

@@ -6,7 +6,7 @@ import { checkPlanCompare, planCompareSchema, planStructureCompareSchema, type P
 import { planSections } from '../src/core/analysis/plan-sections';
 import { buildProjectMap } from '../src/core/analysis/project-map';
 import { ProjectAiContext } from '../src/core/ai/context';
-import { capturePlanCompare, planMapHash, revalidatePlanCompare, waitForPlan, type PickedPlan } from '../src/core/ai/plan-compare';
+import { capturePlanCompare, checkPlanCompareBasis, planMapHash, revalidatePlanCompare, waitForPlan, type PickedPlan } from '../src/core/ai/plan-compare';
 import { LocalWorkerWorkflow, type StageRequest, type StageResponse, type WorkflowDependencies } from '../src/core/ai/workflow';
 import { readStable, scanProject } from '../src/core/project/files';
 import { AppError } from '../src/shared/errors';
@@ -113,6 +113,32 @@ describe('plan comparison references', () => {
 });
 
 describe('plan material and currentness', () => {
+  it.each([
+    ['unchanged', []],
+    ['plan', ['기획 문서가 바뀌었어요. 문서를 다시 고른 뒤 대조해 주세요']],
+    ['deleted plan', ['기획 문서를 다시 읽지 못했어요']],
+    ['new file', ['폴더에 새 파일이 생겼거나 없어졌어요. 폴더를 다시 열어 주세요']],
+    ['deleted file', ['폴더에 새 파일이 생겼거나 없어졌어요. 폴더를 다시 열어 주세요']],
+    ['ignore', ['제외 규칙(.gitignore)이 바뀌었어요']],
+  ])('checks %s without rebuilding the map', async (kind, reasons) => {
+    const f = await fixture(undefined, { 'main.ts': 'export {};', '.gitignore': '# original' });
+    const snapshot = await f.capture();
+    f.source.map.mockClear();
+    if (kind === 'plan') await writeFile(f.document.path, '# changed');
+    if (kind === 'deleted plan') await rm(f.document.path);
+    if (kind === 'new file') await writeFile(path.join(f.root, 'new.ts'), 'export {};');
+    if (kind === 'deleted file') await rm(path.join(f.root, 'main.ts'));
+    if (kind === 'ignore') await writeFile(path.join(f.root, '.gitignore'), '# same files, changed rule text');
+    expect(await checkPlanCompareBasis(f.source, f.document, snapshot.basis)).toEqual(reasons);
+    expect(f.source.map).not.toHaveBeenCalled();
+  });
+  it('propagates scope errors other than CHANGED', async () => {
+    const f = await fixture();
+    const snapshot = await f.capture();
+    const error = new AppError('INTERNAL', 'scope failed');
+    vi.spyOn(f.context, 'paths').mockImplementation(() => { throw error; });
+    await expect(checkPlanCompareBasis(f.source, f.document, snapshot.basis)).rejects.toBe(error);
+  });
   it('keeps CRLF and original Korean line positions, merges overlapping sections, and computes excluded ranges', async () => {
     const f = await fixture('머리\r\n# 첫 장\r\n본문\r\n## 하위 절\r\n내용\r\n# 다음 장\r\n끝');
     const snapshot = await f.capture({ documentId: f.document.documentId, sectionIds: ['s2', 's4'] });
@@ -134,7 +160,7 @@ describe('plan material and currentness', () => {
     map.limited = true; map.notes = ['분석 안내'];
     f.source.map.mockResolvedValue(map);
     const snapshot = await f.capture();
-    expect(Buffer.byteLength(JSON.stringify(snapshot.edges))).toBeLessThanOrEqual(64 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(snapshot.edges.map(({ index, from, to, line }) => ({ index, from, to, line }))))).toBeLessThanOrEqual(64 * 1024);
     expect(snapshot.edges.length).toBeGreaterThan(0);
     expect(snapshot.edges.length).toBeLessThan(map.edges.length);
     expect(snapshot.limitations).toEqual(expect.arrayContaining(['지도 크기 제한으로 연결 일부를 보내지 않았어요',
@@ -190,6 +216,26 @@ describe('plan material and currentness', () => {
 });
 
 describe('plan workflow with fake AI only', () => {
+  it('returns masked plan text and import sites while sending exactly four edge fields to AI', async () => {
+    const f = await fixture('# 기획\npassword: fixture-only-value', { 'main.ts': "import './other';", 'other.ts': 'export {};' });
+    const map = await f.source.map();
+    const w = workflow(f);
+    const event = await w.finish();
+    expect(event.kind).toBe('plan-compare-completed');
+    if (event.kind !== 'plan-compare-completed') throw new Error('Missing result');
+    expect(event.result.plan).toEqual([{ startLine: 1, text: '# 기획\npassword: [MASKED_SECRET]' }]);
+    const { toFileId: _to, names: _names, ...site } = map.edges[0];
+    expect(event.result.edges[0].site).toEqual(site);
+    for (const [request] of w.run.mock.calls) {
+      const material = JSON.parse(request.prompt.split('\n자료:\n')[1].split('\n과제:\n')[0]);
+      expect(material.edges).toHaveLength(1);
+      expect(Object.keys(material.edges[0])).toEqual(['index', 'from', 'to', 'line']);
+      expect(material.plan).toEqual(event.result.plan);
+      expect(request.prompt).not.toContain(site.fileHash);
+      expect(request.prompt).not.toContain(site.text);
+      expect(request.prompt).not.toContain('fixture-only-value');
+    }
+  });
   it('runs picking, writing and review, masks plan and code, and returns metadata without source text', async () => {
     const f = await fixture('# 기획\npassword: fixture-only-value', { 'main.ts': 'const password = "fixture-only-value";' });
     const w = workflow(f, () => ({ ...empty(), items: [{ ...item(f.id('main.ts')), plan: { startLine: 2, endLine: 2 } }] }), [f.id('main.ts')]);
@@ -349,8 +395,8 @@ it.each([100, 400])('checks the actual review prompt size with 16,384 short line
   }
   while (true) {
     const next = { index: snapshot.edges.length, from: 'long-folder/'.repeat(10) + 'a.ts', to: 'long-folder/'.repeat(10) + 'b.ts', line: 1 };
-    if (Buffer.byteLength(JSON.stringify([...snapshot.edges, next])) > 64 * 1024) break;
-    snapshot.edges.push(next);
+    if (Buffer.byteLength(JSON.stringify([...snapshot.edges, next].map(({ index, from, to, line }) => ({ index, from, to, line })))) > 64 * 1024) break;
+    snapshot.edges.push({ ...next, site: { fromFileId: f.id('a.ts'), fileHash: 'a'.repeat(64), startUtf16: 0, endUtf16: 1, startLine: 1, endLine: 1, text: 'x', specifier: null } });
   }
   const answer = { ...empty(), items: Array.from({ length: 40 }, () => ({ ...item(f.id('a.ts')), title: '가'.repeat(length),
     difference: '가'.repeat(length), missingEvidence: '가'.repeat(length), searched: '가'.repeat(length) })) };

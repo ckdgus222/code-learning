@@ -690,6 +690,7 @@ function App() {
               checking={ai.checking} connections={ai.connections} onInspect={ai.inspectConnections} onEnsure={ai.ensureConnections} onRunning={ai.setFeatureGuideRunning}
               revision={revision.current} locked={busy} onFollow={(index, start) => void followFeatureRoute(index, start)} />
             {view === 'overview' && <details key={ai.overviewCard} className="card card--wide" aria-label="더 알아보기"
+              onToggle={event => { if (event.target === event.currentTarget && event.currentTarget.open) void planCompare.recheck(); }}
               // Once an overview was asked for, its progress, result or error stays in view (the prop never turns false again).
               open={features.routes?.routes.length === 0 || !!features.error || ai.overview !== null}>
             <summary onClick={event => { if (ai.overview?.status === 'running') event.preventDefault(); }}>
@@ -716,6 +717,7 @@ function App() {
               onEvidence={next => { setView('code'); void showEvidence(next, null, 'overview'); }}
               onFollow={followFeature} onFunction={(name, at) => void showNamedFunction(name, at)} />
             <PlanCompare state={planCompare} mode={ai.mode} checking={ai.checking}
+              onFile={fileId => { setView('code'); void readFile(fileId); }} onImport={site => void showImport(site)}
               readiness={ai.connections?.modes.find(item => item.mode === ai.mode) ?? null}
               onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
               locked={busy || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'} />

@@ -4,6 +4,7 @@ import type { LearningEvent } from '../shared/ai';
 
 const api: LearningApi = {
   startPlanCompare: input => ipcRenderer.invoke(channels.planCompare, input),
+  checkPlanCompare: input => ipcRenderer.invoke(channels.planCompareCheck, input),
   pickPlanDocument: () => ipcRenderer.invoke(channels.pickPlanDocument),
   openProject: () => ipcRenderer.invoke(channels.open),
   recentProjects: () => ipcRenderer.invoke(channels.recentProjects),

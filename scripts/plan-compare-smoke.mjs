@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 // Shared by development and packaged smoke tests. The picker can return only these temporary fixtures.
@@ -129,7 +130,7 @@ export async function checkPlanCompare(app, page, temporary, project) {
     await card.getByRole('button', { name: '기획 문서 고르기', exact: true }).waitFor();
     assert.equal(await card.getByText(/^parent-body\.md ·/).count(), 0);
     assert.deepEqual(await app.evaluate(() => globalThis.planTestAiCalls), []);
-    await checkPlanCompareRequests(app, page, card, pick);
+    await checkPlanCompareRequests(app, page, card, pick, temporary, showCard, dialogTo);
     // The checks that follow start from the welcome screen, so leave the app as it was found.
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
@@ -148,12 +149,13 @@ export async function checkPlanCompare(app, page, temporary, project) {
 
 
 // No provider runs: every start, installation check and cancellation uses an IPC fake.
-async function checkPlanCompareRequests(app, page, card, pick) {
+async function checkPlanCompareRequests(app, page, card, pick, temporary, showCard, dialogTo) {
   await app.evaluate(({ ipcMain }) => {
-    const channels = ['learning:plan-compare', 'learning:connections', 'learning:cancel-explanation'];
+    const channels = ['learning:plan-compare', 'learning:connections', 'learning:cancel-explanation', 'learning:plan-compare-check'];
     globalThis.compareTestHandlers = channels.map(channel => [channel, ipcMain._invokeHandlers.get(channel)]);
     globalThis.compareTestRequests = [];
     globalThis.compareTestCancelled = [];
+    ipcMain._invokeHandlers.set('learning:plan-compare-check', async () => ({ ok: true, value: { reasons: [] } }));
     ipcMain._invokeHandlers.set('learning:connections', async () => ({ ok: true, value: {
       checkedAt: new Date().toISOString(), providers: [],
       modes: ['local-worker', 'codex', 'antigravity'].map(mode => ({ mode, ready: true, reason: '가짜 AI 시험 준비됨' })),
@@ -186,7 +188,7 @@ async function checkPlanCompareRequests(app, page, card, pick) {
       const fileId = '00000000-0000-4000-8000-000000000099';
       event.result = { jobId, projectId: input.projectId, mode: input.mode, structureOnly, models: [],
         review: structureOnly ? 'AI 대조 없음' : 'AI 검토됨', document: { documentId: input.selection.documentId, name: 'fixture.md' },
-        sent: [range], excluded: [], files: [{ id: fileId, relativePath: 'main.ts' }], edges: [], read: [],
+        sent: [range], excluded: [], plan: [{ startLine: range.startLine, text: '시험\n'.repeat(range.endLine - range.startLine + 1) }], files: [{ id: fileId, relativePath: 'main.ts' }], edges: [], read: [],
         compare: { items: [{ title: '시험', plan: range, status: structureOnly ? 'unverified' : 'matches', files: [fileId],
           difference: null, missingEvidence: structureOnly ? '코드를 읽지 않음' : null, searched: null }],
           unrequested: [], designMismatches: [], unknowns: [] },
@@ -208,7 +210,7 @@ async function checkPlanCompareRequests(app, page, card, pick) {
     await card.getByRole('status').filter({ hasText: 'Codex가 대조 검토 중' }).waitFor();
     await send(first, 'plan-compare-completed');
     await card.getByRole('status').filter({ hasText: '대조 결과 · 기획대로 1 · 다름 0' }).waitFor();
-    await card.getByText('자세한 결과 화면은 준비 중이에요', { exact: true }).waitFor();
+    await card.getByText('새 파일과 기획 문서 변경은 10초마다 확인해요', { exact: true }).waitFor();
     assert.match(await card.innerText(), /대조한 범위: 1–3줄/);
 
     const cancelled = await start();
@@ -252,14 +254,215 @@ async function checkPlanCompareRequests(app, page, card, pick) {
     assert.equal(single.input.mode, 'codex');
     await send(single, 'plan-compare-completed');
     await card.getByRole('status').filter({ hasText: '대조 결과 · 기획대로 0 · 다름 0 · 확인 못 함 1' }).waitFor();
-    assert.match(await card.getByRole('status').innerText(), /코드를 읽지 않은 구조 비교/);
+    assert.match(await card.getByRole('status').filter({ hasText: '대조 결과' }).innerText(), /코드를 읽지 않은 구조 비교/);
     await panel.getByLabel('AI 사용 방식', { exact: true }).selectOption('local-worker');
+    await checkPlanCompareResults(app, page, card, pick, temporary, showCard, dialogTo, start);
   } finally {
     await app.evaluate(({ ipcMain }) => {
       for (const [channel, handler] of globalThis.compareTestHandlers) ipcMain._invokeHandlers.set(channel, handler);
       delete globalThis.compareTestHandlers;
       delete globalThis.compareTestRequests;
       delete globalThis.compareTestCancelled;
+    });
+  }
+}
+
+// Real document/scope checks and real import sites; only AI results are fabricated.
+async function checkPlanCompareResults(app, page, card, pick, temporary, showCard, dialogTo, start) {
+  const root = path.join(temporary, 'plan-result-project');
+  const code = "import { value } from './other';\nexport const result = value;\n";
+  await mkdir(root, { recursive: true });
+  const hash = value => createHash('sha256').update(value).digest('hex');
+  const scopeHash = hash(JSON.stringify({ paths: ['main.ts', 'other.ts'], rules: [{ path: '.gitignore', hash: null }] }));
+  const resultCard = card.locator('.plan-compare-result');
+  const fileButton = resultCard.getByRole('button', { name: 'main.ts', exact: true }).first();
+  const flush = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const fresh = async () => {
+    await page.waitForFunction(() => {
+      const button = document.querySelector('.plan-compare-result button');
+      return button && !button.disabled;
+    });
+    assert.equal(await resultCard.getByRole('alert').count(), 0);
+  };
+  const stale = async (reason, timeout = 5000) => {
+    await resultCard.getByRole('alert').filter({ hasText: reason }).waitFor({ timeout });
+    assert.equal(await resultCard.locator('button:not(:disabled)').count(), 0);
+  };
+  const restoreCheck = () => app.evaluate(({ ipcMain }) => {
+    const handler = globalThis.compareTestHandlers.find(([channel]) => channel === 'learning:plan-compare-check')[1];
+    ipcMain._invokeHandlers.set('learning:plan-compare-check', handler);
+  });
+  const projectEvent = kind => app.evaluate(({ BrowserWindow }, kind) => {
+    const request = globalThis.compareTestRequests.at(-1);
+    BrowserWindow.getAllWindows()[0].webContents.send('learning:project-event', { projectId: request.input.projectId, kind });
+  }, kind);
+  const complete = async job => {
+    const response = await page.evaluate(projectId => window.learning.projectMap({ projectId }), job.input.projectId);
+    assert.equal(response.ok, true);
+    const map = response.value;
+    const from = map.files.find(file => file.relativePath === 'main.ts');
+    const to = map.files.find(file => file.relativePath === 'other.ts');
+    const { toFileId: _to, names: _names, ...site } = map.edges.find(edge => edge.fromFileId === from.id && edge.toFileId === to.id);
+    const text = await readFile(path.join(temporary, 'small.md'), 'utf8');
+    const range = { startLine: 1, endLine: 2 };
+    const item = { title: '대조 항목', plan: range, files: [from.id], difference: null, missingEvidence: null, searched: null };
+    const result = {
+      jobId: job.jobId, projectId: job.input.projectId, mode: 'local-worker', structureOnly: false, models: [], review: 'AI 검토됨',
+      document: { documentId: job.input.selection.documentId, name: 'small.md' }, plan: [{ startLine: 1, text }],
+      sent: [{ startLine: 1, endLine: text.split('\n').length }], excluded: [],
+      files: [{ id: from.id, relativePath: from.relativePath }, { id: to.id, relativePath: to.relativePath }],
+      read: [{ fileId: from.id, relativePath: from.relativePath, fileHash: site.fileHash }],
+      edges: [{ index: 0, from: from.relativePath, to: to.relativePath, line: site.startLine, site }],
+      compare: {
+        items: [
+          { ...item, status: 'differs', difference: '기획과 다른 동작' },
+          { ...item, status: 'missing', files: [], searched: '전체 파일 목록' },
+          { ...item, status: 'unverified', files: [to.id], missingEvidence: '실행은 확인 못 함' },
+          { ...item, status: 'matches' },
+        ],
+        unrequested: [{ title: '추가 후보', files: [to.id], note: '기획 범위에서 못 찾음' }],
+        designMismatches: [{ plan: range, edge: 0, note: '직접 연결' }], unknowns: [],
+      },
+      basis: { planHash: hash(text), scopeHash, mapHash: 'c'.repeat(64) }, limitations: [],
+    };
+    await app.evaluate(({ BrowserWindow }, result) => {
+      BrowserWindow.getAllWindows()[0].webContents.send('learning:ai-event', {
+        kind: 'plan-compare-completed', jobId: result.jobId, projectId: result.projectId, result,
+      });
+    }, result);
+    await resultCard.getByRole('status').filter({ hasText: '대조 결과' }).waitFor();
+  };
+  const reopen = async () => {
+    await restoreCheck();
+    await rm(path.join(root, 'new.ts'), { force: true });
+    await writeFile(path.join(root, 'main.ts'), code);
+    await writeFile(path.join(root, 'other.ts'), 'export const value = 1;\n');
+    await writeFile(path.join(temporary, 'small.md'), '# 작은 기획\r\n한 줄\r\n');
+    await dialogTo(root);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await showCard();
+    await pick('small.md');
+    await complete(await start());
+    await fresh();
+  };
+  const holdCheck = async () => {
+    await app.evaluate(({ ipcMain }) => {
+      globalThis.planCheckPending = [];
+      ipcMain._invokeHandlers.set('learning:plan-compare-check', () => new Promise(resolve => globalThis.planCheckPending.push(resolve)));
+    });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await resultCard.getByRole('status').filter({ hasText: '지금 파일과 맞는지 확인 중' }).waitFor();
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await flush();
+    assert.equal(await app.evaluate(() => globalThis.planCheckPending.length), 1, 'Overlapping checks must coalesce');
+  };
+  const releaseCheck = reasons => app.evaluate((_electron, reasons) => {
+    globalThis.planCheckPending.shift()({ ok: true, value: { reasons } });
+  }, reasons);
+
+  // Hidden BrowserWindows need a visible-document state to exercise the foreground-only timer.
+  await page.evaluate(() => {
+    globalThis.planVisibilityDescriptor = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+  });
+  try {
+    await reopen();
+    assert.deepEqual(await resultCard.locator(':scope > details > summary').allTextContents(), [
+      '있지만 기획과 다름 (1)', '기획에 있는데 못 찾음 (1)', '찾았지만 확인 못 함 (1)',
+      '시키지 않은 작업 후보 (1)', '설계와 다른 연결 (1)', '기획대로 있음 (1)',
+    ]);
+    await fileButton.click();
+    await page.getByRole('region', { name: '파일 목록', exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelector('.cm-content')?.textContent.includes('export const result = value;'));
+    await showCard(); await fresh();
+    await resultCard.getByRole('button', { name: 'main.ts → other.ts · 1행', exact: true }).click();
+    await page.locator('.cm-selectionBackground').first().waitFor();
+    await page.locator('.cm-content').focus();
+    await page.waitForFunction(() => getSelection()?.toString() === "import { value } from './other';");
+    await showCard(); await fresh();
+
+    await writeFile(path.join(root, 'main.ts'), code + '// changed\n');
+    await stale('대조 뒤 코드나 제외 규칙이 바뀌었어요');
+
+    await reopen();
+    await writeFile(path.join(root, 'new.ts'), 'export {};');
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+    await showCard();
+    await stale('폴더에 새 파일이 생겼거나 없어졌어요');
+
+    await reopen();
+    await writeFile(path.join(temporary, 'small.md'), '# 바뀐 기획\n내용');
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+    await showCard();
+    await stale('기획 문서가 바뀌었어요');
+
+    await reopen();
+    const more = page.locator('details[aria-label="더 알아보기"]');
+    const foldedAt = Date.now();
+    await more.locator(':scope > summary').click();
+    assert.equal(await more.evaluate(element => element.open), false);
+    await writeFile(path.join(temporary, 'small.md'), '# 접힌 동안 수정\n내용');
+    await more.locator(':scope > summary').click();
+    await stale('기획 문서가 바뀌었어요');
+    assert.ok(Date.now() - foldedAt < 10_000, 'Expanding must check before the periodic interval');
+
+    await reopen();
+    await writeFile(path.join(root, 'new.ts'), 'export {};');
+    await stale('폴더에 새 파일이 생겼거나 없어졌어요', 12_000);
+
+    await reopen();
+    await projectEvent('watch-error');
+    await stale('파일 감시가 멈춰');
+    await app.evaluate(({ ipcMain }) => {
+      ipcMain._invokeHandlers.set('learning:plan-compare-check', async () => ({ ok: true, value: { reasons: [] } }));
+    });
+    await complete(await start());
+    await stale('파일 감시가 멈춰');
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await flush();
+    await stale('파일 감시가 멈춰');
+    await reopen(); // forget() clears the broken-watch latch even for the same project ID.
+
+    // A watch failure before any result must also latch until the folder is reopened.
+    const withoutResult = await start();
+    await projectEvent('watch-error');
+    await complete(withoutResult);
+    await stale('파일 감시가 멈춰');
+    await reopen();
+
+    // Failed checks lock evidence but can recover on the next focus.
+    await app.evaluate(({ ipcMain }) => {
+      ipcMain._invokeHandlers.set('learning:plan-compare-check', async () => ({ ok: false, code: 'INTERNAL', message: '시험 확인 실패' }));
+    });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await resultCard.getByRole('alert').filter({ hasText: '지금 파일과 맞는지 확인하지 못했어요: 시험 확인 실패' }).waitFor();
+    assert.equal(await resultCard.locator('button:not(:disabled)').count(), 0);
+    await restoreCheck();
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await fresh();
+
+    // A late stale response must not attach to a replacement result.
+    await holdCheck();
+    const next = await start();
+    await restoreCheck();
+    await complete(next); await fresh();
+    await releaseCheck(['이전 결과의 늦은 응답']);
+    await flush(); await fresh();
+
+    // A changed event wins over an already-running check that later replies with no reasons.
+    await holdCheck();
+    await projectEvent('changed');
+    await stale('대조 뒤 코드나 제외 규칙이 바뀌었어요');
+    await releaseCheck([]);
+    await flush();
+    await stale('대조 뒤 코드나 제외 규칙이 바뀌었어요');
+  } finally {
+    await restoreCheck();
+    await app.evaluate(() => { delete globalThis.planCheckPending; });
+    await page.evaluate(() => {
+      if (globalThis.planVisibilityDescriptor) Object.defineProperty(document, 'visibilityState', globalThis.planVisibilityDescriptor);
+      if (!globalThis.planVisibilityDescriptor) delete document.visibilityState;
+      delete globalThis.planVisibilityDescriptor;
     });
   }
 }

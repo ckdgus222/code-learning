@@ -177,7 +177,7 @@ export class LocalWorkerWorkflow {
       + '근거가 부족하면 단정하지 말고 unknowns에 적는다. JSON schema를 따르는 JSON 하나만 출력한다.\n자료:\n'
       // Paths are masked too: a folder or file name can hold a token. The result keeps the real paths for the screen.
       + JSON.stringify({ plan: snapshot.plan, availableFiles: snapshot.availableFiles.map(file => ({ id: file.id, path: maskSecrets(file.relativePath).text })),
-        edges: snapshot.edges.map(edge => ({ ...edge, from: maskSecrets(edge.from).text, to: maskSecrets(edge.to).text })),
+        edges: snapshot.edges.map(edge => ({ index: edge.index, from: maskSecrets(edge.from).text, to: maskSecrets(edge.to).text, line: edge.line })),
         files: outgoingFiles(snapshot.files).files.map(file => ({ id: file.evidence.fileId, path: maskSecrets(file.relativePath).text, code: file.code })),
         structureOnly }) + '\n과제:\n';
     if (!structureOnly) {
@@ -206,7 +206,7 @@ export class LocalWorkerWorkflow {
     const result: PlanCompareResult = { jobId: job.id, projectId: job.projectId, mode: request.mode,
       review: structureOnly ? 'AI 대조 없음' : 'AI 검토됨', models, structureOnly,
       document: { documentId: snapshot.document.documentId, name: snapshot.document.name }, sent: snapshot.sent, excluded: snapshot.excluded,
-      files: snapshot.availableFiles, edges: snapshot.edges,
+      plan: snapshot.plan, files: snapshot.availableFiles, edges: snapshot.edges,
       read: snapshot.files.map(file => ({ fileId: file.evidence.fileId, relativePath: file.relativePath, fileHash: file.evidence.fileHash })),
       compare, basis: snapshot.basis, limitations: [...snapshot.limitations, ...outgoingFiles(snapshot.files).notes] };
     this.deps.emit({ kind: 'plan-compare-completed', jobId: job.id, projectId: job.projectId, result });
