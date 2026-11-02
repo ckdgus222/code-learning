@@ -228,6 +228,35 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
   const agy = (...events: object[]) => events.map(event => JSON.stringify(event)).join('\n');
   const init = (model?: string) => ({ event: 'init', conversation_id: 'c', init: { cwd: '/tmp', tools: [], permission_mode: 'request-review', ...(model ? { model } : {}) } });
   const ok = { event: 'result', conversation_id: 'c', status: 'SUCCESS', structured_output: { summary: 'example' } };
+  it.each([
+    { provider: 'antigravity' as const, timeoutMs: undefined, expected: 120_000 },
+    { provider: 'antigravity' as const, timeoutMs: 240_000, expected: 240_000 },
+    { provider: 'codex' as const, timeoutMs: undefined, expected: 120_000 },
+    { provider: 'codex' as const, timeoutMs: 240_000, expected: 240_000 },
+  ])('passes the same timeout to the process and CLI for $provider with $timeoutMs', async ({ provider, timeoutMs, expected }) => {
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
+    await runtime.checkConnections();
+    vi.mocked(runProcess).mockClear();
+    const stdout = provider === 'antigravity' ? agy(init(GEMINI_MODEL), ok)
+      : [{ type: 'item.completed', item: { type: 'agent_message', text: '{"summary":"example"}' } }, { type: 'turn.completed' }]
+        .map(event => JSON.stringify(event)).join('\n');
+    vi.mocked(runProcess).mockResolvedValue({ stdout, stderr: '', exitCode: 0 });
+    const signal = new AbortController().signal;
+    await expect(runtime.run({ stage: 'explaining', provider, prompt: 'PROMPT', schema: {}, signal,
+      ...(timeoutMs === undefined ? {} : { timeoutMs }) })).resolves.toMatchObject({ value: { summary: 'example' } });
+    expect(runProcess).toHaveBeenCalledTimes(1);
+    const request = inner(vi.mocked(runProcess).mock.calls[0][0]);
+    expect(request.timeoutMs).toBe(expected);
+    expect(request.signal).toBe(signal);
+    if (provider === 'codex') {
+      expect(request.args).not.toContain('--print-timeout');
+      return;
+    }
+    const index = request.args.indexOf('--print-timeout');
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(request.args[index + 1]).toBe(`${expected / 1000}s`);
+  });
+
   it('extracts the final agy stream-json result and the model named in init', () => {
     const value = { summary: 'example' };
     expect(parseStageOutput('antigravity', agy(init(GEMINI_MODEL), { event: 'step_update', step_type: 'user_input', state: 'DONE' },

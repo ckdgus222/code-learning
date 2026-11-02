@@ -44,6 +44,13 @@ function context(request: StageRequest) {
 }
 
 describe('local worker workflow with fake adapters', () => {
+  it.each(['local-worker', 'codex', 'antigravity'] as const)('keeps the default timeout for every question stage in %s mode', async mode => {
+    const f = fixture();
+    expect((await f.finish({ ...f.request, mode })).kind).toBe('completed');
+    expect(f.run).toHaveBeenCalledTimes(mode === 'local-worker' ? 3 : 1);
+    for (const [request] of f.run.mock.calls) expect(request.timeoutMs).toBeUndefined();
+  });
+
   it.each(['local-worker', 'codex', 'antigravity'] as const)('sends easy writing and glossary rules to every question stage in %s mode', async mode => {
     const f = fixture();
     expect((await f.finish({ ...f.request, mode })).kind).toBe('completed');
