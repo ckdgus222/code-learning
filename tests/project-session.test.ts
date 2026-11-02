@@ -788,3 +788,33 @@ it('resolves only registered file IDs in an open project for saved explanations'
   await session.close();
   expect(() => session.relativePathOf('f1')).toThrow(expect.objectContaining({ code: 'PROJECT_CLOSED' }));
 });
+
+
+describe('plan restoration has an independent map worker', () => {
+  it.each(['map', 'plan-map'] as const)('runs %s alongside the other map job', async first => {
+    process.env.MAP_DELAY = '100';
+    const pending = session.map(30_000, first);
+    const other = session.map(30_000, first === 'map' ? 'plan-map' : 'map');
+    await Promise.all([expect(pending).resolves.toMatchObject({ edges: [] }), expect(other).resolves.toMatchObject({ edges: [] })]);
+  });
+  it('cancels only the user map and rejects overlapping restoration jobs', async () => {
+    process.env.MAP_DELAY = '100';
+    const restored = session.map(30_000, 'plan-map');
+    const map = session.map();
+    await expect(session.map(30_000, 'plan-map')).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+    session.cancelMap();
+    await expect(map).rejects.toMatchObject({ code: 'CANCELLED' });
+    await expect(restored).resolves.toMatchObject({ edges: [] });
+  });
+  it('closes both map workers', async () => {
+    process.env.MAP_DELAY = '100';
+    const restored = session.map(30_000, 'plan-map');
+    const map = session.map();
+    const stopped = Promise.all([expect(restored).rejects.toMatchObject({ code: 'CANCELLED' }),
+      expect(map).rejects.toMatchObject({ code: 'CANCELLED' })]);
+    await session.close();
+    await stopped;
+    await workersStopped();
+    expect(await markers('map-replied')).toBe(2);
+  });
+});

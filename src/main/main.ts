@@ -16,8 +16,8 @@ import { LocalWorkerWorkflow } from '../core/ai/workflow';
 import { ProjectAiContext } from '../core/ai/context';
 import { MAX_FILE_BYTES, readStable } from '../core/project/files';
 import { planSections } from '../core/analysis/plan-sections';
-import { planCompareCheckSchema, planCompareRequestSchema, planSelection, type PlanDocument } from '../shared/plan-compare';
-import { capturePlanCompare, checkPlanCompareBasis, revalidatePlanCompare } from '../core/ai/plan-compare';
+import { checkPlanCompare, planPartFor, planCompareResultSchema, savePlanCompareSchema, planCompareCheckSchema, planCompareRequestSchema, planSelection, type PlanCompareResult, type PlanDocument } from '../shared/plan-compare';
+import { capturePlanCompare, checkPlanCompareBasis, restorePlanCompare, revalidatePlanCompare } from '../core/ai/plan-compare';
 
 let window: BrowserWindow | null = null;
 let session: ProjectSession | undefined;
@@ -32,6 +32,7 @@ let aiContext: ProjectAiContext | undefined;
 // The one plan document picked this run, kept for the comparison step; exported for main tests.
 // The picker sends metadata only; comparison results also send the selected, masked text.
 export let planDocument: (PlanDocument & { path: string; text: string; hash: string }) | null = null;
+let finishedPlanCompare: { result: PlanCompareResult; planPath: string } | null = null;
 let pickingPlan = false;
 // App-only Codex and Antigravity folders keep the user's own AI settings out of app runs.
 const aiRuntime = new LocalAiRuntime(path.join(app.getPath('userData'), 'codex-home'), path.join(app.getPath('userData'), 'agy-home'));
@@ -117,7 +118,13 @@ const learning = new LocalWorkerWorkflow({
     }
   },
   run: request => aiRuntime.run(request),
-  emit: event => { if (window && !window.isDestroyed()) window.webContents.send(channels.learningEvent, event); },
+  emit: event => {
+    if (event.kind === 'plan-compare-completed') {
+      finishedPlanCompare = planDocument?.documentId === event.result.document.documentId
+        ? { result: event.result, planPath: planDocument.path } : null;
+    }
+    if (window && !window.isDestroyed()) window.webContents.send(channels.learningEvent, event);
+  },
 });
 const rendererFile = path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`);
 const rendererUrl = new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL || pathToFileURL(rendererFile).href).href;
@@ -128,11 +135,26 @@ function validateSender(event: IpcMainInvokeEvent) {
 }
 
 const planSource = (active: ProjectSession, context: ProjectAiContext) =>
-  ({ projectId: active.id, root: active.root, context, map: () => active.map(), cancelMap: () => active.cancelMap() });
+  ({ projectId: active.id, root: active.root, context, map: () => active.map(), restoreMap: () => active.map(30_000, 'plan-map'), cancelMap: () => active.cancelMap() });
 
 function current(projectId: string) {
   if (!session || session.id !== projectId) throw new AppError('PROJECT_CLOSED', '현재 선택한 프로젝트가 아닙니다.');
   return session;
+}
+
+function storedPlanCompare(projectId: string) {
+  const saved = storage.planCompareOf(projectId);
+  if (!saved) return null;
+  const parsed = planCompareResultSchema.safeParse(saved.result);
+  if (!parsed.success || parsed.data.projectId !== projectId) return null;
+  const result: PlanCompareResult = parsed.data;
+  try {
+    checkPlanCompare(result.compare, result.sent, result.files.map(file => file.id),
+      result.read.map(file => file.fileId), result.edges.map(edge => edge.index));
+  } catch { return null; }
+  const ranges = [...result.compare.items, ...result.compare.designMismatches].map(item => item.plan);
+  if (ranges.some(range => !planPartFor(result.plan, range))) return null;
+  return { result, planPath: saved.planPath, savedAt: saved.savedAt };
 }
 
 function overviewReferencesMatch(projectId: string, result: OverviewResult): boolean {
@@ -186,6 +208,7 @@ function handle<T>(channel: string, action: (argument: unknown) => Promise<T>) {
 async function dispose() {
   generation++;
   planDocument = null;
+  finishedPlanCompare = null;
   const previous = session;
   session = undefined;
   aiContext = undefined;
@@ -204,6 +227,7 @@ async function openFolder(selectRoot: (requestedAt: number) => Promise<string | 
     if (generation !== requestedAt) throw new AppError('CANCELLED', '폴더 열기를 취소했습니다.');
     if (root === null) return null;
     planDocument = null;
+    finishedPlanCompare = null;
     const previous = session;
     session = undefined;
     aiContext = undefined;
@@ -640,6 +664,36 @@ app.whenReady().then(async () => {
     planSelection(planDocument, input.selection);
     return learning.startPlanCompare(input);
   });
+  handle(channels.savePlanCompare, async argument => {
+    const { projectId, jobId } = savePlanCompareSchema.parse(argument);
+    current(projectId);
+    if (!finishedPlanCompare || finishedPlanCompare.result.projectId !== projectId || finishedPlanCompare.result.jobId !== jobId) {
+      throw new AppError('NOT_ALLOWED', '이번에 끝난 대조 결과만 저장할 수 있어요.');
+    }
+    // The import line is project code: mask it like other saved text. Highlighting uses only the hash and offsets.
+    const { result, planPath } = finishedPlanCompare;
+    const masked = (text: string) => maskSecrets(text).text;
+    const stored: PlanCompareResult = { ...result, edges: result.edges.map(edge => ({ ...edge, site: { ...edge.site,
+      text: masked(edge.site.text), specifier: edge.site.specifier === null ? null : masked(edge.site.specifier) } })) };
+    return { savedAt: storage.savePlanCompare(projectId, stored, planPath) };
+  });
+  handle(channels.savedPlanCompare, async argument => {
+    const { projectId } = projectRequestSchema.parse(argument);
+    const active = current(projectId);
+    const context = aiContext;
+    if (!context) throw new AppError('PROJECT_CLOSED', '프로젝트를 먼저 열어 주세요.');
+    const saved = storedPlanCompare(projectId);
+    if (!saved) return null;
+    const restored = await restorePlanCompare(planSource(active, context), saved.result, saved.planPath);
+    if (session !== active || aiContext !== context) throw new AppError('PROJECT_CLOSED', '프로젝트가 닫혔습니다.');
+    return { ...restored, savedAt: saved.savedAt };
+  });
+  handle(channels.deletePlanCompare, async argument => {
+    const { projectId } = projectRequestSchema.parse(argument);
+    current(projectId);
+    storage.deletePlanCompare(projectId);
+    return null;
+  });
   handle(channels.planCompareCheck, async argument => {
     const input = planCompareCheckSchema.parse(argument);
     if (opening || pickingPlan) throw new AppError('INVALID_REQUEST', '폴더와 문서를 고른 뒤 확인해 주세요.');
@@ -647,8 +701,14 @@ app.whenReady().then(async () => {
     const context = aiContext;
     const document = planDocument;
     if (!context) throw new AppError('PROJECT_CLOSED', '프로젝트를 먼저 열어 주세요.');
-    if (!document || document.documentId !== input.documentId) throw new AppError('INVALID_REQUEST', '기획 문서를 다시 골라 주세요');
-    const reasons = await checkPlanCompareBasis(planSource(active, context), document, input);
+    // A restored result has no picked document; its saved location is checked instead.
+    let planPath = document?.documentId === input.documentId ? document.path : null;
+    if (!planPath) {
+      const saved = storedPlanCompare(input.projectId);
+      if (saved?.result.document.documentId === input.documentId) planPath = saved.planPath;
+    }
+    if (!planPath) throw new AppError('INVALID_REQUEST', '기획 문서를 다시 골라 주세요');
+    const reasons = await checkPlanCompareBasis(planSource(active, context), planPath, input);
     if (session !== active || aiContext !== context || planDocument !== document) {
       throw new AppError('CHANGED', '대조 자료가 바뀌었어요. 다시 골라 주세요.');
     }

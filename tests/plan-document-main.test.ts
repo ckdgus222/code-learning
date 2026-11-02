@@ -1,5 +1,6 @@
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { channels, MAX_FILE_BYTES, type Result } from '../src/shared/contracts';
@@ -249,7 +250,7 @@ it('validates comparison checks against the active project, document and strict 
     }
   }
   expect(await invoke(channels.planCompareCheck, { ...input, path: file })).toMatchObject({ ok: false, code: 'INVALID_REQUEST' });
-  expect(await invoke(channels.planCompareCheck, input)).toMatchObject({ ok: true, value: { reasons: ['제외 규칙(.gitignore)이 바뀌었어요'] } });
+  expect(await invoke(channels.planCompareCheck, input)).toMatchObject({ ok: true, value: { reasons: ['파일 목록이나 제외 규칙(.gitignore)이 바뀌었어요'] } });
   await invoke(channels.cancel);
   expect(await invoke(channels.planCompareCheck, input)).toMatchObject({ ok: false, code: 'PROJECT_CLOSED' });
   expect(host.run).not.toHaveBeenCalled();
@@ -270,4 +271,134 @@ it('discards a comparison check when its document is replaced during the read', 
   release({ text: document.text, hash: document.hash });
   expect(await pending).toMatchObject({ ok: false, code: 'CHANGED' });
   expect(host.run).not.toHaveBeenCalled();
+});
+
+async function finishAndSave() {
+  const file = path.join(temporary, 'saved-plan.md');
+  await writeFile(file, '# saved\nbody');
+  host.picker.mockResolvedValue({ canceled: false, filePaths: [file] });
+  expect(await invoke(channels.pickPlanDocument)).toMatchObject({ ok: true });
+  const started = await invoke<{ jobId: string }>(channels.planCompare, { projectId: host.projectId,
+    selection: { documentId: main.planDocument!.documentId, startLine: 1, endLine: 2 }, mode: 'codex', consent: true });
+  if (!started.ok) throw new Error('Comparison did not start');
+  await vi.waitFor(() => expect(host.events.some(event => event.jobId === started.value.jobId && event.kind === 'plan-compare-completed')).toBe(true));
+  const completed = host.events.find(event => event.jobId === started.value.jobId && event.kind === 'plan-compare-completed')!;
+  if (completed.kind !== 'plan-compare-completed') throw new Error('Comparison missing');
+  const result = completed.result;
+  expect(await invoke(channels.savePlanCompare, { projectId: host.projectId, jobId: result.jobId })).toMatchObject({ ok: true });
+  return { result, file };
+}
+async function reopenProject() {
+  host.picker.mockResolvedValueOnce({ canceled: false, filePaths: [host.folder] });
+  expect(await invoke(channels.open)).toMatchObject({ ok: true });
+  expect(main.planDocument).toBeNull();
+}
+
+it('saves only the completed job in the active project, restores without AI and deletes it', async () => {
+  expect(await invoke(channels.savePlanCompare, { projectId: host.projectId, jobId: randomUUID() }))
+    .toMatchObject({ ok: false, code: 'NOT_ALLOWED' });
+  const { result } = await finishAndSave();
+  const input = { projectId: host.projectId, jobId: result.jobId };
+  expect(await invoke(channels.savePlanCompare, { ...input, jobId: randomUUID() }))
+    .toMatchObject({ ok: false, code: 'NOT_ALLOWED', message: '이번에 끝난 대조 결과만 저장할 수 있어요.' });
+  expect(await invoke(channels.savePlanCompare, { ...input, projectId: randomUUID() }))
+    .toMatchObject({ ok: false, code: 'PROJECT_CLOSED' });
+  expect(await invoke(channels.savePlanCompare, { ...input, result })).toMatchObject({ ok: false, code: 'INVALID_REQUEST' });
+  await reopenProject();
+  host.run.mockClear();
+  const saved = await invoke(channels.savedPlanCompare, { projectId: host.projectId });
+  expect(saved).toMatchObject({ ok: true, value: { result, reasons: [], savedAt: expect.any(String) } });
+  expect(JSON.stringify(saved)).not.toContain(temporary);
+  expect(host.run).not.toHaveBeenCalled();
+  expect(await invoke(channels.savePlanCompare, input)).toMatchObject({ ok: false, code: 'NOT_ALLOWED' });
+  expect(await invoke(channels.deletePlanCompare, { projectId: host.projectId })).toEqual({ ok: true, value: null });
+  await reopenProject();
+  expect(await invoke(channels.savedPlanCompare, { projectId: host.projectId })).toEqual({ ok: true, value: null });
+  await invoke(channels.cancel);
+  expect(await invoke(channels.savedPlanCompare, { projectId: host.projectId })).toMatchObject({ ok: false, code: 'PROJECT_CLOSED' });
+  expect(await invoke(channels.deletePlanCompare, { projectId: host.projectId })).toMatchObject({ ok: false, code: 'PROJECT_CLOSED' });
+});
+
+it.each(['broken JSON', 'schema', 'foreign project', 'invalid reference', 'missing excerpt', 'short excerpt', 'missing design excerpt'])
+('hides but retains a saved row with %s', async kind => {
+  const { result } = await finishAndSave();
+  if (kind === 'foreign project') result.projectId = randomUUID();
+  if (kind === 'schema') Object.assign(result.document, { path: '/not-allowed.md' });
+  if (kind === 'invalid reference') result.compare.unrequested = [{ title: 'candidate', files: [randomUUID()], note: 'unknown' }];
+  if (kind === 'missing excerpt' || kind === 'short excerpt') {
+    result.compare.items = [{ title: 'missing', plan: { startLine: 1, endLine: 2 }, status: 'missing', files: [],
+      difference: null, missingEvidence: null, searched: 'all files' }];
+    result.plan = kind === 'missing excerpt' ? [] : [{ startLine: 1, text: '# only one line' }];
+  }
+  if (kind === 'missing design excerpt') {
+    result.compare.designMismatches = [{ plan: { startLine: 1, endLine: 2 }, edge: 0, note: 'direct' }];
+    result.edges = [{ index: 0, from: 'a.ts', to: 'b.ts', line: 1, site: { fromFileId: randomUUID(), fileHash: 'a'.repeat(64),
+      startUtf16: 0, endUtf16: 1, startLine: 1, endLine: 1, text: 'x', specifier: null } }];
+    result.plan = [];
+  }
+  const writer = new DatabaseSync(path.join(host.profile, 'learning.sqlite'));
+  try {
+    const encoded = kind === 'broken JSON' ? '{broken' : JSON.stringify(result);
+    writer.prepare('UPDATE plan_compares SET result = ? WHERE project_id = ?').run(encoded, host.projectId);
+    expect(await invoke(channels.savedPlanCompare, { projectId: host.projectId })).toEqual({ ok: true, value: null });
+    expect(writer.prepare('SELECT result FROM plan_compares WHERE project_id = ?').get(host.projectId)).toEqual({ result: encoded });
+  } finally { writer.close(); }
+});
+
+it('masks secrets in saved import lines, which highlighting does not read', async () => {
+  const { ProjectSession } = await import('../src/main/project-session');
+  const [from, to] = [randomUUID(), randomUUID()];
+  const secret = 'ghp_' + 'a'.repeat(36);
+  const text = `import { value } from './b'; // token ${secret}`;
+  const file = (id: string, relativePath: string) => ({ id, relativePath, folder: '', start: false, entry: false, checked: 'full' as const, reason: null });
+  const spy = vi.spyOn(ProjectSession.prototype, 'map').mockImplementation(async function (this: { id: string }) {
+    return { projectId: this.id, files: [file(from, 'a.ts'), file(to, 'b.ts')], unresolved: [], external: [], limited: false, notes: [],
+      edges: [{ fromFileId: from, toFileId: to, names: ['value'], fileHash: 'f'.repeat(64), startUtf16: 0, endUtf16: text.length,
+        startLine: 1, endLine: 1, text, specifier: `./b?${secret}` }] } as never;
+  });
+  try {
+    const { result } = await finishAndSave();
+    expect(result.edges[0].site.text).toContain(secret);
+    const reader = new DatabaseSync(path.join(host.profile, 'learning.sqlite'));
+    try {
+      const row = reader.prepare('SELECT result FROM plan_compares WHERE project_id = ?').get(host.projectId) as { result: string };
+      expect(row.result).not.toContain(secret);
+      const saved = JSON.parse(row.result) as typeof result;
+      expect(saved.edges[0].site).toMatchObject({ text: "import { value } from './b'; // token [MASKED_SECRET]",
+        specifier: './b?[MASKED_SECRET]', startUtf16: 0, endUtf16: text.length, fileHash: 'f'.repeat(64) });
+    } finally { reader.close(); }
+  } finally { spy.mockRestore(); }
+});
+
+it('checks a saved document without picking it and rejects unrelated document IDs', async () => {
+  const { result, file } = await finishAndSave();
+  await reopenProject();
+  vi.mocked(readStable).mockClear();
+  const input = { projectId: host.projectId, documentId: result.document.documentId,
+    planHash: result.basis.planHash, scopeHash: result.basis.scopeHash };
+  expect(await invoke(channels.planCompareCheck, input)).toEqual({ ok: true, value: { reasons: [] } });
+  expect(readStable).toHaveBeenCalledWith(path.dirname(file), path.basename(file));
+  expect(await invoke(channels.planCompareCheck, { ...input, documentId: randomUUID() })).toMatchObject({ ok: false, code: 'INVALID_REQUEST' });
+  host.picker.mockResolvedValue({ canceled: false, filePaths: [file] });
+  expect(await invoke(channels.pickPlanDocument)).toMatchObject({ ok: true });
+  expect(await invoke(channels.planCompareCheck, { ...input, documentId: randomUUID() })).toMatchObject({ ok: false, code: 'INVALID_REQUEST' });
+  expect(await invoke(channels.planCompareCheck, input)).toEqual({ ok: true, value: { reasons: [] } });
+});
+
+it.each(['check', 'restore'])('discards an in-flight saved %s after its context changes', async kind => {
+  const { result, file } = await finishAndSave();
+  await reopenProject();
+  let release!: (value: { text: string; hash: string }) => void;
+  vi.mocked(readStable).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  const pending = kind === 'restore' ? invoke(channels.savedPlanCompare, { projectId: host.projectId })
+    : invoke(channels.planCompareCheck, { projectId: host.projectId, documentId: result.document.documentId,
+      planHash: result.basis.planHash, scopeHash: result.basis.scopeHash });
+  await vi.waitFor(() => expect(release).toBeDefined());
+  if (kind === 'restore') await reopenProject();
+  if (kind === 'check') {
+    host.picker.mockResolvedValue({ canceled: false, filePaths: [file] });
+    expect(await invoke(channels.pickPlanDocument)).toMatchObject({ ok: true });
+  }
+  release({ text: '# saved\nbody', hash: result.basis.planHash });
+  expect(await pending).toMatchObject({ ok: false, code: kind === 'restore' ? 'PROJECT_CLOSED' : 'CHANGED' });
 });

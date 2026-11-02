@@ -9,7 +9,8 @@ export interface PlanCompareFreshness {
 }
 const watchError = '파일 감시가 멈춰 바뀐 코드를 알 수 없어요. 폴더를 다시 열어 주세요';
 
-export function usePlanCompare(projectId: string | null) {
+export function usePlanCompare(project: { id: string } | null) {
+  const projectId = project?.id ?? null;
   const [document, setDocument] = useState<PlanDocument | null>(null);
   const [selection, updateSelection] = useState<PlanSelection | null>(null);
   const [picking, setPicking] = useState(false);
@@ -17,6 +18,9 @@ export function usePlanCompare(projectId: string | null) {
   const [running, setRunning] = useState(false);
   const [phase, setPhase] = useState<LearningPhase | null>(null);
   const [result, setResult] = useState<PlanCompareResult | null>(null);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const loadRequest = useRef(0);
+  const projectEvents = useRef(0);
   const [freshness, setFreshness] = useState<PlanCompareFreshness>({ status: 'fresh', reasons: [] });
   const resultRef = useRef<PlanCompareResult | null>(null);
   const freshnessRef = useRef(freshness);
@@ -38,12 +42,14 @@ export function usePlanCompare(projectId: string | null) {
       checkRequest.current++;
       resultRef.current = event.result;
       setResult(event.result);
+      void save(event.projectId, event.jobId);
       updateFreshness(watchBroken.current ? { status: 'stale', reasons: [watchError] } : { status: 'fresh', reasons: [] });
     }
   };
   const projectReceiver = useRef((_event: ProjectEvent) => {});
   projectReceiver.current = event => {
     if (event.projectId !== projectId) return;
+    projectEvents.current++;
     if (event.kind === 'watch-error') watchBroken.current = true;
     if (!resultRef.current || freshnessRef.current.status === 'stale') return;
     checkRequest.current++;
@@ -52,7 +58,7 @@ export function usePlanCompare(projectId: string | null) {
   };
   useEffect(() => window.learning.onLearningEvent(event => receiver.current(event)), []);
   useEffect(() => window.learning.onProjectEvent(event => projectReceiver.current(event)), []);
-  useEffect(() => { forget(); }, [projectId]);
+  useEffect(() => { forget(); if (project) void restore(project.id); }, [project]);
   const request = useRef(0);
   const pending = useRef(false);
 
@@ -61,10 +67,62 @@ export function usePlanCompare(projectId: string | null) {
     setFreshness(next);
   }
   function clearResult() {
+    loadRequest.current++;
+    setSavedAt(null);
     checkRequest.current++;
     resultRef.current = null;
     setResult(null);
     updateFreshness({ status: 'fresh', reasons: [] });
+  }
+  async function save(projectId: string, jobId: string) {
+    const message = '대조 결과를 저장하지 못했어요. 앱을 닫으면 사라져요.';
+    try {
+      const response = await window.learning.savePlanCompare({ projectId, jobId });
+      if (resultRef.current?.jobId !== jobId) return;
+      if (response.ok) { setSavedAt(response.value.savedAt); return; }
+      if (response.code !== 'PROJECT_CLOSED') setError(message);
+    } catch {
+      if (resultRef.current?.jobId === jobId) setError(message);
+    }
+  }
+  async function restore(projectId: string) {
+    const current = ++loadRequest.current;
+    const events = projectEvents.current;
+    const message = '저장한 대조 결과를 불러오지 못했어요.';
+    try {
+      const response = await window.learning.savedPlanCompare({ projectId });
+      if (current !== loadRequest.current) return;
+      if (!response.ok) {
+        if (response.code !== 'PROJECT_CLOSED') setError(message);
+        return;
+      }
+      if (!response.value) return;
+      const { result, savedAt, reasons } = response.value;
+      checkRequest.current++;
+      resultRef.current = result;
+      setResult(result); setSavedAt(savedAt);
+      if (watchBroken.current) { updateFreshness({ status: 'stale', reasons: [watchError] }); return; }
+      if (events !== projectEvents.current) {
+        updateFreshness({ status: 'stale', reasons: ['대조 뒤 코드나 제외 규칙이 바뀌었어요(또는 잠자기에서 돌아왔어요)'] });
+        return;
+      }
+      updateFreshness({ status: reasons.length ? 'stale' : 'fresh', reasons });
+    } catch {
+      if (current === loadRequest.current) setError(message);
+    }
+  }
+  async function remove() {
+    const removed = resultRef.current;
+    if (!removed || job.current.starting || job.current.id) return;
+    loadRequest.current++;
+    try {
+      const response = await window.learning.deletePlanCompare({ projectId: removed.projectId });
+      if (resultRef.current?.jobId !== removed.jobId) return;
+      if (!response.ok) { setError(response.message); return; }
+      clearResult();
+    } catch {
+      if (resultRef.current?.jobId === removed.jobId) setError('대조 결과를 지우지 못했어요.');
+    }
   }
   // A stale result never rechecks, so a broken watch (always stale) cannot be turned fresh here.
   async function recheck() {
@@ -152,5 +210,5 @@ export function usePlanCompare(projectId: string | null) {
     }
   }
 
-  return { document, selection, setSelection, picking, error, pick, forget, running, phase, result, freshness, recheck, consent, setConsent, start, cancel };
+  return { document, selection, setSelection, picking, error, pick, forget, running, phase, result, savedAt, remove, freshness, recheck, consent, setConsent, start, cancel };
 }

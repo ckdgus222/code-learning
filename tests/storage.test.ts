@@ -251,3 +251,41 @@ it('keeps malformed feature guide JSON until replacement or deletion', () => {
     expect(writer.prepare('SELECT COUNT(*) AS count FROM ai_feature_guides').get()).toEqual({ count: 1 });
   } finally { writer.close(); }
 });
+
+
+it('replaces one plan comparison per project and retains its document path across reopening', () => {
+  const filename = path.join(temp, 'app.sqlite');
+  storage = new ProjectStorage(filename);
+  const first = storage.recordOpen('/a', 'A');
+  const second = storage.recordOpen('/b', 'B');
+  expect(storage.planCompareOf(first)).toBeNull();
+  storage.savePlanCompare(first, { summary: 'old' }, '/old.md');
+  storage.savePlanCompare(second, { summary: 'other' }, '/other.md');
+  const savedAt = storage.savePlanCompare(first, { summary: 'new' }, '/new.md');
+  expect(new Date(savedAt).toISOString()).toBe(savedAt);
+  storage.close();
+  storage = new ProjectStorage(filename);
+  expect(storage.planCompareOf(first)).toEqual({ result: { summary: 'new' }, planPath: '/new.md', savedAt });
+  const reader = new DatabaseSync(filename);
+  try { expect(reader.prepare('SELECT COUNT(*) AS count FROM plan_compares').get()).toEqual({ count: 2 }); }
+  finally { reader.close(); }
+  storage.deletePlanCompare(first);
+  storage.deletePlanCompare(first);
+  expect(storage.planCompareOf(first)).toBeNull();
+  expect(storage.planCompareOf(second)?.result).toEqual({ summary: 'other' });
+});
+
+it('retains malformed plan comparison JSON until replacement or explicit deletion', () => {
+  const filename = path.join(temp, 'app.sqlite');
+  storage = new ProjectStorage(filename);
+  const projectId = storage.recordOpen('/a', 'A');
+  const writer = new DatabaseSync(filename);
+  try {
+    writer.prepare('INSERT INTO plan_compares VALUES (?, ?, ?, ?)').run(projectId, '{broken', '/plan.md', 'now');
+    expect(storage.planCompareOf(projectId)).toBeNull();
+    expect(writer.prepare('SELECT result FROM plan_compares').get()).toEqual({ result: '{broken' });
+    storage.savePlanCompare(projectId, { summary: 'recovered' }, '/plan.md');
+    expect(storage.planCompareOf(projectId)?.result).toEqual({ summary: 'recovered' });
+    expect(writer.prepare('SELECT COUNT(*) AS count FROM plan_compares').get()).toEqual({ count: 1 });
+  } finally { writer.close(); }
+});

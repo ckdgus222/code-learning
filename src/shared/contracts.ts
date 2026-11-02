@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { PlanCompareCheck, PlanCompareRequest, PlanDocument } from './plan-compare';
+import type { PlanCompareCheck, PlanCompareRequest, PlanCompareResult, SavePlanCompare, PlanDocument } from './plan-compare';
 import type { CheckConnectionsRequest, ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest, FeatureGuideRequest, FeatureGuideResult, FileChunk, FileExplanationRange, FileExplanationResult, OverviewResult, LearningResult } from './ai';
 
 export const MAX_FILE_BYTES = 256 * 1024;
@@ -497,6 +497,9 @@ export type Result<T> = { ok: true; value: T } | { ok: false; code: AppErrorCode
 export type ProjectEvent = { projectId: string; kind: 'changed' | 'watch-error' };
 
 export interface LearningApi {
+  savedPlanCompare(input: z.infer<typeof projectRequestSchema>): Promise<Result<{ result: PlanCompareResult; savedAt: string; reasons: string[] } | null>>;
+  savePlanCompare(input: SavePlanCompare): Promise<Result<{ savedAt: string }>>;
+  deletePlanCompare(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
   startPlanCompare(input: PlanCompareRequest): Promise<Result<{ jobId: string }>>;
   checkPlanCompare(input: PlanCompareCheck): Promise<Result<{ reasons: string[] }>>;
   pickPlanDocument(): Promise<Result<PlanDocument | null>>;
@@ -551,6 +554,7 @@ export interface LearningApi {
 }
 
 export const channels = {
+  savedPlanCompare: 'learning:saved-plan-compare', savePlanCompare: 'learning:save-plan-compare', deletePlanCompare: 'learning:delete-plan-compare',
   planCompare: 'learning:plan-compare',
   planCompareCheck: 'learning:plan-compare-check',
   pickPlanDocument: 'learning:pick-plan-document',

@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import { GEMINI_MODEL, type LearningMode, type LearningPhase, type ConnectionReport } from '../shared/ai';
 import { PLAN_SEND_LIMIT, selectionBytes } from '../shared/plan-compare';
+import { savedDate } from './overview';
 import { PlanCompareResultView, modes } from './plan-compare-result';
 import type { MapImport } from '../shared/contracts';
 import type { usePlanCompare } from './use-plan-compare';
@@ -38,7 +39,6 @@ export function PlanCompare({ state, locked, mode, checking, readiness, onInspec
   return <section className="card card--wide plan-compare" aria-labelledby="plan-compare-title">
     <h3 id="plan-compare-title">기획과 비교</h3>
     <p>기획 문서와 코드를 비교해 기획대로인 것·다른 것·못 찾은 것과 시키지 않은 작업 후보를 찾아요. AI 결과라 정확성을 보장하지 않아요.</p>
-    <p className="hint">결과는 아직 저장하지 않아요.</p>
     <button className="btn" disabled={locked || picking || state.running} onClick={() => void state.pick()}>
       {picking ? '문서 읽는 중…' : document ? '다른 문서 고르기' : '기획 문서 고르기'}
     </button>
@@ -92,8 +92,13 @@ export function PlanCompare({ state, locked, mode, checking, readiness, onInspec
           onClick={() => void state.start(mode)}>대조하기</button>
       </div>}
       {state.running && <p role="status">{state.phase ? phases[state.phase] : '대조 작업 시작 중'} <button className="btn" onClick={state.cancel}>대조 작업 취소</button></p>}
-      {state.result && <PlanCompareResultView result={state.result} freshness={state.freshness} locked={locked}
-        recheck={state.recheck} onFile={onFile} onImport={onImport} />}
+    </>}
+    {state.result && <>
+      <p className="hint">{state.savedAt ? `저장됨 · ${savedDate(state.savedAt)}` : '저장 전'}{' '}
+        <button className="btn btn--small" disabled={locked || state.running} onClick={() => void state.remove()}>지우기</button>
+      </p>
+      <PlanCompareResultView result={state.result} freshness={state.freshness} locked={locked}
+        recheck={state.recheck} onFile={onFile} onImport={onImport} />
     </>}
   </section>;
 }

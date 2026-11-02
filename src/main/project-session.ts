@@ -26,13 +26,15 @@ export async function workersStopped(): Promise<void> {
 }
 
 // Jobs that read the whole project in a worker of their own, so the session's worker keeps answering reads.
-type SideJob = 'routes' | 'flow' | 'flows' | 'map' | 'calls' | 'shapes' | 'history' | 'changes' | 'diff';
+type SideJob = 'routes' | 'flow' | 'flows' | 'map' | 'plan-map' | 'calls' | 'shapes' | 'history' | 'changes' | 'diff';
 const sideWords: Record<SideJob, { failed: string; ended: string; slow: string; changed: string }> = {
   routes: { failed: '주소를 찾지 못했어요.', ended: '주소 찾기가 끝났어요.', slow: '주소 찾기 시간이 초과됐어요.', changed: '주소를 찾는 동안 파일이 바뀌었어요.' },
   flows: { failed: '화면별로 묶지 못했어요.', ended: '화면별로 묶기가 끝났어요.', slow: '화면별로 묶기 시간이 초과됐어요.', changed: '화면별로 묶는 동안 파일이 바뀌었어요.' },
   flow: { failed: '기능 흐름을 찾지 못했어요.', ended: '기능 흐름 찾기가 끝났어요.', slow: '기능 흐름 찾기 시간이 초과됐어요.', changed: '기능 흐름을 찾는 동안 파일이 바뀌었어요.' },
   map: { failed: '지도를 만들지 못했어요.', ended: '지도 작업이 끝나 버렸어요.', slow: '지도를 만드는 데 너무 오래 걸려 멈췄어요.',
     changed: '지도를 만드는 동안 파일이 바뀌었어요. 다시 만들어 주세요.' },
+  'plan-map': { failed: '지도를 만들지 못했어요.', ended: '지도 작업이 끝나 버렸어요.', slow: '지도를 만드는 데 너무 오래 걸려 멈췄어요.',
+    changed: '확인하는 동안 파일이 바뀌었어요.' },
   calls: { failed: '호출을 찾지 못했어요.', ended: '호출 찾기 작업이 끝나 버렸어요.', slow: '호출을 찾는 데 너무 오래 걸려 멈췄어요.',
     changed: '호출을 찾는 동안 파일이 바뀌었어요. 다시 찾아 주세요.' },
   shapes: { failed: '값의 모양을 찾지 못했어요.', ended: '값의 모양 찾기 작업이 끝나 버렸어요.', slow: '값의 모양을 찾는 데 너무 오래 걸려 멈췄어요.',
@@ -219,11 +221,11 @@ export class ProjectSession {
   cancelFeatureFlow(): void { this.flowRun++; this.cancelSide('flow'); }
 
   /** Draws the project map from the files listed when the folder was opened. */
-  async map(timeoutMs = 30_000): Promise<ProjectMap> {
+  async map(timeoutMs = 30_000, job: 'map' | 'plan-map' = 'map'): Promise<ProjectMap> {
     if (this.closed || !this.project) throw new AppError('PROJECT_CLOSED', '프로젝트가 닫혔습니다. 다시 열어 주세요.');
-    if (this.sideRuns.map) throw new AppError('INVALID_REQUEST', '이미 지도를 만드는 중입니다.');
+    if (this.sideRuns[job]) throw new AppError('INVALID_REQUEST', '이미 지도를 만드는 중입니다.');
     const { files, overview } = this.project;
-    return await this.runSide('map', stop => ({ map: { files, starts: overview.candidates.map(candidate => candidate.fileId), entries: overview.entryFileIds, stop } }), timeoutMs) as ProjectMap;
+    return await this.runSide(job, stop => ({ map: { files, starts: overview.candidates.map(candidate => candidate.fileId), entries: overview.entryFileIds, stop } }), timeoutMs) as ProjectMap;
   }
 
   /** Finds what one function calls and where it is called from. Asking for another function replaces the search. */
@@ -448,6 +450,7 @@ export class ProjectSession {
     this.closed = true;
     Atomics.store(this.stop, 0, 1);
     this.cancelMap();
+    this.cancelSide('plan-map');
     this.cancelRoutes();
     this.cancelCalls();
     this.cancelShapes();

@@ -35,6 +35,7 @@ export class ProjectAiContext {
   private evidence = new Map<string, Evidence>();
   constructor(private readonly root: string, private readonly project: ProjectFiles) {}
 
+  fileIdOf(relativePath: string): string | undefined { return this.project.files.find(file => file.relativePath === relativePath)?.id; }
   paths(): string[] { return this.project.files.map(file => file.relativePath).sort(); }
 
   private remember(evidence: Evidence): Evidence {
