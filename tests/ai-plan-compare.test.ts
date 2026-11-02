@@ -1,0 +1,370 @@
+import { randomUUID } from 'node:crypto';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { checkPlanCompare, planCompareSchema, planStructureCompareSchema, type PlanCompareAnswer, type PlanCompareRequest, type PlanSelection } from '../src/shared/plan-compare';
+import { planSections } from '../src/core/analysis/plan-sections';
+import { buildProjectMap } from '../src/core/analysis/project-map';
+import { ProjectAiContext } from '../src/core/ai/context';
+import { capturePlanCompare, planMapHash, revalidatePlanCompare, waitForPlan, type PickedPlan } from '../src/core/ai/plan-compare';
+import { LocalWorkerWorkflow, type StageRequest, type StageResponse, type WorkflowDependencies } from '../src/core/ai/workflow';
+import { readStable, scanProject } from '../src/core/project/files';
+import { AppError } from '../src/shared/errors';
+import type { LearningEvent, LearningMode } from '../src/shared/ai';
+
+const temporary: string[] = [];
+afterEach(async () => { await Promise.all(temporary.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+async function fixture(text = '# 장\n기획대로\n다름\n확인 못 함\n못 찾음\n설계', files = { 'main.ts': 'export const x = 1;' } as Record<string, string>) {
+  const base = await mkdtemp('/private/tmp/plan-compare-');
+  temporary.push(base);
+  const root = path.join(base, 'project');
+  await mkdir(root);
+  for (const [name, code] of Object.entries(files)) {
+    await mkdir(path.dirname(path.join(root, name)), { recursive: true });
+    await writeFile(path.join(root, name), code);
+  }
+  const filename = path.join(base, 'plan.md');
+  await writeFile(filename, text);
+  const document: PickedPlan = { documentId: randomUUID(), name: 'plan.md', path: filename,
+    hash: (await readStable(base, 'plan.md')).hash, bytes: Buffer.byteLength(text), ...planSections(text) };
+  const project = await scanProject(root, randomUUID());
+  const context = new ProjectAiContext(root, project);
+  const source = { projectId: project.id, root, context, map: vi.fn(() => buildProjectMap(root, project.id, project.files, [])), cancelMap: vi.fn() };
+  const signal = new AbortController().signal;
+  const selection = { documentId: document.documentId, startLine: 1, endLine: document.lines };
+  const capture = (chosen: PlanSelection = selection, cancellation = signal) => capturePlanCompare(source, document, chosen, 7, cancellation);
+  const id = (name: string) => project.files.find(file => file.relativePath === name)!.id;
+  return { base, root, document, project, context, source, signal, selection, capture, id };
+}
+const empty = (): PlanCompareAnswer => ({ items: [], unrequested: [], designMismatches: [], unknowns: [] });
+const item = (file: string): PlanCompareAnswer['items'][number] => ({ title: '항목', plan: { startLine: 2, endLine: 3 },
+  status: 'matches', files: [file], difference: null, missingEvidence: null, searched: null });
+
+function workflow(f: Awaited<ReturnType<typeof fixture>>, answer: () => PlanCompareAnswer = empty, requested: string[] = [], mode: LearningMode = 'local-worker') {
+  const events: LearningEvent[] = [];
+  const run = vi.fn(async ({ stage }: StageRequest): Promise<StageResponse> => ({ reportedModel: null,
+    value: stage === 'organizing' ? { focus: '대조', requestedFileIds: requested } : stage === 'reviewing' ? { accepted: true, issues: [], compare: answer() } : answer() }));
+  const deps: WorkflowDependencies = {
+    assertReady() {},
+    capturePlanCompare: (_request, signal) => f.capture(f.selection, signal),
+    revalidatePlanCompare: (snapshot, signal, final) => revalidatePlanCompare(f.source, snapshot, signal, final),
+    capture: async () => { throw new Error('not a question test'); },
+    captureOverview: async () => { throw new Error('not an overview test'); },
+    captureFeatureGuide: async () => { throw new Error('not a guide test'); },
+    revalidateFeatureGuide: async () => { throw new Error('not a guide test'); },
+    captureFile: async () => { throw new Error('not a file test'); },
+    expand: (snapshot, ids, signal) => f.context.expand(snapshot, ids, signal),
+    revalidate: (snapshot, signal) => f.context.revalidate(snapshot, signal), run, emit: event => events.push(event),
+  };
+  const worker = new LocalWorkerWorkflow(deps);
+  const request: PlanCompareRequest = { projectId: f.project.id, selection: f.selection, mode, consent: true };
+  const terminal = async (jobId: string) => {
+    await vi.waitFor(() => expect(events.some(event => event.jobId === jobId && event.kind !== 'progress')).toBe(true));
+    return events.find(event => event.jobId === jobId && event.kind !== 'progress')!;
+  };
+  const finish = async () => terminal(worker.startPlanCompare(request).jobId);
+  return { worker, deps, run, events, request, finish, terminal };
+}
+
+describe('plan comparison references', () => {
+  const file = randomUUID();
+  const second = randomUUID();
+  const ranges = [{ startLine: 2, endLine: 4 }, { startLine: 6, endLine: 8 }];
+  const check = (answer: PlanCompareAnswer, read = [file]) => checkPlanCompare(answer, ranges, [file, second], read, [2]);
+  it('accepts all four statuses, a candidate and a design mismatch with supplied references', () => {
+    const answer = empty();
+    answer.items = [item(file), { ...item(file), status: 'differs', difference: '조건이 다름' },
+      { ...item(second), status: 'unverified', missingEvidence: '설정 파일' },
+      { ...item(file), status: 'missing', files: [], searched: '전체 목록과 두 파일' }];
+    answer.unrequested = [{ title: '후보', files: [second], note: '기획에서 못 찾음' }];
+    answer.designMismatches = [{ plan: { startLine: 6, endLine: 8 }, edge: 2, note: '직접 연결' }];
+    expect(() => check(planCompareSchema.parse(answer))).not.toThrow();
+  });
+  it.each([
+    ['outside range', { plan: { startLine: 1, endLine: 3 } }],
+    ['across ranges', { plan: { startLine: 3, endLine: 6 } }],
+    ['reversed range', { plan: { startLine: 4, endLine: 2 } }],
+    ['unknown file', { files: [randomUUID()] }],
+    ['duplicate file', { files: [file, file] }],
+    ['unread file', { files: [second] }],
+    ['mixed read files', { files: [file, second] }],
+    ['matches without files', { files: [] }],
+    ['differs without difference', { status: 'differs' }],
+    ['differs without files', { status: 'differs', files: [], difference: '다름' }],
+    ['unverified without files', { status: 'unverified', files: [], missingEvidence: '설정' }],
+    ['unverified without evidence', { status: 'unverified' }],
+    ['missing with files', { status: 'missing', searched: '목록' }],
+    ['missing without scope', { status: 'missing', files: [] }],
+  ])('refuses %s', (_name, change) => {
+    expect(() => check({ ...empty(), items: [{ ...item(file), ...change } as PlanCompareAnswer['items'][number]] })).toThrow(AppError);
+  });
+  it.each([
+    { unrequested: [{ title: '후보', files: [randomUUID()], note: '설명' }] },
+    { unrequested: [{ title: '후보', files: [file, file], note: '설명' }] },
+    { designMismatches: [{ plan: { startLine: 2, endLine: 3 }, edge: 1, note: '연결' }] },
+    { designMismatches: [{ plan: { startLine: 3, endLine: 6 }, edge: 2, note: '연결' }] },
+  ])('refuses other invalid references %j', change => expect(() => check({ ...empty(), ...change })).toThrow(AppError));
+  it('rejects structure-only matches by both schema and the read-file guard', () => {
+    const answer = { ...empty(), items: [item(file)] };
+    expect(planStructureCompareSchema.safeParse(answer).success).toBe(false);
+    expect(() => check(answer, [])).toThrow(AppError);
+    expect(planStructureCompareSchema.safeParse({ ...empty(), items: [{ ...item(file), status: 'differs', difference: '다름' }] }).success).toBe(false);
+  });
+});
+
+describe('plan material and currentness', () => {
+  it('keeps CRLF and original Korean line positions, merges overlapping sections, and computes excluded ranges', async () => {
+    const f = await fixture('머리\r\n# 첫 장\r\n본문\r\n## 하위 절\r\n내용\r\n# 다음 장\r\n끝');
+    const snapshot = await f.capture({ documentId: f.document.documentId, sectionIds: ['s2', 's4'] });
+    expect(snapshot.sent).toEqual([{ startLine: 2, endLine: 5 }]);
+    expect(snapshot.plan).toEqual([{ startLine: 2, text: '# 첫 장\r\n본문\r\n## 하위 절\r\n내용\r\n' }]);
+    expect(snapshot.excluded).toEqual([{ startLine: 1, endLine: 1 }, { startLine: 6, endLine: 7 }]);
+    expect((await f.capture()).excluded).toEqual([]);
+  });
+  it('masks the whole document before selecting the middle of a multiline private key', async () => {
+    const f = await fixture('앞\n-----BEGIN PRIVATE KEY-----\nfixture-only-body\nfixture-only-tail\n-----END PRIVATE KEY-----\n뒤');
+    const snapshot = await f.capture({ documentId: f.document.documentId, startLine: 3, endLine: 4 });
+    expect(snapshot.plan).toEqual([{ startLine: 3, text: '\n\n' }]);
+    expect(snapshot.limitations.join()).toContain('기획 문서: 비밀값처럼 보이는 1곳');
+  });
+  it('bounds edges at 64 KiB and reports unresolved and limited map information', async () => {
+    const f = await fixture(undefined, { 'main.ts': "import './other';\nimport './absent';", 'other.ts': 'export {};' });
+    const map = await f.source.map();
+    map.edges = Array.from({ length: 3000 }, () => map.edges[0]);
+    map.limited = true; map.notes = ['분석 안내'];
+    f.source.map.mockResolvedValue(map);
+    const snapshot = await f.capture();
+    expect(Buffer.byteLength(JSON.stringify(snapshot.edges))).toBeLessThanOrEqual(64 * 1024);
+    expect(snapshot.edges.length).toBeGreaterThan(0);
+    expect(snapshot.edges.length).toBeLessThan(map.edges.length);
+    expect(snapshot.limitations).toEqual(expect.arrayContaining(['지도 크기 제한으로 연결 일부를 보내지 않았어요',
+      '지도에서 잇지 못한 연결 1개는 설계 비교에서 판단하지 않았어요', '분석 안내', '지도 분석 한도로 프로젝트 일부만 확인했어요.']));
+    expect(snapshot.basis.mapHash).toBe(planMapHash(map));
+  });
+  it('reads eight files within 80 KiB and skips the file taking the sum to 81 KiB', async () => {
+    const files = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`f${i}.ts`, 'x'.repeat((i < 8 ? 10 : 1) * 1024)]));
+    const f = await fixture(undefined, files);
+    const snapshot = await f.capture();
+    await f.context.expand(snapshot, Object.keys(files).slice(0, 8).map(f.id), f.signal);
+    expect(snapshot.files).toHaveLength(8);
+    expect(snapshot.files.reduce((sum, file) => sum + Buffer.byteLength(file.code), 0)).toBe(80 * 1024);
+    const overflow = await fixture(undefined, { 'a.ts': 'a'.repeat(32 * 1024), 'b.ts': 'b'.repeat(32 * 1024),
+      'c.ts': 'c'.repeat(16 * 1024), 'd.ts': 'd'.repeat(1024), 'large.ts': 'x'.repeat(32 * 1024 + 1) });
+    const over = await overflow.capture();
+    await overflow.context.expand(over, ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'large.ts'].map(overflow.id), overflow.signal);
+    expect(over.files).toHaveLength(3);
+    expect(over.limitations.join()).toContain('d.ts: 비어 있거나 자료 크기 제한');
+    expect(over.limitations.join()).toContain('large.ts: 비어 있거나 자료 크기 제한');
+    await expect(f.context.expand(await f.capture(), Object.keys(files).map(f.id), f.signal)).rejects.toMatchObject({ code: 'AI_RESPONSE' });
+    await expect(f.context.expand(await f.capture(), [f.id('f0.ts'), f.id('f0.ts')], f.signal)).rejects.toMatchObject({ code: 'AI_RESPONSE' });
+    await expect(f.context.expand(await f.capture(), [randomUUID()], f.signal)).rejects.toMatchObject({ code: 'AI_RESPONSE' });
+  });
+  it.each(['plan', 'new file', 'read code', 'ignore', 'nested ignore', 'unread import', 'alias'])('detects %s changes without a revision notification', async kind => {
+    const f = await fixture(undefined, { 'main.ts': 'export const x = 1;', 'unread.ts': "import '@app/value';", 'other.ts': 'export {};',
+      'sub/value.ts': 'export {};', '.gitignore': '# initial', 'sub/.gitignore': '# initial',
+      'tsconfig.json': JSON.stringify({ compilerOptions: { paths: { '@app/value': ['./main.ts'] } } }) });
+    const snapshot = await f.capture();
+    await f.context.expand(snapshot, [f.id('main.ts')], f.signal);
+    if (kind === 'plan') await writeFile(f.document.path, 'changed');
+    if (kind === 'new file') await writeFile(path.join(f.root, 'new.ts'), 'export {};');
+    if (kind === 'read code') await writeFile(path.join(f.root, 'main.ts'), 'export const x = 2;');
+    if (kind === 'ignore') await writeFile(path.join(f.root, '.gitignore'), '# comment changed, same paths');
+    if (kind === 'nested ignore') await writeFile(path.join(f.root, 'sub/.gitignore'), '# changed');
+    if (kind === 'unread import') await writeFile(path.join(f.root, 'unread.ts'), "import './other';");
+    if (kind === 'alias') await writeFile(path.join(f.root, 'tsconfig.json'), JSON.stringify({ compilerOptions: { paths: { '@app/value': ['./other.ts'] } } }));
+    await expect(revalidatePlanCompare(f.source, snapshot, f.signal, true)).rejects.toMatchObject({ code: 'CHANGED' });
+  });
+  it('refuses an already outdated file list on initial capture', async () => {
+    const f = await fixture();
+    await writeFile(path.join(f.root, 'added.ts'), 'export {};');
+    await expect(f.capture()).rejects.toMatchObject({ code: 'CHANGED', message: '폴더에 새 파일이 생겼거나 제외 규칙이 바뀌었어요. 폴더를 다시 열어 주세요.' });
+    expect(f.source.map).not.toHaveBeenCalled();
+  });
+  it('hashes structure independently of file IDs', async () => {
+    const f = await fixture(undefined, { 'main.ts': "import './other';", 'other.ts': 'export {};' });
+    const first = await f.source.map();
+    const scanned = await scanProject(f.root, randomUUID());
+    const next = await buildProjectMap(f.root, scanned.id, scanned.files, []);
+    expect(planMapHash(first)).toBe(planMapHash(next));
+  });
+});
+
+describe('plan workflow with fake AI only', () => {
+  it('runs picking, writing and review, masks plan and code, and returns metadata without source text', async () => {
+    const f = await fixture('# 기획\npassword: fixture-only-value', { 'main.ts': 'const password = "fixture-only-value";' });
+    const w = workflow(f, () => ({ ...empty(), items: [{ ...item(f.id('main.ts')), plan: { startLine: 2, endLine: 2 } }] }), [f.id('main.ts')]);
+    const result = await w.finish();
+    expect(result.kind).toBe('plan-compare-completed');
+    if (result.kind !== 'plan-compare-completed') return;
+    expect(w.run.mock.calls.map(([request]) => [request.stage, request.provider])).toEqual([
+      ['organizing', 'codex'], ['explaining', 'antigravity'], ['reviewing', 'codex']]);
+    expect(result.result).toMatchObject({ structureOnly: false, review: 'AI 검토됨', document: { name: 'plan.md' } });
+    expect(result.result.limitations.join()).toContain('main.ts: 비밀값처럼 보이는');
+    expect(result.result.limitations.join()).toContain('기획 문서: 비밀값처럼 보이는');
+    for (const [request] of w.run.mock.calls) {
+      expect(request.prompt).not.toContain('fixture-only-value');
+      expect(request.prompt).not.toContain(f.base);
+      expect(request.prompt).toContain('[MASKED_SECRET]');
+    }
+    expect(JSON.stringify(result.result)).not.toContain(f.base);
+    expect(Object.keys(result.result.document).sort()).toEqual(['documentId', 'name']);
+    expect(result.result.read).toHaveLength(1);
+    expect(f.source.map).toHaveBeenCalledTimes(2);
+  });
+  it.each(['local-worker', 'codex', 'antigravity'] as const)('masks token-shaped paths in the file list, edges and read files (%s)', async mode => {
+    const token = `ghp_${'A'.repeat(36)}`;
+    const f = await fixture(undefined, { [`${token}/store.ts`]: "import { n } from '../screen';\nexport const orders = [n];", 'screen.ts': `import { orders } from './${token}/store';\nexport const n = orders;` });
+    const w = workflow(f, empty, [f.id(`${token}/store.ts`)], mode);
+    const result = await w.finish();
+    expect(result.kind).toBe('plan-compare-completed');
+    if (result.kind !== 'plan-compare-completed') return;
+    expect(result.result.edges).toEqual(expect.arrayContaining([expect.objectContaining({ from: 'screen.ts', to: `${token}/store.ts` }),
+      expect.objectContaining({ from: `${token}/store.ts`, to: 'screen.ts' })]));
+    expect(w.run).toHaveBeenCalled();
+    for (const [request] of w.run.mock.calls) {
+      expect(request.prompt).not.toContain(token);
+      expect(request.prompt).toContain('[MASKED_SECRET]/store.ts');
+    }
+  });
+  it.each(['codex', 'antigravity'] as const)('runs %s once with only the structure schema', async mode => {
+    const f = await fixture();
+    const w = workflow(f, empty, [], mode);
+    const result = await w.finish();
+    expect(result).toMatchObject({ kind: 'plan-compare-completed', result: { structureOnly: true, review: 'AI 대조 없음', read: [] } });
+    expect(w.run).toHaveBeenCalledOnce();
+    expect(w.run.mock.calls[0][0]).toMatchObject({ stage: 'explaining', provider: mode });
+    const schema = JSON.stringify(w.run.mock.calls[0][0].schema);
+    expect(schema).not.toContain('"matches"'); expect(schema).not.toContain('"differs"');
+  });
+  it.each([{ accepted: false, issues: [] }, { accepted: true, issues: ['남은 문제'] }])('discards an unresolved review %j', async verdict => {
+    const f = await fixture(); const w = workflow(f);
+    w.run.mockImplementation(async ({ stage }) => ({ reportedModel: null, value: stage === 'organizing' ? { focus: '확인', requestedFileIds: [] }
+      : stage === 'reviewing' ? { ...verdict, compare: empty() } : empty() }));
+    expect(await w.finish()).toMatchObject({ kind: 'failed', error: { code: 'AI_RESPONSE' } });
+  });
+  it.each(['plan', 'new file', 'code'])('checks %s again between AI stages', async kind => {
+    const f = await fixture(); const w = workflow(f, empty, [f.id('main.ts')]);
+    const original = w.run.getMockImplementation()!;
+    w.run.mockImplementation(async input => {
+      const result = await original(input);
+      if (input.stage !== 'explaining') return result;
+      const file = kind === 'plan' ? f.document.path : path.join(f.root, kind === 'new file' ? 'new.ts' : 'main.ts');
+      await writeFile(file, 'export const changed = 1;');
+      return result;
+    });
+    expect(await w.finish()).toMatchObject({ kind: 'failed', error: { code: 'CHANGED' } });
+    expect(w.run.mock.calls.map(([input]) => input.stage)).toEqual(['organizing', 'explaining']);
+  });
+  it.each(['unread import', 'alias', 'ignore'])('discards final %s changes even without a watcher event', async kind => {
+    const f = await fixture(undefined, { 'main.ts': 'export {};', 'unread.ts': "import '@app/value';", 'other.ts': 'export {};',
+      '.gitignore': '# initial', 'tsconfig.json': JSON.stringify({ compilerOptions: { paths: { '@app/value': ['./main.ts'] } } }) });
+    const w = workflow(f, empty, [f.id('main.ts')]);
+    const original = w.run.getMockImplementation()!;
+    w.run.mockImplementation(async input => {
+      const result = await original(input);
+      if (input.stage !== 'reviewing') return result;
+      if (kind === 'unread import') await writeFile(path.join(f.root, 'unread.ts'), "import './other';");
+      if (kind === 'alias') await writeFile(path.join(f.root, 'tsconfig.json'), JSON.stringify({ compilerOptions: { paths: { '@app/value': ['./other.ts'] } } }));
+      if (kind === 'ignore') await writeFile(path.join(f.root, '.gitignore'), '# changed without changing paths');
+      return result;
+    });
+    expect(await w.finish()).toMatchObject({ kind: 'failed', error: { code: 'CHANGED' } });
+    expect(w.run).toHaveBeenCalledTimes(3);
+    expect(w.events.some(event => event.kind === 'plan-compare-completed')).toBe(false);
+  });
+  it.each([1, 2])('cancels map wait %i immediately and accepts a new AI job', async heldMap => {
+    const f = await fixture(); const w = workflow(f);
+    const realMap = f.source.map.getMockImplementation()!;
+    let count = 0;
+    f.source.map.mockImplementation(() => ++count === heldMap ? new Promise(() => {}) : realMap());
+    const { jobId } = w.worker.startPlanCompare(w.request);
+    await vi.waitFor(() => expect(f.source.map).toHaveBeenCalledTimes(heldMap));
+    await w.worker.cancel(jobId);
+    expect(f.source.cancelMap).toHaveBeenCalledOnce();
+    expect(w.events.filter(event => event.kind === 'plan-compare-completed')).toEqual([]);
+    expect(await w.terminal(jobId)).toMatchObject({ kind: 'failed', error: { code: 'CANCELLED' } });
+    f.source.map.mockImplementation(realMap);
+    expect(await w.finish()).toMatchObject({ kind: 'plan-compare-completed' });
+  });
+  it('cancels a stalled capture and does not let its later result start AI', async () => {
+    const f = await fixture(); const snapshot = await f.capture(); const w = workflow(f);
+    let release!: (value: typeof snapshot) => void;
+    w.deps.capturePlanCompare = () => new Promise(resolve => { release = resolve; });
+    const { jobId } = w.worker.startPlanCompare(w.request);
+    await vi.waitFor(() => expect(release).toBeDefined());
+    await w.worker.cancel(jobId);
+    release(snapshot);
+    await Promise.resolve();
+    expect(w.run).not.toHaveBeenCalled();
+    expect(await w.terminal(jobId)).toMatchObject({ error: { code: 'CANCELLED' } });
+  });
+  it('shares the active job lock, rejects paths and consent bypass, and keeps Claude Code unavailable', async () => {
+    const f = await fixture(); const w = workflow(f);
+    for (const change of [{ path: '/tmp/plan.md' }, { text: 'injected' }, { consent: false }]) {
+      expect(() => w.worker.startPlanCompare({ ...w.request, ...change } as PlanCompareRequest)).toThrow();
+    }
+    expect(() => w.worker.startPlanCompare({ ...w.request, mode: 'claude-code' })).toThrow('준비 중');
+    const { jobId } = w.worker.startPlanCompare(w.request);
+    expect(() => w.worker.startOverview({ projectId: f.project.id, mode: 'local-worker', startFileId: null, consent: true })).toThrow('이미 AI 작업');
+    await w.worker.cancel(jobId);
+  });
+  it('settles any cancelled wait without waiting for the underlying read to finish', async () => {
+    const controller = new AbortController();
+    const pending = waitForPlan(controller.signal, () => new Promise(() => {}));
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
+  });
+  it('passes the five fixture cases and design mismatch through fake AI, and rejects that answer in a single mode', async () => {
+    const base = await mkdtemp('/private/tmp/plan-fixtures-'); temporary.push(base);
+    await cp(path.resolve('tests/fixtures/plan-compare'), base, { recursive: true });
+    const files: Record<string, string> = {};
+    for (const name of ['order.ts', 'settings.ts', 'screen.ts', 'store.ts', 'extra.ts']) files[name] = await readFile(path.join(base, name), 'utf8');
+    const f = await fixture(await readFile(path.join(base, 'plan.txt'), 'utf8'), files);
+    const map = await f.source.map();
+    const edge = map.edges.findIndex(edge => edge.fromFileId === f.id('screen.ts') && edge.toFileId === f.id('store.ts'));
+    expect(edge).toBeGreaterThanOrEqual(0);
+    const answer: PlanCompareAnswer = { items: [
+      { ...item(f.id('order.ts')), title: '최소 수량', plan: { startLine: 2, endLine: 2 } },
+      { ...item(f.id('order.ts')), title: '최대 수량', plan: { startLine: 3, endLine: 3 }, status: 'differs', difference: '5개 대신 6개' },
+      { ...item(f.id('order.ts')), title: '배송비', plan: { startLine: 4, endLine: 4 }, status: 'unverified', missingEvidence: 'settings.ts는 읽지 않음' },
+      { ...item(f.id('order.ts')), title: '취소', plan: { startLine: 5, endLine: 5 }, status: 'missing', files: [], searched: '파일 목록과 주문 코드' },
+    ], unrequested: [{ title: '추천', files: [f.id('extra.ts')], note: '기획에서 찾지 못한 후보' }],
+    designMismatches: [{ plan: { startLine: 6, endLine: 6 }, edge, note: '화면에서 저장소를 직접 불러옴' }], unknowns: [] };
+    const w = workflow(f, () => answer, [f.id('order.ts'), f.id('extra.ts'), f.id('screen.ts')]);
+    expect(await w.finish()).toMatchObject({ kind: 'plan-compare-completed', result: { compare: answer } });
+    expect(await workflow(f, () => answer, [], 'codex').finish()).toMatchObject({ kind: 'failed', error: { code: 'AI_RESPONSE' } });
+  });
+});
+
+it.each([100, 400])('checks the actual review prompt size with 16,384 short lines and %i-character Korean draft fields', async length => {
+  const f = await fixture('x\n'.repeat(16384), { 'a.ts': 'a'.repeat(32 * 1024), 'b.ts': 'b'.repeat(32 * 1024), 'c.ts': 'c'.repeat(16 * 1024) });
+  const snapshot = await f.capture({ documentId: f.document.documentId, startLine: 1, endLine: 16384 });
+  await f.context.expand(snapshot, [f.id('a.ts'), f.id('b.ts'), f.id('c.ts')], f.signal);
+  expect(snapshot.plan).toEqual([{ startLine: 1, text: 'x\n'.repeat(16384) }]);
+  // Fill the real wire shapes to within one entry of each material limit.
+  while (true) {
+    const next = { id: randomUUID(), relativePath: 'long-folder/'.repeat(10) + `${snapshot.availableFiles.length}.ts` };
+    if (Buffer.byteLength(JSON.stringify([...snapshot.availableFiles, next])) > 96 * 1024) break;
+    snapshot.availableFiles.push(next);
+  }
+  while (true) {
+    const next = { index: snapshot.edges.length, from: 'long-folder/'.repeat(10) + 'a.ts', to: 'long-folder/'.repeat(10) + 'b.ts', line: 1 };
+    if (Buffer.byteLength(JSON.stringify([...snapshot.edges, next])) > 64 * 1024) break;
+    snapshot.edges.push(next);
+  }
+  const answer = { ...empty(), items: Array.from({ length: 40 }, () => ({ ...item(f.id('a.ts')), title: '가'.repeat(length),
+    difference: '가'.repeat(length), missingEvidence: '가'.repeat(length), searched: '가'.repeat(length) })) };
+  const w = workflow(f, () => answer);
+  w.deps.capturePlanCompare = async () => snapshot;
+  w.deps.revalidatePlanCompare = async () => {};
+  const result = await w.finish();
+  if (length === 400) {
+    expect(result).toMatchObject({ kind: 'failed', error: { code: 'LIMIT' } });
+    expect(w.run.mock.calls.map(([request]) => request.stage)).toEqual(['organizing', 'explaining']);
+    return;
+  }
+  expect(result.kind).toBe('plan-compare-completed');
+  const review = w.run.mock.calls.find(([request]) => request.stage === 'reviewing')![0];
+  expect(Buffer.byteLength(review.prompt) + Buffer.byteLength(JSON.stringify(review.schema))).toBeLessThanOrEqual(384 * 1024);
+  expect(Buffer.byteLength(review.prompt)).toBeGreaterThan(300 * 1024);
+});

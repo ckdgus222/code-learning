@@ -16,7 +16,8 @@ import { LocalWorkerWorkflow } from '../core/ai/workflow';
 import { ProjectAiContext } from '../core/ai/context';
 import { MAX_FILE_BYTES, readStable } from '../core/project/files';
 import { planSections } from '../core/analysis/plan-sections';
-import type { PlanDocument } from '../shared/plan-compare';
+import { planCompareRequestSchema, planSelection, type PlanDocument } from '../shared/plan-compare';
+import { capturePlanCompare, revalidatePlanCompare } from '../core/ai/plan-compare';
 
 let window: BrowserWindow | null = null;
 let session: ProjectSession | undefined;
@@ -45,6 +46,32 @@ const learning = new LocalWorkerWorkflow({
     const snapshot = await context.capture(source, evidence, revision, signal);
     if (session !== active || aiContext !== context || projectRevision !== revision) throw new AppError('CHANGED', '근거를 모으는 동안 코드가 바뀌었습니다.');
     return snapshot;
+  },
+  capturePlanCompare: async (request, signal) => {
+    const revision = projectRevision;
+    const active = current(request.projectId);
+    const context = aiContext;
+    const document = planDocument;
+    if (!context) throw new AppError('PROJECT_CLOSED', '프로젝트를 먼저 열어 주세요.');
+    if (!document || document.documentId !== request.selection.documentId) throw new AppError('INVALID_REQUEST', '기획 문서를 다시 골라 주세요');
+    const snapshot = await capturePlanCompare(planSource(active, context),
+      document, request.selection, revision, signal);
+    if (session !== active || aiContext !== context || projectRevision !== revision || planDocument !== document) {
+      throw new AppError('CHANGED', '대조 자료가 바뀌었어요. 다시 골라 주세요.');
+    }
+    return snapshot;
+  },
+  revalidatePlanCompare: async (snapshot, signal, final) => {
+    const active = current(snapshot.projectId);
+    const context = aiContext;
+    if (!context) throw new AppError('PROJECT_CLOSED', '프로젝트가 닫혔습니다.');
+    if (projectRevision !== snapshot.revision || planDocument?.documentId !== snapshot.document.documentId) {
+      throw new AppError('CHANGED', '대조 자료가 바뀌었어요. 다시 골라 주세요.');
+    }
+    await revalidatePlanCompare(planSource(active, context), snapshot, signal, final);
+    if (session !== active || aiContext !== context || projectRevision !== snapshot.revision || planDocument?.documentId !== snapshot.document.documentId) {
+      throw new AppError('CHANGED', '대조 자료가 바뀌었어요. 다시 골라 주세요.');
+    }
   },
   captureOverview: async (request, signal) => {
     const revision = projectRevision;
@@ -99,6 +126,9 @@ function validateSender(event: IpcMainInvokeEvent) {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame ||
       event.senderFrame.url !== rendererUrl) throw new AppError('NOT_ALLOWED', '이 요청은 허용된 앱 화면에서만 사용할 수 있습니다.');
 }
+
+const planSource = (active: ProjectSession, context: ProjectAiContext) =>
+  ({ projectId: active.id, root: active.root, context, map: () => active.map(), cancelMap: () => active.cancelMap() });
 
 function current(projectId: string) {
   if (!session || session.id !== projectId) throw new AppError('PROJECT_CLOSED', '현재 선택한 프로젝트가 아닙니다.');
@@ -601,6 +631,14 @@ app.whenReady().then(async () => {
     if (opening) throw new AppError('INVALID_REQUEST', '프로젝트를 연 뒤 질문해 주세요.');
     current(input.projectId);
     return learning.start(input);
+  });
+  handle(channels.planCompare, async argument => {
+    const input = planCompareRequestSchema.parse(argument);
+    if (opening || pickingPlan) throw new AppError('INVALID_REQUEST', '폴더와 문서를 고른 뒤 대조해 주세요.');
+    current(input.projectId);
+    if (!planDocument || input.selection.documentId !== planDocument.documentId) throw new AppError('INVALID_REQUEST', '기획 문서를 다시 골라 주세요');
+    planSelection(planDocument, input.selection);
+    return learning.startPlanCompare(input);
   });
   handle(channels.overview, async argument => {
     const input = overviewRequestSchema.parse(argument);

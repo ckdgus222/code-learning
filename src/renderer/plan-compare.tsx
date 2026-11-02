@@ -1,9 +1,19 @@
-import React from 'react';
-import { PLAN_SEND_LIMIT, selectionBytes } from '../shared/plan-compare';
+import React, { useEffect } from 'react';
+import { GEMINI_MODEL, type LearningMode, type LearningPhase, type ConnectionReport } from '../shared/ai';
+import { PLAN_SEND_LIMIT, selectionBytes, type PlanCompareAnswer } from '../shared/plan-compare';
 import type { usePlanCompare } from './use-plan-compare';
 
-export function PlanCompare({ state, locked }: { state: ReturnType<typeof usePlanCompare>; locked: boolean }) {
+const modes: Record<LearningMode, string> = { 'local-worker': '로컬 워커 · Codex → Gemini → Codex', codex: 'Codex 단독', antigravity: 'Antigravity 단독', 'claude-code': 'Claude Code 단독 · 준비 중' };
+const phases: Record<LearningPhase, string> = { collecting: '대조 자료 모으는 중', organizing: 'Codex가 파일 고르는 중', 'reading-related': '고른 코드 읽는 중', explaining: '기획 대조 작성 중', reviewing: 'Codex가 대조 검토 중', validating: '자료가 바뀌었는지 확인 중' };
+
+export function PlanCompare({ state, locked, mode, checking, readiness, onInspect }: {
+  state: ReturnType<typeof usePlanCompare>; locked: boolean; mode: LearningMode; checking: boolean;
+  readiness: ConnectionReport['modes'][number] | null; onInspect(): void;
+}) {
+  useEffect(() => { state.setConsent(false); }, [mode]);
   const { document, selection, setSelection, picking, error } = state;
+  const count = (status: PlanCompareAnswer['items'][number]['status']) =>
+    state.result?.compare.items.filter(item => item.status === status).length ?? 0;
   const large = !!document && document.bytes > PLAN_SEND_LIMIT;
   const hasHeadings = !!document?.sections.some(section => section.level > 0);
   const byLines = selection && 'startLine' in selection;
@@ -29,8 +39,8 @@ export function PlanCompare({ state, locked }: { state: ReturnType<typeof usePla
   return <section className="card card--wide plan-compare" aria-labelledby="plan-compare-title">
     <h3 id="plan-compare-title">기획과 비교</h3>
     <p>기획 문서와 코드를 비교해 기획대로인 것·다른 것·못 찾은 것과 시키지 않은 작업 후보를 찾아요. AI 결과라 정확성을 보장하지 않아요.</p>
-    <p className="hint">지금은 문서와 범위만 골라요. AI에 보내거나 저장하지 않아요.</p>
-    <button className="btn" disabled={locked || picking} onClick={() => void state.pick()}>
+    <p className="hint">결과는 아직 저장하지 않아요.</p>
+    <button className="btn" disabled={locked || picking || state.running} onClick={() => void state.pick()}>
       {picking ? '문서 읽는 중…' : document ? '다른 문서 고르기' : '기획 문서 고르기'}
     </button>
     {error && <p role="alert">{error}</p>}
@@ -38,7 +48,7 @@ export function PlanCompare({ state, locked }: { state: ReturnType<typeof usePla
       <p>{document.name} · {document.bytes.toLocaleString()} 바이트 · {document.lines.toLocaleString()}줄</p>
       {!large && <p>문서 전체를 보내요.</p>}
       {large && selection && <>
-        <fieldset disabled={locked || picking}>
+        <fieldset disabled={locked || picking || state.running}>
           <legend>보낼 범위 고르기</legend>
           {hasHeadings && <label><input type="radio" name="plan-selection" checked={!byLines}
             onChange={() => setSelection({ documentId: document.documentId, sectionIds: [] })} />장·절로 고르기</label>}
@@ -66,6 +76,28 @@ export function PlanCompare({ state, locked }: { state: ReturnType<typeof usePla
           <p>대조하지 않을 범위: {excluded.join(', ') || '없음'}</p>
         </>}
       </>}
+      {selection && !invalid && bytes <= PLAN_SEND_LIMIT && (byLines || selected.length > 0) && <div>
+        <p>{modes[mode]}{mode !== 'local-worker' && ' · 코드를 읽지 않은 구조 비교'}</p>
+        <p className="hint">방식은 오른쪽 AI 칸의 ‘설정’에서 고를 수 있어요. 답변은 AI 제공자 서버에서 만들어요.
+          {(mode === 'local-worker' || mode === 'antigravity') && ` Gemini 3.8 Flash · High (${GEMINI_MODEL})를 요청해요.`}</p>
+        <button className="btn" disabled={locked || state.running || checking} onClick={onInspect}>{checking ? '설치 확인 중…' : '로컬 AI 설치 확인'}</button>
+        <p className="hint">{readiness?.reason ?? '먼저 설치 상태를 확인해 주세요. 설치 확인만으로 로그인이나 실제 AI 연결이 검증되는 것은 아닙니다.'}</p>
+        <label><input type="checkbox" checked={state.consent} disabled={locked || state.running || !readiness?.ready}
+          onChange={event => state.setConsent(event.target.checked)} />보낼 자료에 동의</label>
+        <details><summary>무엇을 보내나요?</summary>
+          <p>고른 기획 범위(최대 48 KiB), 파일 목록과 지도 연결을 {mode === 'local-worker' ? 'Codex와 Gemini' : mode === 'codex' ? 'Codex' : mode === 'antigravity' ? 'Gemini(Antigravity)' : 'Claude Code'}에 보내요.
+            {mode === 'local-worker' ? ' Codex가 고른 코드 최대 8개·파일당 32 KiB·합계 80 KiB를 Gemini와 Codex에 보내요.' : ' 코드 원문은 보내지 않아요.'}
+            비밀값처럼 보이는 내용은 가린 뒤 보내지만 모든 비밀값을 찾는다고 보장하지는 않아요.</p>
+        </details>
+        <button className="btn btn--primary" disabled={locked || picking || state.running || checking || !state.consent || !readiness?.ready}
+          onClick={() => void state.start(mode)}>대조하기</button>
+      </div>}
+      {state.running && <p role="status">{state.phase ? phases[state.phase] : '대조 작업 시작 중'} <button className="btn" onClick={state.cancel}>대조 작업 취소</button></p>}
+      {state.result && <div>
+        <p role="status">대조 결과 · 기획대로 {count('matches')} · 다름 {count('differs')} · 확인 못 함 {count('unverified')} · 못 찾음 {count('missing')} · 시키지 않은 작업 후보 {state.result.compare.unrequested.length} · 설계와 다른 연결 {state.result.compare.designMismatches.length}
+          {state.result.structureOnly && ' · 코드를 읽지 않은 구조 비교'} · 대조한 범위: {state.result.sent.map(range => `${range.startLine}–${range.endLine}줄`).join(', ')}</p>
+        <p className="hint">자세한 결과 화면은 준비 중이에요</p>
+      </div>}
     </>}
   </section>;
 }

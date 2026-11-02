@@ -77,8 +77,8 @@ function FileTreeList({ folder, expanded, searching, currentFileId, busy, onTogg
 }
 
 function App() {
-  const planCompare = usePlanCompare();
   const [project, setProject] = useState<ProjectView | null>(null);
+  const planCompare = usePlanCompare(project?.id ?? null);
   const [source, setSource] = useState<SourceView | null>(null);
   const [evidence, setReaderEvidence] = useState<Evidence | null>(null);
   const [questionEvidence, setQuestionEvidence] = useState<Evidence | null>(null);
@@ -143,7 +143,7 @@ function App() {
     }
   }), [project?.id]);
 
-  const ai = useAiJobs({ project, source, symbol, revision, setError, setNotice });
+  const ai = useAiJobs({ project, source, symbol, revision, setError, setNotice, planCompareRunning: planCompare.running });
   // Coming back to the overview puts the focus on the card the topic came from (plan U1).
   useEffect(() => {
     if (view !== 'overview' || !focusAnchor) return;
@@ -686,7 +686,7 @@ function App() {
               </> : <p className="unknown"><span className="tag tag--unknown">확인하지 못함</span>프로젝트 목적: 아직 확인하지 못했습니다.</p>}
             </section>}
             <FeatureChooser key={project.files[0]?.id ?? project.id} project={project} state={features}
-              mode={ai.mode} running={ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'}
+              mode={ai.mode} running={planCompare.running || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'}
               checking={ai.checking} connections={ai.connections} onInspect={ai.inspectConnections} onEnsure={ai.ensureConnections} onRunning={ai.setFeatureGuideRunning}
               revision={revision.current} locked={busy} onFollow={(index, start) => void followFeatureRoute(index, start)} />
             {view === 'overview' && <details key={ai.overviewCard} className="card card--wide" aria-label="더 알아보기"
@@ -708,14 +708,17 @@ function App() {
               <p className="hint"><span className="tag tag--unknown">학습 시작점 후보</span>TS/JS 파일 {project.overview.checkedFiles}개를 살펴봤어요{project.overview.limited && '(전체 중 일부)'}. 코드 구조로 고른 후보이고, 실제 실행 시작점인지는 확인하지 않았어요.</p>
               {project.overview.notes.map(note => <p key={note} className="hint">{note}</p>)}
             </section>
-            <OverviewAi key={ai.overviewCard} project={project} state={ai.overview} locked={busy || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning}
+            <OverviewAi key={ai.overviewCard} project={project} state={ai.overview} locked={busy || planCompare.running || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning}
               stale={ai.overview?.status === 'done' && (ai.overview.revision !== revision.current || ai.overview.changed)}
               readiness={ai.connections?.modes.find(item => item.mode === 'local-worker') ?? null} checking={ai.checking}
               revealAnchor={learning.topic?.anchor ?? null} topicName={learning.topic ? learning.topic.name.trim() || learning.topic.original : null} onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
               onStart={startFileId => void ai.startOverview(startFileId)} onCancel={() => void ai.cancelOverview()} onDelete={() => void ai.deleteOverview()}
               onEvidence={next => { setView('code'); void showEvidence(next, null, 'overview'); }}
               onFollow={followFeature} onFunction={(name, at) => void showNamedFunction(name, at)} />
-            <PlanCompare state={planCompare} locked={busy} />
+            <PlanCompare state={planCompare} mode={ai.mode} checking={ai.checking}
+              readiness={ai.connections?.modes.find(item => item.mode === ai.mode) ?? null}
+              onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
+              locked={busy || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'} />
             <section className="card card--wide">
               <h3>확인한 범위와 모르는 부분</h3>
               <p className="stat">읽을 수 있는 파일 <b>{project.files.length}</b>개</p>
@@ -919,7 +922,7 @@ function App() {
             request.current++; setBusy(false); setError(''); setNotice(''); setView('code');
             setSource(value.source); setReaderEvidence(value.evidence); selectSymbol(null); selectStep(null);
           }} evidence={questionEvidence} stale={stale} draft={draft}
-          connections={ai.connections} checking={ai.checking} otherRunning={ai.overview?.status === 'running' || ai.fileExplanationRunning || ai.featureGuideRunning} onInspect={ai.inspectConnections} onEnsure={ai.ensureConnections}
+          connections={ai.connections} checking={ai.checking} otherRunning={planCompare.running || ai.overview?.status === 'running' || ai.fileExplanationRunning || ai.featureGuideRunning} onInspect={ai.inspectConnections} onEnsure={ai.ensureConnections}
           mode={ai.mode} onMode={ai.setMode} onRunning={ai.setQuestionRunning}
           relativePath={project.files.find(file => file.id === questionEvidence?.fileId)?.relativePath ?? ''}
           onEvidence={next => { setView('code'); void showEvidence(next, null, 'answer'); }} />
@@ -931,7 +934,7 @@ function App() {
           }}>AI로 이 파일 설명 만들기</summary>
           <FileExplanationCard source={source} entry={ai.fileExplanation}
             state={ai.sourceExplanationState} stale={ai.fileExplanationStale}
-            mode={ai.mode} locked={busy} running={ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'}
+            mode={ai.mode} locked={busy} running={planCompare.running || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'}
             checking={ai.checking} connections={ai.connections}
             onEnsure={() => { void ai.ensureConnections().then(message => { if (message) setError(message); }); }}
             onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}

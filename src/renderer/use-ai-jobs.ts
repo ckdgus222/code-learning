@@ -12,7 +12,8 @@ const EXPLANATION_SAVE_FAILED = '파일 설명을 저장하지 못했어요. 앱
 const EXPLANATION_LOAD_FAILED = '저장된 파일 설명을 불러오지 못했어요.';
 
 // Keeps AI jobs and installation checks together so their running states block conflicting work.
-export function useAiJobs({ project, source, symbol, revision, setError, setNotice }: {
+export function useAiJobs({ project, source, symbol, revision, setError, setNotice, planCompareRunning }: {
+  planCompareRunning: boolean;
   project: ProjectView | null; source: SourceView | null; symbol: CodeSymbol | undefined;
   revision: RefObject<number>; setError(message: string): void; setNotice(message: string): void;
 }) {
@@ -171,6 +172,7 @@ export function useAiJobs({ project, source, symbol, revision, setError, setNoti
   }
 
   function connectionCheckBlockedReason(): string | null {
+    if (planCompareRunning) return '대조 작업 중에는 설치를 다시 확인할 수 없어요.';
     // A check starts main's list of AI programs over: the overview's next stage would find none.
     return inspectionBlockedReason({ overviewRunning: overviewAi?.status === 'running',
       fileExplanationRunning, questionRunning, featureGuideRunning });
@@ -211,7 +213,7 @@ export function useAiJobs({ project, source, symbol, revision, setError, setNoti
     setOverviewCard(count => count + 1);
   }
   async function startOverview(startFileId: string | null) {
-    if (!project || questionRunning || fileExplanationRunning || featureGuideRunning || checking) return;
+    if (!project || planCompareRunning || questionRunning || fileExplanationRunning || featureGuideRunning || checking) return;
     savedOverviewRequest.current++;
     const token = ++overviewRequest.current;
     overviewJob.current = { id: null, starting: true, queued: [] };
@@ -238,7 +240,7 @@ export function useAiJobs({ project, source, symbol, revision, setError, setNoti
   }
 
   async function startFileExplanation() {
-    if (!project || !source || questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running' || checking) return;
+    if (!project || !source || planCompareRunning || questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running' || checking) return;
     const token = ++fileExplanationRequest.current;
     fileExplanationJob.current = { id: null, starting: true, queued: [], revision: revision.current };
     setFileExplanationState({ status: 'running', fileId: source.fileId, revision: revision.current, phase: null, mode });

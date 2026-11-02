@@ -53,7 +53,7 @@ async function setup(habit: Habit) {
     }
     return { reportedModel: null, value: { accepted: true, issues: [], explanation: draft } };
   };
-  const workflow = new LocalWorkerWorkflow({ captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); },
+  const workflow = new LocalWorkerWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); },
     assertReady: () => {}, run, emit: event => events.push(event),
     capture: (_request, signal) => context.capture(source, evidence, 1, signal),
     captureOverview: (request, signal) => context.captureOverview(request.startFileId, 1, signal),

@@ -212,6 +212,7 @@ export const overviewResultSchema = z.object({
 export type OverviewResult = z.infer<typeof overviewResultSchema>;
 export const saveOverviewSchema = z.object({ projectId: idSchema, result: overviewResultSchema }).strict();
 export type LearningEvent =
+  | { kind: 'plan-compare-completed'; jobId: string; projectId: string; result: import('./plan-compare').PlanCompareResult }
   | { kind: 'progress'; jobId: string; projectId: string; phase: LearningPhase }
   | { kind: 'completed'; jobId: string; projectId: string; result: LearningResult }
   | { kind: 'overview-completed'; jobId: string; projectId: string; result: OverviewResult }

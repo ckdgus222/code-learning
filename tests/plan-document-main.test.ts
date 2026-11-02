@@ -1,8 +1,9 @@
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { channels, MAX_FILE_BYTES, type Result } from '../src/shared/contracts';
+import type { LearningEvent } from '../src/shared/ai';
 import type { PlanDocument } from '../src/shared/plan-compare';
 import { readStable } from '../src/core/project/files';
 import { AppError } from '../src/shared/errors';
@@ -10,20 +11,20 @@ import { AppError } from '../src/shared/errors';
 // Real IPC validation and file reading. Only temporary files and a test profile are used; no AI runs.
 const host = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, input: unknown) => Promise<Result<unknown>>>(),
-  folder: '', profile: '', closeStorage: () => {},
+  folder: '', profile: '', projectId: '', closeStorage: () => {}, events: [] as LearningEvent[],
+  run: vi.fn(async () => ({ value: { items: [], unrequested: [], designMismatches: [], unknowns: [] }, reportedModel: null })),
   picker: vi.fn<(...args: unknown[]) => Promise<{ canceled: boolean; filePaths: string[] }>>(),
-  contents: { mainFrame: { url: 'http://learning.test/' }, setWindowOpenHandler() {}, on() {},
+  contents: { send: (_channel: string, event: LearningEvent) => host.events.push(event), mainFrame: { url: 'http://learning.test/' }, setWindowOpenHandler() {}, on() {},
     session: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, on() {} } },
 }));
 vi.mock('electron', () => ({
   app: { getPath: () => host.profile, whenReady: () => Promise.resolve(), on() {}, exit: vi.fn() },
-  BrowserWindow: class { webContents = host.contents; on() {} loadURL() {} },
+  BrowserWindow: class { isDestroyed() { return false; } webContents = host.contents; on() {} loadURL() {} },
   dialog: { showOpenDialog: host.picker, showErrorBox: vi.fn() },
   ipcMain: { handle: (channel: string, handler: (event: unknown, input: unknown) => Promise<Result<unknown>>) => host.handlers.set(channel, handler) },
   powerMonitor: { on() {} },
 }));
-vi.mock('../src/core/ai/runtime', () => ({ LocalAiRuntime: class { async close() {} } }));
-vi.mock('../src/core/ai/workflow', () => ({ LocalWorkerWorkflow: class { async close() {} } }));
+vi.mock('../src/core/ai/runtime', () => ({ LocalAiRuntime: class { assertReady() {} run = host.run; async close() {} } }));
 vi.mock('../src/core/storage/projects', async importOriginal => {
   const { ProjectStorage } = await importOriginal<typeof import('../src/core/storage/projects')>();
   return { ProjectStorage: class extends ProjectStorage {
@@ -37,8 +38,10 @@ vi.mock('../src/core/project/files', async importOriginal => {
 vi.mock('../src/main/project-session', () => ({
   workersStopped: async () => {},
   ProjectSession: class {
-    constructor(readonly id: string) {}
+    constructor(readonly id: string, readonly root: string) { host.projectId = id; }
     async open() { return { id: this.id, name: 'test', files: [], excluded: {}, warnings: [] }; }
+    async map() { return { projectId: this.id, files: [], edges: [], unresolved: [], external: [], limited: false, notes: [] }; }
+    cancelMap() {}
     async close() {}
   },
 }));
@@ -62,6 +65,7 @@ beforeEach(async () => {
   host.picker.mockReset().mockResolvedValue({ canceled: false, filePaths: [host.folder] });
   expect(await invoke(channels.open)).toMatchObject({ ok: true });
   host.picker.mockClear();
+  host.events.length = 0; host.run.mockClear();
   vi.mocked(readStable).mockClear();
 });
 afterAll(async () => {
@@ -197,4 +201,35 @@ it('discards a file read that finishes after the project changes', async () => {
   release({ text: '# old', hash: 'old' });
   expect(await pending).toMatchObject({ ok: false, code: 'CANCELLED' });
   expect(main.planDocument).toBeNull();
+});
+
+
+it('rejects a foreign document, oversized selection and renderer source material before starting AI', async () => {
+  const file = path.join(temporary, 'compare.md');
+  await writeFile(file, 'a'.repeat(48 * 1024 + 1));
+  host.picker.mockResolvedValue({ canceled: false, filePaths: [file] });
+  expect(await invoke(channels.pickPlanDocument)).toMatchObject({ ok: true });
+  const request = { projectId: host.projectId, selection: { documentId: main.planDocument!.documentId, startLine: 1, endLine: 1 }, mode: 'codex', consent: true };
+  expect(await invoke(channels.planCompare, { ...request, selection: { ...request.selection, documentId: randomUUID() } }))
+    .toMatchObject({ ok: false, code: 'INVALID_REQUEST', message: '기획 문서를 다시 골라 주세요' });
+  expect(await invoke(channels.planCompare, request)).toMatchObject({ ok: false, code: 'LIMIT' });
+  for (const extra of [{ path: file }, { text: 'injected' }, { consent: false }]) {
+    expect(await invoke(channels.planCompare, { ...request, ...extra })).toMatchObject({ ok: false, code: 'INVALID_REQUEST' });
+  }
+  expect(host.run).not.toHaveBeenCalled();
+});
+
+it('rereads a chosen document in main and rejects a changed hash before any AI stage', async () => {
+  const file = path.join(temporary, 'compare-changed.md');
+  await writeFile(file, '# original');
+  host.picker.mockResolvedValue({ canceled: false, filePaths: [file] });
+  expect(await invoke(channels.pickPlanDocument)).toMatchObject({ ok: true });
+  await writeFile(file, '# changed');
+  const result = await invoke<{ jobId: string }>(channels.planCompare, { projectId: host.projectId,
+    selection: { documentId: main.planDocument!.documentId, startLine: 1, endLine: 1 }, mode: 'codex', consent: true });
+  expect(result.ok).toBe(true);
+  if (!result.ok) return;
+  await vi.waitFor(() => expect(host.events.find(event => event.jobId === result.value.jobId && event.kind === 'failed'))
+    .toMatchObject({ error: { code: 'CHANGED', message: '기획 문서가 바뀌었어요. 다시 골라 주세요.' } }));
+  expect(host.run).not.toHaveBeenCalled();
 });

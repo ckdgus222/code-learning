@@ -29,7 +29,7 @@ function fixture() {
         : { accepted: true, issues: [], explanation: structuredClone(explanation) },
   }));
   const captureOverview = vi.fn(async () => { throw new Error('not an overview test'); });
-  const workflow = new LocalWorkerWorkflow({ captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); }, assertReady, capture, captureOverview, captureFile: async () => { throw new Error('not a file explanation test'); }, expand, revalidate, run, emit: event => events.push(event) });
+  const workflow = new LocalWorkerWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); }, assertReady, capture, captureOverview, captureFile: async () => { throw new Error('not a file explanation test'); }, expand, revalidate, run, emit: event => events.push(event) });
   const finish = async (input = request) => {
     const { jobId } = workflow.start(input);
     await vi.waitFor(() => expect(events.some(event => event.jobId === jobId && event.kind !== 'progress')).toBe(true));
