@@ -16,9 +16,12 @@ import { checkPlanCompare, planCompareRequestSchema, planCompareSchema, planComp
 import { waitForPlan, type PlanCompareSnapshot } from './plan-compare';
 export type { ContextSnapshot, EvidenceSnapshot } from './context';
 
+// Gemini High thinking exceeded two minutes during a live plan comparison.
+const PLAN_COMPARE_GEMINI_TIMEOUT_MS = 4 * 60_000;
+
 export interface StageRequest {
   stage: ModelRun['stage']; provider: ModelRun['provider']; prompt: string;
-  schema: Record<string, unknown>; signal: AbortSignal;
+  schema: Record<string, unknown>; signal: AbortSignal; timeoutMs?: number;
 }
 export interface StageResponse { value: unknown; reportedModel: string | null }
 export interface WorkflowDependencies {
@@ -187,8 +190,9 @@ export class LocalWorkerWorkflow {
     this.ensureActive(job);
     const check = (compare: PlanCompareResult['compare']) => checkPlanCompare(compare, snapshot.sent,
       snapshot.availableFiles.map(file => file.id), snapshot.files.map(file => file.evidence.fileId), snapshot.edges.map(edge => edge.index));
-    let compare: PlanCompareResult['compare'] = await this.stage<PlanCompareResult['compare']>(job, models, current, 'explaining', request.mode === 'codex' ? 'codex' : 'antigravity',
-      planCompareSchema, () => prompt() + '기획과 읽은 코드를 대조하라.');
+    const provider = request.mode === 'codex' ? 'codex' : 'antigravity';
+    let compare: PlanCompareResult['compare'] = await this.stage<PlanCompareResult['compare']>(job, models, current, 'explaining', provider,
+      planCompareSchema, () => prompt() + '기획과 읽은 코드를 대조하라.', provider === 'antigravity' ? PLAN_COMPARE_GEMINI_TIMEOUT_MS : undefined);
     check(compare);
     if (!single) {
       const reviewed = await this.stage(job, models, current, 'reviewing', 'codex', planCompareReviewSchema,
@@ -353,13 +357,13 @@ export class LocalWorkerWorkflow {
    * the prompt is built only then, as files may have been added since the last stage.
    */
   private async stage<T>(job: Job, models: ModelRun[], stillCurrent: () => Promise<void>, stage: ModelRun['stage'], provider: ModelRun['provider'],
-    schema: z.ZodType<T>, prompt: () => string): Promise<T> {
+    schema: z.ZodType<T>, prompt: () => string, timeoutMs?: number): Promise<T> {
     this.progress(job, stage);
     await stillCurrent();
     this.ensureActive(job);
     const text = prompt();
     if (Buffer.byteLength(text) > 384 * 1024) throw new AppError('LIMIT', 'AI 질문 자료가 실행 크기 제한을 넘었습니다.');
-    const response = await this.deps.run({ stage, provider, prompt: text, schema: z.toJSONSchema(schema), signal: job.controller.signal });
+    const response = await this.deps.run({ stage, provider, prompt: text, schema: z.toJSONSchema(schema), signal: job.controller.signal, timeoutMs });
     this.ensureActive(job);
     models.push({ stage, provider, requestedModel: provider === 'antigravity' ? GEMINI_MODEL : null, reportedModel: response.reportedModel });
     return parse(schema, response.value);

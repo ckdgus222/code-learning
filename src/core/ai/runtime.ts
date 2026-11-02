@@ -325,6 +325,7 @@ export class LocalAiRuntime {
   private async executeVerifiedStage(request: StageRequest): Promise<StageResponse> {
     const launch = this.launches.get(request.provider);
     if (!launch) throw new AppError('AI_UNAVAILABLE', '먼저 로컬 AI 설치 상태를 확인해 주세요.');
+    const timeoutMs = request.timeoutMs ?? 120_000;
     const directory = await mkdtemp(path.join(os.tmpdir(), 'code-learning-ai-'));
     try {
       const schema = path.join(directory, 'response-schema.json');
@@ -354,7 +355,7 @@ export class LocalAiRuntime {
         // No --json-schema: agy 1.3.5 then forces an extra internal tool call to shape the answer,
         // which the no-tools rule rejects. The schema goes into the prompt and the app checks the JSON.
         : ['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', GEMINI_MODEL, '--mode', 'plan', '--sandbox',
-          '--print-timeout', '2m'];
+          '--print-timeout', `${timeoutMs / 1000}s`];
       const stdin = request.provider === 'codex' ? request.prompt : `${JSON.stringify({ event: 'user', message: {
         content: `${request.prompt}\n\n응답은 아래 JSON schema를 따르는 JSON 하나만 출력한다. 코드 울타리나 다른 글을 붙이지 않는다.\n${JSON.stringify(request.schema)}`,
       } })}\n`;
@@ -362,7 +363,7 @@ export class LocalAiRuntime {
       const fenced = await fencedLaunch(launch, { appHome: request.provider === 'codex' ? this.codexHome : this.antigravityHome, runDirectory: directory });
       // TMPDIR points into this run's folder, the only temporary place the fence lets the CLI write.
       const output = await runProcess({ executable: fenced.executable, args: [...fenced.prefix, ...args], stdin, cwd: directory,
-        signal: request.signal, env: { ...env, TMPDIR: directory } });
+        signal: request.signal, timeoutMs, env: { ...env, TMPDIR: directory } });
       // Stderr can contain provider/native paths; never return it to the renderer.
       if (/denied|permission|not allowed|unauthorized|authentication required|rate.limit|quota/i.test(output.stderr)) {
         throw new AppError('AI_UNAVAILABLE', 'AI 실행 중 인증·권한·이용 한도 오류가 발생했습니다.');

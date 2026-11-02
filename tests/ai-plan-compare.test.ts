@@ -211,6 +211,52 @@ describe('plan material and currentness', () => {
 });
 
 describe('plan workflow with fake AI only', () => {
+  it.each(['local-worker', 'codex', 'antigravity'] as const)('extends only Gemini comparison to four minutes in %s mode', async mode => {
+    const f = await fixture();
+    const w = workflow(f, empty, [], mode);
+    expect(await w.finish()).toMatchObject({ kind: 'plan-compare-completed' });
+    expect(w.run.mock.calls.map(([request]) => [request.stage, request.provider, request.timeoutMs])).toEqual(
+      mode === 'local-worker'
+        ? [['organizing', 'codex', undefined], ['explaining', 'antigravity', 240_000], ['reviewing', 'codex', undefined]]
+        : [['organizing', mode, undefined], ['explaining', mode, mode === 'antigravity' ? 240_000 : undefined]],
+    );
+  });
+
+  it('keeps cancellation active during the longer Gemini comparison', async () => {
+    const f = await fixture();
+    const w = workflow(f);
+    const normal = w.run.getMockImplementation()!;
+    w.run.mockImplementation(async request => {
+      if (request.stage !== 'explaining') return normal(request);
+      return new Promise((_resolve, reject) => {
+        request.signal.addEventListener('abort', () => reject(new AppError('CANCELLED', '작업을 취소했습니다.')), { once: true });
+      });
+    });
+    const { jobId } = w.worker.startPlanCompare(w.request);
+    await vi.waitFor(() => expect(w.run).toHaveBeenCalledTimes(2));
+    const comparison = w.run.mock.calls[1][0];
+    expect(comparison.timeoutMs).toBe(240_000);
+    await w.worker.cancel(jobId);
+    expect(comparison.signal.aborted).toBe(true);
+    expect(await w.terminal(jobId)).toMatchObject({ kind: 'failed', error: { code: 'CANCELLED' } });
+    expect(w.run).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports LIMIT when the longer Gemini comparison times out without starting review', async () => {
+    const f = await fixture();
+    const w = workflow(f);
+    const normal = w.run.getMockImplementation()!;
+    w.run.mockImplementation(async request => {
+      if (request.stage !== 'explaining') return normal(request);
+      throw new AppError('LIMIT', 'AI 응답 대기 시간이 초과되었습니다. 다시 시도해 주세요.');
+    });
+    expect(await w.finish()).toMatchObject({ kind: 'failed', error: {
+      code: 'LIMIT', message: 'AI 응답 대기 시간이 초과되었습니다. 다시 시도해 주세요.',
+    } });
+    expect(w.run).toHaveBeenCalledTimes(2);
+    expect(w.run.mock.calls[1][0].timeoutMs).toBe(240_000);
+  });
+
   it.each(['local-worker', 'codex', 'antigravity'] as const)('clarifies connection items without structure-only instructions in %s prompts', async mode => {
     const f = await fixture();
     const w = workflow(f, empty, [], mode);
