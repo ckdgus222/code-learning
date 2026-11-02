@@ -174,6 +174,7 @@ export class LocalWorkerWorkflow {
       + 'matches·differs는 읽은 파일 근거가 있어야 하며 differs에는 difference를 쓴다. '
       + 'unverified는 관련 파일과 missingEvidence, missing은 빈 files와 이번에 조사한 범위 searched를 쓴다. '
       + '기획에 없는 작업 후보는 unrequested, 설계 문장과 다른 연결은 designMismatches에 보낸 edge 번호로 적는다. '
+      + '어느 파일이 어느 파일을 불러오는지에 관한 기획 문장도 items에 한 항목으로 적고, 보낸 edges 중 그 문장과 어긋나는 연결이 있으면 designMismatches에도 그 edge 번호로 적는다. '
       + '근거가 부족하면 단정하지 말고 unknowns에 적는다. JSON schema를 따르는 JSON 하나만 출력한다.\n자료:\n'
       // Paths are masked too: a folder or file name can hold a token. The result keeps the real paths for the screen.
       + JSON.stringify({ plan: snapshot.plan, availableFiles: snapshot.availableFiles.map(file => ({ id: file.id, path: maskSecrets(file.relativePath).text })),
@@ -191,7 +192,9 @@ export class LocalWorkerWorkflow {
       snapshot.availableFiles.map(file => file.id), snapshot.files.map(file => file.evidence.fileId), snapshot.edges.map(edge => edge.index));
     let compare: PlanCompareResult['compare'] = await this.stage<PlanCompareResult['compare']>(job, models, current, 'explaining', request.mode === 'codex' ? 'codex' : 'antigravity',
       structureOnly ? planStructureCompareSchema : planCompareSchema,
-      () => prompt() + (structureOnly ? '코드를 읽지 않은 구조 비교다. unverified·missing만 쓰고 구현 일치·차이를 판정하지 않는다.' : '기획과 읽은 코드를 대조하라.'));
+      () => prompt() + (structureOnly ? '코드를 읽지 않은 구조 비교다. unverified·missing만 쓰고 구현 일치·차이를 판정하지 않는다. '
+        + '기획 문장마다 관련돼 보이는 파일이 availableFiles에 있으면 그 파일 ID로 unverified, 없으면 missing으로 적는다. '
+        + '시키지 않은 작업 후보는 파일 이름만으로 기획과 관계없음이 분명할 때만 적는다.' : '기획과 읽은 코드를 대조하라.'));
     check(compare);
     if (!structureOnly) {
       const reviewed = await this.stage(job, models, current, 'reviewing', 'codex', planCompareReviewSchema,

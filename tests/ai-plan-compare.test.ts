@@ -216,6 +216,24 @@ describe('plan material and currentness', () => {
 });
 
 describe('plan workflow with fake AI only', () => {
+  it.each(['local-worker', 'codex', 'antigravity'] as const)('clarifies connection items and structure-only judgments in %s prompts', async mode => {
+    const f = await fixture();
+    const w = workflow(f, empty, [], mode);
+    expect(await w.finish()).toMatchObject({ kind: 'plan-compare-completed' });
+    expect(w.run).toHaveBeenCalledTimes(mode === 'local-worker' ? 3 : 1);
+    const connectionInstruction = '어느 파일이 어느 파일을 불러오는지에 관한 기획 문장도 items에 한 항목으로 적고, 보낸 edges 중 그 문장과 어긋나는 연결이 있으면 designMismatches에도 그 edge 번호로 적는다. ';
+    const structureInstruction = '코드를 읽지 않은 구조 비교다. unverified·missing만 쓰고 구현 일치·차이를 판정하지 않는다. '
+      + '기획 문장마다 관련돼 보이는 파일이 availableFiles에 있으면 그 파일 ID로 unverified, 없으면 missing으로 적는다. '
+      + '시키지 않은 작업 후보는 파일 이름만으로 기획과 관계없음이 분명할 때만 적는다.';
+    for (const [request] of w.run.mock.calls) {
+      expect(request.prompt).toContain(connectionInstruction);
+      if (mode === 'local-worker') {
+        expect(request.prompt).not.toContain(structureInstruction);
+        continue;
+      }
+      expect(request.prompt).toContain(structureInstruction);
+    }
+  });
   it('returns masked plan text and import sites while sending exactly four edge fields to AI', async () => {
     const f = await fixture('# 기획\npassword: fixture-only-value', { 'main.ts': "import './other';", 'other.ts': 'export {};' });
     const map = await f.source.map();
