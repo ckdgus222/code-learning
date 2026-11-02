@@ -182,15 +182,15 @@ async function checkPlanCompareRequests(app, page, card, pick, temporary, showCa
     const event = { kind, jobId, projectId: input.projectId };
     if (kind === 'progress') event.phase = 'reviewing';
     if (kind === 'plan-compare-completed') {
-      const structureOnly = input.mode !== 'local-worker';
+      const single = input.mode !== 'local-worker';
       const range = 'startLine' in input.selection ? { startLine: input.selection.startLine, endLine: input.selection.endLine }
         : { startLine: 3, endLine: 4 };
       const fileId = '00000000-0000-4000-8000-000000000099';
-      event.result = { jobId, projectId: input.projectId, mode: input.mode, structureOnly, models: [],
-        review: structureOnly ? 'AI 대조 없음' : 'AI 검토됨', document: { documentId: input.selection.documentId, name: 'fixture.md' },
+      event.result = { jobId, projectId: input.projectId, mode: input.mode, structureOnly: false, models: [],
+        review: single ? 'AI 대조 없음' : 'AI 검토됨', document: { documentId: input.selection.documentId, name: 'fixture.md' },
         sent: [range], excluded: [], plan: [{ startLine: range.startLine, text: '시험\n'.repeat(range.endLine - range.startLine + 1) }], files: [{ id: fileId, relativePath: 'main.ts' }], edges: [], read: [],
-        compare: { items: [{ title: '시험', plan: range, status: structureOnly ? 'unverified' : 'matches', files: [fileId],
-          difference: null, missingEvidence: structureOnly ? '코드를 읽지 않음' : null, searched: null }],
+        compare: { items: [{ title: '시험', plan: range, status: 'matches', files: [fileId],
+          difference: null, missingEvidence: null, searched: null }],
           unrequested: [], designMismatches: [], unknowns: [] },
         basis: { planHash: 'a'.repeat(64), scopeHash: 'b'.repeat(64), mapHash: 'c'.repeat(64) }, limitations: [] };
     }
@@ -253,8 +253,9 @@ async function checkPlanCompareRequests(app, page, card, pick, temporary, showCa
     const single = await start();
     assert.equal(single.input.mode, 'codex');
     await send(single, 'plan-compare-completed');
-    await card.getByRole('status').filter({ hasText: '대조 결과 · 기획대로 0 · 다름 0 · 확인 못 함 1' }).waitFor();
-    assert.match(await card.getByRole('status').filter({ hasText: '대조 결과' }).innerText(), /코드를 읽지 않은 구조 비교/);
+    await card.getByRole('status').filter({ hasText: '대조 결과 · 기획대로 1 · 다름 0 · 확인 못 함 0' }).waitFor();
+    assert.doesNotMatch(await card.locator('.plan-compare-result').innerText(), /코드를 읽지 않은 구조 비교/);
+    await card.locator('.plan-compare-result').getByText('AI 대조 · 정확성을 보장하지 않아요 · Codex 단독 · AI 대조 없음', { exact: true }).waitFor();
     await panel.getByLabel('AI 사용 방식', { exact: true }).selectOption('local-worker');
     await checkPlanCompareResults(app, page, card, pick, temporary, showCard, dialogTo, start);
   } finally {

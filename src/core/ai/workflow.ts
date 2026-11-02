@@ -12,7 +12,7 @@ import { AppError, failure } from '../../shared/errors';
 import type { ContextFile, ContextSnapshot, EvidenceSnapshot, FileExplanationSnapshot } from './context';
 import { checkFeatureGuideRoutes, type FeatureGuideSnapshot } from './feature-guide';
 import { maskSecrets } from './secrets';
-import { checkPlanCompare, planCompareRequestSchema, planCompareSchema, planStructureCompareSchema, planCompareReviewSchema, planCompareOrganizationSchema, type PlanCompareRequest, type PlanCompareResult } from '../../shared/plan-compare';
+import { checkPlanCompare, planCompareRequestSchema, planCompareSchema, planCompareReviewSchema, planCompareOrganizationSchema, type PlanCompareRequest, type PlanCompareResult } from '../../shared/plan-compare';
 import { waitForPlan, type PlanCompareSnapshot } from './plan-compare';
 export type { ContextSnapshot, EvidenceSnapshot } from './context';
 
@@ -164,7 +164,7 @@ export class LocalWorkerWorkflow {
     this.progress(job, 'collecting');
     const snapshot = await this.deps.capturePlanCompare(request, signal);
     this.ensureActive(job);
-    const structureOnly = request.mode !== 'local-worker';
+    const single = request.mode !== 'local-worker';
     const models: ModelRun[] = [];
     const current = () => this.deps.revalidatePlanCompare(snapshot, signal, false);
     const prompt = () => '코드 학습 앱의 읽기 전용 보조 역할이다. 도구·파일·셸·웹을 사용하지 않는다. '
@@ -179,24 +179,18 @@ export class LocalWorkerWorkflow {
       // Paths are masked too: a folder or file name can hold a token. The result keeps the real paths for the screen.
       + JSON.stringify({ plan: snapshot.plan, availableFiles: snapshot.availableFiles.map(file => ({ id: file.id, path: maskSecrets(file.relativePath).text })),
         edges: snapshot.edges.map(edge => ({ index: edge.index, from: maskSecrets(edge.from).text, to: maskSecrets(edge.to).text, line: edge.line })),
-        files: outgoingFiles(snapshot.files).files.map(file => ({ id: file.evidence.fileId, path: maskSecrets(file.relativePath).text, code: file.code })),
-        structureOnly }) + '\n과제:\n';
-    if (!structureOnly) {
-      const organized = await this.stage(job, models, current, 'organizing', 'codex', planCompareOrganizationSchema,
-        () => prompt() + '기획과 대조할 코드를 availableFiles에서 최대 8개 골라 requestedFileIds에 담아라.');
-      this.progress(job, 'reading-related');
-      await this.deps.expand(snapshot, organized.requestedFileIds, signal);
-      this.ensureActive(job);
-    }
+        files: outgoingFiles(snapshot.files).files.map(file => ({ id: file.evidence.fileId, path: maskSecrets(file.relativePath).text, code: file.code })) }) + '\n과제:\n';
+    const organized = await this.stage(job, models, current, 'organizing', request.mode === 'antigravity' ? 'antigravity' : 'codex', planCompareOrganizationSchema,
+      () => prompt() + '기획과 대조할 코드를 availableFiles에서 최대 8개 골라 requestedFileIds에 담아라.');
+    this.progress(job, 'reading-related');
+    await this.deps.expand(snapshot, organized.requestedFileIds, signal);
+    this.ensureActive(job);
     const check = (compare: PlanCompareResult['compare']) => checkPlanCompare(compare, snapshot.sent,
       snapshot.availableFiles.map(file => file.id), snapshot.files.map(file => file.evidence.fileId), snapshot.edges.map(edge => edge.index));
     let compare: PlanCompareResult['compare'] = await this.stage<PlanCompareResult['compare']>(job, models, current, 'explaining', request.mode === 'codex' ? 'codex' : 'antigravity',
-      structureOnly ? planStructureCompareSchema : planCompareSchema,
-      () => prompt() + (structureOnly ? '코드를 읽지 않은 구조 비교다. unverified·missing만 쓰고 구현 일치·차이를 판정하지 않는다. '
-        + '기획 문장마다 관련돼 보이는 파일이 availableFiles에 있으면 그 파일 ID로 unverified, 없으면 missing으로 적는다. '
-        + '시키지 않은 작업 후보는 파일 이름만으로 기획과 관계없음이 분명할 때만 적는다.' : '기획과 읽은 코드를 대조하라.'));
+      planCompareSchema, () => prompt() + '기획과 읽은 코드를 대조하라.');
     check(compare);
-    if (!structureOnly) {
+    if (!single) {
       const reviewed = await this.stage(job, models, current, 'reviewing', 'codex', planCompareReviewSchema,
         () => prompt() + '초안을 같은 자료와 대조하고 고쳐 compare에 담아라. 해결하지 못한 문제만 issues에 남겨라.\n초안:\n' + JSON.stringify(compare));
       check(reviewed.compare);
@@ -207,7 +201,7 @@ export class LocalWorkerWorkflow {
     await this.deps.revalidatePlanCompare(snapshot, signal, true);
     this.ensureActive(job);
     const result: PlanCompareResult = { jobId: job.id, projectId: job.projectId, mode: request.mode,
-      review: structureOnly ? 'AI 대조 없음' : 'AI 검토됨', models, structureOnly,
+      review: single ? 'AI 대조 없음' : 'AI 검토됨', models, structureOnly: false,
       document: { documentId: snapshot.document.documentId, name: snapshot.document.name }, sent: snapshot.sent, excluded: snapshot.excluded,
       plan: snapshot.plan, files: snapshot.availableFiles, edges: snapshot.edges,
       read: snapshot.files.map(file => ({ fileId: file.evidence.fileId, relativePath: file.relativePath, fileHash: file.evidence.fileHash })),

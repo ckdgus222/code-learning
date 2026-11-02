@@ -110,32 +110,21 @@ describe('Plan comparison through the app runtime (real account, non-secret fixt
         `[${mode}] plan line 6 must flag the screen.ts → store.ts connection`).toEqual(expect.arrayContaining([
         expect.objectContaining({ edge: expect.objectContaining({ from: 'screen.ts', to: 'store.ts', line: 1 }) }),
       ]));
-      if (mode !== 'local-worker') {
-        expect.soft(result.structureOnly, `[${mode}] expected structureOnly: true`).toBe(true);
-        expect.soft(items.filter(item => item.status === 'matches'), `[${mode}] matches must be empty`).toEqual([]);
-        expect.soft(items.filter(item => item.status === 'differs'), `[${mode}] differs must be empty`).toEqual([]);
-        expect.soft(result.read, `[${mode}] structure comparison must not read code`).toEqual([]);
-        for (const line of [4, 5]) {
-          expect.soft(lineItems(line), `[${mode}] plan line ${line} must be unverified or missing`).toEqual(expect.arrayContaining([
-            expect.objectContaining({ status: expect.stringMatching(/^(unverified|missing)$/) }),
-          ]));
-        }
-        return;
-      }
-      expect.soft(result.structureOnly, '[local-worker] expected code comparison').toBe(false);
-      expect.soft(unrequested, '[local-worker] expected extra.ts in unrequested').toEqual(expect.arrayContaining([
+      if (mode !== 'local-worker') expect.soft(result.review, `[${mode}] expected no independent review`).toBe('AI 대조 없음');
+      expect.soft(result.structureOnly, `[${mode}] expected code comparison`).toBe(false);
+      expect.soft(unrequested, `[${mode}] expected extra.ts in unrequested`).toEqual(expect.arrayContaining([
         expect.objectContaining({ files: expect.arrayContaining(['extra.ts']) }),
       ]));
-      expect.soft(lineItems(2), '[local-worker] plan line 2 must match order.ts').toEqual(expect.arrayContaining([
+      expect.soft(lineItems(2), `[${mode}] plan line 2 must match order.ts`).toEqual(expect.arrayContaining([
         expect.objectContaining({ status: 'matches', files: expect.arrayContaining(['order.ts']) }),
       ]));
-      expect.soft(lineItems(3), '[local-worker] plan line 3 must differ in order.ts with a nonempty difference').toEqual(expect.arrayContaining([
+      expect.soft(lineItems(3), `[${mode}] plan line 3 must differ in order.ts with a nonempty difference`).toEqual(expect.arrayContaining([
         expect.objectContaining({ status: 'differs', files: expect.arrayContaining(['order.ts']), difference: expect.stringMatching(/\S/) }),
       ]));
-      expect.soft(lineItems(4), '[local-worker] plan line 4 must be unverified with missingEvidence').toEqual(expect.arrayContaining([
+      expect.soft(lineItems(4), `[${mode}] plan line 4 must be unverified with missingEvidence`).toEqual(expect.arrayContaining([
         expect.objectContaining({ status: 'unverified', missingEvidence: expect.stringMatching(/\S/) }),
       ]));
-      expect.soft(lineItems(5), '[local-worker] plan line 5 must be missing').toEqual(expect.arrayContaining([
+      expect.soft(lineItems(5), `[${mode}] plan line 5 must be missing`).toEqual(expect.arrayContaining([
         expect.objectContaining({ status: 'missing' }),
       ]));
     } catch (error) {

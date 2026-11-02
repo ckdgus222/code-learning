@@ -90,15 +90,12 @@ export const planCompareSchema = z.object({
   designMismatches: z.array(z.object({ plan: planLines, edge: z.number().int().min(0), note: text }).strict()).max(20),
   unknowns: z.array(text).max(10),
 }).strict();
-export const planStructureCompareSchema = planCompareSchema.extend({
-  items: z.array(item.extend({ status: z.enum(['unverified', 'missing']) }).strict()).max(40),
-}).strict();
 export const planCompareReviewSchema = z.object({ accepted: z.boolean(), issues: z.array(text).max(16), compare: planCompareSchema }).strict();
 export const planCompareOrganizationSchema = z.object({ focus: text, requestedFileIds: z.array(idSchema).max(8) }).strict();
 export type PlanCompareAnswer = z.infer<typeof planCompareSchema>;
 export interface PlanCompareResult {
   jobId: string; projectId: string; mode: LearningMode; review: 'AI 검토됨' | 'AI 대조 없음'; models: ModelRun[];
-  structureOnly: boolean;
+  structureOnly: boolean; // Keep true for previously saved structure comparisons; new results are always false.
   document: Pick<PlanDocument, 'documentId' | 'name'>;
   sent: PlanRange[]; excluded: PlanRange[];
   plan: { startLine: number; text: string }[];
@@ -120,7 +117,8 @@ const mapImportSchema = z.object({
 }).strict();
 export const planCompareResultSchema = z.object({
   jobId: idSchema, projectId: idSchema, mode: learningModeSchema,
-  review: z.enum(['AI 검토됨', 'AI 대조 없음']), models: z.array(modelRunSchema), structureOnly: z.boolean(),
+  review: z.enum(['AI 검토됨', 'AI 대조 없음']), models: z.array(modelRunSchema),
+  structureOnly: z.boolean(), // Accept previously saved structure comparisons (true); new results are always false.
   document: z.object({ documentId: z.string(), name: z.string() }).strict(),
   sent: z.array(planLines), excluded: z.array(planLines),
   plan: z.array(z.object({ startLine: z.number().int().min(1), text: z.string() }).strict()),

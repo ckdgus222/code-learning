@@ -6,15 +6,30 @@ import type { PlanCompareFreshness, usePlanCompare } from '../src/renderer/use-p
 import { planSections } from '../src/core/analysis/plan-sections';
 import { PlanCompareResultView } from '../src/renderer/plan-compare-result';
 import type { PlanCompareResult, PlanSelection } from '../src/shared/plan-compare';
+import type { LearningMode } from '../src/shared/ai';
 
-function render(text: string | null, selection: PlanSelection | null = null, saved: { result: PlanCompareResult; savedAt: string | null } | null = null) {
+function render(text: string | null, selection: PlanSelection | null = null, saved: { result: PlanCompareResult; savedAt: string | null } | null = null,
+  mode: LearningMode = 'local-worker', phase: ReturnType<typeof usePlanCompare>['phase'] = null) {
   const state: ReturnType<typeof usePlanCompare> = {
     document: text === null ? null : { documentId: 'doc', name: 'plan.md', bytes: Buffer.byteLength(text), ...planSections(text) },
-    freshness: { status: 'fresh', reasons: [] }, async recheck() {}, running: false, phase: null, result: saved?.result ?? null, savedAt: saved?.savedAt ?? null, async remove() {}, consent: false, setConsent() {}, async start() {}, cancel() {},
+    freshness: { status: 'fresh', reasons: [] }, async recheck() {}, running: phase !== null, phase, result: saved?.result ?? null, savedAt: saved?.savedAt ?? null, async remove() {}, consent: false, setConsent() {}, async start() {}, cancel() {},
     selection: selection ?? (text === null ? null : { documentId: 'doc', startLine: 1, endLine: text.split('\n').length }), setSelection() {}, picking: false, error: '', async pick() {}, forget() {},
   };
-  return renderToStaticMarkup(React.createElement(PlanCompare, { state, locked: false, mode: 'local-worker', checking: false, readiness: null, onInspect() {}, onFile() {}, onImport() {} }));
+  return renderToStaticMarkup(React.createElement(PlanCompare, { state, locked: false, mode, checking: false, readiness: null, onInspect() {}, onFile() {}, onImport() {} }));
 }
+
+it.each(['codex', 'antigravity'] as const)('explains code sharing for %s without structure-only labels', mode => {
+  const html = render('# 작은 문서', null, null, mode);
+  expect(html).toContain('같은 AI가 고른 코드 최대 8개·파일당 32 KiB·합계 80 KiB를 보내요.');
+  expect(html).not.toContain('코드를 읽지 않은 구조 비교');
+  expect(html).not.toContain('코드 원문은 보내지 않아요');
+});
+
+it('shows provider-neutral picking progress for Gemini alone', () => {
+  const html = render('# 작은 문서', null, null, 'antigravity', 'organizing');
+  expect(html).toContain('role="status">파일 고르는 중');
+  expect(html).not.toContain('Codex가');
+});
 
 it('shows the picker and a whole-document message for small documents with a disabled comparison action until consent', () => {
   expect(render(null)).toContain('기획 문서 고르기');
