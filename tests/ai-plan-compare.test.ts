@@ -270,6 +270,29 @@ describe('plan workflow with fake AI only', () => {
       expect(request.prompt).not.toContain('structureOnly');
     }
   });
+  it.each(['local-worker', 'codex', 'antigravity'] as const)('defines ambiguous decisions and review acceptance in %s prompts', async mode => {
+    const f = await fixture();
+    const w = workflow(f, empty, [], mode);
+    expect(await w.finish()).toMatchObject({ kind: 'plan-compare-completed' });
+    const requests = w.run.mock.calls.map(([request]) => request);
+    const explaining = requests.find(request => request.stage === 'explaining')!;
+    expect(explaining.prompt).toContain('단순 제목·빈 줄은 items에서 제외하고, 제목 자체에 요구사항이 있으면 포함한다.');
+    expect(explaining.prompt).toContain('여러 줄로 이어지는 하나의 요구사항은 해당 줄 범위로 묶는다.');
+    expect(explaining.prompt).toContain('파일 ID는 availableFiles에서 그대로 복사하며 새로 만들지 않는다.');
+    expect(explaining.prompt).toContain('관련 구현 후보가 있지만 필요한 코드·설정·호출을 읽지 못했으면 unverified이다.');
+    expect(explaining.prompt).toContain('조사한 목록과 읽은 코드에서 구현 후보를 찾지 못했으면 missing이며, 프로젝트 전체에 없다고 단정하지 않는다.');
+    expect(explaining.prompt).toContain('availableFiles에 있지만 files에 없는 파일은 읽지 않은 것이며 없는 파일이 아니다.');
+    expect(explaining.prompt).toContain('적용되지 않는 difference·missingEvidence·searched는 null로 쓴다.');
+    expect(explaining.prompt).toContain('연결의 matches·differs 근거에는 import를 직접 확인한 읽은 파일 ID만 적는다.');
+    expect(requests[0].prompt).toContain('요구사항을 구현하는 파일과 설계 연결의 출발 파일을 우선 고르고');
+    expect(requests[0].prompt).toContain('이 단계에서는 파일만 고르고 대조 결과는 작성하지 않는다.');
+    const review = requests.find(request => request.stage === 'reviewing');
+    if (!review) return;
+    expect(review.prompt).toContain('형식·근거·기획 누락 문제가 남아 있지 않으면 accepted=true, issues=[]로 쓴다.');
+    expect(review.prompt).toContain('고친 문제는 issues에 적지 않는다.');
+    expect(review.prompt).toContain('부족한 근거를 unverified·missing·unknowns로 정확히 표시한 것은 거절 사유가 아니다.');
+    expect(review.prompt).toContain('해결하지 못한 잘못된 판정·근거·누락이 남으면 accepted=false로 쓰고 그 이유만 issues에 남겨라.');
+  });
   it('returns masked plan text and import sites while sending exactly four edge fields to AI', async () => {
     const f = await fixture('# 기획\npassword: fixture-only-value', { 'main.ts': "import './other';", 'other.ts': 'export {};' });
     const map = await f.source.map();
@@ -382,7 +405,11 @@ describe('plan workflow with fake AI only', () => {
     const f = await fixture(); const w = workflow(f);
     w.run.mockImplementation(async ({ stage }) => ({ reportedModel: null, value: stage === 'organizing' ? { focus: '확인', requestedFileIds: [] }
       : stage === 'reviewing' ? { ...verdict, compare: empty() } : empty() }));
-    expect(await w.finish()).toMatchObject({ kind: 'failed', error: { code: 'AI_RESPONSE' } });
+    expect(await w.finish()).toMatchObject({ kind: 'failed', error: {
+      code: 'AI_RESPONSE', message: 'AI 대조에서 해결하지 못한 문제가 있어 결과를 표시하지 않았어요.',
+    } });
+    expect(w.events.some(event => event.kind === 'plan-compare-completed')).toBe(false);
+    expect(JSON.stringify(w.events)).not.toContain('남은 문제');
   });
   it.each(['plan', 'new file', 'code'])('checks %s again between AI stages', async kind => {
     const f = await fixture(); const w = workflow(f, empty, [f.id('main.ts')]);

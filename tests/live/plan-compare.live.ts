@@ -1,10 +1,11 @@
 // Real plan comparisons through the app runtime, using only the non-secret fixture.
 // Excluded from `npm test`; run explicitly with `npm run test:plan-live` after approval.
 import { randomUUID } from 'node:crypto';
-import { cp, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { performance } from 'node:perf_hooks';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { planSections } from '../../src/core/analysis/plan-sections';
 import { ProjectAiContext } from '../../src/core/ai/context';
 import { capturePlanCompare, revalidatePlanCompare, type PickedPlan } from '../../src/core/ai/plan-compare';
@@ -15,13 +16,28 @@ import type { LearningEvent } from '../../src/shared/ai';
 import type { ProjectMap } from '../../src/shared/contracts';
 import { AppError } from '../../src/shared/errors';
 import { recordedFailure, rethrown } from './records';
+import { recordPlanCompareStage, type PlanCompareStageRecord } from './plan-compare-records';
 
 const appCodexHome = path.join(os.homedir(), 'Library/Application Support/Code Learning/codex-home');
 const appAgyHome = path.join(os.homedir(), 'Library/Application Support/Code Learning/agy-home');
 const fixture = path.resolve('tests/fixtures/plan-compare');
+const records: Record<string, { stages: PlanCompareStageRecord[]; workflowOutcome?: LearningEvent['kind']; elapsedMs?: number;
+  failure?: ReturnType<typeof recordedFailure> }> = {};
+
+afterAll(async () => {
+  if (!Object.keys(records).length) return;
+  await mkdir('test-results', { recursive: true });
+  const filename = `test-results/plan-compare-live-${randomUUID()}.json`;
+  // Separate files preserve earlier runs. These are workflow diagnostics, not assertion results.
+  await writeFile(filename, JSON.stringify({ recordedAt: new Date().toISOString(), fixtureOnly: true, records }, null, 2),
+    { flag: 'wx', mode: 0o600 });
+  console.log(`Plan comparison diagnostics: ${filename}`);
+});
 
 describe('Plan comparison through the app runtime (real account, non-secret fixture)', { concurrent: false, shuffle: false }, () => {
   it.each(['local-worker', 'codex', 'antigravity'] as const)('%s: checks plan B expectations', async mode => {
+    const started = performance.now();
+    const record = records[mode] = { stages: [] } as typeof records[string];
     const base = await realpath(await mkdtemp(path.join(os.tmpdir(), 'plan-compare-live-')));
     let workflow: LocalWorkerWorkflow | undefined;
     try {
@@ -66,7 +82,10 @@ describe('Plan comparison through the app runtime (real account, non-secret fixt
       const events: LearningEvent[] = [];
       workflow = new LocalWorkerWorkflow({
         assertReady: selectedMode => runtime.assertReady(selectedMode),
-        run: request => runtime.run(request),
+        run: async request => {
+          try { return await recordPlanCompareStage(request, stage => runtime.run(stage), record.stages); }
+          finally { console.log(`[${mode}] stage: ${JSON.stringify(record.stages.at(-1))}`); }
+        },
         emit: event => events.push(event),
         capturePlanCompare: (request, signal) => capturePlanCompare(source, document, request.selection, 1, signal),
         revalidatePlanCompare: (snapshot, signal, final) => revalidatePlanCompare(source, snapshot, signal, final),
@@ -83,6 +102,7 @@ describe('Plan comparison through the app runtime (real account, non-secret fixt
         `[${mode}] no terminal event within 10 minutes; phases: ${events.filter(event => event.kind === 'progress').map(event => event.phase).join(', ')}`)
         .toBe(true), { timeout: 600_000, interval: 100 });
       const end = events.find(event => event.jobId === jobId && event.kind !== 'progress')!;
+      record.workflowOutcome = end.kind;
       if (end.kind === 'failed') throw new AppError(end.error.code, `[${mode}] ${end.error.message}`);
       if (end.kind !== 'plan-compare-completed') throw new AppError('AI_RESPONSE', `[${mode}] unexpected event: ${end.kind}`);
 
@@ -128,11 +148,15 @@ describe('Plan comparison through the app runtime (real account, non-secret fixt
         expect.objectContaining({ status: 'missing' }),
       ]));
     } catch (error) {
-      console.error(`[${mode}] failed:`, recordedFailure(error));
+      record.failure = recordedFailure(error);
+      console.error(`[${mode}] failed:`, record.failure);
       throw rethrown(error);
     } finally {
       try { await workflow?.close(); }
-      finally { await rm(base, { recursive: true, force: true }); }
+      finally {
+        record.elapsedMs = Math.round(performance.now() - started);
+        await rm(base, { recursive: true, force: true });
+      }
     }
   }, 660_000);
 });
