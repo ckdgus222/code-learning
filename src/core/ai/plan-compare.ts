@@ -110,7 +110,8 @@ export async function capturePlanCompare(source: PlanCompareSource, document: Pi
     const entry = { index, from: paths.get(edge.fromFileId)!, to: paths.get(edge.toFileId)!, line: edge.startLine };
     bytes += Buffer.byteLength(JSON.stringify(entry)) + (edges.length ? 1 : 0);
     if (bytes > 64 * 1024) { snapshot.limitations.push('지도 크기 제한으로 연결 일부를 보내지 않았어요'); break; }
-    edges.push(entry);
+    const { fromFileId, fileHash, startUtf16, endUtf16, startLine, endLine, text, specifier } = edge;
+    edges.push({ ...entry, site: { fromFileId, fileHash, startUtf16, endUtf16, startLine, endLine, text, specifier } });
   }
   if (map.unresolved.length) snapshot.limitations.push(`지도에서 잇지 못한 연결 ${map.unresolved.length}개는 설계 비교에서 판단하지 않았어요`);
   if (map.limited) snapshot.limitations.push('지도 분석 한도로 프로젝트 일부만 확인했어요.');
@@ -119,6 +120,26 @@ export async function capturePlanCompare(source: PlanCompareSource, document: Pi
     document: { documentId: document.documentId, name: document.name, path: document.path, hash: document.hash,
       bytes: document.bytes, lines: document.lines, lineBytes: document.lineBytes, sections: document.sections },
     sent, excluded, plan, edges, basis: { planHash: document.hash, scopeHash, mapHash: planMapHash(map) } };
+}
+
+/** Check the unobserved plan document and file scope; project events cover code and map changes. */
+export async function checkPlanCompareBasis(source: PlanCompareSource, document: PickedPlan,
+  basis: Pick<PlanCompareResult['basis'], 'planHash' | 'scopeHash'>): Promise<string[]> {
+  const reasons: string[] = [];
+  try {
+    const current = await readStable(path.dirname(document.path), path.basename(document.path));
+    if (current.hash !== basis.planHash) reasons.push('기획 문서가 바뀌었어요. 문서를 다시 고른 뒤 대조해 주세요');
+  } catch {
+    reasons.push('기획 문서를 다시 읽지 못했어요');
+  }
+  try {
+    const scopeHash = await planScope(source, new AbortController().signal);
+    if (scopeHash !== basis.scopeHash) reasons.push('제외 규칙(.gitignore)이 바뀌었어요');
+  } catch (error) {
+    if (!(error instanceof AppError) || error.code !== 'CHANGED') throw error;
+    reasons.push('폴더에 새 파일이 생겼거나 없어졌어요. 폴더를 다시 열어 주세요');
+  }
+  return reasons;
 }
 
 export async function revalidatePlanCompare(source: PlanCompareSource, snapshot: PlanCompareSnapshot, signal: AbortSignal, final: boolean): Promise<void> {

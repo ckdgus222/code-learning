@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { PlanCompareRequest, PlanDocument } from './plan-compare';
+import type { PlanCompareCheck, PlanCompareRequest, PlanDocument } from './plan-compare';
 import type { CheckConnectionsRequest, ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest, FeatureGuideRequest, FeatureGuideResult, FileChunk, FileExplanationRange, FileExplanationResult, OverviewResult, LearningResult } from './ai';
 
 export const MAX_FILE_BYTES = 256 * 1024;
@@ -498,6 +498,7 @@ export type ProjectEvent = { projectId: string; kind: 'changed' | 'watch-error' 
 
 export interface LearningApi {
   startPlanCompare(input: PlanCompareRequest): Promise<Result<{ jobId: string }>>;
+  checkPlanCompare(input: PlanCompareCheck): Promise<Result<{ reasons: string[] }>>;
   pickPlanDocument(): Promise<Result<PlanDocument | null>>;
   openProject(): Promise<Result<ProjectView | null>>;
   recentProjects(): Promise<Result<RecentProject[]>>;
@@ -551,6 +552,7 @@ export interface LearningApi {
 
 export const channels = {
   planCompare: 'learning:plan-compare',
+  planCompareCheck: 'learning:plan-compare-check',
   pickPlanDocument: 'learning:pick-plan-document',
   recentProjects: 'learning:recent-projects', openRecent: 'learning:open-recent',
   learningSpot: 'learning:spot', saveLearningSpot: 'learning:save-spot',

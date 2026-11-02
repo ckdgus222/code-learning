@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { idSchema } from './contracts';
+import { idSchema, type MapImport } from './contracts';
 import { learningModeSchema, type LearningMode, type ModelRun } from './ai';
 import { AppError } from './errors';
 
@@ -72,6 +72,11 @@ export const planCompareRequestSchema = z.object({
   projectId: idSchema, selection: planSelectionSchema, mode: learningModeSchema, consent: z.literal(true),
 }).strict();
 export type PlanCompareRequest = z.infer<typeof planCompareRequestSchema>;
+const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
+export const planCompareCheckSchema = z.object({
+  projectId: idSchema, documentId: z.string(), planHash: sha256, scopeHash: sha256,
+}).strict();
+export type PlanCompareCheck = z.infer<typeof planCompareCheckSchema>;
 const planLines = z.object({ startLine: z.number().int().min(1), endLine: z.number().int().min(1) }).strict();
 export type PlanRange = z.infer<typeof planLines>;
 const text = z.string().trim().min(1).max(400);
@@ -96,8 +101,9 @@ export interface PlanCompareResult {
   structureOnly: boolean;
   document: Pick<PlanDocument, 'documentId' | 'name'>;
   sent: PlanRange[]; excluded: PlanRange[];
+  plan: { startLine: number; text: string }[];
   files: { id: string; relativePath: string }[];
-  edges: { index: number; from: string; to: string; line: number }[];
+  edges: { index: number; from: string; to: string; line: number; site: MapImport }[];
   read: { fileId: string; relativePath: string; fileHash: string }[];
   compare: PlanCompareAnswer;
   basis: { planHash: string; scopeHash: string; mapHash: string };

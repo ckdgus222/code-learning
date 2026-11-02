@@ -233,3 +233,41 @@ it('rereads a chosen document in main and rejects a changed hash before any AI s
     .toMatchObject({ error: { code: 'CHANGED', message: '기획 문서가 바뀌었어요. 다시 골라 주세요.' } }));
   expect(host.run).not.toHaveBeenCalled();
 });
+
+it('validates comparison checks against the active project, document and strict hash format', async () => {
+  const file = path.join(temporary, 'check.md');
+  await writeFile(file, '# check');
+  host.picker.mockResolvedValue({ canceled: false, filePaths: [file] });
+  expect(await invoke(channels.pickPlanDocument)).toMatchObject({ ok: true });
+  const input = { projectId: host.projectId, documentId: main.planDocument!.documentId,
+    planHash: main.planDocument!.hash, scopeHash: 'a'.repeat(64) };
+  expect(await invoke(channels.planCompareCheck, { ...input, documentId: randomUUID() }))
+    .toMatchObject({ ok: false, code: 'INVALID_REQUEST', message: '기획 문서를 다시 골라 주세요' });
+  for (const key of ['planHash', 'scopeHash']) {
+    for (const value of ['a'.repeat(63), 'A'.repeat(64), 'g'.repeat(64), 'a'.repeat(65)]) {
+      expect(await invoke(channels.planCompareCheck, { ...input, [key]: value })).toMatchObject({ ok: false, code: 'INVALID_REQUEST' });
+    }
+  }
+  expect(await invoke(channels.planCompareCheck, { ...input, path: file })).toMatchObject({ ok: false, code: 'INVALID_REQUEST' });
+  expect(await invoke(channels.planCompareCheck, input)).toMatchObject({ ok: true, value: { reasons: ['제외 규칙(.gitignore)이 바뀌었어요'] } });
+  await invoke(channels.cancel);
+  expect(await invoke(channels.planCompareCheck, input)).toMatchObject({ ok: false, code: 'PROJECT_CLOSED' });
+  expect(host.run).not.toHaveBeenCalled();
+});
+
+it('discards a comparison check when its document is replaced during the read', async () => {
+  const file = path.join(temporary, 'pending-check.md');
+  await writeFile(file, '# check');
+  host.picker.mockResolvedValue({ canceled: false, filePaths: [file] });
+  await invoke(channels.pickPlanDocument);
+  const document = main.planDocument!;
+  let release!: (value: { text: string; hash: string }) => void;
+  vi.mocked(readStable).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  const pending = invoke(channels.planCompareCheck, { projectId: host.projectId, documentId: document.documentId,
+    planHash: document.hash, scopeHash: 'a'.repeat(64) });
+  await vi.waitFor(() => expect(release).toBeDefined());
+  await invoke(channels.pickPlanDocument);
+  release({ text: document.text, hash: document.hash });
+  expect(await pending).toMatchObject({ ok: false, code: 'CHANGED' });
+  expect(host.run).not.toHaveBeenCalled();
+});

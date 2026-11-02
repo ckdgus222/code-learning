@@ -16,8 +16,8 @@ import { LocalWorkerWorkflow } from '../core/ai/workflow';
 import { ProjectAiContext } from '../core/ai/context';
 import { MAX_FILE_BYTES, readStable } from '../core/project/files';
 import { planSections } from '../core/analysis/plan-sections';
-import { planCompareRequestSchema, planSelection, type PlanDocument } from '../shared/plan-compare';
-import { capturePlanCompare, revalidatePlanCompare } from '../core/ai/plan-compare';
+import { planCompareCheckSchema, planCompareRequestSchema, planSelection, type PlanDocument } from '../shared/plan-compare';
+import { capturePlanCompare, checkPlanCompareBasis, revalidatePlanCompare } from '../core/ai/plan-compare';
 
 let window: BrowserWindow | null = null;
 let session: ProjectSession | undefined;
@@ -30,7 +30,7 @@ let quitReady = false;
 let projectRevision = 0;
 let aiContext: ProjectAiContext | undefined;
 // The one plan document picked this run, kept for the comparison step; exported for main tests.
-// Its path and text never cross to the renderer, which only gets the name, sizes and sections.
+// The picker sends metadata only; comparison results also send the selected, masked text.
 export let planDocument: (PlanDocument & { path: string; text: string; hash: string }) | null = null;
 let pickingPlan = false;
 // App-only Codex and Antigravity folders keep the user's own AI settings out of app runs.
@@ -639,6 +639,20 @@ app.whenReady().then(async () => {
     if (!planDocument || input.selection.documentId !== planDocument.documentId) throw new AppError('INVALID_REQUEST', '기획 문서를 다시 골라 주세요');
     planSelection(planDocument, input.selection);
     return learning.startPlanCompare(input);
+  });
+  handle(channels.planCompareCheck, async argument => {
+    const input = planCompareCheckSchema.parse(argument);
+    if (opening || pickingPlan) throw new AppError('INVALID_REQUEST', '폴더와 문서를 고른 뒤 확인해 주세요.');
+    const active = current(input.projectId);
+    const context = aiContext;
+    const document = planDocument;
+    if (!context) throw new AppError('PROJECT_CLOSED', '프로젝트를 먼저 열어 주세요.');
+    if (!document || document.documentId !== input.documentId) throw new AppError('INVALID_REQUEST', '기획 문서를 다시 골라 주세요');
+    const reasons = await checkPlanCompareBasis(planSource(active, context), document, input);
+    if (session !== active || aiContext !== context || planDocument !== document) {
+      throw new AppError('CHANGED', '대조 자료가 바뀌었어요. 다시 골라 주세요.');
+    }
+    return { reasons };
   });
   handle(channels.overview, async argument => {
     const input = overviewRequestSchema.parse(argument);
