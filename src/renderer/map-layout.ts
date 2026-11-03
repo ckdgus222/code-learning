@@ -28,6 +28,10 @@ const COLUMN_WIDTH = 320;
 // Room between stacked boxes for an arrow inside one folder.
 const ROW_HEIGHT = 112;
 export const FILE_VIEW_LIMIT = 80;
+// List larger direct-file groups: hundreds of arrows proved unreadable in excalidraw measurements.
+export const BIG_FOLDER_LIMIT = 30;
+export const NEIGHBOR_LIMIT = 20;
+export const NEIGHBOR_ROW_HEIGHT = 160;
 export const folderName = (folder: string) => folder || '(최상위 폴더)';
 
 /** Full names distinguish boxes in accessible labels and other path-based displays. */
@@ -70,6 +74,50 @@ export function foldersWithFiles(map: ProjectMap): { folder: string; count: numb
   const counts = new Map<string, number>();
   for (const file of map.files) counts.set(file.folder, (counts.get(file.folder) ?? 0) + 1);
   return [...counts].sort(([a], [b]) => a.localeCompare(b)).map(([folder, count]) => ({ folder, count }));
+}
+
+/** Count distinct neighbours, including files outside the chosen folder. */
+export function folderFileList(map: ProjectMap, folder: string): { file: MapFile; uses: number; usedBy: number }[] {
+  const neighbours = new Map(map.files.filter(file => file.folder === folder)
+    .map(file => [file.id, { file, uses: new Set<string>(), usedBy: new Set<string>() }]));
+  for (const edge of map.edges) {
+    if (edge.fromFileId === edge.toFileId) continue;
+    neighbours.get(edge.fromFileId)?.uses.add(edge.toFileId);
+    neighbours.get(edge.toFileId)?.usedBy.add(edge.fromFileId);
+  }
+  return [...neighbours.values()].map(({ file, uses, usedBy }) => ({ file, uses: uses.size, usedBy: usedBy.size }))
+    .sort((a, b) => b.usedBy - a.usedBy || b.uses - a.uses || a.file.relativePath.localeCompare(b.file.relativePath));
+}
+
+/** Find direct files exposed by the same ancestor and file-group rules as visibleGraph. */
+export function shownBigFolder(opened: ReadonlySet<string>, folders: { folder: string; count: number }[],
+  expandable: Set<string>): string | null {
+  return [...folders].sort((a, b) => a.folder.localeCompare(b.folder)).find(({ folder, count }) =>
+    count > BIG_FOLDER_LIMIT && ancestorsOf(folder).every(path => opened.has(`folder:${path}`))
+    && (!expandable.has(`files:${folder}`) || opened.has(`files:${folder}`)))?.folder ?? null;
+}
+
+/** Keep only the chosen file's direct connections; mutual neighbours live in the left column. */
+export function neighborhoodGraph(map: ProjectMap, fileId: string):
+  { boxes: MapBox[]; arrows: MapArrow[]; users: MapFile[]; used: MapFile[]; hidden: { users: number; used: number } } {
+  const selected = map.files.find(file => file.id === fileId);
+  if (!selected) return { boxes: [], arrows: [], users: [], used: [], hidden: { users: 0, used: 0 } };
+  const touching = map.edges.filter(edge => edge.fromFileId !== edge.toFileId
+    && (edge.fromFileId === fileId || edge.toFileId === fileId));
+  const userIds = new Set(touching.filter(edge => edge.toFileId === fileId).map(edge => edge.fromFileId));
+  const usedIds = new Set(touching.filter(edge => edge.fromFileId === fileId).map(edge => edge.toFileId));
+  const ordered = [...map.files].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  const users = ordered.filter(file => userIds.has(file.id));
+  const used = ordered.filter(file => usedIds.has(file.id));
+  const right = used.filter(file => !userIds.has(file.id));
+  const boxes: MapBox[] = [users.slice(0, NEIGHBOR_LIMIT), [selected], right.slice(0, NEIGHBOR_LIMIT)]
+    .flatMap((files, column) => files.map((file, row) => ({ id: file.id, kind: 'file', folder: file.folder, file,
+      label: file.relativePath.split('/').at(-1)!, count: 1, x: column * COLUMN_WIDTH, y: row * NEIGHBOR_ROW_HEIGHT })));
+  const arrows = groupedArrows({ ...map, edges: touching }, new Map(boxes.map(box => [box.id, box.id])));
+  const positions = new Map(boxes.map(box => [box.id, box.x]));
+  for (const arrow of arrows) arrow.back = positions.get(arrow.target)! < positions.get(arrow.source)!;
+  return { boxes, arrows, users, used,
+    hidden: { users: Math.max(0, users.length - NEIGHBOR_LIMIT), used: Math.max(0, right.length - NEIGHBOR_LIMIT) } };
 }
 
 /** Open one folder's direct files and the ancestors needed to reach it. */

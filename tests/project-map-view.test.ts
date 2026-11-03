@@ -1,7 +1,8 @@
 import React from 'react';
 import * as ReactHooks from 'react';
+import * as JSX from 'react/jsx-dev-runtime';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ReactFlow, type Edge, type Node } from '@xyflow/react';
+import { ReactFlow, ReactFlowProvider, type Edge, type Node } from '@xyflow/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ARROW_MARKER, MapCanvas, ProjectMapView, type MapChanges } from '../src/renderer/project-map';
 import { boxName, boxPlace, expandableIds, fileViewOf, visibleGraph, type MapArrow } from '../src/renderer/map-layout';
@@ -10,6 +11,10 @@ import type { MapFile, ProjectMap, ProjectView } from '../src/shared/contracts';
 vi.mock('react', async importOriginal => {
   const actual = await importOriginal<typeof import('react')>();
   return { ...actual, useState: vi.fn(actual.useState) };
+});
+vi.mock('react/jsx-dev-runtime', async importOriginal => {
+  const actual = await importOriginal<typeof import('react/jsx-dev-runtime')>();
+  return { ...actual, jsxDEV: vi.fn(actual.jsxDEV) };
 });
 vi.mock('@xyflow/react', async importOriginal => {
   const actual = await importOriginal<typeof import('@xyflow/react')>();
@@ -27,14 +32,16 @@ const changes: MapChanges = { stale: false, result: { projectId: 'p', commit: '1
   changes: map.files.map(file => ({ kind: 'modified', fileId: file.id, path: file.relativePath, oldPath: null })) } };
 
 function render(opened: ReadonlySet<string> = new Set(), focus: { id: string; opened: ReadonlySet<string> } | null = null,
-  hovered: { id: string; opened: ReadonlySet<string> } | null = null, source = map, selected: MapArrow | null = null) {
+  hovered: { id: string; opened: ReadonlySet<string> } | null = null, source = map, selected: MapArrow | null = null,
+  picked: { fileId: string; opened: ReadonlySet<string> } | null = null, onOpenFile = vi.fn()) {
   vi.mocked(ReactHooks.useState).mockImplementationOnce(() => [opened, vi.fn()]);
   vi.mocked(ReactHooks.useState).mockImplementationOnce(() => [selected, vi.fn()]);
   vi.mocked(ReactHooks.useState).mockImplementationOnce(() => [focus, vi.fn()]);
   vi.mocked(ReactHooks.useState).mockImplementationOnce(() => [hovered, vi.fn()]);
+  vi.mocked(ReactHooks.useState).mockImplementationOnce(() => [picked, vi.fn()]);
   return renderToStaticMarkup(React.createElement(ProjectMapView, { project, entry: { map: source, revision: 0, build: 1 },
     stale: false, mapping: false, locked: false, changes,
-    onBuild() {}, onCancel() {}, onOpenFile() {}, onShowImport() {}, onShowFunction() {}, onShowChange() {} }));
+    onBuild() {}, onCancel() {}, onOpenFile, onShowImport() {}, onShowFunction() {}, onShowChange() {} }));
 }
 function drawnNodes(): Node[] {
   return vi.mocked(ReactFlow).mock.calls.at(-1)![0].nodes!;
@@ -166,10 +173,146 @@ describe('large project file view controls', () => {
     const opened = fileViewOf('web/app', expandable);
     const html = render(opened, null, null, large);
     expect(html).toContain('<option value="folder:web/app" selected="">web/app · 파일 77개</option>');
-    expect(drawnNodes().filter(node => node.className?.includes('map-box--file'))).toHaveLength(77);
+    expect(html).not.toContain('data-testid="map-canvas"');
+    expect(html.match(/aria-label="큰 폴더 파일 목록">(.*?)<\/section>/)![1].match(/<li>/g)).toHaveLength(77);
     for (const current of [new Set([...opened, 'folder:website']), new Set(['folder:web'])]) {
       expect(render(current, null, null, large)).toContain('<option value="" selected="">폴더 고르기</option>');
     }
+  });
+});
+
+describe('big folder list view', () => {
+  const source: ProjectMap = { ...map, files: [
+    ...Array.from({ length: 31 }, (_, i) => file(`a${String(i).padStart(2, '0')}`, 'a')),
+    ...Array.from({ length: 30 }, (_, i) => file(`b${i}`, 'b')),
+    ...Array.from({ length: 21 }, (_, i) => file(`c${String(i).padStart(2, '0')}`, 'c')),
+  ], edges: [
+    ...Array.from({ length: 21 }, (_, i) => ({ ...map.edges[0], fromFileId: `c${String(i).padStart(2, '0')}`, toFileId: 'a00' })),
+    { ...map.edges[0], fromFileId: 'a00', toFileId: 'b0' },
+    { ...map.edges[0], fromFileId: 'a00', toFileId: 'b0', startUtf16: 3 },
+    { ...map.edges[0], fromFileId: 'a01', toFileId: 'b0' },
+  ] };
+  const opened = fileViewOf('a', expandableIds(source));
+  const list = (html: string) => html.match(/aria-label="큰 폴더 파일 목록">(.*?)<\/section>/)![1];
+  const elements = () => vi.mocked(JSX.jsxDEV).mock.results
+    .map(result => result.value as React.ReactElement<Record<string, unknown>>);
+  const button = (label: string) => elements().filter(element => element.type === 'button' && element.props['aria-label'] === label).at(-1)!;
+
+  it('keeps thirty direct files as boxes and shows thirty-one as a complete list with the new explanation', () => {
+    const small = render(fileViewOf('b', expandableIds(source)), null, null, source);
+    expect(small).toContain('data-testid="map-canvas"');
+    expect(drawnNodes().filter(node => node.className?.includes('map-box--file'))).toHaveLength(30);
+    vi.mocked(ReactFlow).mockClear();
+    const html = render(opened, null, null, { ...source, files: source.files.toReversed() });
+    expect(ReactFlow).not.toHaveBeenCalled();
+    expect(html).not.toContain('data-testid="map-canvas"');
+    expect(html).not.toContain('aria-label="상자별 연결"');
+    expect(html).not.toContain('상자를 누르면 그 안을 한 단계');
+    expect(html).not.toContain('폴더를 고르면 그 폴더의 파일을 상자로');
+    expect(html).toContain('바로 아래 파일이 31개라 상자로 그리면 화살표가 엉켜요.');
+    expect(html).toContain('파일을 고르면 그 파일과 바로 이어진 파일만 지도로 보여 줘요.');
+    expect(list(html).match(/<li>/g)).toHaveLength(31);
+    expect(list(html)).toContain('가져다 씀 1곳 · 이 파일을 가져다 씀 21곳');
+    expect([...list(html).matchAll(/<button[^>]*aria-label="([^"]+)"/g)].map(match => match[1]))
+      .toEqual(source.files.filter(file => file.folder === 'a').map(file => file.relativePath));
+    expect(html).toContain('aria-label="변경 목록"');
+    expect(html).toContain('aria-label="폴더 사이 연결"');
+  });
+
+  it('stores the current opened object when a list button is clicked, including rows after three hundred', () => {
+    const many = { ...source, files: Array.from({ length: 302 }, (_, i) => file(`f${String(i).padStart(3, '0')}`, 'a')), edges: [] };
+    const html = render(opened, null, null, many);
+    expect(list(html).match(/<li>/g)).toHaveLength(302);
+    (button('a/f301.ts').props.onClick as () => void)();
+    const setter = vi.mocked(ReactHooks.useState).mock.results[4].value[1];
+    expect(setter).toHaveBeenCalledWith({ fileId: 'f301', opened });
+    expect(setter.mock.calls[0][0].opened).toBe(opened);
+    const chosen = render(opened, null, null, many, null, setter.mock.calls[0][0]);
+    expect(chosen).toContain('data-testid="map-neighborhood"');
+    expect(drawnNodes().map(node => node.id)).toEqual(['f301']);
+    expect(list(chosen)).toContain('aria-label="a/f301.ts" aria-pressed="true"');
+  });
+
+  it('draws a tall neighbourhood, keeps full sorted neighbour text, and bypasses focus and hover', () => {
+    const updated = { ...source, files: source.files.map(file => file.id === 'a00' ? { ...file, start: true, checked: 'partial' as const } : file) };
+    const openFile = vi.fn();
+    const html = render(opened, { id: 'a00', opened }, { id: 'b0', opened }, updated, null, { fileId: 'a00', opened }, openFile);
+    expect(html).toContain('data-testid="map-neighborhood" style="height:3280px"');
+    expect(html).not.toContain('aria-label="이어진 것만 보는 중"');
+    expect(drawnNodes()).toHaveLength(22);
+    expect(drawnEdges()).toHaveLength(21);
+    expect(drawnNodes().every(node => node.data.onFocus === undefined && node.className === 'map-box map-box--file map-box--neighbor')).toBe(true);
+    expect(drawnNodes().find(node => node.id === 'c00')?.ariaLabel).toBe('c/c00.ts');
+    const props = vi.mocked(ReactFlow).mock.calls.at(-1)![0];
+    expect(props.onNodeMouseEnter).toBeUndefined();
+    expect(props.onNodeMouseLeave).toBeUndefined();
+    expect(props.zoomOnScroll).toBe(false);
+    expect(props.fitViewOptions?.padding).toBe(0.02);
+    props.onNodeClick!({} as React.MouseEvent, drawnNodes().find(node => node.id === 'b0')!);
+    expect(openFile).toHaveBeenCalledWith('b0');
+    props.onEdgeClick!({} as React.MouseEvent, drawnEdges()[0]);
+    const setSelected = vi.mocked(ReactHooks.useState).mock.results[1].value[1];
+    const selected = setSelected.mock.calls[0][0] as MapArrow;
+    expect(selected.id).toBe(drawnEdges()[0].id);
+    expect(html).toContain('지도에는 &#x27;이 파일을 가져다 씀&#x27;을 20개까지만 그렸어요. 나머지 1개는 아래 목록에 있어요.');
+    expect(html).toContain(`이 파일을 가져다 씀 21곳: ${source.files.filter(file => file.folder === 'c').map(file => file.relativePath).join(', ')}`);
+    expect(html).toContain('가져다 씀 1곳: b/b0.ts');
+    expect(render(opened, null, null, source, selected, { fileId: 'a00', opened })).toContain('고른 화살표의 근거 · import 1개');
+  });
+
+  it('refits when another file is picked and omits the focus button while retaining all file tags', () => {
+    const tagged = { ...source, files: [...source.files, { ...file('a', 'a'), start: true, checked: 'partial' as const }] };
+    render(opened, null, null, tagged, null, { fileId: 'a', opened });
+    const first = elements().filter(element => element.type === ReactFlow).at(-1)!;
+    expect(first.key).toBe('a');
+    const node = drawnNodes()[0];
+    const NodeType = vi.mocked(ReactFlow).mock.calls.at(-1)![0].nodeTypes!.box;
+    // The real node component renders the same labels and tags as the main map.
+    const nodeHtml = renderToStaticMarkup(React.createElement(ReactFlowProvider, {
+      children: React.createElement(NodeType, { ...node, data: node.data } as never),
+    }));
+    expect(nodeHtml).not.toContain('이어진 것만');
+    expect(nodeHtml).toContain('시작점 후보');
+    expect(nodeHtml).toContain('일부만 봄');
+    expect(nodeHtml).toContain('수정');
+    render(opened, null, null, tagged, null, { fileId: 'a01', opened });
+    expect(elements().filter(element => element.type === ReactFlow).at(-1)!.key).toBe('a01');
+    expect(drawnNodes().map(node => node.id)).toEqual(['a01', 'b0']);
+  });
+
+  it('invalidates a pick after changing folders, returning to A, folding and reopening, or removing the file', () => {
+    const pick = { fileId: 'a00', opened };
+    for (const current of [fileViewOf('b', expandableIds(source)), fileViewOf('a', expandableIds(source)), new Set<string>(), new Set(opened)]) {
+      const html = render(current, null, null, source, null, pick);
+      expect(html).not.toContain('data-testid="map-neighborhood"');
+      expect(html).not.toContain('aria-label="a/a00.ts" aria-pressed="true"');
+    }
+    expect(render(opened, null, null, source, null, { fileId: 'missing', opened })).not.toContain('data-testid="map-neighborhood"');
+  });
+
+  it('lists every outgoing neighbour even when only twenty fit on the right', () => {
+    const outgoing = { ...source, edges: source.files.filter(file => file.folder === 'b').toReversed()
+      .map(file => ({ ...map.edges[0], fromFileId: 'a00', toFileId: file.id })) };
+    const html = render(opened, null, null, outgoing, null, { fileId: 'a00', opened });
+    expect(drawnNodes()).toHaveLength(21);
+    expect(html).toContain('지도에는 &#x27;가져다 씀&#x27;을 20개까지만 그렸어요. 나머지 10개는 아래 목록에 있어요.');
+    expect(html).toContain(`가져다 씀 30곳: ${source.files.filter(file => file.folder === 'b').map(file => file.relativePath).sort((a, b) => a.localeCompare(b)).join(', ')}`);
+    expect(html).toContain('이 파일을 가져다 씀 0곳: 없음');
+  });
+
+  it.each(['folder', 'files'])('normalizes a large %s box to its own file view when another folder is open', kind => {
+    const grouped = { ...source, files: [...source.files, file('child', 'a/child')] };
+    const input = kind === 'files' ? grouped : source;
+    const previous = new Set(['folder:b', ...(kind === 'files' ? ['folder:a'] : [])]);
+    render(previous, null, null, input);
+    const flow = vi.mocked(ReactFlow).mock.calls.at(-1)![0];
+    flow.onNodeClick!({} as React.MouseEvent, drawnNodes().find(node => node.id === `${kind}:a`)!);
+    const next = vi.mocked(ReactHooks.useState).mock.results[0].value[1].mock.calls[0][0] as Set<string>;
+    expect(next).toEqual(fileViewOf('a', expandableIds(input)));
+    const html = render(next, null, null, input);
+    expect(html).toContain('<option value="folder:a" selected="">a · 파일 31개</option>');
+    expect(html).not.toContain('data-testid="map-canvas"');
+    expect(list(html).match(/<li>/g)).toHaveLength(31);
   });
 });
 
@@ -451,13 +594,14 @@ describe('connections listed by visible box', () => {
   });
 
   it('limits rows to 300 while counting all boxes and retaining neighbours beyond the row limit', () => {
-    const files = Array.from({ length: 301 }, (_, index) => file(`f${String(index).padStart(3, '0')}`, ''));
+    const files = Array.from({ length: 301 }, (_, index) =>
+      file(`f${String(index).padStart(3, '0')}`, `d${String(Math.floor(index / 30)).padStart(2, '0')}`));
     const large = { ...map, files, edges: [{ ...map.edges[0], fromFileId: 'f000', toFileId: 'f300' }] };
     const html = render(expandableIds(large), null, null, large);
     const list = connectionSection(html);
     expect(list).toContain('상자별 연결 · 상자 301개');
     expect(rows(html)).toHaveLength(300);
-    expect(rows(html).map(row => row.match(/<button[^>]*>(.*?)<\/button>/)![1]))
+    expect(rows(html).map(row => row.match(/aria-label="([^"]*)"/)![1]))
       .toEqual(visibleGraph(large, expandableIds(large)).boxes.slice(0, 300).map(boxName));
     expect(list).toContain('처음 300개만 보여요. 나머지 1개는 생략했어요.');
     expect(list).toContain('가져다 씀 1곳: f300.ts');

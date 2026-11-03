@@ -419,6 +419,9 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .map-canvas .react-flow__attribution { background: var(--side); }
 .map-canvas .react-flow__attribution a { color: var(--muted); }
 .map-box__label { display: grid; gap: 4px; overflow-wrap: anywhere; }
+.map-neighborhood-scroll { overflow-x: auto; min-width: 0; }
+.map-neighborhood-scroll .map-canvas { min-width: 900px; }
+.map-box--neighbor .map-box__label > b { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .map-canvas .map-arrow .react-flow__edge-path { stroke: var(--accent); stroke-width: 1.6; }
 .map-canvas .map-arrow--faint .react-flow__edge-path { opacity: .25; }
 .map-canvas .map-arrow--strong .react-flow__edge-path { stroke-width: 2.4; }
@@ -434,6 +437,9 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 /* Each direction on its own line, so a box's uses and users read as two short lists. */
 .map-connections li { display: grid; gap: 2px; justify-items: start; }
 .map-connections__line { padding-left: 8px; }
+/* Up to 1,000 rows: the list scrolls on its own so the neighbourhood map below stays in reach. */
+.map-big-folder { max-height: 360px; overflow-y: auto; }
+.map-big-folder li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
 /* Plan v2.3 C-2: kinds of change, and the read-only comparison. */
 .tag--change { background: var(--raised); color: var(--ink); }

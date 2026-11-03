@@ -141,6 +141,27 @@ for (let index = 0; index < 90; index++) {
     `import { value as next } from '../part${(index + 1) % 3}/file${(index + 1) % 90}';\nexport const value = next;\n`);
 }
 await writeFile(path.join(folderFileViewFixture, 'root.ts'), 'export const root = 1;\n');
+// A 31-file folder with right-only and left-only neighbourhoods, without an AI fixture.
+const neighborhoodFixture = path.join(temporary, '큰 폴더 주변 지도 프로젝트');
+const longNeighbor = `00-${'long-neighbor-name-'.repeat(10)}.ts`;
+const dependencyNames = [longNeighbor, ...Array.from({ length: 19 }, (_, i) => `dep${String(i + 1).padStart(2, '0')}.ts`)];
+await Promise.all(['large', 'neighbors', 'users'].map(folder => mkdir(path.join(neighborhoodFixture, folder), { recursive: true })));
+await writeFile(path.join(neighborhoodFixture, 'package.json'), JSON.stringify({ name: 'neighborhood-fixture', main: `neighbors/${longNeighbor}` }));
+await writeFile(path.join(neighborhoodFixture, 'large/right.ts'), dependencyNames.map((name, i) =>
+  `import { value as value${i} } from '../neighbors/${name.slice(0, -3)}';`).join('\n') + '\nexport const right = 1;\n');
+await writeFile(path.join(neighborhoodFixture, 'large/left.ts'), 'export const left = 1;\n');
+for (let i = 0; i < 29; i++) await writeFile(path.join(neighborhoodFixture, `large/isolated${i}.ts`), 'export const isolated = 1;\n');
+for (const name of dependencyNames) await writeFile(path.join(neighborhoodFixture, 'neighbors', name), 'export const value = 1;\n');
+for (let i = 0; i < 31; i++) await writeFile(path.join(neighborhoodFixture, `users/user${String(i).padStart(2, '0')}.ts`),
+  i < 7 ? "import { left } from '../large/left';\nexport const user = left;\n" : 'export const user = 1;\n');
+const neighborhoodGit = (...args) => execFileSync('git', args, { cwd: neighborhoodFixture,
+  env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+neighborhoodGit('init', '-q');
+neighborhoodGit('add', '-A');
+neighborhoodGit('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'neighborhood fixture');
+// Under 256 KiB but over the map's 200,000 syntax-node budget: a real partial-read tag, together
+// with the package main start tag and the Git modification tag, on a name longer than two lines.
+await writeFile(path.join(neighborhoodFixture, 'neighbors', longNeighbor), 'export const value = 2;\n' + 'x;'.repeat(110_000));
 // Plan G1: a feature to follow, two methods of one name, and a source file that is no start candidate.
 const featureFixture = path.join(temporary, '기능 프로젝트');
 const featureFiles = {
@@ -2348,6 +2369,89 @@ try {
     assert.equal(await select.inputValue(), '');
     assert.deepEqual(await select.locator('option:checked').allTextContents(), ['폴더 고르기']);
     assert.equal(await chips.count(), 0);
+    await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
+    await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+  });
+  await check('Big folder lists keep neighbourhoods readable at default and minimum window widths', async () => {
+    await dialogTo(neighborhoodFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '큰 폴더 주변 지도 프로젝트', exact: true }).waitFor();
+    await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
+    await page.getByRole('region', { name: '바뀐 파일 목록' }).getByText(`neighbors/${longNeighbor}`, { exact: true }).waitFor();
+    await openFileMap();
+    const select = page.getByRole('combobox', { name: '파일 볼 폴더', exact: true });
+    await select.selectOption('folder:large');
+    const list = page.getByRole('region', { name: '큰 폴더 파일 목록', exact: true });
+    await list.waitFor();
+    assert.equal(await list.locator('li').count(), 31);
+    // A long list scrolls inside its own box, so the neighbourhood map stays just below it.
+    assert.ok(await list.locator('ul').evaluate(element => element.clientHeight <= 361 && element.scrollHeight > element.clientHeight));
+    assert.equal(await page.getByTestId('map-canvas').locator('.react-flow__node').count(), 0);
+    assert.equal(await page.getByRole('region', { name: '상자별 연결', exact: true }).count(), 0);
+    const canvas = page.getByTestId('map-neighborhood');
+    const nodes = canvas.locator('.react-flow__node');
+    const originalSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
+    try {
+      const scenarios = [originalSize[0], 760].flatMap(width => [
+        { width, name: 'right', count: 21 }, { width, name: 'left', count: 8 },
+      ]);
+      // Switching directions also checks that each selection gets a new fitView.
+      for (const { width, name, count } of scenarios) {
+        await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 800), width);
+        await list.getByRole('button', { name: `large/${name}.ts`, exact: true }).click();
+        await until(async () => await nodes.count() === count && await nodes.evaluateAll(items => items.every(item => {
+          const bounds = item.getBoundingClientRect();
+          return bounds.width > 0 && bounds.height > 0 && getComputedStyle(item).visibility !== 'hidden';
+        })));
+        await until(async () => await canvas.evaluate(element => {
+          const viewport = element.querySelector('.react-flow__viewport');
+          if (!viewport || new DOMMatrixReadOnly(getComputedStyle(viewport).transform).a < 0.9) return false;
+          const bounds = element.getBoundingClientRect();
+          return [...element.querySelectorAll('.react-flow__node')].every(node => {
+            const box = node.getBoundingClientRect();
+            return box.left >= bounds.left - 1 && box.right <= bounds.right + 1 && box.top >= bounds.top - 1 && box.bottom <= bounds.bottom + 1;
+          });
+        }));
+        assert.equal(await canvas.getByRole('button', { name: /이어진 것만/ }).count(), 0);
+        const bounds = await canvas.boundingBox();
+        const boxes = await Promise.all((await nodes.all()).map(node => node.boundingBox()));
+        assert.ok(boxes.every(Boolean));
+        for (const [i, box] of boxes.entries()) {
+          assert.ok(box.x >= bounds.x - 1 && box.x + box.width <= bounds.x + bounds.width + 1, `${name} fits horizontally at ${width}px`);
+          assert.ok(box.y >= bounds.y - 1 && box.y + box.height <= bounds.y + bounds.height + 1, `${name} fits vertically at ${width}px`);
+          assert.ok(boxes.slice(i + 1).every(other => box.x + box.width <= other.x + 1 || other.x + other.width <= box.x + 1
+            || box.y + box.height <= other.y + 1 || other.y + other.height <= box.y + 1), `${name} boxes do not overlap at ${width}px`);
+        }
+        assert.equal(await nodes.locator('.map-box__label > b').evaluateAll(labels => labels.every(label => {
+          const style = getComputedStyle(label);
+          return label.textContent.length > 0 && label.getBoundingClientRect().height > 0 && style.visibility !== 'hidden'
+            && Number.parseFloat(style.fontSize) >= 12 && style.opacity !== '0';
+        })), true);
+        if (name === 'right') {
+          const longBox = nodes.filter({ hasText: longNeighbor });
+          assert.deepEqual(await longBox.locator('.tag').allTextContents(), ['시작점 후보', '일부만 봄', '수정']);
+          assert.equal(await longBox.locator('.map-box__label > b').evaluate(label => {
+            const style = getComputedStyle(label);
+            return style.webkitLineClamp === '2' && label.scrollHeight > label.clientHeight
+              && label.clientHeight <= Number.parseFloat(style.lineHeight) * 2 + 1;
+          }), true);
+          assert.ok((await longBox.boundingBox()).height < 160);
+          await longBox.scrollIntoViewIfNeeded();
+          await page.screenshot({ path: path.join(artifacts, `map-neighborhood-${width}.png`) });
+        }
+        const scroll = page.locator('.map-neighborhood-scroll');
+        assert.equal(await scroll.evaluate(element => getComputedStyle(element).overflowX), 'auto');
+        if (width === 760) assert.equal(await scroll.evaluate(element => element.scrollWidth > element.clientWidth), true);
+      }
+      await list.getByRole('button', { name: 'large/right.ts', exact: true }).click();
+      const dependency = nodes.filter({ hasText: 'dep01.ts' });
+      await dependency.click();
+      await page.getByRole('button', { name: '코드 읽기', exact: true }).waitFor();
+      await until(async () => (await page.locator('.cm-content').innerText()).includes('export const value = 1;'));
+      assert.equal(await page.getByRole('button', { name: '코드 읽기', exact: true }).getAttribute('aria-current'), 'page');
+    } finally {
+      await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), originalSize);
+    }
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
   });
