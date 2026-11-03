@@ -245,6 +245,8 @@ async function checkPlanCompareRequests(app, page, card, pick, temporary, showCa
     await card.getByLabel('끝 줄', { exact: true }).fill('3');
     assert.equal(await card.getByRole('status').filter({ hasText: '대조 결과' }).count(), 0);
 
+    const question = page.getByRole('banner').getByRole('button', { name: '질문', exact: true });
+    if (await question.getAttribute('aria-pressed') === 'false') await question.click();
     const panel = page.getByRole('complementary', { name: 'AI 질문', exact: true });
     const settings = panel.getByRole('button', { name: '설정', exact: true });
     if (await settings.getAttribute('aria-expanded') !== 'true') await settings.click();

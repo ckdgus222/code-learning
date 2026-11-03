@@ -33,9 +33,9 @@ import { savedDate, ResumeCard, restoreSpot, OverviewAi, TopicBar, type Place, t
 import type { OverviewFeature, FileExplanationRange } from '../shared/ai';
 import './styles.css';
 
-const views: { id: Exclude<View, 'function'>; label: string; more?: true }[] = [
+const views: { id: Exclude<View, 'function'>; label: string }[] = [
   { id: 'overview', label: '한눈에 보기' }, { id: 'flow', label: '흐름 따라가기' },
-  { id: 'code', label: '코드 읽기' }, { id: 'map', label: '프로젝트 지도', more: true }, { id: 'changes', label: '달라진 내용', more: true },
+  { id: 'code', label: '코드 읽기' }, { id: 'map', label: '프로젝트 지도' }, { id: 'changes', label: '달라진 내용' },
 ];
 const candidateReasons: Record<StartCandidate['reason'], string> = {
   'package-main': 'package.json의 main이 가리키는 파일',
@@ -92,7 +92,7 @@ function App() {
   const [watchError, setWatchError] = useState(false);
   const [search, setSearch] = useState('');
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
-  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelOpen, setPanelOpen] = useState(false);
   const [fileGuideOpen, setFileGuideOpen] = useState(false);
   const [draft, setDraft] = useState<{ text: string; id: number; topic?: { name: string; evidenceId: string } } | null>(null);
   const openedAt = useRef(0);
@@ -586,7 +586,7 @@ function App() {
   const scope = [project?.name, source?.relativePath, symbol?.name, step?.title].filter(Boolean);
   const filesVisible = showsFiles(view);
 
-  const viewButton = (item: typeof views[number]) => <button key={item.id} className={`views__item${item.more ? ' views__item--more' : ''}`}
+  const viewButton = (item: typeof views[number]) => <button key={item.id} className="views__item"
     aria-current={(view === 'function' ? 'code' : view) === item.id ? 'page' : undefined}
     onClick={() => setView(item.id)}><Icon name={item.id} /><span>{item.label}</span></button>;
   return <div className={`app${project ? '' : ' app--empty'}${project && filesVisible ? ' app--files' : ''}${panelOpen ? '' : ' app--panel-closed'}`}>
@@ -601,19 +601,24 @@ function App() {
         {scope.slice(1).map((part, index) => <span key={index} className="crumb">{part}</span>)}
       </nav>}
       <div className="topbar__actions">
+        {project && <>
+          <nav aria-label="보기" className="views">{views.map(viewButton)}</nav>
+          <span className="topbar__separator" aria-hidden="true" />
+        </>}
         {busy && <span role="status" className="busy"><span className="spinner" aria-hidden="true" />처리 중…</span>}
         {ai.fileExplanationState?.status === 'running' && (view !== 'code' || source?.fileId !== ai.fileExplanationState.fileId || !panelOpen) &&
           <span role="status">파일 설명 진행 중 <button className="btn btn--small" onClick={() => void ai.cancelFileExplanation()}>파일 설명 작업 취소</button></span>}
-        <button className="btn" onClick={() => void openProject()} disabled={busy}>프로젝트 폴더 열기</button>
-        <button className="btn btn--ghost" onClick={cancel} disabled={!project && !busy}>프로젝트 닫기</button>
+        <button className="btn topbar__question" aria-pressed={!!project && panelOpen} aria-controls="ai-question-panel"
+          aria-label={!panelOpen && ai.questionRunning ? '질문 · 진행 중' : '질문'} disabled={!project}
+          onClick={() => setPanelOpen(open => !open)}><Icon name="question" />질문
+          {!panelOpen && ai.questionRunning && <span className="topbar__question-progress" aria-hidden="true" />}
+        </button>
+        <button className="btn btn--icon" aria-label="프로젝트 폴더 열기" title="프로젝트 폴더 열기"
+          onClick={() => void openProject()} disabled={busy}><Icon name="folder" /></button>
+        <button className="btn btn--ghost btn--icon" aria-label="프로젝트 닫기" title="프로젝트 닫기"
+          onClick={cancel} disabled={!project && !busy}><Icon name="close" /></button>
       </div>
     </header>
-
-    {project && <nav aria-label="보기" className="views">
-      {views.filter(item => !item.more).map(viewButton)}
-      <p className="views__more">더 보기</p>
-      {views.filter(item => item.more).map(viewButton)}
-    </nav>}
 
     {(error || notice || (project && (watchError || stale))) && <div className="notices">
       {error && <p role="alert" className="notice">{error}</p>}
@@ -635,13 +640,13 @@ function App() {
         </li>)}</ul>
       </section>}
       <ol className="welcome__steps">
-        <li><b>폴더 열기</b><span>위의 ‘프로젝트 폴더 열기’를 눌러요.</span></li>
+        <li><b>폴더 열기</b><span>위 폴더 아이콘(프로젝트 폴더 열기)을 눌러요.</span></li>
         <li><b>파일과 함수 고르기</b><span>‘코드 읽기’에서 읽을 파일을 골라요.</span></li>
         <li><b>코드 위치 확인</b><span>구문을 누르면 해당 줄이 강조돼요.</span></li>
       </ol>
       <ul className="welcome__promises">
         <li>원본 파일을 수정하지 않아요.</li>
-        <li>AI에는 오른쪽 AI 칸에서 동의한 질문만 보내요. 알려진 한계는 README에 있어요.</li>
+        <li>AI에는 위 ‘질문’에서 동의한 질문만 보내요. 알려진 한계는 README에 있어요.</li>
       </ul>
     </main> : <>
       {filesVisible && <aside className="sidebar" aria-label="보기와 파일">
@@ -915,7 +920,7 @@ function App() {
         </div>)}
       </main>
 
-      <aside className="panel" aria-label="AI 질문" hidden={!panelOpen}>
+      <aside id="ai-question-panel" className="panel" aria-label="AI 질문" hidden={!panelOpen}>
         <div className="panel__head">
           <button className="btn btn--ghost btn--icon" aria-label="AI 칸 접기" title="AI 칸 접기" onClick={() => setPanelOpen(false)}><Icon name="collapse" /></button>
         </div>
@@ -945,7 +950,6 @@ function App() {
             onShow={range => void showFileExplanationRange(range)} />
         </details>}
       </aside>
-      {!panelOpen && <button className="panel-reopen btn btn--small" onClick={() => setPanelOpen(true)}>AI 칸 펼치기</button>}
     </>}
   </div>;
 }

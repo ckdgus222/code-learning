@@ -1,6 +1,9 @@
 import React from 'react';
 
 const paths = {
+  folder: 'M3 7V4h6l2 3h10v13H3z',
+  close: 'M6 6l12 12 M18 6L6 18',
+  question: 'M4 3h16v14H9l-5 4z M9 7a3 3 0 0 1 6 0c0 2-3 2-3 4 M12 14h.01',
   overview: 'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
   map: 'M9 3h6v5H9z M3 16h6v5H3z M15 16h6v5h-6z M12 8v4 M6 16v-4h12v4',
   flow: 'M5 3v12a4 4 0 0 0 4 4h10 M15 15l4 4-4 4 M5 7h14 M15 3l4 4-4 4',

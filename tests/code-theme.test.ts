@@ -5,9 +5,10 @@ import { codeHighlightStyle } from '../src/renderer/code-theme';
 const css = readFileSync(new URL('../src/renderer/styles.css', import.meta.url), 'utf8');
 const lightBlock = css.match(/:root\s*\{([^}]+)\}/)![1];
 const darkBlock = css.match(/@media\s*\(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{([^}]+)\}/)![1];
-const themes = [lightBlock, darkBlock].map(block =>
+const overrides = [lightBlock, darkBlock].map(block =>
   Object.fromEntries([...block.matchAll(/--([\w-]+):\s*([^;]+);/g)].map(match => [match[1], match[2]])));
-const [light, dark] = themes;
+const light = overrides[0];
+const dark = { ...light, ...overrides[1] };
 
 function luminance(hex: string) {
   const channels = hex.slice(1).match(/../g)!.map(channel => {
@@ -52,16 +53,20 @@ describe('system theme tokens', () => {
   it('defines the same tokens in both themes without duplicates', () => {
     expect(Object.keys(light).sort()).toEqual(Object.keys(dark).sort());
     for (const [index, block] of [lightBlock, darkBlock].entries()) {
-      expect([...block.matchAll(/--[\w-]+:/g)]).toHaveLength(Object.keys(themes[index]).length);
+      expect([...block.matchAll(/--[\w-]+:/g)]).toHaveLength(Object.keys(overrides[index]).length);
     }
   });
 
-  it('uses a bright paper background by default and preserves the dark background', () => {
+  it('uses a bright paper background by default and uses the navy blueprint background', () => {
     expect(css).toMatch(/color-scheme:\s*light dark;/);
     expect(luminance(light.bg)).toBeGreaterThan(0.8);
-    expect(dark.bg).toBe('#14161A');
+    expect(dark.bg).toBe('#0A1422');
+    expect(dark.surface).toBe('#0D1828');
+    expect(dark.accent).toBe('#7DB2F8');
     expect(light.radius).toBe('3px');
-    expect(dark.radius).toBe('10px');
+    expect(dark.radius).toBe('3px');
+    expect(light['radius-sm']).toBe('3px');
+    expect(dark['radius-sm']).toBe('3px');
   });
 
   it('keeps renderer colours in the theme definitions', () => {
