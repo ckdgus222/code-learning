@@ -108,7 +108,8 @@ try {
   assert.ok(csp.includes("connect-src 'none'"));
   const { DatabaseSync } = await import('node:sqlite');
   const db = new DatabaseSync(path.join(profile, 'learning.sqlite'), { readOnly: true });
-  assert.equal(db.prepare('SELECT count(*) AS n FROM projects').get().n, 1);
+  // The plan-compare checks above open their own project too, so look for this one by its folder.
+  assert.equal(db.prepare('SELECT count(*) AS n FROM projects WHERE root = ?').get(project).n, 1);
   db.close();
   await page.screenshot({ path: path.join(root, 'test-results/packaged-code-flow.png') });
   // The TypeScript checker runs from outside the archive and reads the package's type file.
