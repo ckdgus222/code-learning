@@ -1,1 +1,1 @@
-export const freeShippingFrom = 100;
+export function shippingRule(amount: number) { return amount >= 100 ? 0 : 3; }
