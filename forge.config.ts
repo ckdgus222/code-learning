@@ -1,4 +1,5 @@
 import { VitePlugin } from '@electron-forge/plugin-vite';
+import { signMacPackages } from './scripts/mac-signing';
 
 export default {
   packagerConfig: {
@@ -9,6 +10,8 @@ export default {
     ignore: (file: string) => !!file && !/^\/(?:\.vite|node_modules)(?:\/|$)/.test(file),
   },
   makers: [],
+  // Keep inside-out signing and verification together in this hook instead of osxSign.
+  hooks: { postPackage: signMacPackages },
   // These pinned packages ship N-API prebuilts verified in Electron on macOS arm64.
   // tree-sitter 0.21's source build selects C++17, incompatible with Electron 44 headers.
   rebuildConfig: { ignoreModules: ['tree-sitter', 'tree-sitter-javascript', 'tree-sitter-typescript'] },
