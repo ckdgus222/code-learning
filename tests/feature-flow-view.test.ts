@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { ReactFlow, ReactFlowProvider } from '@xyflow/react';
 import { expect, it, vi } from 'vitest';
 import * as ReactHooks from 'react';
-import { edgeLabel, FlowBoxNode, FlowDiagram, SIDE_HANDLE_TOP, pickNode, evidenceView, FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowLimits, FlowSteps, FlowWalk, hasFlowCode, hintSteps, stepQuestion, summaryKey, RoutesStatus, useFeatureFlows, walkSelection } from '../src/renderer/feature-flow';
+import { edgeLabel, FlowPicture, FlowBoxNode, FlowDiagram, SIDE_HANDLE_TOP, pickNode, evidenceView, FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowLimits, FlowSteps, FlowWalk, hasFlowCode, hintSteps, stepQuestion, summaryKey, RoutesStatus, useFeatureFlows, walkSelection } from '../src/renderer/feature-flow';
 import type { FlowEdge, SourceView, Evidence, FeatureFlow, FlowNode, ProjectRoutes, ProjectView } from '../src/shared/contracts';
 import { Snippet } from '../src/renderer/flow';
 import { storyOf } from '../src/core/analysis/flow-story';
@@ -1216,7 +1216,7 @@ it('passes route options to the canvas and keeps a lone cross-lane label short',
   const drawn = vi.mocked(ReactFlow).mock.calls.at(-1)![0].edges!;
   expect(drawn.map(edge => edge.label)).toEqual(['부름 · 1행', undefined, undefined, '안쪽 함수']);
   expect(drawn.map(edge => 'pathOptions' in edge ? edge.pathOptions : undefined)).toEqual([
-    { offset: 20, stepPosition: 0.5 }, { offset: 34 }, { offset: 20 }, undefined,
+    { offset: 10, stepPosition: 0.5 }, { offset: 34 }, { offset: 10 }, undefined,
   ]);
   expect(drawn.map(edge => [edge.sourceHandle, edge.targetHandle])).toEqual([
     ['out-right', 'in-left'], ['out-right', 'in-right'], ['out-right', 'in-top'], ['out-bottom', 'in-top'],
@@ -1244,7 +1244,7 @@ it('keeps all side handles at the same fixed height with and without event and s
   }
 });
 
-it.each([[0, 240], [8, 1010], [12, 1450], [13, 1560], [14, 1600], [30, 1600]])(
+it.each([[0, 314], [8, 1364], [9, 1514], [10, 1600], [14, 1600], [30, 1600]])(
   'sizes the diagram for %i rows with a 1600px cap', (count, height) => {
     vi.mocked(ReactFlow).mockImplementationOnce(() => React.createElement(React.Fragment));
     const input = { ...flow, edges: [], nodes: Array.from({ length: count }, (_, i) => ({ ...nodes[2], id: `node${i}` })) };
@@ -1313,6 +1313,15 @@ it.each([false, true])('renders the selected code and connections with locked=%s
     const html = renderToStaticMarkup(walkOf({ ...walkProps, locked, flow: { ...flow, nodes: [selected, ...nodes.slice(1)] } }));
     const strip = html.slice(html.indexOf('<section aria-label="선택한 연결의 근거"'), html.indexOf('<section class="card" aria-label="기능 흐름 단계"'));
     expect(strip).toContain('선택한 연결의 근거 · src/example.ts');
+    expect(strip).toContain('class="flow-evidence__columns"');
+    expect(strip).toContain('class="flow-evidence__code"');
+    expect(strip).toContain('class="flow-evidence__details"');
+    expect(strip).toContain('고른 상자');
+    expect(strip).toContain('서버 받는 곳 · Controller.remove');
+    expect(strip).toContain('<span aria-hidden="true">⇢</span>');
+    expect(strip).toContain('class="flow-evidence__inferred"');
+    expect(strip).toContain('코드에 적힌 연결만 보여요. 실제로 실행해 확인한 것은 아니에요.');
+    expect(strip.indexOf('flow-evidence__actions')).toBeGreaterThan(strip.indexOf('flow-evidence__details'));
     expect(strip).toContain('서버 쪽 · Controller.remove · 1–14줄');
     expect(strip.match(/class="snippet__line"/g)).toHaveLength(12);
     expect(strip).toContain('이어지는 2줄은 ‘코드 보기’에서 볼 수 있어요.');
@@ -1349,4 +1358,53 @@ it('keeps a changed saved guide visible and deletable when no server routes rema
   expect(html).not.toContain('예전 묶음');
   expect(html).toContain('<button class="btn btn--small">지우기</button>');
   expect(html).toMatch(/<button[^>]*disabled="">AI로 기능 정리하기<\/button>/);
+});
+
+it('shows incoming and outgoing evidence arrows without changing their text', () => {
+  const selected = nodes[2];
+  const useState = vi.mocked(ReactHooks.useState)
+    .mockImplementationOnce(() => [selected.id, vi.fn()])
+    .mockImplementationOnce(() => [{ nodeId: selected.id, result: { ok: true, value: evidenceSource } }, vi.fn()]);
+  try {
+    const html = renderToStaticMarkup(React.createElement(FlowPicture, { ...walkProps,
+      flow: { ...flow, edges: flow.edges.map(edge => ({ ...edge, sure: true })) } }));
+    expect(html).toContain('<span aria-hidden="true">←</span> DogsPage → 이 상자');
+    expect(html).toContain('<span aria-hidden="true">→</span> 이 상자 → DELETE /dogs/${id}');
+  } finally { useState.mockRestore(); }
+});
+
+it.each(['empty', 'loading', 'error', 'changed', 'stale'] as const)('keeps evidence actions and hides details when %s', state => {
+  const picked = state === 'loading' || state === 'empty' ? null : { nodeId: nodes[0].id, result: state === 'error'
+    ? { ok: false, code: 'IO', message: '읽기 실패' }
+    : { ok: true, value: { ...evidenceSource, hash: state === 'changed' ? 'changed' : 'h' } } };
+  const useState = vi.mocked(ReactHooks.useState)
+    .mockImplementationOnce(() => [state === 'empty' ? null : nodes[0].id, vi.fn()])
+    .mockImplementationOnce(() => [picked, vi.fn()]);
+  try {
+    const html = renderToStaticMarkup(React.createElement(FlowPicture, { ...walkProps, flow,
+      locked: state === 'loading', stale: state === 'stale' }));
+    const strip = html.slice(html.indexOf('<section aria-label="선택한 연결의 근거"'), html.indexOf('<section class="card" aria-label="기능 흐름 단계"'));
+    expect(strip).toContain('class="flow-evidence__code"');
+    expect(strip).not.toContain('flow-evidence__details');
+    expect(strip).not.toContain('고른 상자');
+    expect(strip).not.toContain('flow-snippet');
+    const buttons = strip.match(/<button[^>]*>/g) ?? [];
+    expect(buttons).toHaveLength(state === 'empty' ? 0 : 2);
+    expect(buttons.every(button => button.includes('disabled=""') === (state === 'loading' || state === 'stale'))).toBe(true);
+    const messages = { empty: '지도에서 상자를 누르면 그 코드가 여기 보여요.', loading: '코드를 읽는 중…', error: '읽기 실패',
+      changed: '흐름을 찾은 뒤 이 파일이 바뀌어', stale: '다시 확인 필요:' };
+    expect(strip).toContain(messages[state]);
+  } finally { useState.mockRestore(); }
+});
+
+it('renders lane headers and keeps empty lane messages below them', () => {
+  renderToStaticMarkup(React.createElement(FlowDiagram, { flow: { ...flow, nodes: [], edges: [] }, selectedNodeId: null, onSelect() {} }));
+  const props = vi.mocked(ReactFlow).mock.calls.at(-1)![0];
+  const Lane = props.nodeTypes!.flowLane;
+  const headers = props.nodes!.map(lane => renderToStaticMarkup(React.createElement(Lane, { data: lane.data } as React.ComponentProps<typeof Lane>)));
+  expect(headers).toHaveLength(3);
+  for (const [index, note] of ['사람이 보고 누르는 곳', '화면이 서버로 보내는 부탁', '부탁을 받아 일을 하는 곳'].entries()) {
+    expect(headers[index]).toContain('class="flow-lane__header"');
+    expect(headers[index]).toContain(`<p>${note}</p></div><p>이 기능에서 찾지 못했어요</p>`);
+  }
 });

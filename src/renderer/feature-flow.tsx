@@ -4,7 +4,8 @@ import type { Result, Evidence, SourceView, CallTarget, FeatureFlow, FlowEdge, F
 import { ARROW_MARKER, firstRows, MapCanvas, Omitted } from './project-map';
 import { screenGroups, type RouteRow } from './screen-groups';
 import { featureIndex, type IndexFeature, type IndexGroup } from './feature-index';
-import { routeEdges, LANE_TITLES, layoutFlow, type FlowLane } from './flow-layout';
+import { routeEdges, LANE_TITLES, LANE_NOTES, flowNodeKind, layoutFlow, type FlowLane } from './flow-layout';
+import { Icon } from './icons';
 import { Snippet } from './flow';
 import { isNextConfig, nextRouteOf } from '../core/analysis/next-routes';
 import type { ConnectionReport, FeatureGuide, FeatureGuideResult, LearningMode } from '../shared/ai';
@@ -333,15 +334,18 @@ export const SIDE_HANDLE_TOP = 24;
 
 export function FlowBoxNode({ data }: NodeProps<Node<{ node: FlowNode }>>) {
   const { node } = data;
+  const kind = flowNodeKind(node);
   return <>
     <Handle type="target" id="in-left" position={Position.Left} style={{ top: SIDE_HANDLE_TOP }} />
     <Handle type="target" id="in-top" position={Position.Top} />
     <Handle type="target" id="in-right" position={Position.Right} style={{ top: SIDE_HANDLE_TOP }} />
+    <span className="feature-box__icon"><Icon name={kind.icon} /></span>
     <span className="map-box__label">
-      <small className="feature-box__file" title={node.relativePath}>{node.relativePath.split('/').at(-1)}</small>
+      <span className="feature-box__kind">{kind.label}</span>
       <b className="feature-box__name" title={node.name}>{node.name}</b>
       {node.event && <span className="tag tag--doc">화면 이벤트 {node.event}</span>}
       {node.screen !== null && <span className="tag tag--doc" title={`화면 주소 ${node.screen}`}>화면 주소 {node.screen}</span>}
+      <small className="feature-box__file" title={node.relativePath}>{node.relativePath}</small>
     </span>
     <Handle type="source" id="out-right" position={Position.Right} style={{ top: SIDE_HANDLE_TOP }} />
     <Handle type="source" id="out-bottom" position={Position.Bottom} />
@@ -349,7 +353,8 @@ export function FlowBoxNode({ data }: NodeProps<Node<{ node: FlowNode }>>) {
 }
 
 function FlowLaneNode({ data }: NodeProps<Node<{ lane: FlowLane }>>) {
-  return <><h4>{data.lane.title}</h4>{data.lane.empty && <p>이 기능에서 찾지 못했어요</p>}</>;
+  return <><div className="flow-lane__header"><h4>{data.lane.title}</h4><p>{LANE_NOTES[data.lane.side]}</p></div>
+    {data.lane.empty && <p>이 기능에서 찾지 못했어요</p>}</>;
 }
 const flowNodeTypes = { flowBox: FlowBoxNode, flowLane: FlowLaneNode };
 
@@ -382,7 +387,7 @@ export function FlowDiagram({ flow, selectedNodeId, onSelect }: {
       const from = byId.get(edge.from)!;
       const to = byId.get(edge.to)!;
       const { crowded, ...route } = routes[index];
-      // Arrows looping outside a lane get no text, and arrows between lanes drop the call name: the 120px gap
+      // Arrows looping outside a lane get no text, and arrows between lanes drop the call name: the 140px gap
       // cannot hold it. The evidence strip and step list below still say both.
       const label = crowded || route.targetHandle === 'in-right' || edge.from === edge.to
         ? undefined : edgeLabel(edge, { name: from.node.side === to.node.side });
@@ -424,23 +429,33 @@ function FlowEvidence({ flow, node, picked, locked, stale, onCode, onFunction }:
 }) {
   const view = evidenceView(node, picked, stale);
   return <section aria-label="선택한 연결의 근거" className="flow-evidence">
-    {node && <>
-      <h4>선택한 연결의 근거 · {node.relativePath}</h4>
-      <p>{LANE_TITLES[node.side]} · {node.name} · {node.range.startLine}–{node.range.endLine}줄</p>
-    </>}
-    {view.kind === 'code' && node ? <Snippet source={view.source} evidence={node.range} more="코드 보기" />
-      : view.kind !== 'code' && <p>{view.message}</p>}
-    {node && <>
-      <ul className="map-list">{flow.edges.filter(edge => edge.from === node.id || edge.to === node.id).map((edge, index) => {
-        const incoming = edge.to === node.id;
-        const other = flow.nodes.find(item => item.id === (incoming ? edge.from : edge.to));
-        return <li key={index}>
-          {incoming ? `${other?.name} → 이 상자` : `이 상자 → ${other?.name}`} · {edgeText(edge)}{' '}
-          {!edge.sure && <><span className="tag tag--unknown">추정</span>{edge.kind !== 'hook' && ` · ${edge.reasons.join(' · ')}`}</>}
-        </li>;
-      })}</ul>
+    <div className="flow-evidence__columns">
+      <div className="flow-evidence__code">
+        {node && <>
+          <h4>선택한 연결의 근거 · {node.relativePath}</h4>
+          <p>{LANE_TITLES[node.side]} · {node.name} · {node.range.startLine}–{node.range.endLine}줄</p>
+        </>}
+        {view.kind === 'code' && node ? <Snippet source={view.source} evidence={node.range} more="코드 보기" />
+          : view.kind !== 'code' && <p>{view.message}</p>}
+      </div>
+      {view.kind === 'code' && node && <div className="flow-evidence__details">
+        <span className="flow-evidence__label">고른 상자</span>
+        <p><b>{flowNodeKind(node).label} · {node.name}</b></p>
+        <ul className="map-list">{flow.edges.filter(edge => edge.from === node.id || edge.to === node.id).map((edge, index) => {
+          const incoming = edge.to === node.id;
+          const other = flow.nodes.find(item => item.id === (incoming ? edge.from : edge.to));
+          return <li key={index} className={!edge.sure ? 'flow-evidence__inferred' : undefined}>
+            <span aria-hidden="true">{!edge.sure ? '⇢' : incoming ? '←' : '→'}</span>{' '}
+            {incoming ? `${other?.name} → 이 상자` : `이 상자 → ${other?.name}`} · {edgeText(edge)}{' '}
+            {!edge.sure && <><span className="tag tag--unknown">추정</span>{edge.kind !== 'hook' && ` · ${edge.reasons.join(' · ')}`}</>}
+          </li>;
+        })}</ul>
+        <p className="hint">코드에 적힌 연결만 보여요. 실제로 실행해 확인한 것은 아니에요.</p>
+      </div>}
+    </div>
+    {node && <div className="flow-evidence__actions">
       <NodeButtons node={node} locked={locked || stale} onCode={onCode} onFunction={onFunction} />
-    </>}
+    </div>}
   </section>;
 }
 

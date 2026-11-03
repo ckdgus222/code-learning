@@ -779,6 +779,7 @@ function App() {
               <button aria-pressed={mapTab === 'feature'} onClick={() => setMapTab('feature')}>기능별 연결</button>
               <button aria-pressed={mapTab === 'file'} onClick={() => setMapTab('file')}>파일 연결</button>
             </div>
+            <p className="map-heading__note"><Icon name="link" />코드에서 찾은 연결 · 실행 기록이 아니에요</p>
           </div>
           {mapTab === 'feature' && <>
             <RoutesStatus state={features} retryDisabled={busy || features.stale}
@@ -790,10 +791,11 @@ function App() {
                 disabled={busy || features.stale} onFollow={(index, start) => void followFeatureInMap(index, start)} />}
             </>}
             {features.flow && <>
-              <div className="map-actions">
+              <div className="map-actions map-actions--feature">
+                <span className="map-actions__label">고른 기능</span>
                 <h3>{flowTitle}</h3>
                 <button className="btn" disabled={busy} onClick={features.clearFlow}>다른 기능 고르기</button>
-                <button className="btn" onClick={() => setView('flow')}>흐름 따라가기에서 단계별로 보기</button>
+                <button className="btn btn--primary" onClick={() => setView('flow')}>흐름 따라가기에서 단계별로 보기</button>
               </div>
               <FlowPicture key={`${features.flow.routesId}:${features.flow.routeIndex}`} flow={features.flow}
                 locked={busy} stale={features.stale} readCode={readFlowCode}

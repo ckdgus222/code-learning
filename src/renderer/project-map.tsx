@@ -1,6 +1,6 @@
-import React, { useMemo, useState } from 'react';
-import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Dimensions, type Edge, type Node, type NodeChange, type NodeProps,
-  type NodeTypes } from '@xyflow/react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Background, BackgroundVariant, Controls, Handle, MarkerType, Position, ReactFlow, useReactFlow, useStore, type Dimensions, type Edge,
+  type FitViewOptions, type Node, type NodeChange, type NodeProps, type NodeTypes } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { ChangeKind, FileChange, MapExport, MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectChanges, ProjectMap, ProjectView, UnusedExcludeKind } from '../shared/contracts';
 import { BIG_FOLDER_LIMIT, boxName, boxPlace, closeArea, expandableIds, FILE_VIEW_LIMIT, fileViewFolder, fileViewOf, folderArrows, folderFileList, folderName,
@@ -67,15 +67,33 @@ const nodeTypes = { box: MapNode };
 export const ARROW_MARKER = { type: MarkerType.ArrowClosed, width: 18, height: 18, color: 'var(--accent)' };
 const FIT = { maxZoom: 1, minZoom: 0.1 };
 
-/** The read-only dark canvas both maps draw on: boxes cannot be dragged or connected. */
+/**
+ * Opening or closing the question panel changes the canvas width; the boxes are fitted again (user decision:
+ * always refit). React Flow's own measured width is used, so the fit runs after it knows the new size.
+ */
+export function FitOnWidthChange({ options }: { options: FitViewOptions }) {
+  const width = useStore(state => state.width);
+  const { fitView } = useReactFlow();
+  const previous = useRef<number | null>(null);
+  useEffect(() => {
+    // 0 is the width before React Flow has measured; the first real width is the initial fit's.
+    if (width === 0) return;
+    if (previous.current !== null && previous.current !== width) void fitView(options);
+    previous.current = width;
+  }, [width, fitView, options]);
+  return null;
+}
+
+/** The read-only canvas both maps draw on: boxes cannot be dragged or connected. */
 export function MapCanvas({ testId, canvasKey, height, fitPadding, nodes, edges, nodeTypes, onNodeClick, onNodeHover, onEdgeClick }: {
   testId: string; canvasKey?: string; height?: number; fitPadding?: number; nodes: Node[]; edges: Edge[]; nodeTypes?: NodeTypes;
   onNodeClick(id: string): void; onNodeHover?(id: string | null): void; onEdgeClick?(id: string): void;
 }) {
+  const fitOptions = useMemo(() => fitPadding === undefined ? FIT : { ...FIT, padding: fitPadding }, [fitPadding]);
   // Nodes are rebuilt on every render. Without their measured size, React Flow hides and re-measures
   // every box, so a click landing during a hover re-render falls through to the pane.
   const [sizes, setSizes] = useState<ReadonlyMap<string, Dimensions>>(() => new Map());
-  const measured = nodes.map(node => ({ ...node, measured: sizes.get(node.id) }));
+  const measured: Node[] = nodes.map(node => ({ ...node, measured: sizes.get(node.id) }));
   const onNodesChange = (changes: NodeChange[]) => {
     const resized = changes.flatMap(change => change.type === 'dimensions' && change.dimensions ? [[change.id, change.dimensions] as const] : []);
     if (resized.length) setSizes(current => new Map([...current, ...resized]));
@@ -83,7 +101,7 @@ export function MapCanvas({ testId, canvasKey, height, fitPadding, nodes, edges,
   return <div className="map-canvas" data-testid={testId} style={height === undefined ? undefined : { height }}>
     <ReactFlow colorMode="system" key={canvasKey} nodes={measured} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange}
       // Only boxes in view are drawn, so the fit may zoom out far enough to show a whole opened folder.
-      fitView fitViewOptions={fitPadding === undefined ? FIT : { ...FIT, padding: fitPadding }} minZoom={0.1} onlyRenderVisibleElements
+      fitView fitViewOptions={fitOptions} minZoom={0.1} onlyRenderVisibleElements
       // A canvas sized to its content has nothing to scroll inside, so the wheel scrolls the page instead of zooming.
       zoomOnScroll={height === undefined} preventScrolling={height === undefined}
       nodesDraggable={false} nodesConnectable={false}
@@ -91,7 +109,8 @@ export function MapCanvas({ testId, canvasKey, height, fitPadding, nodes, edges,
       onNodeMouseEnter={onNodeHover && ((_event, node) => onNodeHover(node.id))}
       onNodeMouseLeave={onNodeHover && (() => onNodeHover(null))}
       onEdgeClick={onEdgeClick && ((_event, edge) => onEdgeClick(edge.id))}>
-      <Background />
+      <Background variant={BackgroundVariant.Lines} gap={24} />
+      <FitOnWidthChange options={fitOptions} />
       <Controls showInteractive={false} />
     </ReactFlow>
   </div>;

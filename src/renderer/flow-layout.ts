@@ -1,20 +1,31 @@
 import type { FeatureFlow, FlowNode } from '../shared/contracts';
 
-const LANE_WIDTH = 320;
-const LANE_HEADER = 70;
-const ROW_HEIGHT = 110;
-const BOX_WIDTH = 200;
-// The shared `.map-box` is 200px wide (styles.css); centring it leaves room on both sides for arrows that skip rows.
+const LANE_WIDTH = 440;
+const LANE_HEADER = 104;
+const ROW_HEIGHT = 150;
+const BOX_WIDTH = 300;
+// Feature boxes are 300px wide (styles.css); centring leaves room on both sides for arrows that skip rows.
 const BOX_LEFT = (LANE_WIDTH - BOX_WIDTH) / 2;
-// The 120px gap right of a lane is shared by vertical lines: self calls keep 20px (a larger offset also climbs into the
-// box above), arrows looping outside the lane take 24–44px and arrows to a lane on the right 48–100px, so none meet.
-const ROUTE_OFFSET = 20;
+// The 140px gap between boxes is shared by vertical lines: self calls keep 10px (half the 20px row gap),
+// arrows looping outside the lane take 24–44px and arrows to a lane on the right 48–120px, so none meet.
+const ROUTE_OFFSET = 10;
 const OUTSIDE_GAP_START = 24;
 const OUTSIDE_GAP_END = 44;
 const BETWEEN_GAP_START = 48;
-const BETWEEN_GAP_END = 100;
-const SINGLE_BETWEEN_OFFSET = 60;
+const BETWEEN_GAP_END = 120;
+const SINGLE_BETWEEN_OFFSET = 70;
 export const LANE_TITLES: Record<FlowNode['side'], string> = { front: '화면 쪽', request: '요청', back: '서버 쪽' };
+export const LANE_NOTES: Record<FlowNode['side'], string> = {
+  front: '사람이 보고 누르는 곳', request: '화면이 서버로 보내는 부탁', back: '부탁을 받아 일을 하는 곳',
+};
+
+export function flowNodeKind(node: FlowNode): { label: string; icon: 'document' | 'code' | 'gear' | 'box' } {
+  if (node.side === 'request') return { label: '요청', icon: 'code' };
+  if (node.side === 'back') return { label: node.depth === 0 ? '서버 받는 곳' : '서버 처리', icon: node.depth === 0 ? 'gear' : 'box' };
+  if (node.screen !== null) return { label: '화면', icon: 'document' };
+  if (node.event !== null) return { label: '화면 이벤트 처리', icon: 'document' };
+  return { label: '화면 쪽 함수', icon: 'document' };
+}
 
 export type FlowBox = { node: FlowNode; step: number; row: number; x: number; y: number };
 export type FlowLane = { side: FlowNode['side']; title: string; x: number; width: number; height: number; empty: boolean };
