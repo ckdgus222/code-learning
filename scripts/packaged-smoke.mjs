@@ -54,7 +54,7 @@ try {
   try {
     for (const mode of ['light', 'dark']) {
       await app.evaluate(({ nativeTheme }, mode) => { nativeTheme.themeSource = mode; }, mode);
-      const background = mode === 'light' ? 'rgb(247, 250, 253)' : 'rgb(20, 22, 26)';
+      const background = mode === 'light' ? 'rgb(247, 250, 253)' : 'rgb(10, 20, 34)';
       await page.waitForFunction(({ mode, background }) =>
         matchMedia(`(prefers-color-scheme: ${mode})`).matches
           && getComputedStyle(document.documentElement).backgroundColor === background, { mode, background });
@@ -143,6 +143,8 @@ try {
   const changed = page.getByRole('region', { name: '바뀐 파일 목록' }).getByRole('list', { name: '바뀐 파일' });
   await changed.waitFor({ timeout: 30_000 });
   assert.deepEqual(await changed.locator('li').allInnerTexts(), ['수정 price.ts 비교 보기']);
+  const question = page.getByRole('banner').getByRole('button', { name: '질문', exact: true });
+  if (await question.getAttribute('aria-pressed') === 'false') await question.click();
   await page.getByRole('button', { name: '질문하기', exact: true }).click();
   await page.getByRole('button', { name: '설정', exact: true }).click();
   assert.equal(await page.getByRole('combobox', { name: 'AI 사용 방식' }).inputValue(), 'local-worker');

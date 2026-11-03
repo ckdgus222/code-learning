@@ -262,7 +262,12 @@ let app;
 let page;
 const checks = [];
 const failures = [];
+async function openAiPanel() {
+  const question = page.getByRole('banner').getByRole('button', { name: /^질문(?: · 진행 중)?$/ });
+  if (await question.getAttribute('aria-pressed') === 'false') await question.click();
+}
 async function openAiSection(name) {
+  await openAiPanel();
   const button = page.getByRole('group', { name: 'AI 연결', exact: true }).getByRole('button', { name, exact: true });
   if (await button.getAttribute('aria-expanded') === 'false') await button.click();
 }
@@ -272,6 +277,7 @@ async function openFileGuide() {
   return guide;
 }
 async function checkPanelLayout(width) {
+  await openAiPanel();
   const problems = await page.locator('.panel').evaluate(panel => {
     const line = panel.querySelector('.ai-line');
     const bounds = line.getBoundingClientRect();
@@ -291,6 +297,27 @@ async function checkPanelLayout(width) {
     return problems;
   });
   assert.deepEqual(problems, [], `AI panel ${width}px`);
+}
+async function checkTopbarLayout() {
+  const problems = await page.getByRole('banner').evaluate(header => {
+    const problems = [];
+    const bounds = header.getBoundingClientRect();
+    const tabs = document.querySelector('nav[aria-label="보기"]');
+    if (!header.contains(tabs)) problems.push('tabs are outside the banner');
+    if (header.scrollWidth > header.clientWidth) problems.push('header overflows horizontally');
+    if (document.documentElement.scrollWidth > document.documentElement.clientWidth) problems.push('page overflows horizontally');
+    const elements = [...header.querySelectorAll('.brand, .topbar__project, .crumbs, .views button, .topbar__separator, .topbar__actions > button, .topbar__actions > [role="status"]')];
+    const boxes = elements.map(element => element.getBoundingClientRect()).filter(box => box.width && box.height);
+    for (const box of boxes) {
+      if (box.left < bounds.left || box.right > bounds.right || box.top < bounds.top || box.bottom > bounds.bottom) problems.push('control outside banner');
+    }
+    for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i], b = boxes[j];
+      if (a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1) problems.push('header controls overlap');
+    }
+    return problems;
+  });
+  assert.deepEqual(problems, []);
 }
 async function openFunctionFlow() {
   await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
@@ -370,11 +397,16 @@ async function rebuildFreshMap() {
 // Wait for the media query and CSS together; React Flow updates are checked at the canvas.
 async function setTheme(mode) {
   await app.evaluate(({ nativeTheme }, mode) => { nativeTheme.themeSource = mode; }, mode);
-  const background = mode === 'light' ? 'rgb(247, 250, 253)' : 'rgb(20, 22, 26)';
+  const background = mode === 'light' ? 'rgb(247, 250, 253)' : 'rgb(10, 20, 34)';
   await page.waitForFunction(({ mode, background }) =>
     matchMedia(`(prefers-color-scheme: ${mode})`).matches
       && getComputedStyle(document.documentElement).backgroundColor === background, { mode, background });
   assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme), 'light dark');
+  if (mode === 'dark') assert.deepEqual(await page.evaluate(() => {
+    const style = getComputedStyle(document.documentElement);
+    // Chromium reports custom property hex values in lower case.
+    return ['--bg', '--accent'].map(token => style.getPropertyValue(token).trim().toLowerCase());
+  }), ['#0a1422', '#7db2f8']);
 }
 // Checks run in dark then light; the app goes back to following macOS afterwards, even when a check fails.
 async function eachTheme(check) {
@@ -586,6 +618,7 @@ try {
       if (entry === 'file') {
         await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
         await page.getByRole('button', { name: 'order.ts', exact: true }).click();
+        await openAiPanel();
         await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).click();
         await page.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
       } else if (entry === 'feature') {
@@ -604,6 +637,7 @@ try {
       }
       await until(async () => (await calls()).length === 1);
       assert.deepEqual(await calls(), [{ automatic: true }]);
+      await openAiPanel();
       const panel = page.locator('.ai-panel');
       if (entry === 'question') {
         await page.getByTestId('send-blocked').getByText('로컬 AI 설치를 확인하는 중이에요.', { exact: true }).waitFor();
@@ -612,6 +646,7 @@ try {
         // A second entry during the held request must share that check.
         await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
         await page.getByRole('button', { name: 'order.ts', exact: true }).click();
+        await openAiPanel();
         await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).click();
         await page.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
         assert.deepEqual(await calls(), [{ automatic: true }]);
@@ -643,6 +678,7 @@ try {
         await openAiSection('설정');
         await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
         await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+        await openAiPanel();
         await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).click();
         await page.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
         assert.equal((await calls()).length, 1);
@@ -687,6 +723,30 @@ try {
     assert.equal(await page.locator('.topbar').getByText('AI는 동의한 질문만').count(), 0);
   });
   await dialogTo(fixture);
+  await check('Question panel starts closed and the header button toggles the mounted panel', async () => {
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
+    const question = page.getByRole('banner').getByRole('button', { name: '질문', exact: true });
+    const panel = page.locator('#ai-question-panel');
+    assert.equal(await question.getAttribute('aria-controls'), await panel.getAttribute('id'));
+    assert.equal(await question.getAttribute('aria-pressed'), 'false');
+    assert.equal(await panel.getAttribute('hidden'), '');
+    assert.equal(await panel.locator('.ai-panel').count(), 1);
+    assert.equal(await page.getByRole('button', { name: 'AI 칸 펼치기', exact: true }).count(), 0);
+    await question.click();
+    assert.equal(await question.getAttribute('aria-pressed'), 'true');
+    assert.equal(await panel.isVisible(), true);
+    await question.click();
+    assert.equal(await question.getAttribute('aria-pressed'), 'false');
+    assert.equal(await panel.isVisible(), false);
+    assert.equal(await panel.locator('.ai-panel').count(), 1);
+    for (const name of ['프로젝트 폴더 열기', '프로젝트 닫기']) {
+      const button = page.getByRole('banner').getByRole('button', { name, exact: true });
+      assert.equal(await button.getAttribute('title'), name);
+      assert.equal(await button.innerText(), '');
+      assert.equal(await button.locator('svg[aria-hidden="true"]').count(), 1);
+    }
+  });
   await check('Plan document picker, sections, byte limits and persistent selection without AI', async () => {
     await checkPlanCompare(app, page, temporary, fixture);
   });
@@ -702,17 +762,26 @@ try {
   await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
   await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
   await check('Open a real folder; secret filenames excluded', async () => {
+    await until(async () => {
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
+      return await page.evaluate(() => window.outerWidth === 1280);
+    });
     assert.equal(await page.locator('.views__item').count(), 5);
     assert.equal(await page.getByRole('contentinfo', { name: '작업 상태' }).count(), 0);
     const menu = page.getByRole('navigation', { name: '보기', exact: true });
     assert.deepEqual(await menu.locator(':scope > *').allTextContents(),
-      ['한눈에 보기', '흐름 따라가기', '코드 읽기', '더 보기', '프로젝트 지도', '달라진 내용']);
-    assert.equal(await menu.locator('p.views__more').getAttribute('aria-hidden'), null);
-    assert.deepEqual(await menu.locator('.views__item--more').allTextContents(), ['프로젝트 지도', '달라진 내용']);
-    for (const button of await menu.locator('.views__item--more').all()) assert.equal(await button.isVisible(), true);
+      ['한눈에 보기', '흐름 따라가기', '코드 읽기', '프로젝트 지도', '달라진 내용']);
+    assert.equal(await page.locator('.views__more, .views__item--more').count(), 0);
+    const separator = page.locator('.topbar__separator');
+    assert.equal(await separator.count(), 1);
+    assert.equal(await separator.getAttribute('aria-hidden'), 'true');
+    assert.equal(await separator.evaluate(element => element.previousElementSibling.matches('nav[aria-label="보기"]')
+      && !!(element.compareDocumentPosition(document.querySelector('.topbar__question')) & Node.DOCUMENT_POSITION_FOLLOWING)), true);
+    for (const button of await menu.getByRole('button').all()) assert.equal(await button.isVisible(), true);
     const tabTops = await menu.getByRole('button').evaluateAll(buttons => buttons.map(button => button.getBoundingClientRect().top));
     assert.ok(tabTops.every(top => Math.abs(top - tabTops[0]) < 0.5));
-    assert.ok(tabTops[0] >= await page.locator('.topbar').evaluate(element => element.getBoundingClientRect().bottom));
+    await checkTopbarLayout();
+    assert.ok(await page.getByRole('banner').evaluate(element => element.getBoundingClientRect().height) <= 72);
     assert.equal(await page.locator('.topbar .badge').innerText(), '읽기 전용');
     assert.equal(await page.getByRole('button', { name: '한눈에 보기', exact: true }).getAttribute('aria-current'), 'page');
     const files = page.getByRole('region', { name: '파일 목록', exact: true });
@@ -729,6 +798,7 @@ try {
     assert.equal(await page.getByRole('navigation', { name: '현재 학습 위치', exact: true }).innerText(), 'order.ts');
   });
   await check('File guidance starts collapsed above the reader and keeps its state independently of the AI panel', async () => {
+    await openAiPanel();
     const panel = page.locator('aside[aria-label="AI 질문"]');
     assert.deepEqual(await panel.locator(':scope > *').evaluateAll(elements => elements.map(element => element.className)),
       ['panel__head', 'panel__body ai-panel', 'card']);
@@ -762,7 +832,7 @@ try {
     await page.getByRole('button', { name: 'AI 칸 접기', exact: true }).click();
     assert.equal(await panel.isVisible(), false);
     assert.equal(await region.isVisible(), true);
-    await page.getByRole('button', { name: 'AI 칸 펼치기', exact: true }).click();
+    await page.getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
   });
   await check('Top navigation fits narrow windows with and without files and the AI panel', async () => {
     for (const width of [760, 1000]) {
@@ -772,7 +842,7 @@ try {
       });
       for (const [name, panelOpen] of [['한눈에 보기', false], ['한눈에 보기', true], ['코드 읽기', false], ['코드 읽기', true]]) {
         await page.getByRole('button', { name, exact: true }).click();
-        await page.getByRole('button', { name: panelOpen ? 'AI 칸 펼치기' : 'AI 칸 접기', exact: true }).click();
+        await page.getByRole('banner').getByRole('button', { name: '질문', exact: true }).click();
         assert.equal(await page.locator('.panel').isVisible(), panelOpen);
         assert.equal(await page.getByRole('region', { name: '파일 목록', exact: true }).count(), name === '코드 읽기' ? 1 : 0);
         const heading = page.locator('.topbar').getByRole('heading', { name: '한글 프로젝트', exact: true });
@@ -789,11 +859,11 @@ try {
           const buttons = [...tabs.querySelectorAll('button')];
           const top = buttons[0].getBoundingClientRect().top;
           if (buttons.some(button => Math.abs(button.getBoundingClientRect().top - top) > 0.5)) problems.push('tabs wrap');
-          if (tabs.getBoundingClientRect().top < document.querySelector('.topbar').getBoundingClientRect().bottom) problems.push('tabs overlap top bar');
-          if (getComputedStyle(tabs).overflowX !== 'auto') problems.push('tabs cannot scroll');
+          if (tabs.scrollWidth > tabs.clientWidth) problems.push('tabs overflow horizontally');
           return problems;
         });
         assert.deepEqual(problems, [], `${width}px, ${name}, panel ${panelOpen}`);
+        await checkTopbarLayout();
       }
     }
     await until(async () => {
@@ -817,9 +887,9 @@ try {
     await page.locator('.cm-selectionBackground').first().waitFor();
     await eachTheme(async mode => {
       assert.equal(await page.locator('.cm-selectionBackground').first().evaluate(element => getComputedStyle(element).backgroundColor),
-        mode === 'dark' ? 'rgb(51, 44, 28)' : 'rgb(220, 235, 255)');
+        mode === 'dark' ? 'rgb(27, 52, 86)' : 'rgb(220, 235, 255)');
       assert.equal(await page.locator('.cm-editor').evaluate(element => getComputedStyle(element).backgroundColor),
-        mode === 'dark' ? 'rgb(31, 34, 40)' : 'rgb(255, 255, 255)');
+        mode === 'dark' ? 'rgb(13, 24, 40)' : 'rgb(255, 255, 255)');
       await page.screenshot({ path: path.join(artifacts, `${mode}-code-reader.png`) });
       if (mode === 'light') {
         const guide = await openFileGuide();
@@ -840,9 +910,9 @@ try {
       element.getBoundingClientRect().right <= document.querySelector('.cm-lineNumbers').getBoundingClientRect().left));
     await eachTheme(async mode => {
       assert.deepEqual(await markers.nth(0).evaluate(element => [getComputedStyle(element).backgroundColor, getComputedStyle(element).color]),
-        mode === 'dark' ? ['rgb(240, 180, 76)', 'rgb(26, 19, 0)'] : ['rgb(40, 94, 172)', 'rgb(255, 255, 255)']);
+        mode === 'dark' ? ['rgb(125, 178, 248)', 'rgb(11, 22, 38)'] : ['rgb(40, 94, 172)', 'rgb(255, 255, 255)']);
       assert.equal(await markers.nth(1).evaluate(element => getComputedStyle(element).backgroundColor),
-        mode === 'dark' ? 'rgb(35, 39, 46)' : 'rgb(239, 245, 252)');
+        mode === 'dark' ? 'rgb(20, 36, 58)' : 'rgb(239, 245, 252)');
     });
     await markers.nth(1).click();
     await until(async () => /order.ts · 3–3줄/.test(await page.getByTestId('evidence-range').innerText()));
@@ -3046,7 +3116,7 @@ try {
     await checkConsentDisclosure(page.locator('.ai-panel'), '선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·질문·최근 답변을 Claude Code에 보내는 데 동의합니다. 다른 파일은 더 읽지 않습니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.');
     await selector.selectOption('local-worker');
     await page.getByRole('button', { name: 'AI 칸 접기', exact: true }).click();
-    await page.getByRole('button', { name: 'AI 칸 펼치기', exact: true }).click();
+    await page.getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
     assert.equal(await selector.inputValue(), 'local-worker');
     assert.equal(await page.getByRole('textbox', { name: '선택한 코드에 질문' }).inputValue(), '설정 보존 확인');
   });
@@ -3167,7 +3237,7 @@ try {
     await page.getByText('AI · 로컬 워커 · 준비됨', { exact: true }).waitFor();
     await page.getByText('Antigravity · 호출 모델 gemini-3.8-flash-high · 응답 모델 미보고', { exact: true }).waitFor();
     await page.getByRole('button', { name: 'AI 칸 접기', exact: true }).click();
-    await page.getByRole('button', { name: 'AI 칸 펼치기', exact: true }).click();
+    await page.getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
     await page.getByRole('button', { name: '질문하기', exact: true }).click();
     assert.equal(await page.getByText('가짜 설명: 빠른 응답', { exact: true }).isVisible(), true);
     assert.equal(await page.getByTestId('question-scope').isVisible(), true);
@@ -3253,6 +3323,30 @@ try {
     assert.equal(await panel.getByRole('textbox').isVisible(), false);
     await app.evaluate(() => { globalThis.testFakeAiBehavior = 'early'; });
   });
+  await check('FAKE AI IPC: a question finishes while the panel is hidden and survives reopening', async () => {
+    await openAiSection('질문하기');
+    await page.getByRole('textbox', { name: '선택한 코드에 질문' }).fill('숨긴 칸의 응답');
+    await app.evaluate(() => { globalThis.testFakeAiBehavior = 'hold'; });
+    await page.getByRole('button', { name: '질문 보내기', exact: true }).click();
+    await page.getByRole('button', { name: 'AI 작업 취소', exact: true }).waitFor();
+    await until(() => app.evaluate(() => globalThis.testFakeAiCalls.at(-1).request.question === '숨긴 칸의 응답'));
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const questionToggle = page.getByRole('banner').getByRole('button', { name: /^질문(?: · 진행 중)?$/ });
+    await questionToggle.click();
+    assert.equal(await questionToggle.getAttribute('aria-pressed'), 'false');
+    assert.equal(await questionToggle.getAttribute('aria-label'), '질문 · 진행 중');
+    assert.equal(await questionToggle.locator('.topbar__question-progress').isVisible(), true);
+    assert.equal(await page.locator('#ai-question-panel').isVisible(), false);
+    await app.evaluate(() => globalThis.testFakeAiLate());
+    await until(async () => await questionToggle.getAttribute('aria-label') === '질문');
+    assert.equal(await questionToggle.locator('.topbar__question-progress').count(), 0);
+    assert.equal(await page.locator('#ai-question-panel').isVisible(), false);
+    assert.equal(await page.getByText('가짜 설명: 숨긴 칸의 응답', { exact: true }).count(), 1);
+    await questionToggle.click();
+    assert.equal(await questionToggle.getAttribute('aria-pressed'), 'true');
+    await page.getByText('가짜 설명: 숨긴 칸의 응답', { exact: true }).waitFor();
+    await app.evaluate(() => { globalThis.testFakeAiBehavior = 'early'; });
+  });
   await check('Flow question (fake AI): keeps the step and narrow code selection, asks consent and renders easy-to-code layers', async () => {
     const { story, question, ask } = await openLoginFlowQuestion();
     const topic = await story.locator(':scope > .map-actions > h3').innerText();
@@ -3265,6 +3359,8 @@ try {
     await page.getByRole('button', { name: '질문하기', exact: true }).click();
     await page.getByRole('button', { name: 'AI 칸 접기', exact: true }).click();
     await ask.click();
+    // The step's code is read first, then the question panel opens.
+    await until(async () => await page.getByRole('banner').getByRole('button', { name: '질문', exact: true }).getAttribute('aria-pressed') === 'true');
     await until(async () => await question.inputValue() === expected);
     assert.equal(await page.getByRole('button', { name: '질문하기', exact: true }).getAttribute('aria-expanded'), 'true');
     assert.equal(await page.getByRole('button', { name: '흐름 따라가기', exact: true }).getAttribute('aria-current'), 'page');
@@ -4291,7 +4387,7 @@ try {
     assert.equal(await guide.evaluate(element => element.open), true);
     assert.equal(await guide.locator('[data-symbol-id]').count(), 14);
     assert.equal(await page.locator('aside[aria-label="AI 질문"]').isVisible(), false);
-    assert.equal(await page.getByRole('button', { name: 'AI 칸 펼치기', exact: true }).isVisible(), true);
+    assert.equal(await page.getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).isVisible(), true);
     await until(() => ninth.isEnabled());
     await page.getByRole('region', { name: '이 파일 안내', exact: true }).evaluate(element => { element.scrollTop = 0; });
     assert.equal(await visibleCard(ninthId), false);
@@ -4299,7 +4395,7 @@ try {
     await until(() => visibleCard(ninthId));
     await until(() => ninth.isEnabled());
     await page.screenshot({ path: path.join(artifacts, 'function-bands.png') });
-    await page.getByRole('button', { name: 'AI 칸 펼치기', exact: true }).click();
+    await page.getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
     await writeFile(path.join(guideFixture, 'src/functions.ts'), functionsSource + '// changed\n');
     await page.getByText('파일이 바뀌어 설명 줄을 숨겼어요. 파일 다시 읽기를 눌러 주세요.', { exact: true }).waitFor();
     assert.equal(await page.locator('.code-function-header, .cm-function-band').count(), 0);
@@ -4590,7 +4686,7 @@ try {
     await page.getByRole('button', { name: 'AI 칸 접기', exact: true }).click();
     await page.locator('.topbar').getByText('파일 설명 진행 중', { exact: false }).waitFor();
     await page.getByRole('button', { name: '파일 설명 작업 취소', exact: true }).click();
-    await page.getByRole('button', { name: 'AI 칸 펼치기', exact: true }).click();
+    await page.getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
     await card.getByText('AI 작업을 취소했습니다.', { exact: true }).waitFor();
     await page.getByRole('button', { name: 'chunks.ts', exact: true }).click();
     await page.getByRole('button', { name: 'other0.ts', exact: true }).click();
@@ -4630,7 +4726,7 @@ try {
     await page.getByRole('button', { name: 'AI 칸 접기', exact: true }).click();
     await page.locator('.topbar').getByText('파일 설명 진행 중', { exact: false }).waitFor();
     await page.getByRole('button', { name: '파일 설명 작업 취소', exact: true }).click();
-    await page.getByRole('button', { name: 'AI 칸 펼치기', exact: true }).click();
+    await page.getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
     await card.getByText('AI 작업을 취소했습니다.', { exact: true }).waitFor();
     await app.evaluate(() => { globalThis.testFileExplanationLate(); globalThis.testFileExplanationHold = false; });
     await card.getByText('AI 작업을 취소했습니다.', { exact: true }).waitFor();
@@ -5024,6 +5120,7 @@ try {
       await page.getByRole('region', { name: '최근 프로젝트', exact: true }).getByRole('button').filter({ hasText: '파일 설명 저장 프로젝트' }).click();
       await page.getByRole('heading', { name: '파일 설명 저장 프로젝트', exact: true }).waitFor();
       await openTreeFile('saved.ts');
+      await openAiPanel();
     };
     const restart = async () => { await app.close(); await launch(); await openRecent(); };
     const assertDeleted = async () => {
@@ -5062,6 +5159,7 @@ try {
       });
     };
     const generate = async () => {
+      await openAiPanel();
       const disclosure = page.locator('.panel > details').filter({ has: page.getByText('AI로 이 파일 설명 만들기', { exact: true }) });
       if (!await disclosure.evaluate(element => element.open)) await disclosure.locator(':scope > summary').click();
       await card().getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
@@ -5426,8 +5524,7 @@ try {
     const history = () => page.locator('.saved-answers');
     const row = question => history().getByRole('listitem').filter({ has: page.locator('.saved-question', { hasText: question }) });
     const showHistory = async () => {
-      const expand = page.getByRole('button', { name: 'AI 칸 펼치기', exact: true });
-      if (await expand.isVisible()) await expand.click();
+      await openAiPanel();
       if (!await history().evaluate(element => element.open)) await history().locator(':scope > summary').click();
     };
     const observeLists = () => app.evaluate(({ ipcMain }) => {
