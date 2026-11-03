@@ -2,15 +2,15 @@ import React from 'react';
 import * as ReactHooks from 'react';
 import * as JSX from 'react/jsx-dev-runtime';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ReactFlow, ReactFlowProvider, type Edge, type Node } from '@xyflow/react';
+import { Background, BackgroundVariant, ReactFlow, ReactFlowProvider, useReactFlow, useStore, type Edge, type Node } from '@xyflow/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ARROW_MARKER, MapCanvas, ProjectMapView, type MapChanges } from '../src/renderer/project-map';
+import { ARROW_MARKER, FitOnWidthChange, MapCanvas, ProjectMapView, type MapChanges } from '../src/renderer/project-map';
 import { boxName, boxPlace, expandableIds, fileViewOf, visibleGraph, type MapArrow } from '../src/renderer/map-layout';
 import type { MapFile, ProjectMap, ProjectView } from '../src/shared/contracts';
 
 vi.mock('react', async importOriginal => {
   const actual = await importOriginal<typeof import('react')>();
-  return { ...actual, useState: vi.fn(actual.useState) };
+  return { ...actual, useState: vi.fn(actual.useState), useRef: vi.fn(actual.useRef), useEffect: vi.fn(actual.useEffect) };
 });
 vi.mock('react/jsx-dev-runtime', async importOriginal => {
   const actual = await importOriginal<typeof import('react/jsx-dev-runtime')>();
@@ -18,7 +18,7 @@ vi.mock('react/jsx-dev-runtime', async importOriginal => {
 });
 vi.mock('@xyflow/react', async importOriginal => {
   const actual = await importOriginal<typeof import('@xyflow/react')>();
-  return { ...actual, ReactFlow: vi.fn(() => null) };
+  return { ...actual, ReactFlow: vi.fn(() => null), useStore: vi.fn(actual.useStore), useReactFlow: vi.fn(actual.useReactFlow) };
 });
 
 const file = (id: string, folder: string): MapFile => ({ id, folder, relativePath: `${folder ? `${folder}/` : ''}${id}.ts`,
@@ -705,4 +705,40 @@ describe('unused exports card', () => {
     expect(card).not.toContain('file300.ts');
     expect(card.match(/처음 300개만 보여요. 나머지 1개는 생략했어요./g)).toHaveLength(2);
   });
+});
+
+it.each([undefined, 0.02])('fits again with the initial options (padding %s) only when the measured width changes', fitPadding => {
+  renderToStaticMarkup(React.createElement(MapCanvas, { testId: 'resize-map', nodes: [], edges: [], fitPadding, onNodeClick() {} }));
+  const props = vi.mocked(ReactFlow).mock.calls.at(-1)![0];
+  expect(props.fitView).toBe(true);
+  expect(props.fitViewOptions).toEqual(fitPadding === undefined ? { minZoom: 0.1, maxZoom: 1 } : { minZoom: 0.1, maxZoom: 1, padding: 0.02 });
+  const refit = React.Children.toArray(props.children).find(child => React.isValidElement(child) && child.type === FitOnWidthChange);
+  expect(React.isValidElement(refit) && (refit.props as { options: unknown }).options).toBe(props.fitViewOptions);
+
+  const fitView = vi.fn();
+  const previous = { current: null as number | null };
+  vi.mocked(useReactFlow).mockReturnValue({ fitView } as unknown as ReturnType<typeof useReactFlow>);
+  const renderAt = (width: number) => {
+    vi.mocked(useStore).mockImplementationOnce(selector => (selector as (state: { width: number }) => number)({ width }));
+    vi.mocked(ReactHooks.useRef).mockImplementationOnce(() => previous);
+    vi.mocked(ReactHooks.useEffect).mockImplementationOnce(callback => { callback(); });
+    renderToStaticMarkup(React.createElement(FitOnWidthChange, { options: props.fitViewOptions! }));
+  };
+  renderAt(0);
+  renderAt(1200);
+  renderAt(1200);
+  expect(fitView).not.toHaveBeenCalled();
+  renderAt(900);
+  expect(fitView).toHaveBeenCalledExactlyOnceWith(props.fitViewOptions);
+  renderAt(900);
+  renderAt(1200);
+  expect(fitView).toHaveBeenCalledTimes(2);
+});
+
+it('uses a 24px line grid on the shared canvas', () => {
+  renderToStaticMarkup(React.createElement(MapCanvas, { testId: 'grid-map', nodes: [], edges: [], onNodeClick() {} }));
+  const props = vi.mocked(ReactFlow).mock.calls.at(-1)![0];
+  const background = React.Children.toArray(props.children).find(child => React.isValidElement(child) && child.type === Background);
+  expect(background).toBeDefined();
+  expect((background as React.ReactElement<React.ComponentProps<typeof Background>>).props).toMatchObject({ variant: BackgroundVariant.Lines, gap: 24 });
 });

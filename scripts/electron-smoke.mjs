@@ -328,6 +328,36 @@ async function openFileMap() {
   await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
   await page.getByRole('group', { name: '지도 종류', exact: true }).getByRole('button', { name: '파일 연결', exact: true }).click();
 }
+async function checkCanvasFits(canvas, count) {
+  await until(async () => await canvas.evaluate((element, expected) => {
+    const nodes = [...element.querySelectorAll('.react-flow__node')];
+    const bounds = element.getBoundingClientRect();
+    return nodes.length === expected && nodes.every(node => {
+      const box = node.getBoundingClientRect();
+      return box.width > 0 && box.height > 0 && getComputedStyle(node).visibility !== 'hidden'
+        && box.left >= bounds.left - 1 && box.right <= bounds.right + 1
+        && box.top >= bounds.top - 1 && box.bottom <= bounds.bottom + 1;
+    });
+  }, count));
+}
+async function checkCanvasPanelRefit(canvas) {
+  await until(async () => await canvas.locator('.react-flow__node').count() > 0);
+  const count = await canvas.locator('.react-flow__node').count();
+  await checkCanvasFits(canvas, count);
+  for (let toggle = 0; toggle < 2; toggle++) {
+    const width = await canvas.evaluate(element => element.clientWidth);
+    const zoom = await canvas.locator('.react-flow__viewport').evaluate(element => new DOMMatrix(getComputedStyle(element).transform).a);
+    const viewport = () => canvas.locator('.react-flow__viewport').evaluate(element => getComputedStyle(element).transform);
+    await canvas.locator('.react-flow__controls-zoomin').click();
+    await until(async () => await canvas.locator('.react-flow__viewport').evaluate(element => new DOMMatrix(getComputedStyle(element).transform).a) > zoom);
+    const zoomed = await viewport();
+    await page.getByRole('banner').getByRole('button', { name: '질문', exact: true }).click();
+    await until(async () => await canvas.evaluate(element => element.clientWidth) !== width);
+    // The refit runs after React Flow measures the new width; the next zoom must start from it.
+    await until(async () => await viewport() !== zoomed);
+    await checkCanvasFits(canvas, count);
+  }
+}
 // Wait for grouping before locating a legacy code-name or AI feature button.
 async function openServerFeatures() {
   const list = page.getByRole('region', { name: '기능 목록', exact: true });
@@ -1736,6 +1766,11 @@ try {
     await eachTheme(async mode => {
       await diagram.locator(`.react-flow.${mode}`).waitFor();
       assert.equal(await diagram.locator(`.react-flow.${mode}`).count(), 1);
+      assert.equal(await diagram.locator('.react-flow__background pattern path.lines').count(), 1);
+      assert.equal(await diagram.locator('.react-flow__background pattern circle').count(), 0);
+      assert.equal(await diagram.locator('.flow-lane').evaluateAll(lanes => lanes.every(lane =>
+        getComputedStyle(lane).backgroundColor === 'rgba(0, 0, 0, 0)')), true);
+
       await page.screenshot({ path: path.join(artifacts, `${mode}-flow-map.png`) });
     });
     assert.equal(await diagram.locator('.react-flow__node.draggable').count(), 0);
@@ -1749,6 +1784,14 @@ try {
     assert.ok(edgeLabels.every(label => /^(?:.+ 부름|부름|화면 이벤트|화면에 놓음|안쪽 함수|훅 값|요청 보냄)(?: · \d+행)?$/.test(label)));
     assert.equal(await diagram.locator('.flow-lane').count(), 3);
     assert.deepEqual(await diagram.locator('.flow-lane h4').allTextContents(), ['화면 쪽', '요청', '서버 쪽']);
+    assert.deepEqual(await diagram.locator('.flow-lane__header p').allTextContents(),
+      ['사람이 보고 누르는 곳', '화면이 서버로 보내는 부탁', '부탁을 받아 일을 하는 곳']);
+    assert.equal(await screenNode.locator('.feature-box__kind').innerText(), '화면');
+    assert.equal(await serviceNode.locator('.feature-box__kind').innerText(), '서버 처리');
+    assert.equal(await screenNode.locator('.feature-box__file').innerText(), 'web/app/dogs/page.tsx');
+    assert.equal(await diagram.locator('.feature-box').evaluateAll(boxes => boxes.every(box =>
+      box.offsetWidth === 300 && box.offsetHeight <= 130)), true);
+
     const diagramHeight = await diagram.evaluate(element => ({ height: element.getBoundingClientRect().height, viewport: window.innerHeight }));
     assert.ok(diagramHeight.height > diagramHeight.viewport * 0.6, 'The flow canvas must grow beyond 60vh');
     const mutationNode = diagram.getByRole('group', { name: 'web/lib/dogs.ts · mutationFn', exact: true });
@@ -1785,7 +1828,7 @@ try {
     const gapZoom = await diagram.locator('.react-flow__viewport').evaluate(element =>
       new DOMMatrix(getComputedStyle(element).transform).a);
     const gapVerticalXs = [];
-    for (const [from, to, offset] of [[dogListNode, hookNode, 34], [mutationNode, requestNode, 60]]) {
+    for (const [from, to, offset] of [[dogListNode, hookNode, 34], [mutationNode, requestNode, 70]]) {
       const fromId = await from.getAttribute('data-id');
       const toId = await to.getAttribute('data-id');
       const verticals = await diagram.getByRole('group', { name: `Edge from ${fromId} to ${toId}`, exact: true })
@@ -2298,6 +2341,11 @@ try {
       assert.equal(await page.getByRole('button', { name: '프로젝트 지도', exact: true }).getAttribute('aria-current'), 'page');
       assert.deepEqual(await app.evaluate(() => globalThis.mapTabCalls), { map: 0, read: 0, flow: 2 });
       assert.deepEqual(await diagram.locator('.flow-lane h4').allTextContents(), ['화면 쪽', '요청', '서버 쪽']);
+
+      await mapPage.getByText('코드에서 찾은 연결 · 실행 기록이 아니에요', { exact: true }).waitFor();
+      assert.equal(await mapPage.locator('.map-actions__label').innerText(), '고른 기능');
+      assert.match(await mapPage.getByRole('button', { name: '흐름 따라가기에서 단계별로 보기', exact: true }).getAttribute('class'), /btn--primary/);
+      await checkCanvasPanelRefit(diagram);
       const title = await mapPage.locator('.map-actions h3').innerText();
       assert.match(title, /\/api\/dogs\/:id/);
       const limits = mapPage.locator('details').filter({ has: page.locator('summary', { hasText: /^이 흐름을 찾은 방법과 한계$/ }) });
@@ -2309,8 +2357,43 @@ try {
       await diagram.getByRole('group', { name: 'api/service.ts · DogsService.remove', exact: true }).click();
       await evidenceStrip.getByRole('heading', { name: '선택한 연결의 근거 · api/service.ts', exact: true }).waitFor();
       await until(async () => (await evidenceStrip.getByTestId('flow-snippet').innerText()).includes('this.prisma.dog.delete'));
+      assert.equal(await evidenceStrip.locator('.flow-evidence__label').innerText(), '고른 상자');
+      assert.equal(await evidenceStrip.locator('.flow-evidence__actions button').count(), 2);
+      const windowSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
+      const nodeCount = await diagram.locator('.react-flow__node').count();
+      try {
+        for (const width of [1280, 760]) {
+          await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
+          await until(async () => await page.evaluate(expected => window.outerWidth === expected, width));
+          await checkCanvasFits(diagram, nodeCount);
+          const left = await evidenceStrip.locator('.flow-evidence__code').boundingBox();
+          const right = await evidenceStrip.locator('.flow-evidence__details').boundingBox();
+          assert.ok(left && right);
+          if (width === 1280) {
+            assert.ok(Math.abs(left.y - right.y) <= 1 && left.x + left.width <= right.x + 1);
+            assert.ok(left.width > right.width);
+          } else {
+            assert.ok(Math.abs(left.x - right.x) <= 1 && left.y + left.height <= right.y + 1);
+          }
+        }
+      } finally {
+        await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), windowSize);
+      }
+
       await eachTheme(async mode => {
         await diagram.locator(`.react-flow.${mode}`).waitFor();
+
+        assert.equal(await diagram.locator('.flow-lane').evaluateAll(lanes => lanes.every(lane =>
+          getComputedStyle(lane).backgroundColor === 'rgba(0, 0, 0, 0)')), true);
+        assert.equal(await diagram.locator('.react-flow__background pattern path.lines').count(), 1);
+        assert.equal(await diagram.locator('.feature-box.selected').evaluate(box => {
+          const probe = document.createElement('span');
+          probe.style.backgroundColor = 'var(--accent-soft)';
+          box.append(probe);
+          const matches = getComputedStyle(box).backgroundColor === getComputedStyle(probe).backgroundColor;
+          probe.remove();
+          return matches && getComputedStyle(box).borderTopWidth === '3px';
+        }), true);
         await mapPage.getByRole('heading', { name: '프로젝트 지도', exact: true }).scrollIntoViewIfNeeded();
         await page.screenshot({ path: path.join(artifacts, `${mode}-map-feature.png`), fullPage: true });
       });
@@ -2332,6 +2415,8 @@ try {
       await tabs.getByRole('button', { name: '파일 연결', exact: true }).click();
       await mapPage.getByRole('button', { name: '지도 다시 만들기', exact: true }).waitFor();
       await mapPage.getByTestId('map-canvas').waitFor();
+      await checkCanvasPanelRefit(mapPage.getByTestId('map-canvas'));
+
       assert.equal(await app.evaluate(() => globalThis.mapTabCalls.map), 1);
       await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
       await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
@@ -2462,6 +2547,16 @@ try {
     const nodes = canvas.locator('.react-flow__node');
     const originalSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
     try {
+
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
+      await until(async () => await page.evaluate(() => window.outerWidth === 1280));
+      await list.getByRole('button', { name: 'large/right.ts', exact: true }).click();
+      await until(async () => await nodes.count() === 21);
+      await checkCanvasFits(canvas, 21);
+      const initialZoom = await canvas.locator('.react-flow__viewport').evaluate(element => new DOMMatrix(getComputedStyle(element).transform).a);
+      await checkCanvasPanelRefit(canvas);
+      const refittedZoom = await canvas.locator('.react-flow__viewport').evaluate(element => new DOMMatrix(getComputedStyle(element).transform).a);
+      assert.ok(Math.abs(initialZoom - refittedZoom) < 0.001, 'Neighborhood resizing preserves the initial fitPadding 0.02');
       const scenarios = [originalSize[0], 760].flatMap(width => [
         { width, name: 'right', count: 21 }, { width, name: 'left', count: 8 },
       ]);

@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import type { FeatureFlow, FlowNode } from '../src/shared/contracts';
 import { getSmoothStepPath, Position } from '@xyflow/react';
-import { edgeRoute, layoutFlow, routeEdges, type EdgeRouteInfo, type FlowBox } from '../src/renderer/flow-layout';
+import { edgeRoute, flowNodeKind, LANE_NOTES, layoutFlow, routeEdges, type EdgeRouteInfo, type FlowBox } from '../src/renderer/flow-layout';
 import { SIDE_HANDLE_TOP } from '../src/renderer/feature-flow';
 
 const node = (id: string, side: FlowNode['side'], depth: number): FlowNode => ({
@@ -37,13 +37,13 @@ it('stacks boxes in three fixed lanes with shared heights and lane-local rows', 
   ]);
   const { boxes, lanes } = layoutFlow(input);
   expect(boxes.map(({ node, x, y, row }) => [node.id, x, y, row])).toEqual([
-    ['far', 60, 70, 0], ['near', 60, 180, 1], ['request', 380, 70, 0],
-    ['handler', 700, 70, 0], ['service', 700, 180, 1],
+    ['far', 70, 104, 0], ['near', 70, 254, 1], ['request', 510, 104, 0],
+    ['handler', 950, 104, 0], ['service', 950, 254, 1],
   ]);
   expect(lanes).toEqual([
-    { side: 'front', title: '화면 쪽', x: 0, width: 320, height: 310, empty: false },
-    { side: 'request', title: '요청', x: 320, width: 320, height: 310, empty: false },
-    { side: 'back', title: '서버 쪽', x: 640, width: 320, height: 310, empty: false },
+    { side: 'front', title: '화면 쪽', x: 0, width: 440, height: 424, empty: false },
+    { side: 'request', title: '요청', x: 440, width: 440, height: 424, empty: false },
+    { side: 'back', title: '서버 쪽', x: 880, width: 440, height: 424, empty: false },
   ]);
 });
 
@@ -75,11 +75,11 @@ it('keeps all three lanes for empty and backend-only flows', () => {
   const empty = layoutFlow(flow([]));
   expect(empty.boxes).toEqual([]);
   expect(empty.lanes).toHaveLength(3);
-  expect(empty.lanes.every(lane => lane.empty && lane.height === 200)).toBe(true);
+  expect(empty.lanes.every(lane => lane.empty && lane.height === 274)).toBe(true);
   const back = layoutFlow(flow([node('handler', 'back', 0), node('service', 'back', 1)]));
-  expect(back.boxes.map(({ node, x, y }) => [node.id, x, y])).toEqual([['handler', 700, 70], ['service', 700, 180]]);
+  expect(back.boxes.map(({ node, x, y }) => [node.id, x, y])).toEqual([['handler', 950, 104], ['service', 950, 254]]);
   expect(back.lanes.map(lane => lane.empty)).toEqual([true, true, false]);
-  expect(back.lanes.map(lane => lane.height)).toEqual([310, 310, 310]);
+  expect(back.lanes.map(lane => lane.height)).toEqual([424, 424, 424]);
 });
 
 function checkRoutes(input: FeatureFlow) {
@@ -109,8 +109,8 @@ it.each(['self', 'upward'] as const)('keeps %s smoothstep paths from collapsing 
   const to = kind === 'self' ? from : boxes[0];
   const route = edgeRoute(from, to);
   expect(route.type).toBe('smoothstep');
-  const [path] = getSmoothStepPath({ sourceX: from.x + 200, sourceY: from.y + 30, sourcePosition: Position.Right,
-    targetX: to.x + (route.targetHandle === 'in-top' ? 100 : 200),
+  const [path] = getSmoothStepPath({ sourceX: from.x + 300, sourceY: from.y + 30, sourcePosition: Position.Right,
+    targetX: to.x + (route.targetHandle === 'in-top' ? 150 : 300),
     targetY: to.y + (route.targetHandle === 'in-top' ? 0 : 30),
     targetPosition: route.targetHandle === 'in-top' ? Position.Top : Position.Right });
   const numbers = path.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
@@ -127,18 +127,18 @@ it('starts all three lanes at the top with eight frontend boxes and bends the ca
     edges([['mutationFn', 'request'], ['request', 'handler'], ['handler', 'service']]));
   const { boxes, lanes } = layoutFlow(input);
   expect(boxes.map(box => box.row)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 0, 0, 1]);
-  expect([boxes[0], boxes[8], boxes[9]].map(box => box.y)).toEqual([70, 70, 70]);
-  expect(lanes.map(lane => lane.height)).toEqual([970, 970, 970]);
+  expect([boxes[0], boxes[8], boxes[9]].map(box => box.y)).toEqual([104, 104, 104]);
+  expect(lanes.map(lane => lane.height)).toEqual([1324, 1324, 1324]);
   expect(edgeRoute(boxes[7], boxes[8])).toEqual({ sourceHandle: 'out-right', targetHandle: 'in-left', type: 'smoothstep' });
   expect(edgeRoute(boxes[8], boxes[9])).toEqual({ sourceHandle: 'out-right', targetHandle: 'in-left', type: 'straight' });
   const from = boxes[7];
   const to = boxes[8];
-  const [path] = getSmoothStepPath({ sourceX: from.x + 200, sourceY: from.y + 24, sourcePosition: Position.Right,
+  const [path] = getSmoothStepPath({ sourceX: from.x + 300, sourceY: from.y + 24, sourcePosition: Position.Right,
     targetX: to.x, targetY: to.y + 24, targetPosition: Position.Left });
   expect(path.match(/[A-Za-z]/g)!.every(command => ['M', 'L', 'Q'].includes(command))).toBe(true);
   const commands = [...path.matchAll(/([MLQ])([^MLQ]*)/g)];
   expect(commands.length).toBeGreaterThan(2);
-  let previous = [from.x + 200, from.y + 24];
+  let previous = [from.x + 300, from.y + 24];
   for (const [, command, coordinates] of commands) {
     const values = coordinates.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
     // Rounded corners have two perpendicular tangents; every straight segment follows an axis.
@@ -158,12 +158,12 @@ it('separates requests sharing a caller and bends the second connection to their
   const from = boxes[3];
   const to = boxes[4];
   expect(edgeRoute(from, to)).toEqual({ sourceHandle: 'out-right', targetHandle: 'in-left', type: 'smoothstep' });
-  const [path] = getSmoothStepPath({ sourceX: from.x + 200, sourceY: from.y + 24, sourcePosition: Position.Right,
+  const [path] = getSmoothStepPath({ sourceX: from.x + 300, sourceY: from.y + 24, sourcePosition: Position.Right,
     targetX: to.x, targetY: to.y + 24, targetPosition: Position.Left });
   expect(path.match(/[A-Za-z]/g)!.every(command => ['M', 'L', 'Q'].includes(command))).toBe(true);
   const commands = [...path.matchAll(/([MLQ])([^MLQ]*)/g)];
   expect(commands.length).toBeGreaterThan(2);
-  let previous = [from.x + 200, from.y + 24];
+  let previous = [from.x + 300, from.y + 24];
   for (const [, command, coordinates] of commands) {
     const values = coordinates.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
     // Rounded corners have two perpendicular tangents; every straight segment follows an axis.
@@ -187,13 +187,13 @@ it('stacks requests without gaps and connects adjacent rows vertically when call
   edges([['front0', 'first'], ['front3', 'second'], ['front0', 'third'], ['first', 'second']]));
   const { boxes, lanes } = layoutFlow(input);
   expect(boxes.slice(4).map(box => box.row)).toEqual([0, 1, 2, 0]);
-  expect(lanes.every(lane => lane.height === 530)).toBe(true);
+  expect(lanes.every(lane => lane.height === 724)).toBe(true);
   expect(edgeRoute(boxes[4], boxes[5])).toEqual({ sourceHandle: 'out-bottom', targetHandle: 'in-top', type: 'straight' });
 });
 
 function smoothPath(from: FlowBox, to: FlowBox, route: EdgeRouteInfo): string {
-  return getSmoothStepPath({ sourceX: from.x + 200, sourceY: from.y + SIDE_HANDLE_TOP, sourcePosition: Position.Right,
-    targetX: to.x + (route.targetHandle === 'in-top' ? 100 : route.targetHandle === 'in-right' ? 200 : 0),
+  return getSmoothStepPath({ sourceX: from.x + 300, sourceY: from.y + SIDE_HANDLE_TOP, sourcePosition: Position.Right,
+    targetX: to.x + (route.targetHandle === 'in-top' ? 150 : route.targetHandle === 'in-right' ? 300 : 0),
     targetY: to.y + (route.targetHandle === 'in-top' ? 0 : SIDE_HANDLE_TOP),
     targetPosition: route.targetHandle === 'in-top' ? Position.Top
       : route.targetHandle === 'in-right' ? Position.Right : Position.Left,
@@ -227,14 +227,14 @@ it('spreads mixed cross-lane, outside and self-call paths into distinct position
     const from = byId.get(edge.from)!;
     const to = byId.get(edge.to)!;
     expect(route).toMatchObject(edgeRoute(from, to));
-    const verticals = verticalXs(smoothPath(from, to, route)).filter(x => x > from.x + 200);
+    const verticals = verticalXs(smoothPath(from, to, route)).filter(x => x > from.x + 300);
     expect(verticals).toHaveLength(1);
     return verticals[0];
   });
-  const right = boxes[0].x + 200;
+  const right = boxes[0].x + 300;
   expect(new Set(xs).size).toBe(6);
-  expect(xs.every(x => x > right && x < right + 120)).toBe(true);
-  [61, 74, 87, 24 + 20 / 3, 24 + 40 / 3, 20].forEach((offset, index) =>
+  expect(xs.every(x => x > right && x < right + 140)).toBe(true);
+  [66, 84, 102, 24 + 20 / 3, 24 + 40 / 3, 10].forEach((offset, index) =>
     expect(xs[index]).toBeCloseTo(right + offset));
   expect(routes.map(route => route.crowded)).toEqual([true, true, true, false, false, false]);
   expect({ edges: mixedGap.edges, boxes }).toEqual(before);
@@ -255,30 +255,30 @@ it('keeps twenty vertical segments distinct even when their gap is crowded', () 
     verticalXs(smoothPath(byId.get(input.edges[index].from)!, byId.get(input.edges[index].to)!, route)));
   expect(xs).toHaveLength(20);
   expect(new Set(xs).size).toBe(20);
-  expect(xs.slice(0, 11).every(x => x > 260 + 48 && x < 260 + 100)).toBe(true);
-  expect(xs.slice(11).every(x => x > 260 + 24 && x < 260 + 44)).toBe(true);
+  expect(xs.slice(0, 11).every(x => x > 370 + 48 && x < 370 + 120)).toBe(true);
+  expect(xs.slice(11).every(x => x > 370 + 24 && x < 370 + 44)).toBe(true);
 });
 
 it('keeps the entire self-call path below the box immediately above it', () => {
   const { boxes } = layoutFlow(flow([node('upper', 'front', 2), node('lower', 'front', 1)]));
   const [route] = routeEdges([{ from: 'lower', to: 'lower' }], boxes);
-  expect(route.pathOptions).toEqual({ offset: 20 });
+  expect(route.pathOptions).toEqual({ offset: 10 });
   const coordinates = smoothPath(boxes[1], boxes[1], route).match(/-?\d+(?:\.\d+)?/g)!.map(Number);
   const ys = coordinates.filter((_, index) => index % 2 === 1);
   // Every endpoint and quadratic control point is below the upper rectangle, so the curves are too.
-  expect(Math.min(...ys)).toBe(boxes[1].y - 20);
-  expect(Math.min(...ys)).toBeGreaterThan(boxes[0].y + 60);
+  expect(Math.min(...ys)).toBe(boxes[1].y - 10);
+  expect(Math.min(...ys)).toBeGreaterThan(boxes[0].y + 130);
 });
 
-it('marks only multiple cross-lane arrows in one gap as crowded and keeps a lone arrow at R + 60', () => {
+it('marks only multiple cross-lane arrows in one gap as crowded and keeps a lone arrow at R + 70', () => {
   const { boxes } = layoutFlow(mixedGap);
   const byId = new Map(boxes.map(box => [box.node.id, box]));
   expect(routeEdges(mixedGap.edges.slice(0, 2), boxes).map(route => route.crowded)).toEqual([true, true]);
   const input = [mixedGap.edges[0], ...mixedGap.edges.slice(3)];
   const routes = routeEdges(input, boxes);
   expect(routes.every(route => !route.crowded)).toBe(true);
-  expect(routes[0].pathOptions).toEqual({ offset: 20, stepPosition: 0.5 });
-  expect(verticalXs(smoothPath(byId.get('front0')!, byId.get('request1')!, routes[0]))).toEqual([260 + 60]);
+  expect(routes[0].pathOptions).toEqual({ offset: 10, stepPosition: 0.5 });
+  expect(verticalXs(smoothPath(byId.get('front0')!, byId.get('request1')!, routes[0]))).toEqual([370 + 70]);
 });
 
 it('leaves straight and leftward connections unchanged and handles an empty flow', () => {
@@ -301,7 +301,7 @@ it.each([false, true])('routes a two-lane jump through the source gap with anoth
   const { boxes } = layoutFlow(input);
   const [route] = routeEdges(input.edges, boxes);
   const [x] = verticalXs(smoothPath(boxes[1], boxes[3], route));
-  expect(x).toBeCloseTo(260 + (crowded ? 48 + 52 / 3 : 60));
+  expect(x).toBeCloseTo(370 + (crowded ? 48 + 72 / 3 : 70));
   expect(route.pathOptions!.stepPosition).toBeGreaterThan(0);
   expect(route.pathOptions!.stepPosition).toBeLessThan(0.5);
   expect(route.crowded).toBe(crowded);
@@ -320,8 +320,56 @@ it('sorts each region by source row, target row, then original order without mix
   const byId = new Map(boxes.map(box => [box.node.id, box]));
   const xs = routes.map((route, index) => verticalXs(smoothPath(
     byId.get(input.edges[index].from)!, byId.get(input.edges[index].to)!, route))[0]);
-  [4, 3, 1, 2].forEach((order, index) => expect(xs[index]).toBeCloseTo(260 + 48 + 52 * order / 5));
-  [4, 3, 1, 2].forEach((order, index) => expect(xs[index + 4]).toBeCloseTo(260 + 24 + 20 * order / 5));
-  expect(xs[8]).toBe(580 + 60);
+  [4, 3, 1, 2].forEach((order, index) => expect(xs[index]).toBeCloseTo(370 + 48 + 72 * order / 5));
+  [4, 3, 1, 2].forEach((order, index) => expect(xs[index + 4]).toBeCloseTo(370 + 24 + 20 * order / 5));
+  expect(xs[8]).toBe(810 + 70);
   expect(routes[8].crowded).toBe(false);
+});
+
+it('describes the three lanes with the approved notes', () => {
+  expect(LANE_NOTES).toEqual({ front: '사람이 보고 누르는 곳', request: '화면이 서버로 보내는 부탁', back: '부탁을 받아 일을 하는 곳' });
+});
+
+it.each([
+  ['front', 0, '/dogs', 'onClick', '화면', 'document'],
+  ['front', 0, null, 'onClick', '화면 이벤트 처리', 'document'],
+  ['front', 0, null, null, '화면 쪽 함수', 'document'],
+  ['request', 0, null, null, '요청', 'code'],
+  ['back', 0, null, null, '서버 받는 곳', 'gear'],
+  ['back', 1, null, null, '서버 처리', 'box'],
+] as const)('classifies %s depth %s screen %s event %s from node data', (side, depth, screen, event, label, icon) => {
+  expect(flowNodeKind({ ...node('n', side, depth), screen, event })).toEqual({ label, icon });
+});
+
+it.each(['front', 'back'] as const)('keeps self-calls and skipped-row detours clear of 300×130 tagged boxes in the %s lane', side => {
+  const input = flow(Array.from({ length: 4 }, (_, index) => ({ ...node(`n${index}`, side, side === 'front' ? 4 - index : index),
+    screen: '/dogs', event: 'onClick' })), edges([
+    ['n0', 'n0'], ['n1', 'n1'], ['n2', 'n2'], ['n3', 'n3'],
+    ['n0', 'n2'], ['n0', 'n3'], ['n3', 'n0'], ['n3', 'n1'],
+  ]));
+  const { boxes } = layoutFlow(input);
+  const byId = new Map(boxes.map(box => [box.node.id, box]));
+  routeEdges(input.edges, boxes).forEach((route, index) => {
+    const edge = input.edges[index];
+    const path = smoothPath(byId.get(edge.from)!, byId.get(edge.to)!, route);
+    const commands = [...path.matchAll(/([MLQ])([^MLQ]*)/g)];
+    let previous: number[] = [];
+    commands.forEach(([, command, coordinates], segment) => {
+      const values = coordinates.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+      if (command === 'M') { previous = values; return; }
+      // A quadratic curve stays inside the bounds of its endpoints and control point.
+      const points = [...previous, ...values];
+      const xs = points.filter((_, i) => i % 2 === 0);
+      const ys = points.filter((_, i) => i % 2 === 1);
+      for (const box of boxes) {
+        // Only the departure and final arrival may touch their own handles.
+        if (segment === 1 && box.node.id === edge.from) continue;
+        if (segment === commands.length - 1 && box.node.id === edge.to) continue;
+        const overlaps = Math.max(...xs) >= box.x && Math.min(...xs) <= box.x + 300
+          && Math.max(...ys) >= box.y && Math.min(...ys) <= box.y + 130;
+        expect(overlaps, `${edge.from} → ${edge.to}, segment ${segment}, box ${box.node.id}: ${path}`).toBe(false);
+      }
+      previous = values.slice(-2);
+    });
+  });
 });
