@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { boxName, boxPlace, closeArea, expandableIds, FILE_VIEW_LIMIT, fileViewFolder, fileViewOf, folderArrows, foldersWithFiles,
-  linkedArrows, matchCallStep, matchFunction, matchImport, visibleGraph } from '../src/renderer/map-layout';
+import { BIG_FOLDER_LIMIT, boxName, boxPlace, closeArea, expandableIds, FILE_VIEW_LIMIT, fileViewFolder, fileViewOf, folderArrows, folderFileList, foldersWithFiles,
+  linkedArrows, matchCallStep, matchFunction, matchImport, NEIGHBOR_LIMIT, NEIGHBOR_ROW_HEIGHT, neighborhoodGraph, shownBigFolder, visibleGraph } from '../src/renderer/map-layout';
 import { buildProjectMap } from '../src/core/analysis/project-map';
 import { analyzeSource } from '../src/core/analysis/syntax';
 import { readAllowed, scanProject } from '../src/core/project/files';
@@ -18,6 +18,84 @@ const map: ProjectMap = { projectId: 'p', files: [file('a1', 'a'), file('a2', 'a
   edges: [edge('a1', 'b1'), edge('a2', 'b1'), edge('b2', 'a1'), edge('a1', 'a2')], unresolved: [], external: [], complexFunctions: [], exports: [], unused: { exports: { candidates: [], unsure: [], notes: [] }, candidates: [], unsure: [], excluded: [], notes: [] }, limited: false, notes: [] };
 const summary = (graph: ReturnType<typeof visibleGraph>) => graph.arrows.map(arrow => [arrow.source, arrow.target, arrow.items.length]);
 const backs = (graph: ReturnType<typeof visibleGraph>) => graph.arrows.filter(arrow => arrow.back).map(arrow => arrow.id);
+
+describe('big folder lists and neighbourhoods', () => {
+  it('lists only direct files, counts distinct non-self neighbours across folders and sorts all three keys', () => {
+    const source = { ...map, files: [file('z', 'a'), file('b', 'a'), file('a', 'a'), file('used', 'a'),
+      file('child', 'a/child'), file('outside', 'b')], edges: [
+      edge('outside', 'used'), edge('child', 'used'), edge('outside', 'used'), edge('used', 'used'),
+      edge('a', 'outside'), edge('a', 'outside'), edge('b', 'outside'),
+    ] };
+    expect(folderFileList(source, 'a').map(({ file, uses, usedBy }) => [file.id, uses, usedBy]))
+      .toEqual([['used', 0, 2], ['a', 1, 0], ['b', 1, 0], ['z', 0, 0]]);
+    expect(folderFileList(source, 'absent')).toEqual([]);
+  });
+
+  it('places users on the left, the chosen file in the middle and dependencies on the right', () => {
+    const source = { ...map, files: [file('center', 'a'), file('user', 'b'), file('dep', 'c'), file('mutual', 'd')],
+      edges: [edge('user', 'center'), edge('center', 'dep'), edge('center', 'dep'), edge('mutual', 'center'),
+        edge('center', 'mutual'), edge('user', 'dep'), edge('center', 'center')] };
+    const graph = neighborhoodGraph(source, 'center');
+    expect(graph.boxes.map(box => [box.id, box.x, box.y])).toEqual([
+      ['user', 0, 0], ['mutual', 0, NEIGHBOR_ROW_HEIGHT], ['center', 320, 0], ['dep', 640, 0],
+    ]);
+    expect(graph.boxes.every(box => box.kind === 'file' && box.count === 1 && box.file?.id === box.id)).toBe(true);
+    expect(graph.boxes.map(box => [box.label, boxName(box)]))
+      .toEqual([['user.ts', 'b/user.ts'], ['mutual.ts', 'd/mutual.ts'], ['center.ts', 'a/center.ts'], ['dep.ts', 'c/dep.ts']]);
+    expect(summary(graph)).toEqual([['user', 'center', 1], ['center', 'dep', 2], ['mutual', 'center', 1], ['center', 'mutual', 1]]);
+    expect(backs(graph)).toEqual(['center->mutual']);
+    expect(graph.users).toEqual([source.files[1], source.files[3]]);
+    expect(graph.used).toEqual([source.files[2], source.files[3]]);
+    expect(graph.hidden).toEqual({ users: 0, used: 0 });
+  });
+
+  it('keeps the first twenty paths per column and counts hidden boxes after assigning mutual neighbours to the left', () => {
+    expect(NEIGHBOR_LIMIT).toBe(20);
+    expect(NEIGHBOR_ROW_HEIGHT).toBe(160);
+    const users = Array.from({ length: 22 }, (_, i) => file(`user${String(i).padStart(2, '0')}`, 'users'));
+    const used = Array.from({ length: 21 }, (_, i) => file(`used${String(i).padStart(2, '0')}`, 'used'));
+    const source = { ...map, files: [file('center', 'a'), ...users.toReversed(), ...used.toReversed()], edges: [
+      ...users.map(file => edge(file.id, 'center')), ...used.map(file => edge('center', file.id)),
+      edge('center', users[0].id), edge('center', users[21].id),
+    ] };
+    const graph = neighborhoodGraph(source, 'center');
+    expect(graph.boxes).toHaveLength(41);
+    expect(graph.boxes.filter(box => box.x === 0).map(box => box.id)).toEqual(users.slice(0, 20).map(file => file.id));
+    expect(graph.boxes.filter(box => box.x === 640).map(box => box.id)).toEqual(used.slice(0, 20).map(file => file.id));
+    expect(graph.hidden).toEqual({ users: 2, used: 1 });
+    expect(graph.users).toEqual(users);
+    expect(graph.used).toEqual([...used, users[0], users[21]]);
+    expect(graph.arrows).toHaveLength(41);
+    expect(graph.arrows.every(arrow => graph.boxes.some(box => box.id === arrow.source) && graph.boxes.some(box => box.id === arrow.target))).toBe(true);
+    expect(graph.boxes.filter(box => box.x === 0).at(-1)?.y).toBe(19 * 160);
+  });
+
+  it('keeps an isolated file and ignores self imports and missing selections', () => {
+    const source = { ...map, edges: [edge('a1', 'a1')] };
+    expect(neighborhoodGraph(source, 'a1')).toMatchObject({ boxes: [{ id: 'a1', x: 320, y: 0 }], arrows: [], users: [], used: [], hidden: { users: 0, used: 0 } });
+    expect(neighborhoodGraph(source, 'absent')).toEqual({ boxes: [], arrows: [], users: [], used: [], hidden: { users: 0, used: 0 } });
+  });
+
+  it('detects exposed big direct-file groups and leaf folders only when all ancestors are open', () => {
+    expect(BIG_FOLDER_LIMIT).toBe(30);
+    const source = { ...map, files: [
+      ...Array.from({ length: 31 }, (_, i) => file(`a${i}`, 'a')),
+      ...Array.from({ length: 31 }, (_, i) => file(`b${i}`, 'b/leaf')),
+      ...Array.from({ length: 30 }, (_, i) => file(`c${i}`, 'c')),
+      file('child', 'a/child'),
+    ] };
+    const expandable = expandableIds(source);
+    const folders = foldersWithFiles(source).toReversed();
+    expect(shownBigFolder(new Set(['folder:a']), folders, expandable)).toBeNull();
+    expect(shownBigFolder(new Set(['folder:a', 'files:a']), folders, expandable)).toBe('a');
+    expect(shownBigFolder(new Set(['files:a']), folders, expandable)).toBeNull();
+    expect(shownBigFolder(new Set(['folder:b/leaf']), folders, expandable)).toBeNull();
+    expect(shownBigFolder(new Set(['folder:c']), folders, expandable)).toBeNull();
+    expect(shownBigFolder(new Set(['folder:c', 'folder:b', 'folder:b/leaf']), folders, expandable)).toBe('b/leaf');
+    expect(shownBigFolder(expandable, folders, expandable)).toBe('a');
+    expect(shownBigFolder(new Set(['files:']), [{ folder: '', count: 31 }], new Set(['files:']))).toBe('');
+  });
+});
 
 describe('file view of one folder', () => {
   const nested: ProjectMap = { ...map, files: [file('other', 'web'), file('child', 'api/src/child'), file('main', 'api/src'),
