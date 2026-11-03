@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Local, read-only code learning prototype",
+  "license": "MIT",
   "main": ".vite/build/main.cjs",
   "scripts": {
     "start": "electron-forge start",
