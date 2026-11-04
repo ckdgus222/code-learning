@@ -177,9 +177,9 @@ try {
   assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
   await page.screenshot({ path: path.join(root, 'test-results/packaged-local-ai.png') });
   await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
-  const cancellation = page.getByRole('status').filter({ hasText: '작업을 취소했습니다.' });
+  const cancellation = page.getByRole('status').filter({ hasText: '프로젝트를 닫았어요.' });
   await cancellation.waitFor();
-  assert.equal(await cancellation.innerText(), '작업을 취소했습니다.');
+  assert.equal(await cancellation.innerText(), '프로젝트를 닫았어요.');
   assert.match(await cancellation.getAttribute('class'), /(?:^|\s)notice--info(?:\s|$)/);
   assert.equal(await page.getByRole('alert').count(), 0);
   assert.equal(await page.locator('.files h3').count(), 0);

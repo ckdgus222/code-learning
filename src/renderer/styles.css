@@ -667,6 +667,9 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .overview-side .overview-items { grid-template-columns: minmax(0, 1fr); }
 .overview-side .tag { max-width: 100%; white-space: normal; }
 .overview-side .overview-ai { background: var(--raised); border-style: dashed; }
+.overview-review__counts { display: grid; gap: 10px; margin-bottom: 14px; }
+.overview-review__counts p { display: flex; justify-content: space-between; gap: 12px; font-size: 15px; }
+.overview-review__counts b { flex: none; color: var(--ink); }
 .resume-card h3 { font-size: 12px; color: var(--muted); }
 .resume-card > b { font-size: 16px; }
 .feature-chooser { display: flex; flex-direction: column; gap: 22px; min-width: 0; }

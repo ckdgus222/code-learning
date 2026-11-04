@@ -135,7 +135,8 @@ function validateSender(event: IpcMainInvokeEvent) {
 }
 
 const planSource = (active: ProjectSession, context: ProjectAiContext) =>
-  ({ projectId: active.id, root: active.root, context, map: () => active.map(), restoreMap: () => active.map(30_000, 'plan-map'), cancelMap: () => active.cancelMap() });
+  ({ projectId: active.id, root: active.root, context, map: () => active.map(30_000, 'plan-compare-map'),
+    restoreMap: () => active.map(30_000, 'plan-map'), cancelMap: () => active.cancelPlanCompareMap() });
 
 function current(projectId: string) {
   if (!session || session.id !== projectId) throw new AppError('PROJECT_CLOSED', '현재 선택한 프로젝트가 아닙니다.');

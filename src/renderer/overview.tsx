@@ -2,6 +2,37 @@ import React, { useId, useState } from 'react';
 import type { Evidence, LearningSpot, ProjectFile, ProjectView, SavedSpot } from '../shared/contracts';
 import type { LearningPhase, OverviewFeature, OverviewResult } from '../shared/ai';
 import { SourceButtons } from './ai-panel';
+import type { MapEntry } from './project-map';
+
+export function OverviewReview({ entry, stale, mapping, onBuild, onOpen }: {
+  entry: MapEntry | null; stale: boolean; mapping: boolean; onBuild(): void; onOpen(): void;
+}) {
+  const titleId = useId();
+  let content: React.ReactNode;
+  if (mapping) {
+    content = <p role="status">세는 중…</p>;
+  } else if (entry && !stale) {
+    const { map } = entry;
+    content = <>
+      <div className="overview-review__counts">
+        <p><span>아무도 가져다 쓰지 않는 파일 후보</span><b>{map.unused.candidates.length}</b></p>
+        <p><span>어려운 코드 살펴볼 곳</span><b>{map.complexFunctions.length}</b></p>
+        <p><span>확인 못 한 import</span><b>{map.unresolved.length}</b></p>
+      </div>
+      {map.limited && <p className="hint">일부 파일만 확인했어요.</p>}
+      <button className="btn btn--small" onClick={onOpen}>프로젝트 지도에서 보기</button>
+    </>;
+  } else {
+    content = <>
+      <p className="hint">{entry && stale ? '파일이 바뀌어 다시 세야 해요.' : '아직 세지 않았어요.'}</p>
+      <button className="btn btn--small" onClick={onBuild}>{entry && stale ? '다시 세기' : '세기'}</button>
+    </>;
+  }
+  return <section className="card overview-review" aria-labelledby={titleId}>
+    <p className="eyebrow" id={titleId}>살펴볼 곳</p>
+    {content}
+  </section>;
+}
 
 export function savedDate(at: string): string {
   return new Date(at).toLocaleDateString('ko-KR', { month: 'long', day: 'numeric' });

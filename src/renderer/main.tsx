@@ -31,7 +31,7 @@ import { useAiJobs } from './use-ai-jobs';
 import { useLearning } from './use-learning';
 import { usePlanCompare } from './use-plan-compare';
 import { PlanCompare, PlanCompareEntry } from './plan-compare';
-import { ResumeCard, restoreSpot, OverviewAi, TopicBar, type Place, type Topic } from './overview';
+import { ResumeCard, restoreSpot, OverviewAi, OverviewReview, TopicBar, type Place, type Topic } from './overview';
 import type { OverviewFeature, FileExplanationRange } from '../shared/ai';
 import { Welcome } from './welcome';
 import './styles.css';
@@ -570,6 +570,7 @@ function App() {
   }
 
   async function cancel() {
+    const closing = project !== null;
     openedAt.current++;
     const current = ++request.current;
     setProject(null); setSource(null); setEvidence(null); selectSymbol(null); map.forget(); callSearch.forget(); git.forget(); forgetOverview();
@@ -577,7 +578,7 @@ function App() {
     const result = await window.learning.cancel();
     if (current !== request.current) return;
     setBusy(false);
-    if (result.ok) setNotice('작업을 취소했습니다.');
+    if (result.ok) setNotice(closing ? '프로젝트를 닫았어요.' : '작업을 취소했습니다.');
     else setError(result.message);
   }
 
@@ -712,6 +713,8 @@ function App() {
                   onEvidence={next => { setView('code'); void showEvidence(next, null, 'overview'); }}
                   onFollow={followFeature} onFunction={(name, at) => void showNamedFunction(name, at)} />
                 <PlanCompareEntry state={planCompare} onOpen={() => setView('plan')} />
+                <OverviewReview entry={map.entry} stale={map.entry !== null && map.entry.revision !== revision.current}
+                  mapping={map.mapping} onBuild={() => void map.build()} onOpen={() => { setMapTab('file'); setView('map'); }} />
                 <section className="card card--wide">
                   <h3>확인한 범위와 모르는 부분</h3>
                   <p className="stat">읽을 수 있는 파일 <b>{project.files.length}</b>개</p>
