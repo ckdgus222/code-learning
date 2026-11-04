@@ -254,7 +254,7 @@ describe('big folder list view', () => {
     const setSelected = vi.mocked(ReactHooks.useState).mock.results[1].value[1];
     const selected = setSelected.mock.calls[0][0] as MapArrow;
     expect(selected.id).toBe(drawnEdges()[0].id);
-    expect(html).toContain('지도에는 &#x27;이 파일을 가져다 씀&#x27;을 20개까지만 그렸어요. 나머지 1개는 아래 목록에 있어요.');
+    expect(html).toContain('지도에는 &#x27;이 파일을 가져다 씀&#x27;을 20개까지만 그렸어요. 나머지 1개는 고른 상자 카드의 목록에 있어요.');
     expect(html).toContain(`이 파일을 가져다 씀 21곳: ${source.files.filter(file => file.folder === 'c').map(file => file.relativePath).join(', ')}`);
     expect(html).toContain('가져다 씀 1곳: b/b0.ts');
     expect(render(opened, null, null, source, selected, { fileId: 'a00', opened })).toContain('고른 화살표의 근거 · import 1개');
@@ -295,7 +295,7 @@ describe('big folder list view', () => {
       .map(file => ({ ...map.edges[0], fromFileId: 'a00', toFileId: file.id })) };
     const html = render(opened, null, null, outgoing, null, { fileId: 'a00', opened });
     expect(drawnNodes()).toHaveLength(21);
-    expect(html).toContain('지도에는 &#x27;가져다 씀&#x27;을 20개까지만 그렸어요. 나머지 10개는 아래 목록에 있어요.');
+    expect(html).toContain('지도에는 &#x27;가져다 씀&#x27;을 20개까지만 그렸어요. 나머지 10개는 고른 상자 카드의 목록에 있어요.');
     expect(html).toContain(`가져다 씀 30곳: ${source.files.filter(file => file.folder === 'b').map(file => file.relativePath).sort((a, b) => a.localeCompare(b)).join(', ')}`);
     expect(html).toContain('이 파일을 가져다 씀 0곳: 없음');
   });
@@ -741,4 +741,110 @@ it('uses a 24px line grid on the shared canvas', () => {
   const background = React.Children.toArray(props.children).find(child => React.isValidElement(child) && child.type === Background);
   expect(background).toBeDefined();
   expect((background as React.ReactElement<React.ComponentProps<typeof Background>>).props).toMatchObject({ variant: BackgroundVariant.Lines, gap: 24 });
+});
+
+
+describe('file map side cards', () => {
+  const pickedCard = (html: string) => html.match(/aria-label="고른 상자">(.*?)<\/section>/)![1];
+
+  it('shows guidance without a selection and drops stale selections after folding', () => {
+    const opened = new Set(['folder:web']);
+    for (const html of [render(), render(new Set(), { id: 'folder:web/app', opened })]) {
+      expect(pickedCard(html)).toContain('상자의 ‘이어진 것만’을 누르면 그 상자의 연결이 여기에 보여요.');
+      expect(pickedCard(html)).not.toContain('이어진 것만 보는 중');
+      expect(pickedCard(html)).not.toContain('안의 파일 펼치기');
+    }
+  });
+
+  it.each(['folder:web/app', 'folder:web/lib'])('shows the same names and nonempty connection lines for %s', id => {
+    const opened = new Set(['folder:web']);
+    const html = render(opened, { id, opened });
+    const card = pickedCard(html);
+    expect(card).toContain(`class="map-picked__name">${id.slice(7)}</p>`);
+    expect(card).toContain('aria-label="이어진 것만 보는 중"');
+    expect(card).toContain('모두 보기');
+    expect(card).toContain('안의 파일 펼치기');
+    expect(card).toContain(id.endsWith('app') ? '가져다 씀 1곳: lib/' : '이 상자를 가져다 씀 1곳: app/');
+    expect(card).not.toMatch(/0곳:/);
+    const expand = vi.mocked(JSX.jsxDEV).mock.results.map(result => result.value as React.ReactElement<Record<string, unknown>>)
+      .find(element => element.type === 'button' && element.props.children === '안의 파일 펼치기')!;
+    (expand.props.onClick as () => void)();
+    const setOpened = vi.mocked(ReactHooks.useState).mock.results[0].value[1];
+    expect(setOpened).toHaveBeenCalledWith(new Set(['folder:web', id]));
+  });
+
+  it('keeps selected file paths and both list-mode connection lines inside the side card', () => {
+    const source = { ...map, files: [...map.files, ...Array.from({ length: 80 }, (_, i) => file(`extra${i}`, 'web/app'))] };
+    const opened = fileViewOf('web/app', expandableIds(source));
+    const card = pickedCard(render(opened, null, null, source, null, { fileId: 'a', opened }));
+    expect(card).toContain('class="map-picked__path">web/app/a.ts</p>');
+    expect(card).toContain('<div class="map-connections">');
+    expect(card).toContain('이 파일을 가져다 씀 0곳: 없음');
+    expect(card).toContain('가져다 씀 1곳: web/lib/b.ts');
+    expect(card).not.toContain('안의 파일 펼치기');
+  });
+
+  it('routes side-card folder opening through the big-folder selection rule', () => {
+    const source = { ...map, files: [...map.files, ...Array.from({ length: 80 }, (_, i) => file(`extra${i}`, 'web/app'))] };
+    const opened = new Set(['folder:web']);
+    render(opened, { id: 'folder:web/app', opened }, null, source);
+    const expand = vi.mocked(JSX.jsxDEV).mock.results.map(result => result.value as React.ReactElement<Record<string, unknown>>)
+      .find(element => element.type === 'button' && element.props.children === '안의 파일 펼치기')!;
+    (expand.props.onClick as () => void)();
+    expect(vi.mocked(ReactHooks.useState).mock.results[0].value[1]).toHaveBeenCalledWith(fileViewOf('web/app', expandableIds(source)));
+  });
+
+  it.each([0, 1])('keeps all review counts and focus targets, including %i candidates', count => {
+    const source = { ...map, unused: { ...map.unused, candidates: count ? [{ fileId: 'a', relativePath: 'web/app/a.ts' }] : [] } };
+    const html = render(new Set(), null, null, source);
+    expect(html).toContain(`aria-label="아무도 가져다 쓰지 않는 파일 후보 ${count}개"`);
+    expect(html).toContain(`id="map-unused-files" tabindex="-1">아무도 가져다 쓰지 않는 파일 후보 · ${count}개`);
+    for (const [label, id] of [
+      ['다른 파일이 가져다 쓰지 않는 export 후보', 'map-unused-exports'],
+      ['어려운 코드 살펴볼 곳', 'map-complex-functions'], ['확인 못 한 import', 'map-unresolved'],
+    ]) {
+      expect(html).toContain(`aria-label="${label} 0개"`);
+      expect(html).toContain(`id="${id}" tabindex="-1"`);
+    }
+  });
+
+  it('opens review details before scrolling and focusing, and tolerates a missing target', () => {
+    render();
+    const button = vi.mocked(JSX.jsxDEV).mock.results.map(result => result.value as React.ReactElement<Record<string, unknown>>)
+      .find(element => element.type === 'button' && element.props['aria-label'] === '확인 못 한 import 0개')!;
+    const details = { open: false };
+    const heading = { closest: vi.fn(() => details), scrollIntoView: vi.fn(() => expect(details.open).toBe(true)), focus: vi.fn() };
+    const getElementById = vi.fn().mockReturnValueOnce(null).mockReturnValueOnce(heading);
+    vi.stubGlobal('document', { getElementById });
+    try {
+      const onClick = button.props.onClick as () => void;
+      expect(onClick).not.toThrow();
+      expect(heading.scrollIntoView).not.toHaveBeenCalled();
+      onClick();
+      expect(getElementById).toHaveBeenCalledWith('map-unresolved');
+      expect(heading.scrollIntoView).toHaveBeenCalledWith({ block: 'start' });
+      expect(heading.focus).toHaveBeenCalledWith({ preventScroll: true });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('splits folder labels visually while preserving their exact text and compact change tags', () => {
+    render(new Set(['folder:web']));
+    const props = vi.mocked(ReactFlow).mock.calls.at(-1)![0];
+    const NodeType = props.nodeTypes!.box;
+    for (const node of props.nodes!.filter(node => (node.data.box as { kind: string }).kind === 'folder')) {
+      const box = node.data.box as { label: string };
+      const html = renderToStaticMarkup(React.createElement(ReactFlowProvider, {
+        children: React.createElement(NodeType, { ...node, data: node.data } as never),
+      }));
+      const label = html.match(/<b>(.*?)<\/b>/)![1];
+      expect(label.replace(/<[^>]+>/g, '')).toBe(box.label);
+      expect(label).toContain('class="map-box__name"');
+      expect(label).toContain('class="visually-hidden"> · </span>');
+      expect(label).toContain('class="map-box__count"');
+      expect(html).toContain('class="map-box__tags"');
+      expect(html).toContain('바뀐 파일');
+    }
+  });
 });

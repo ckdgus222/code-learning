@@ -792,7 +792,9 @@ function App() {
               <button aria-pressed={mapTab === 'feature'} onClick={() => setMapTab('feature')}>기능별 연결</button>
               <button aria-pressed={mapTab === 'file'} onClick={() => setMapTab('file')}>파일 연결</button>
             </div>
-            <p className="map-heading__note"><Icon name="link" />코드에서 찾은 연결 · 실행 기록이 아니에요</p>
+            <p className="map-heading__note"><Icon name="link" />{mapTab === 'file'
+              ? '화살표는 ‘가져다 씀(import)’이에요 · 실행 순서가 아니에요'
+              : '코드에서 찾은 연결 · 실행 기록이 아니에요'}</p>
           </div>
           {mapTab === 'feature' && <>
             <RoutesStatus state={features} retryDisabled={busy || features.stale}

@@ -435,18 +435,56 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .map-actions__label, .flow-evidence__label { color: var(--muted); font-size: 12px; }
 .map-actions--feature h3 { font-size: 22px; font-weight: 700; }
 .map-canvas { height: 60vh; min-height: 360px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
-.map-canvas .react-flow__node.map-box { width: 200px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--raised); color: var(--ink); text-align: left; font-size: 13px; }
-.map-canvas .react-flow__node.map-box--folder { background: var(--accent-soft); border-color: var(--accent); }
+.map-canvas .react-flow__node.map-box { width: 200px; padding: 8px 10px; border: 1.5px solid var(--accent); border-radius: 3px; background: var(--surface); color: var(--ink); text-align: left; font-size: 13px; }
 .map-canvas .react-flow__node.map-box--dim { opacity: .35; }
-.map-canvas .react-flow__node.map-box--focus { outline: 2px solid var(--accent); }
+.map-canvas .react-flow__node.map-box--focus { background: var(--accent-soft); box-shadow: inset 0 0 0 1.5px var(--accent); }
 .map-canvas .react-flow__node.selected { outline: 2px solid var(--accent); }
+.map-canvas .react-flow__node.map-box--focus.selected { outline: none; }
 .map-canvas .react-flow { --xy-background-color: var(--surface); --xy-background-pattern-color: var(--grid); --xy-controls-button-background-color: var(--side); --xy-controls-button-background-color-hover: var(--raised); --xy-controls-button-color: var(--ink); --xy-controls-button-border-color: var(--line); }
 .map-canvas .react-flow__attribution { background: var(--side); }
 .map-canvas .react-flow__attribution a { color: var(--muted); }
 .map-box__label { display: grid; gap: 4px; overflow-wrap: anywhere; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* minmax(0, 1fr) lets the one-line folder name shrink to its ellipsis instead of widening past the box. */
+.map-box .map-box__label { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.map-box .map-box__label > b { font: 700 15px/18px var(--mono); color: var(--ink); }
+.map-box__name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.map-box__count { display: block; font-size: 13px; line-height: 16px; font-weight: 400; color: var(--muted); }
+.map-box > button { display: block; line-height: 16px; }
+.map-box__tags { display: flex; flex-wrap: wrap; gap: 2px; }
+.map-box__tags:empty { display: none; }
+.map-box__tags .tag { margin: 0; padding: 1px 4px; font-size: 11px; line-height: 14px; }
+.file-map { display: grid; gap: 12px; min-width: 0; }
+.map-layout { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+.map-main { flex: 999 1 640px; min-width: 0; display: grid; gap: 12px; }
+.map-side { flex: 1 1 320px; min-width: 0; max-width: 380px; display: flex; flex-direction: column; gap: 14px; }
+.map-picked { border-top: 3px solid var(--accent); padding: 18px 20px; overflow-wrap: anywhere; }
+.map-picked__name { font: 700 18px var(--mono); overflow-wrap: anywhere; }
+.map-picked__path { font: 700 16px var(--mono); overflow-wrap: anywhere; }
+.map-picked .hint, .map-picked .map-connections { font-size: 14px; overflow-wrap: anywhere; }
+.map-side__label { font-size: 12px; letter-spacing: .08em; color: var(--muted); }
+.map-review { padding: 16px 20px; }
+.map-review__link { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 8px 0; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); text-align: left; font-size: 14px; overflow-wrap: anywhere; }
+.map-review__link b { color: var(--accent); }
+.map-view-toggle { display: inline-flex; }
+.map-view-toggle .btn { height: 38px; border-radius: 0; }
+.map-view-toggle .btn:first-child { border-radius: 3px 0 0 3px; }
+.map-view-toggle .btn:last-child { border-radius: 0 3px 3px 0; }
+.map-view-toggle .btn:only-child { border-radius: 3px; }
+.map-view-toggle .btn + .btn { margin-left: -1px; }
+.map-view-toggle .btn[aria-pressed="true"] { position: relative; background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.file-map > .map-actions select { height: 38px; min-width: 240px; }
+.map-help, .map-instruction { color: var(--muted); font-size: 13px; }
+.map-help summary { cursor: pointer; }
+.map-help p { margin-top: 8px; }
+.file-map > .card > h3, .file-map > details.card > summary, .map-list-heading { padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.file-map > .card > h3, .file-map > details.card > summary, .map-list-heading h3 { font-size: 17px; font-weight: 700; color: var(--ink); }
+.map-list-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+.map-list-heading .hint { font-size: 13px; }
 .map-neighborhood-scroll { overflow-x: auto; min-width: 0; }
 .map-neighborhood-scroll .map-canvas { min-width: 900px; }
-.map-box--neighbor .map-box__label > b { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+/* A long file name would grow the box past its row and cover the box below; the full name is in the box's title. */
+.map-box--file .map-box__label > b { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .map-canvas .map-arrow .react-flow__edge-path { stroke: var(--accent); stroke-width: 1.6; }
 .map-canvas .map-arrow--faint .react-flow__edge-path { opacity: .25; }
 .map-canvas .map-arrow--strong .react-flow__edge-path { stroke-width: 2.4; }
@@ -463,8 +501,11 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .map-connections li { display: grid; gap: 2px; justify-items: start; }
 .map-connections__line { padding-left: 8px; }
 /* Up to 1,000 rows: the list scrolls on its own so the neighbourhood map below stays in reach. */
-.map-big-folder { max-height: 360px; overflow-y: auto; }
-.map-big-folder li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.map-big-folder { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0; max-height: 360px; overflow-y: auto; }
+.map-big-folder li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; padding: 10px 20px; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); }
+.map-big-folder li:has(button[aria-pressed="true"]) { background: var(--accent-soft); }
+.map-big-folder button { max-width: 100%; font-family: var(--mono); overflow-wrap: anywhere; white-space: normal; text-align: left; }
+.map-big-folder button[aria-pressed="true"] { font-weight: 700; }
 
 /* Plan v2.3 C-2: kinds of change, and the read-only comparison. */
 .tag--change { background: var(--raised); color: var(--ink); }
