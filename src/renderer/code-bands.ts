@@ -8,6 +8,10 @@ export function functionParams(params: string): string {
   return text.length > 60 ? `${text.slice(0, 60)}…` : text || '없음';
 }
 
+export function functionCalls(calls: string[], omitted: number): string {
+  return calls.join(', ') + (omitted > 0 ? ` 외 ${omitted}개` : '');
+}
+
 export function functionBands(analysis: Analysis, guide: FileGuide | null, lineCount: number): {
   headers: { line: number; items: FunctionBandItem[] }[];
   lines: { line: number; kind: FunctionBandKind }[];

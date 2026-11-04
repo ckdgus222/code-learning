@@ -49,6 +49,9 @@ describe('file guide card', () => {
     const disclosure = html.match(/^<details[^>]*>/)![0];
     expect(disclosure.includes('open=""')).toBe(open);
     expect(disclosure).toContain('aria-label="이 파일은"');
+    const summary = html.match(/<summary>(.*?)<\/summary>/)![1];
+    expect(summary).toContain(`이 파일은 · ${guide.role.label}`);
+    expect(summary).toContain('<small> · 코드 모양으로 추정</small>');
     expect(html).toContain('자세한 문장 설명은 AI 칸의 ‘AI로 이 파일 설명 만들기’에서 만들 수 있어요.');
   });
 
