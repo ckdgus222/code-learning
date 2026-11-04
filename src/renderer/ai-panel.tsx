@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { savedDate } from './overview';
+import { Icon } from './icons';
 import type { Evidence, SourceView } from '../shared/contracts';
 import { GEMINI_MODEL, type ConnectionReport, type LearningEvent, type LearningMode, type LearningPhase, type LearningResult } from '../shared/ai';
 
@@ -60,7 +61,8 @@ export function SourceButtons({ ids, sources, selectionId, stale, label, onEvide
   </li>)}</ul>;
 }
 
-export function AiPanel({ projectId, openedAt = 0, onSavedEvidence, evidence, relativePath, stale, draft, connections, checking, otherRunning, mode, onMode, onRunning, onInspect, onEnsure, onEvidence }: {
+export function AiPanel({ open, onClose, projectId, openedAt = 0, onSavedEvidence, evidence, relativePath, stale, draft, connections, checking, otherRunning, mode, onMode, onRunning, onInspect, onEnsure, onEvidence }: {
+  open: boolean; onClose(): void;
   openedAt?: number; onSavedEvidence?(value: { source: SourceView; evidence: Evidence }): void;
   projectId: string; evidence: Evidence | null; relativePath: string; stale: boolean;
   /**
@@ -79,7 +81,6 @@ export function AiPanel({ projectId, openedAt = 0, onSavedEvidence, evidence, re
   onEvidence(evidence: Evidence): void;
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [questionOpen, setQuestionOpen] = useState(false);
   const [question, setQuestion] = useState('');
   const [consent, setConsent] = useState(false);
   const consentDescriptionId = useId();
@@ -88,6 +89,7 @@ export function AiPanel({ projectId, openedAt = 0, onSavedEvidence, evidence, re
   useEffect(() => { onRunning(running); }, [running, onRunning]);
   useEffect(() => () => onRunning(false), [onRunning]);
   const [status, setStatus] = useState('');
+  const [checkError, setCheckError] = useState('');
   const [error, setError] = useState('');
   const [answers, setAnswers] = useState<LearningResult[]>([]);
   const [savedAnswers, setSavedAnswers] = useState<{ jobId: string; question: string; savedAt: string }[]>([]);
@@ -111,11 +113,11 @@ export function AiPanel({ projectId, openedAt = 0, onSavedEvidence, evidence, re
   const mounted = useRef(true);
   const ready = connections?.modes.find(item => item.mode === mode);
   const draftShown = useRef(draft?.id);
+  useEffect(() => { if (open) void ensure(); }, [open]);
   useEffect(() => {
     if (!draft || draft.id === draftShown.current) return;
     draftShown.current = draft.id;
     setQuestion(draft.text);
-    setQuestionOpen(true);
     void ensure();
     if (draft.topic) {
       // A feature question is a new question: one still on its way is cancelled and its answer not shown (integrated
@@ -271,9 +273,9 @@ export function AiPanel({ projectId, openedAt = 0, onSavedEvidence, evidence, re
 
   /** Runs an installation check, automatic (`onEnsure`) or asked for (`onInspect`), and shows why it could not run. */
   async function check(run: () => Promise<string | null>) {
-    setError('');
+    setCheckError('');
     const message = await run();
-    if (message && mounted.current) setError(message);
+    if (message && mounted.current) setCheckError(message);
   }
   const ensure = () => check(onEnsure);
   const inspect = () => check(onInspect);
@@ -310,81 +312,87 @@ export function AiPanel({ projectId, openedAt = 0, onSavedEvidence, evidence, re
     }
   }
 
-  const answerScope = running || answers.length > 0;
   const blockedReason = sendBlockedReason({
     checked: connections !== null, checking, ready: ready?.ready ?? false, readyReason: ready?.reason ?? null,
     hasEvidence: evidence !== null, stale, running, otherRunning, question, consent,
   });
-  const questionScope = evidence && <p className="hint" data-testid="question-scope">질문 기준: {relativePath} · {evidence.startLine}–{evidence.endLine}행</p>;
-  return <div className="panel__body ai-panel">
-    <div className="ai-line" role="group" aria-label="AI 연결">
-      <span>AI · {shortModes[mode]} · {ready?.ready ? '준비됨' : connections ? '사용할 수 없음' : '설치 확인 필요'}</span>
-      <button className="btn btn--small" aria-expanded={questionOpen} onClick={() => { if (!questionOpen) void ensure(); setQuestionOpen(!questionOpen); }}>질문하기</button>
-      <button className="btn btn--small" aria-expanded={settingsOpen} onClick={() => { if (!settingsOpen) void ensure(); setSettingsOpen(!settingsOpen); }}>설정</button>
-    </div>
-    {answerScope && questionScope}
-    {status && <p role="status" className="hint">{status}</p>}
-    {error && <p role="alert" className="notice">{error}</p>}
-    {running && <button className="btn" onClick={cancel}>AI 작업 취소</button>}
-    <div className="ai-settings" hidden={!settingsOpen}>
-      <label>AI 사용 방식
-        <select aria-label="AI 사용 방식" value={mode} disabled={running || otherRunning} onChange={event => onMode(event.target.value as LearningMode)}>
-          {modes.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
-        </select>
-      </label>
-      <p className="hint">Mac에 설치된 공식 프로그램을 실행합니다. 답변 생성은 각 AI 제공자 서버에서 이뤄집니다.</p>
-      <p className="hint">{mode === 'local-worker' && '선택한 프로젝트에서 관련 파일을 찾아 읽습니다. '}원본 파일은 수정·생성·삭제하지 않습니다. 민감 파일·제외 파일·폴더 밖 파일은 읽기 대상에서 제외합니다.</p>
-      <button className="btn" disabled={checking || running || otherRunning} onClick={inspect}>{checking ? '설치 확인 중…' : '로컬 AI 설치 확인'}</button>
-      {connections && <ul aria-label="로컬 AI 설치 상태">
-        {connections.providers.map(item => <li key={item.provider} className="fact fact--muted">
-          <b>{names[item.provider]} · {item.installation === 'found' ? `설치 확인 (${item.version})` : item.installation === 'missing' ? '찾지 못함' : '실행 확인 실패'}</b>
-          <p>{item.message}</p>
-        </li>)}
-      </ul>}
-      {connections && !connections.providers.some(item => item.provider === 'claude-code') &&
-        <p className="hint">자동 확인은 Codex·Antigravity만 해요. Claude Code까지 보려면 ‘로컬 AI 설치 확인’을 눌러요.</p>}
-      <p className="hint" data-testid="ai-readiness">{ready?.reason ?? '먼저 설치 상태를 확인해 주세요. 설치 확인만으로 로그인이나 실제 AI 연결이 검증되는 것은 아닙니다.'}</p>
-      <p className="hint">{mode === 'local-worker' ? `Codex 정리 → Gemini 3.8 Flash · High (${GEMINI_MODEL}) 설명 → Codex 대조`
-        : mode === 'claude-code' ? '단독 실행은 후속 단계에서 연결합니다.'
-          : '한 AI가 바로 설명합니다. 관련 파일을 더 읽지 않고 다른 AI의 대조가 없습니다.'}</p>
-    </div>
-    <div className="ai-question" hidden={!questionOpen}>
-      {!answerScope && questionScope}
-      <label>선택한 코드에 질문
-        <textarea aria-label="선택한 코드에 질문" maxLength={2000} value={question} disabled={running}
-          placeholder="이 부분은 어떤 일을 하나요?" onChange={event => setQuestion(event.target.value)} />
-      </label>
-      <label className="ai-consent"><input type="checkbox" checked={consent} disabled={running || !ready?.ready}
-        aria-describedby={consentDescriptionId} onChange={event => setConsent(event.target.checked)} />보낼 자료에 동의</label>
-      <details className="consent-details">
-        <summary>무엇을 보내나요?</summary>
-        <p id={consentDescriptionId}>선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·{mode === 'local-worker' && '관련 파일(추가 최대 4개)·'}질문·최근 답변을 {recipients[mode]}에 보내는 데 동의합니다.
-          {mode !== 'local-worker' && ' 다른 파일은 더 읽지 않습니다.'} 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.</p>
-      </details>
-      <div className="ai-actions">
-        <button className="btn btn--primary" onClick={ask} aria-describedby={blockedReason ? sendBlockedId : undefined}
-          // The reason and the lock are one decision; the view test keeps it equal to the earlier explicit gate.
-          disabled={running || blockedReason !== null}>질문 보내기</button>
-        {blockedReason && <p className="hint" id={sendBlockedId} data-testid="send-blocked">{blockedReason}</p>}
+  return <div className="ai-panel">
+    <div className="ai-head">
+      <h2>질문</h2>
+      <div className="ai-line" role="group" aria-label="AI 연결">
+        <span>AI · {shortModes[mode]} · {ready?.ready ? '준비됨' : connections ? '사용할 수 없음' : '설치 확인 필요'}</span>
+        <button className="btn btn--small" aria-expanded={settingsOpen} onClick={() => { if (!settingsOpen) void ensure(); setSettingsOpen(!settingsOpen); }}>설정</button>
       </div>
-      <p className="hint">질문과 답은 최근 50개까지 이 Mac에 저장해요. 이어 묻기는 앱을 켜 둔 동안만 돼요. 코드 범위를 바꾸면 새 대화로 시작합니다.</p>
+      <button className="btn btn--ghost btn--icon" aria-label="질문 칸 닫기" title="질문 칸 닫기" onClick={onClose}><Icon name="close" /></button>
     </div>
-    {answers.map(answer => <AnswerView key={answer.jobId} answer={answer} topic={answerTopics[answer.jobId]} stale={stale} onEvidence={onEvidence} />)}
-    {historyError && <p role="alert" className="notice">{historyError}</p>}
-    <details className="saved-answers">
-      <summary>지난 질문과 답 · {savedAnswers.length}개</summary>
-      <p className="hint">지난 답의 대화는 이어지지 않아요.</p>
-      <ul aria-label="저장된 질문">{savedAnswers.map(item => <li key={item.jobId}>
-        <p className="saved-question" title={item.question}>{item.question}</p>
-        <span className="hint">저장됨 · {savedDate(item.savedAt)} </span>
-        <button className="btn btn--small" onClick={() => void openAnswer(item.jobId)}>열기</button>
-        <button className="btn btn--small" onClick={() => void deleteAnswer(item.jobId)}>지우기</button>
-        {openedAnswer?.result.jobId === item.jobId && <>
-          {openedAnswer.changed && <p className="notice">다시 확인 필요: 답을 만든 뒤 코드가 바뀌었어요.</p>}
-          <AnswerView answer={openedAnswer.result} stale={openedAnswer.changed} onEvidence={next => void openEvidence(item.jobId, next.id)} />
-        </>}
-      </li>)}</ul>
-    </details>
+    <div className="panel__body">
+      {status && <p role="status" className="hint">{status}</p>}
+      {checkError && <p role="alert" className="notice">{checkError}</p>}
+      {error && <p role="alert" className="notice">{error}</p>}
+      {running && <button className="btn" onClick={cancel}>AI 작업 취소</button>}
+      <div className="ai-settings" hidden={!settingsOpen}>
+        <label>AI 사용 방식
+          <select aria-label="AI 사용 방식" value={mode} disabled={running || otherRunning} onChange={event => onMode(event.target.value as LearningMode)}>
+            {modes.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+          </select>
+        </label>
+        <p className="hint">Mac에 설치된 공식 프로그램을 실행합니다. 답변 생성은 각 AI 제공자 서버에서 이뤄집니다.</p>
+        <p className="hint">{mode === 'local-worker' && '선택한 프로젝트에서 관련 파일을 찾아 읽습니다. '}원본 파일은 수정·생성·삭제하지 않습니다. 민감 파일·제외 파일·폴더 밖 파일은 읽기 대상에서 제외합니다.</p>
+        <button className="btn" disabled={checking || running || otherRunning} onClick={inspect}>{checking ? '설치 확인 중…' : '로컬 AI 설치 확인'}</button>
+        {connections && <ul aria-label="로컬 AI 설치 상태">
+          {connections.providers.map(item => <li key={item.provider} className="fact fact--muted">
+            <b>{names[item.provider]} · {item.installation === 'found' ? `설치 확인 (${item.version})` : item.installation === 'missing' ? '찾지 못함' : '실행 확인 실패'}</b>
+            <p>{item.message}</p>
+          </li>)}
+        </ul>}
+        {connections && !connections.providers.some(item => item.provider === 'claude-code') &&
+          <p className="hint">자동 확인은 Codex·Antigravity만 해요. Claude Code까지 보려면 ‘로컬 AI 설치 확인’을 눌러요.</p>}
+        <p className="hint" data-testid="ai-readiness">{ready?.reason ?? '먼저 설치 상태를 확인해 주세요. 설치 확인만으로 로그인이나 실제 AI 연결이 검증되는 것은 아닙니다.'}</p>
+        <p className="hint">{mode === 'local-worker' ? `Codex 정리 → Gemini 3.8 Flash · High (${GEMINI_MODEL}) 설명 → Codex 대조`
+          : mode === 'claude-code' ? '단독 실행은 후속 단계에서 연결합니다.'
+            : '한 AI가 바로 설명합니다. 관련 파일을 더 읽지 않고 다른 AI의 대조가 없습니다.'}</p>
+      </div>
+      <div className="ai-question">
+        {evidence && <div className="question-target">
+          <span className="eyebrow">질문 대상</span>
+          <p className="question-target__code" data-testid="question-scope">{relativePath} · {evidence.startLine}–{evidence.endLine}행</p>
+        </div>}
+        <label>선택한 코드에 질문
+          <textarea aria-label="선택한 코드에 질문" maxLength={2000} value={question} disabled={running}
+            placeholder="이 부분은 어떤 일을 하나요?" onChange={event => setQuestion(event.target.value)} />
+        </label>
+        <label className="ai-consent"><input type="checkbox" checked={consent} disabled={running || !ready?.ready}
+          aria-describedby={consentDescriptionId} onChange={event => setConsent(event.target.checked)} />보낼 자료에 동의</label>
+        <details className="consent-details">
+          <summary>무엇을 보내나요?</summary>
+          <p id={consentDescriptionId}>선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·{mode === 'local-worker' && '관련 파일(추가 최대 4개)·'}질문·최근 답변을 {recipients[mode]}에 보내는 데 동의합니다.
+            {mode !== 'local-worker' && ' 다른 파일은 더 읽지 않습니다.'} 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.</p>
+        </details>
+        <div className="ai-actions">
+          <button className="btn btn--primary" onClick={ask} aria-describedby={blockedReason ? sendBlockedId : undefined}
+            // The reason and the lock are one decision; the view test keeps it equal to the earlier explicit gate.
+            disabled={running || blockedReason !== null}>질문 보내기</button>
+          {blockedReason && <p className="hint" id={sendBlockedId} data-testid="send-blocked">{blockedReason}</p>}
+        </div>
+        <p className="hint">질문과 답은 최근 50개까지 이 Mac에 저장해요. 이어 묻기는 앱을 켜 둔 동안만 돼요. 코드 범위를 바꾸면 새 대화로 시작합니다.</p>
+      </div>
+      {answers.map(answer => <AnswerView key={answer.jobId} answer={answer} topic={answerTopics[answer.jobId]} stale={stale} onEvidence={onEvidence} />)}
+      {historyError && <p role="alert" className="notice">{historyError}</p>}
+      <details className="saved-answers">
+        <summary>지난 질문과 답 · {savedAnswers.length}개</summary>
+        <p className="hint">지난 답의 대화는 이어지지 않아요.</p>
+        <ul aria-label="저장된 질문">{savedAnswers.map(item => <li key={item.jobId}>
+          <p className="saved-question" title={item.question}>{item.question}</p>
+          <span className="hint">저장됨 · {savedDate(item.savedAt)} </span>
+          <button className="btn btn--small" onClick={() => void openAnswer(item.jobId)}>열기</button>
+          <button className="btn btn--small" onClick={() => void deleteAnswer(item.jobId)}>지우기</button>
+          {openedAnswer?.result.jobId === item.jobId && <>
+            {openedAnswer.changed && <p className="notice">다시 확인 필요: 답을 만든 뒤 코드가 바뀌었어요.</p>}
+            <AnswerView answer={openedAnswer.result} stale={openedAnswer.changed} onEvidence={next => void openEvidence(item.jobId, next.id)} />
+          </>}
+        </li>)}</ul>
+      </details>
+    </div>
   </div>;
 }
 

@@ -25,6 +25,7 @@ describe('folded AI consent disclosures', () => {
   it.each(recipients)('keeps the full question disclosure and recipient for %s', (mode, recipient) => {
     for (const ready of [false, true]) {
       const html = renderToStaticMarkup(React.createElement(AiPanel, {
+        open: true, onClose() {},
         projectId: 'project', evidence: null, relativePath: '', stale: false, draft: null,
         connections: { checkedAt: '2026-10-21T00:00:00.000Z', providers: [], modes: [{ mode, ready, reason: 'test' }] },
         checking: false, otherRunning: false, mode,

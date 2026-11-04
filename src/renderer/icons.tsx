@@ -15,7 +15,6 @@ const paths = {
   changes: 'M5 3v18 M19 3v18 M2 6h6 M16 18h6 M5 10c0 5 14-1 14 5',
   search: 'M16 16l5 5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',
   wrap: 'M3 5h18 M3 10h14a4 4 0 0 1 0 8h-5 M15 15l-3 3 3 3 M3 16h4',
-  collapse: 'M4 3v18 M10 6l6 6-6 6',
   smaller: 'M2 18L7 5l5 13 M4 13h6 M16 12h6',
   larger: 'M2 18L7 5l5 13 M4 13h6 M16 12h6 M19 9v6',
 };

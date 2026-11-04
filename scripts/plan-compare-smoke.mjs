@@ -51,7 +51,8 @@ export async function checkPlanCompare(app, page, temporary, project) {
   };
   try {
     await dialogTo(project);
-    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    // The same fixture may already be open, so its heading alone does not show that this open finished.
+    await openFolder(page);
     await page.getByRole('heading', { name: path.basename(project), exact: true }).waitFor();
     await showCard();
     await card.getByRole('button', { name: '기획 문서 고르기', exact: true }).waitFor();
@@ -62,6 +63,8 @@ export async function checkPlanCompare(app, page, temporary, project) {
 
     await pick('small.md');
     await card.getByText('문서 전체를 보내요.', { exact: true }).waitFor();
+    await card.getByText('방식은 ‘질문’ 칸의 ‘설정’에서 고를 수 있어요.', { exact: false }).waitFor();
+    assert.equal(await card.getByText('오른쪽 AI 칸', { exact: false }).count(), 0);
     assert.equal(await card.getByRole('checkbox', { name: '보낼 자료에 동의', exact: true }).count(), 1);
     assert.equal(await card.getByRole('button', { name: '대조하기', exact: true }).isDisabled(), true);
 

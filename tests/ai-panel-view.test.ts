@@ -10,35 +10,57 @@ describe('compact AI panel', () => {
     ['antigravity', 'Gemini 단독'], ['claude-code', 'Claude Code(준비 중)'],
   ];
 
-  it.each(modes)('shows readiness for %s while settings and questions start folded', (mode, label) => {
+  it.each(modes)('shows readiness for %s with a visible question and folded settings', (mode, label) => {
     for (const ready of [null, false, true]) {
       const connections: ConnectionReport | null = ready === null ? null : {
         checkedAt: '2026-10-23T00:00:00.000Z', providers: [], modes: [{ mode, ready, reason: 'test' }],
       };
       const html = renderToStaticMarkup(React.createElement(AiPanel, {
+        open: true, onClose() {},
         projectId: 'project', evidence: null, relativePath: '', stale: false, draft: null,
         connections, checking: false, otherRunning: false, mode,
         onMode() {}, onRunning() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onEvidence() {},
       }));
       expect(html).toContain('class="ai-line" role="group" aria-label="AI 연결"');
       expect(html).toContain(`AI · ${label} · ${ready === null ? '설치 확인 필요' : ready ? '준비됨' : '사용할 수 없음'}`);
-      expect(html).toMatch(/<button[^>]*aria-expanded="false">질문하기<\/button>/);
+      expect(html).not.toContain('질문하기');
       expect(html).toMatch(/<button[^>]*aria-expanded="false">설정<\/button>/);
       expect(html).toContain('<div class="ai-settings" hidden="">');
-      expect(html).toContain('<div class="ai-question" hidden="">');
+      expect(html).toContain('<div class="ai-question">');
+      expect(html).not.toContain('question-target');
+      expect(html).not.toContain('data-testid="question-scope"');
+      expect(html).toMatch(/^<div class="ai-panel"><div class="ai-head"><h2>질문<\/h2><div class="ai-line"/);
+      expect(html).toMatch(/>설정<\/button><\/div><button class="btn btn--ghost btn--icon" aria-label="질문 칸 닫기" title="질문 칸 닫기"><svg.*?<\/svg><\/button><\/div><div class="panel__body">/);
       expect(html).not.toContain('role="tab"');
       expect(html).not.toContain('AI 작업 취소');
     }
   });
 
+  it('places one selected code range before the question without inventing a function name', () => {
+    const html = renderToStaticMarkup(React.createElement(AiPanel, {
+      open: true, onClose() {},
+      projectId: 'project', relativePath: 'web/lib/auth.ts', stale: false, draft: null,
+      evidence: { id: 'selection', projectId: 'project', fileId: 'file', fileHash: 'a'.repeat(64),
+        startUtf16: 20, endUtf16: 100, startLine: 3, endLine: 12 },
+      connections: null, checking: false, otherRunning: false, mode: 'local-worker',
+      onMode() {}, onRunning() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onEvidence() {},
+    }));
+    expect(html).toContain('<div class="ai-question"><div class="question-target"><span class="eyebrow">질문 대상</span><p class="question-target__code" data-testid="question-scope">web/lib/auth.ts · 3–12행</p></div><label>선택한 코드에 질문');
+    expect(html.match(/data-testid="question-scope"/g)).toHaveLength(1);
+    expect(html).not.toContain('질문 기준:');
+    expect(html).not.toContain('login()');
+  });
+
   it('places the blocked reason immediately after the send button and links its description', () => {
     const html = renderToStaticMarkup(React.createElement(AiPanel, {
+      open: true, onClose() {},
       projectId: 'project', evidence: null, relativePath: '', stale: false, draft: null,
       connections: null, checking: true, otherRunning: false, mode: 'local-worker',
       onMode() {}, onRunning() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onEvidence() {},
     }));
     const actions = html.match(/<div class="ai-actions">(.*?)<\/div>/)?.[1];
     expect(actions).toBeDefined();
+    expect(actions).toMatch(/^<button class="btn btn--primary"/);
     const descriptionId = actions?.match(/<button[^>]*aria-describedby="([^"]+)"/)?.[1];
     expect(descriptionId).toBeTruthy();
     expect(actions).toContain(`>질문 보내기</button><p class="hint" id="${descriptionId}" data-testid="send-blocked">로컬 AI 설치를 확인하는 중이에요.</p>`);
@@ -55,6 +77,7 @@ describe('compact AI panel', () => {
       { ...automatic.providers[0], provider: 'claude-code' }] };
     for (const connections of [null, automatic, manual]) {
       const html = renderToStaticMarkup(React.createElement(AiPanel, {
+        open: true, onClose() {},
         projectId: 'project', evidence: null, relativePath: '', stale: false, draft: null,
         connections, checking: false, otherRunning: false, mode: 'local-worker',
         onMode() {}, onRunning() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onEvidence() {},
