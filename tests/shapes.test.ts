@@ -103,6 +103,8 @@ const idOf = (relative: string) => project.files.find(file => file.relativePath 
 const at = (relative: string) => path.join(root, relative);
 // A path with / as the checker writes it on every OS.
 const slashed = (name: string) => name.split(path.sep).join('/');
+// A path as the checker gives it for a file it opened: / and, on Windows, a lowercase drive letter.
+const checkerName = (name: string) => slashed(name).replace(/^[A-Z]:/, drive => drive.toLowerCase());
 async function targetOf(relative: string, name: string) {
   const { text, hash } = await readAllowed(root, relative);
   const symbol = analyzeSource(text, relative, { projectId: project.id, fileId: idOf(relative), fileHash: hash }).symbols.find(item => item.name === name)!;
@@ -305,17 +307,27 @@ describe('dependency type files (plan v2.3 V-2 reading rules)', () => {
     expect(fs.realpath!(at('node_modules/pnpm-style'))).toBe(slashed(at('node_modules/.pnpm/pnpm-style@1.0.0/node_modules/pnpm-style')));
   });
 
-  it('answers checker paths with forward slashes the same as app paths', async () => {
+  it('answers checker paths with forward slashes and a lowercase drive letter the same as app paths', async () => {
     const { callbacks: fs } = await callbacks();
     for (const relative of ['src/order.ts', 'node_modules/pricing/index.d.ts', 'node_modules/pnpm-style/index.d.ts', 'src/hidden.ts']) {
       const name = at(relative);
-      expect(fs.readFile!(slashed(name))).toBe(fs.readFile!(name));
-      expect(fs.fileExists!(slashed(name))).toBe(fs.fileExists!(name));
+      expect(fs.readFile!(checkerName(name))).toBe(fs.readFile!(name));
+      expect(fs.fileExists!(checkerName(name))).toBe(fs.fileExists!(name));
     }
     for (const relative of ['', 'src', 'node_modules/pricing', 'node_modules/pnpm-style']) {
       const name = at(relative);
-      expect(fs.getAccessibleEntries!(slashed(name))).toEqual(fs.getAccessibleEntries!(name));
+      expect(fs.getAccessibleEntries!(checkerName(name))).toEqual(fs.getAccessibleEntries!(name));
     }
+  });
+
+  it('leaves checker library paths with a lowercase drive letter to the real file system', () => {
+    const libDir = (path.join(outsideDir, 'lib') + path.sep).replace(/^[A-Z]:/, drive => drive.toLowerCase());
+    const { callbacks: fs } = fileCallbacks(root, new Map(), new Set(['']), libDir, newStopSlots(), SHAPE_LIMITS);
+    const libFile = checkerName(path.join(libDir, 'lib.es5.d.ts'));
+    expect(fs.readFile!(libFile)).toBeUndefined();
+    expect(fs.fileExists!(libFile)).toBeUndefined();
+    expect(fs.directoryExists!(libFile)).toBeUndefined();
+    expect(fs.getAccessibleEntries!(libFile)).toBeUndefined();
   });
 
   it('refuses dependency types inside a folder excluded now, in reading and in listing', async () => {
