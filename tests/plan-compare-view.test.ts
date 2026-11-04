@@ -1,7 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it } from 'vitest';
-import { PlanCompare } from '../src/renderer/plan-compare';
+import { PlanCompare, PlanCompareEntry } from '../src/renderer/plan-compare';
 import type { PlanCompareFreshness, usePlanCompare } from '../src/renderer/use-plan-compare';
 import { planSections } from '../src/core/analysis/plan-sections';
 import { PlanCompareResultView } from '../src/renderer/plan-compare-result';
@@ -101,7 +101,7 @@ function renderResult(result = comparison(), freshness: PlanCompareFreshness = {
 
 it('groups results in review order and opens populated groups except matches', () => {
   const html = renderResult();
-  const groups = [...html.matchAll(/<details( open="")?><summary>([^<]+)<\/summary>/g)].slice(0, 6);
+  const groups = [...html.matchAll(/<details class="plan-group plan-group--[a-z]+"( open="")?><summary>([^<]+)<\/summary>/g)].slice(0, 6);
   expect(groups.map(match => match[2])).toEqual([
     '있지만 기획과 다름 (1)', '기획에 있는데 못 찾음 (1)', '찾았지만 확인 못 함 (1)',
     '시키지 않은 작업 후보 (1)', '설계와 다른 연결 (1)', '기획대로 있음 (1)',
@@ -184,4 +184,93 @@ it('shows a restored result, saved date and delete action without selecting a do
   expect(html).toMatch(/<button class="btn btn--small">지우기<\/button>/);
   expect(html).toContain('대조 결과 · 기획대로 1');
   expect(render(null, null, { result: comparison(), savedAt: null })).toContain('저장 전');
+});
+
+
+it('shows summary names, counts and tags in review order', () => {
+  const result = comparison();
+  result.compare.items.push({ ...result.compare.items[1], title: '추가 차이' });
+  result.compare.unrequested = [];
+  const html = renderResult(result);
+  expect(html).toContain('<div class="plan-summary" role="list" aria-label="요약">');
+  const cells = [...html.matchAll(/<div role="listitem" class="plan-summary__cell plan-summary__cell--([a-z]+)"><strong>(\d+)<\/strong><span>([^<]+)<\/span><\/div>/g)];
+  expect(cells.map(match => match.slice(1))).toEqual([
+    ['differs', '2', '다름'], ['missing', '1', '못 찾음'], ['unverified', '1', '확인 못 함'],
+    ['unrequested', '0', '시키지 않은 작업'], ['design', '1', '설계와 다른 연결'], ['matches', '1', '기획대로'],
+  ]);
+  const tags = [...renderResult().matchAll(/<span class="tag plan-tag plan-tag--([a-z]+)">([^<]+)<\/span>/g)];
+  expect(tags.map(match => match.slice(1))).toEqual([
+    ['differs', '다름'], ['missing', '못 찾음'], ['unverified', '확인 못 함'],
+    ['unrequested', '시키지 않은 작업'], ['design', '설계와 다른 연결'], ['matches', '기획대로'],
+  ]);
+});
+
+it('keeps the complete status for screen readers and separates body and evidence', () => {
+  const html = renderResult();
+  expect(html).toContain('<p role="status" class="visually-hidden">대조 결과 · 기획대로 1 · 다름 1 · 확인 못 함 1 · 못 찾음 1 · 시키지 않은 작업 후보 1 · 설계와 다른 연결 1 · 대조한 범위: 3–10줄, 15–15줄</p>');
+  expect(html).toContain('<p class="plan-item__range">기획 3–10줄</p><h4>차이</h4>');
+  const articles = [...html.matchAll(/<article class="plan-item">(.*?)<\/article>/gs)];
+  expect(articles).toHaveLength(6);
+  for (const article of articles) {
+    expect(article[1]).toContain('class="plan-item__body"');
+    expect(article[1]).toContain('class="plan-item__evidence"');
+  }
+  const design = articles.find(article => article[1].includes('plan-tag--design'))![1];
+  expect(design).not.toContain('<h4>');
+  expect(design).toContain('기획 3–10줄');
+  expect(design).toContain('직접 연결됨');
+  expect(html).toContain('‘못 찾음’은 읽은 범위에서 찾지 못했다는 뜻이고, 구현이 없다는 확정이 아니에요.');
+  expect(html).toContain('<div class="card plan-scope"><section aria-label="조사한 범위">');
+});
+
+it('uses a page heading and keeps document setup available alongside a restored result', () => {
+  const html = render(null, null, { result: comparison(), savedAt: null });
+  expect(html).toContain('<section class="page plan-page" aria-labelledby="plan-compare-title">');
+  expect(html).toContain('<h2 id="plan-compare-title" class="page__title">기획과 비교</h2>');
+  expect(html).toContain('<code class="plan-heading__doc">plan.md · 3–10줄, 15–15줄</code>');
+  expect(html).toContain('<section class="card plan-setup" aria-label="대조할 문서"><button class="btn">기획 문서 고르기</button>');
+});
+
+function renderEntry(overrides: Partial<React.ComponentProps<typeof PlanCompareEntry>['state']> = {}) {
+  return renderToStaticMarkup(React.createElement(PlanCompareEntry, { state: {
+    running: false, phase: null, result: null, savedAt: null, freshness: { status: 'fresh', reasons: [] }, document: null, ...overrides,
+  }, onOpen() {} }));
+}
+
+it('shows an entry without a named region or an empty status line', () => {
+  const html = renderEntry();
+  expect(html).toContain('<section class="card plan-entry">');
+  expect(html).toContain('<span class="eyebrow">AI가 짠 코드 검토</span><h3>기획과 비교</h3>');
+  expect(html).toContain('기획 문서를 고르면 코드가 기획대로인지, 다르거나 빠진 곳, 시키지 않은 작업 후보를 보여 줘요.');
+  expect(html).toContain('<button class="btn">기획과 비교 열기</button>');
+  expect(html).not.toMatch(/aria-label|role="region"|plan-entry__status/);
+});
+
+it.each([
+  ['collecting', '대조 자료 모으는 중'], ['organizing', '파일 고르는 중'], ['reading-related', '고른 코드 읽는 중'],
+  ['explaining', '기획 대조 작성 중'], ['reviewing', 'Codex가 대조 검토 중'], ['validating', '자료가 바뀌었는지 확인 중'], [null, '대조 작업 시작 중'],
+] as const)('prioritizes running entry status for phase %s and keeps opening enabled', (phase, label) => {
+  const html = renderEntry({ running: true, phase, result: comparison(), savedAt: '2026-11-02T03:00:00.000Z' });
+  expect(html).toContain(`<p class="plan-entry__status">대조 중 · ${label}</p>`);
+  expect(html).not.toContain('결과 있음');
+  expect(html).toContain('<button class="btn">기획과 비교 열기</button>');
+});
+
+it.each([
+  [null, 'fresh', '결과 있음 · 저장 전'],
+  [null, 'stale', '결과 있음 · 저장 전 · 다시 확인 필요'],
+  ['2026-11-02T03:00:00.000Z', 'fresh', '결과 있음 · 저장됨 · 11월 2일'],
+  ['2026-11-02T03:00:00.000Z', 'stale', '결과 있음 · 저장됨 · 11월 2일 · 다시 확인 필요'],
+  [null, 'checking', '결과 있음 · 저장 전'],
+  [null, 'error', '결과 있음 · 저장 전'],
+] as const)('shows saved entry state %s / %s', (savedAt, status, expected) => {
+  const html = renderEntry({ result: comparison(), savedAt, freshness: { status, reasons: [] },
+    document: { documentId: 'doc', name: 'plan.md', bytes: 4, ...planSections('plan') } });
+  expect(html).toContain(`<p class="plan-entry__status">${expected}</p>`);
+  expect(html).not.toContain('아직 대조하지 않았어요');
+});
+
+it('shows the selected document in the entry before comparison', () => {
+  const html = renderEntry({ document: { documentId: 'doc', name: 'plan.md', bytes: 4, ...planSections('plan') } });
+  expect(html).toContain('<p class="plan-entry__status">plan.md · 아직 대조하지 않았어요</p>');
 });

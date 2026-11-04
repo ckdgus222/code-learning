@@ -3,6 +3,13 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 
+// Reopening the same folder keeps its heading, so wait for the open button, disabled while opening, instead.
+// Opening a project returns to the overview; moving to the plan page before it finishes would be undone.
+async function openFolder(page) {
+  await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector('[aria-label="프로젝트 폴더 열기"]').disabled);
+}
+
 // Shared by development and packaged smoke tests. The picker can return only these temporary fixtures.
 export async function checkPlanCompare(app, page, temporary, project) {
   const profile = await app.evaluate(({ app }) => app.getPath('userData'));
@@ -28,7 +35,10 @@ export async function checkPlanCompare(app, page, temporary, project) {
   const card = page.getByRole('region', { name: '기획과 비교', exact: true });
   const showCard = async () => {
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await page.locator('.overview-side').getByRole('heading', { name: '기획과 비교', exact: true }).waitFor();
+    await page.getByRole('button', { name: '기획과 비교 열기', exact: true }).click();
     await card.waitFor();
+    assert.equal(await page.getByRole('button', { name: '한눈에 보기', exact: true }).getAttribute('aria-current'), 'page');
   };
   const dialogTo = file => app.evaluate(({ dialog }, file) => {
     dialog.showOpenDialog = async () => ({ canceled: file === null, filePaths: file === null ? [] : [file] });
@@ -122,7 +132,7 @@ export async function checkPlanCompare(app, page, temporary, project) {
 
     // Reopening a project clears the document even if the project ID stays the same.
     await dialogTo(project);
-    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await openFolder(page);
     await showCard();
     await card.getByRole('button', { name: '기획 문서 고르기', exact: true }).waitFor();
     assert.equal(await card.getByText(/^parent-body\.md ·/).count(), 0);
@@ -174,7 +184,7 @@ async function checkPlanCompareRequests(app, page, card, pick, temporary, showCa
     await card.getByRole('button', { name: '대조 작업 취소', exact: true }).waitFor();
     return app.evaluate(() => globalThis.compareTestRequests.at(-1));
   };
-  const send = async (job, kind) => app.evaluate(({ BrowserWindow }, { job, kind }) => {
+  const send = async (job, kind, layout = false) => app.evaluate(({ BrowserWindow }, { job, kind, layout }) => {
     const { jobId, input } = job;
     const event = { kind, jobId, projectId: input.projectId };
     if (kind === 'progress') event.phase = 'reviewing';
@@ -191,8 +201,23 @@ async function checkPlanCompareRequests(app, page, card, pick, temporary, showCa
           unrequested: [], designMismatches: [], unknowns: [] },
         basis: { planHash: 'a'.repeat(64), scopeHash: 'b'.repeat(64), mapHash: 'c'.repeat(64) }, limitations: [] };
     }
+    if (layout) {
+      const result = event.result;
+      const fileId = result.files[0].id;
+      const relativePath = `${'long'.repeat(50)}.ts`;
+      result.document.name = '문'.repeat(120);
+      result.plan[0].text = '기'.repeat(300) + '\n시험\n';
+      result.files[0].relativePath = relativePath;
+      const item = result.compare.items[0];
+      result.compare.items = ['differs', 'missing', 'unverified', 'matches'].map(status => ({ ...item, status }));
+      result.compare.unrequested = [{ title: '추가 후보', note: '기획 범위에서 못 찾음', files: [fileId] }];
+      result.edges = [{ index: 0, from: relativePath, to: relativePath, line: 1,
+        site: { fromFileId: fileId, fileHash: 'a'.repeat(64), startUtf16: 0, endUtf16: 15,
+          startLine: 1, endLine: 1, text: "import './main'", specifier: './main' } }];
+      result.compare.designMismatches = [{ plan: item.plan, edge: 0, note: '직접 연결' }];
+    }
     BrowserWindow.getAllWindows()[0].webContents.send('learning:ai-event', event);
-  }, { job, kind });
+  }, { job, kind, layout });
   try {
     await pick('small.md');
     await card.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
@@ -204,6 +229,9 @@ async function checkPlanCompareRequests(app, page, card, pick, temporary, showCa
     assert.equal(await card.getByRole('button', { name: '다른 문서 고르기', exact: true }).isDisabled(), true);
     assert.equal(await card.getByRole('checkbox', { name: '보낼 자료에 동의', exact: true }).isChecked(), false);
     await send(first, 'progress');
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await page.locator('.plan-entry__status').filter({ hasText: /^대조 중 · Codex가 대조 검토 중$/ }).waitFor();
+    await showCard();
     await card.getByRole('status').filter({ hasText: 'Codex가 대조 검토 중' }).waitFor();
     await send(first, 'plan-compare-completed');
     await card.getByRole('status').filter({ hasText: '대조 결과 · 기획대로 1 · 다름 0' }).waitFor();
@@ -256,6 +284,59 @@ async function checkPlanCompareRequests(app, page, card, pick, temporary, showCa
     assert.doesNotMatch(await card.locator('.plan-compare-result').innerText(), /코드를 읽지 않은 구조 비교/);
     await card.locator('.plan-compare-result').getByText('AI 대조 · 정확성을 보장하지 않아요 · Codex 단독 · AI 대조 없음', { exact: true }).waitFor();
     await panel.getByLabel('AI 사용 방식', { exact: true }).selectOption('local-worker');
+    // A separate fake result stresses layout without altering the evidence/freshness fixtures below.
+    const windowSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
+    const panelWasOpen = await question.getAttribute('aria-pressed') === 'true';
+    try {
+      const layoutJob = await start();
+      await send(layoutJob, 'plan-compare-completed', true);
+      await card.locator('.plan-heading__doc').filter({ hasText: '문'.repeat(120) }).waitFor();
+      assert.deepEqual(await card.getByRole('list', { name: '요약', exact: true }).getByRole('listitem').allTextContents(), [
+        '1다름', '1못 찾음', '1확인 못 함', '1시키지 않은 작업', '1설계와 다른 연결', '1기획대로',
+      ]);
+      assert.ok((await card.locator('.plan-item__body blockquote').first().textContent()).includes('기'.repeat(300)));
+      for (const [width, panelOpen] of [[1440, true], [1440, false], [760, true]]) {
+        if ((await question.getAttribute('aria-pressed') === 'true') !== panelOpen) await question.click();
+        await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
+        await page.waitForFunction(width => window.innerWidth === width, width);
+        const layout = await card.evaluate(element => {
+          const rect = selector => {
+            const { x, y, width, height, right, bottom } = element.querySelector(selector).getBoundingClientRect();
+            return { x, y, width, height, right, bottom };
+          };
+          const center = document.querySelector('.center');
+          return {
+            pageOverflow: element.scrollWidth > element.clientWidth,
+            centerOverflow: center.scrollWidth > center.clientWidth,
+            result: rect('.plan-compare-result'), body: rect('.plan-item__body'), evidence: rect('.plan-item__evidence'),
+            button: rect('.plan-item__evidence button'),
+            cells: [...element.querySelectorAll('.plan-summary__cell')].map(cell => {
+              const { x, y } = cell.getBoundingClientRect();
+              return { x, y };
+            }),
+          };
+        });
+        assert.equal(layout.pageOverflow, false, `Plan page overflow at ${width}px / panel ${panelOpen}`);
+        assert.equal(layout.centerOverflow, false, `Center overflow at ${width}px / panel ${panelOpen}`);
+        assert.equal(layout.cells[0].y, layout.cells[2].y);
+        if (width === 760) {
+          assert.ok(layout.cells[3].y > layout.cells[0].y, 'Summary uses two rows');
+          assert.equal(layout.cells[0].x, layout.cells[3].x);
+          assert.equal(layout.cells[3].y, layout.cells[5].y);
+          assert.ok(layout.button.y >= layout.body.bottom, 'Evidence appears below the body');
+          continue;
+        }
+        assert.ok(layout.cells.every(cell => cell.y === layout.cells[0].y), 'Summary uses one row');
+        assert.ok(layout.result.width >= 800, 'Results use the full page width');
+        assert.ok(layout.button.x > layout.body.x, 'Evidence appears to the right');
+        assert.ok(layout.body.right <= layout.evidence.x, 'Long excerpts and evidence never overlap');
+        assert.ok(layout.body.width >= 360, 'Long paths leave enough space for the body');
+        assert.ok(layout.evidence.width <= 281, 'Evidence column is capped at 280px');
+      }
+    } finally {
+      if ((await question.getAttribute('aria-pressed') === 'true') !== panelWasOpen) await question.click();
+      await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), windowSize);
+    }
     await checkPlanCompareResults(app, page, card, pick, temporary, showCard, dialogTo, start);
   } finally {
     await app.evaluate(({ ipcMain }) => {
@@ -339,7 +420,7 @@ async function checkPlanCompareResults(app, page, card, pick, temporary, showCar
     await writeFile(path.join(root, 'other.ts'), 'export const value = 1;\n');
     await writeFile(path.join(temporary, 'small.md'), '# 작은 기획\r\n한 줄\r\n');
     await dialogTo(root);
-    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await openFolder(page);
     await showCard();
     await pick('small.md');
     await complete(await start());
@@ -488,6 +569,7 @@ export async function checkSavedPlanCompare(app, page, temporary, restart) {
   const flush = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const show = async () => {
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    await page.getByRole('button', { name: '기획과 비교 열기', exact: true }).click();
     await card().waitFor();
   };
   const prepare = async () => {
@@ -508,7 +590,7 @@ export async function checkSavedPlanCompare(app, page, temporary, restart) {
   };
   const open = async () => {
     await app.evaluate(({ dialog }, root) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [root] }); }, root);
-    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await openFolder(page);
     await page.getByRole('heading', { name: path.basename(root), exact: true }).waitFor();
     await show();
     const recent = await page.evaluate(() => window.learning.recentProjects());
@@ -631,6 +713,9 @@ export async function checkSavedPlanCompare(app, page, temporary, restart) {
 
   await prepare(); await open(); await generate();
   await reboot(); await fresh();
+  await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+  await page.locator('.plan-entry__status').filter({ hasText: /^결과 있음 · 저장됨 ·/ }).waitFor();
+  await show(); await fresh();
   await card().getByRole('button', { name: '기획 문서 고르기', exact: true }).waitFor();
   assert.equal(await app.evaluate(() => globalThis.savedPlanAiCalls), 0);
   await openEvidence();
