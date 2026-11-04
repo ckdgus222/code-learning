@@ -6,7 +6,6 @@ Explore unfamiliar TypeScript and JavaScript projects with evidence from the cod
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: macOS Apple silicon · Windows 준비 중](https://img.shields.io/badge/Platform-macOS%20%28Apple%20silicon%29%20%7C%20Windows%20%EC%A4%80%EB%B9%84%20%EC%A4%91-555)](#-설치)
-[![GitHub release](https://img.shields.io/github/v/release/ckdgus222/code-learning)](https://github.com/ckdgus222/code-learning/releases/latest)
 
 [설치](#-설치) · [처음 사용하기](#-처음-사용하기) · [AI 기능 켜기](#-ai-기능-켜기-선택-macos)
 
@@ -74,9 +73,12 @@ Explore unfamiliar TypeScript and JavaScript projects with evidence from the cod
 
 ## 📥 설치
 
-**[macOS용 다운로드 · Apple silicon](https://github.com/ckdgus222/code-learning/releases/latest/download/Code-Learning-mac-arm64.dmg)**
+**아직 개발 중이라 배포한 설치 파일이 없습니다.**
 
-M1 이후 Apple silicon Mac용입니다. Intel Mac은 지원하지 않습니다. **Windows는 준비 중**이며, 배포되면 이곳에 추가합니다.
+M1 이후 Apple silicon Mac용으로 준비하고 있습니다. Intel Mac은 지원하지 않습니다. **Windows도 준비 중**이며, 배포되면 이곳에 추가합니다.
+
+<details>
+<summary>배포 후 첫 실행 허용 방법 (준비 중)</summary>
 
 Apple Developer ID 서명과 공증을 받지 않아 첫 실행 때 macOS가 차단할 수 있습니다. 다음 순서로 한 번 허용해 주세요.
 
@@ -87,10 +89,7 @@ Apple Developer ID 서명과 공증을 받지 않아 첫 실행 때 macOS가 차
 
 macOS 버전에 따라 버튼 문구가 다를 수 있습니다. [Apple의 실행 허용 안내](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac)도 참고하세요.
 
-<details>
-<summary>터미널을 쓰는 경우</summary>
-
-공식 배포 파일을 Applications에 옮긴 뒤 다음 명령을 실행할 수도 있습니다.
+터미널을 쓰는 경우, 공식 배포 파일을 Applications에 옮긴 뒤 다음 명령을 실행할 수도 있습니다.
 
 ```sh
 xattr -dr com.apple.quarantine "/Applications/Code Learning.app"
