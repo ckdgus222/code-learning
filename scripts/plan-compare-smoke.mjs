@@ -26,11 +26,8 @@ export async function checkPlanCompare(app, page, temporary, project) {
     });
   });
   const card = page.getByRole('region', { name: '기획과 비교', exact: true });
-  const more = page.locator('details[aria-label="더 알아보기"]');
   const showCard = async () => {
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
-    await more.waitFor();
-    if (!await more.evaluate(element => element.open)) await more.locator(':scope > summary').click();
     await card.waitFor();
   };
   const dialogTo = file => app.evaluate(({ dialog }, file) => {
@@ -400,14 +397,12 @@ async function checkPlanCompareResults(app, page, card, pick, temporary, showCar
     await stale('기획 문서가 바뀌었어요');
 
     await reopen();
-    const more = page.locator('details[aria-label="더 알아보기"]');
-    const foldedAt = Date.now();
-    await more.locator(':scope > summary').click();
-    assert.equal(await more.evaluate(element => element.open), false);
-    await writeFile(path.join(temporary, 'small.md'), '# 접힌 동안 수정\n내용');
-    await more.locator(':scope > summary').click();
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+    await writeFile(path.join(temporary, 'small.md'), '# 다른 화면에서 수정\n내용');
+    const returnedAt = Date.now();
+    await showCard();
     await stale('기획 문서가 바뀌었어요');
-    assert.ok(Date.now() - foldedAt < 10_000, 'Expanding must check before the periodic interval');
+    assert.ok(Date.now() - returnedAt < 10_000, 'Returning to the overview must check before the periodic interval');
 
     await reopen();
     await writeFile(path.join(root, 'new.ts'), 'export {};');
@@ -493,8 +488,6 @@ export async function checkSavedPlanCompare(app, page, temporary, restart) {
   const flush = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const show = async () => {
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
-    const more = page.locator('details[aria-label="더 알아보기"]');
-    if (!await more.evaluate(element => element.open)) await more.locator(':scope > summary').click();
     await card().waitFor();
   };
   const prepare = async () => {

@@ -68,7 +68,7 @@ export function ResumeCard({ saved, files, locked, onResume }: {
   const { topic, place } = saved.spot;
   const restored = restoreSpot(saved.spot, files);
   const location = place ?? { ...topic.start, symbol: topic.start.functionName ? { name: topic.start.functionName, step: null } : null };
-  return <section className="card card--wide" aria-labelledby="resume-title">
+  return <section className="card resume-card" aria-labelledby="resume-title">
     <h3 id="resume-title">지난번 학습 이어서 보기</h3>
     <b>{topic.name || topic.original}</b>
     <p>{place ? '마지막 위치' : '출발점'}: {location.relativePath}{location.symbol && ` › ${location.symbol.name}`}
@@ -128,7 +128,7 @@ export function OverviewAi({ project, state, stale, locked, readiness, checking,
   const running = state?.status === 'running';
   const candidates = [...new Map(project.overview.candidates.filter(item => item.fileId !== intro?.fileId)
     .map(item => [item.fileId, item.relativePath])).entries()];
-  return <section className="card card--wide" aria-labelledby="overview-ai">
+  return <section className="card card--wide overview-ai" aria-labelledby="overview-ai">
     <h3 id="overview-ai">기능과 구성 (AI 개요)</h3>
     <p className="hint">로컬 워커(Codex → Gemini → Codex)가 시작 파일 하나와 Codex가 고른 파일 최대 4개만 읽고 써요. 조사한 범위의 개요이고, 정확성을 보장하지 않아요.</p>
     <div className="overview-form">
@@ -158,7 +158,7 @@ export function OverviewAi({ project, state, stale, locked, readiness, checking,
         {running && <button className="btn" onClick={onCancel}>개요 작업 취소</button>}
       </div>
     </div>
-    {!state && <p className="unknown"><span className="tag tag--unknown">개요 미생성</span>아직 AI 개요를 만들지 않았어요. 위의 시작점 후보와 코드 읽기로 먼저 살펴볼 수 있어요.</p>}
+    {!state && <p className="unknown"><span className="tag tag--unknown">개요 미생성</span>아직 AI 개요를 만들지 않았어요. ‘어디부터 읽을까요?’의 시작점 후보와 코드 읽기로 먼저 살펴볼 수 있어요.</p>}
     {running && <p role="status" className="hint">{state.phase ? phases[state.phase] : '개요 작업 시작 중'}</p>}
     {state?.status === 'failed' && <p role={state.cancelled ? 'status' : 'alert'} className={state.cancelled ? 'hint' : 'notice'}>{state.message}</p>}
     {state?.status === 'done' && <p className="hint">

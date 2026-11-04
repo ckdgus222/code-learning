@@ -16,7 +16,7 @@ import { markKeysOf, sameMarkKey } from './marks';
 import { LearningMarksCard } from './learning-marks';
 import { ProjectMapView } from './project-map';
 import { FeatureChooser, FeatureList, FlowLimits, FlowPicture, FlowWalk, hasFlowCode, RoutesStatus, siteOf, useFeatureFlows, type FlowStart } from './feature-flow';
-import { codeNameOf } from '../core/analysis/flow-story';
+import { codeNameOf, routeLabel } from '../core/analysis/flow-story';
 import { matchCallStep, matchFunction, matchImport } from './map-layout';
 import { CallsFacts, type CallFunction } from './calls';
 import { ValuesFacts } from './values';
@@ -581,6 +581,7 @@ function App() {
   const fileTree = useMemo(() => buildFileTree(project?.files ?? []), [project?.files]);
   const visibleFileTree = useMemo(() => filterFileTree(fileTree, search), [fileTree, search]);
   const flowCodeName = features.flow && features.routes ? codeNameOf(features.routes.routes[features.flow.routeIndex]) : '';
+  const flowRoute = features.flow && features.routes ? routeLabel(features.routes.routes[features.flow.routeIndex]) : '';
   const flowTitle = features.selectedFeature?.name ?? features.groupingProps.index?.flatMap(group => group.features).find(feature => feature.routeIndex === features.flow?.routeIndex)?.name ?? flowCodeName;
   const intro = project?.overview.intro;
   const scope = [project?.name, source?.relativePath, symbol?.name, step?.title].filter(Boolean);
@@ -672,74 +673,78 @@ function App() {
           onStartHere={startTopicHere} onStart={() => { if (learning.topic) void openStart(learning.topic); }} onBack={() => void goBack()}
           onAsk={() => void prepareTopicQuestion()}
           onOverview={() => { setView('overview'); setFocusAnchor(learning.topic?.anchor ?? 'overview'); }} onClose={learning.closeTopic} />
-        <div className="page" hidden={view !== 'overview'}>
-          <h2 className="page__title" tabIndex={-1} data-anchor="overview">한눈에 보기</h2>
+        <div className="page page--overview" hidden={view !== 'overview'}>
+          <div className="overview-heading">
+            <h2 className="page__title" tabIndex={-1} data-anchor="overview">한눈에 보기</h2>
+            <p>{project.name} · 파일 {project.files.length}개</p>
+          </div>
           {overviewStale && <p className="notice notice--warn overview-stale"><b>다시 확인 필요:</b> 프로젝트를 연 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 아래 소개와 후보는 폴더를 열 때 읽은 내용이에요. 폴더를 다시 열면 새로 계산해요.</p>}
-          <div className="cards">
-            {learning.resume?.projectId === project.id && !learning.topic && <ResumeCard saved={learning.resume.saved} files={project.files} locked={busy}
-              onResume={() => void resumeLearning()} />}
-            {learning.marks?.projectId === project.id && <LearningMarksCard marks={learning.marks.list} files={project.files} locked={busy}
-              onOpen={mark => void openMark(mark)} />}
-            {view === 'overview' && <section className="card card--wide" aria-labelledby="overview-intro">
-              <h3 id="overview-intro">이 프로젝트는 무엇을 하나요?</h3>
-              {intro ? <>
-                <span className="tag tag--doc">문서에 적힌 소개</span>
-                {intro.title && <p className="intro__title">{intro.title}</p>}
-                {intro.text && <p className="intro__text">{intro.text}</p>}
-                <p className="hint">{intro.relativePath}{intro.startLine !== null && ` · ${intro.startLine}–${intro.endLine}줄`} · 문서 내용이 실제 코드와 맞는지는 확인하지 않았어요.</p>
-                <button className="btn btn--chip" disabled={busy} onClick={() => { setView('code'); void readFile(intro.fileId); }}>{intro.relativePath} 열기</button>
-              </> : <p className="unknown"><span className="tag tag--unknown">확인하지 못함</span>프로젝트 목적: 아직 확인하지 못했습니다.</p>}
-            </section>}
-            <FeatureChooser key={project.files[0]?.id ?? project.id} project={project} state={features}
-              mode={ai.mode} running={planCompare.running || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'}
-              checking={ai.checking} connections={ai.connections} onInspect={ai.inspectConnections} onEnsure={ai.ensureConnections} onRunning={ai.setFeatureGuideRunning}
-              revision={revision.current} locked={busy} onFollow={(index, start) => void followFeatureRoute(index, start)} />
-            {view === 'overview' && <details key={ai.overviewCard} className="card card--wide" aria-label="더 알아보기"
-              onToggle={event => { if (event.target === event.currentTarget && event.currentTarget.open) void planCompare.recheck(); }}
-              // Once an overview was asked for, its progress, result or error stays in view (the prop never turns false again).
-              open={features.routes?.routes.length === 0 || !!features.error || ai.overview !== null}>
-            <summary onClick={event => { if (ai.overview?.status === 'running') event.preventDefault(); }}>
-              더 알아보기 · 시작 파일 후보 · AI 개요 · 확인한 범위
-            </summary>
-            <section className="card card--wide card--accent" aria-labelledby="overview-start">
-              <h3 id="overview-start">어디부터 읽을까요?</h3>
-              {project.overview.candidates.length > 0 ? <ul className="starts">{project.overview.candidates.map(item =>
-                <li key={`${item.fileId}:${item.startUtf16}`}>
-                  <button className="starts__item" disabled={busy} data-anchor={`start:${item.fileId}:${item.startUtf16}`} onClick={() => void startFrom(item)}>
-                    <b>{item.name ?? '이 파일 살펴보기'}</b> <span className="path">{item.relativePath}</span>
-                  </button>
-                  <span className="hint">{candidateReasons[item.reason]}</span>
-                </li>)}</ul>
-                : <p>시작점 후보를 찾지 못했어요. <b>코드 읽기</b>에서 궁금한 파일을 골라 시작해 보세요.</p>}
-              <p className="hint"><span className="tag tag--unknown">학습 시작점 후보</span>TS/JS 파일 {project.overview.checkedFiles}개를 살펴봤어요{project.overview.limited && '(전체 중 일부)'}. 코드 구조로 고른 후보이고, 실제 실행 시작점인지는 확인하지 않았어요.</p>
-              {project.overview.notes.map(note => <p key={note} className="hint">{note}</p>)}
-            </section>
-            <OverviewAi key={ai.overviewCard} project={project} state={ai.overview} locked={busy || planCompare.running || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning}
-              stale={ai.overview?.status === 'done' && (ai.overview.revision !== revision.current || ai.overview.changed)}
-              readiness={ai.connections?.modes.find(item => item.mode === 'local-worker') ?? null} checking={ai.checking}
-              revealAnchor={learning.topic?.anchor ?? null} topicName={learning.topic ? learning.topic.name.trim() || learning.topic.original : null} onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
-              onStart={startFileId => void ai.startOverview(startFileId)} onCancel={() => void ai.cancelOverview()} onDelete={() => void ai.deleteOverview()}
-              onEvidence={next => { setView('code'); void showEvidence(next, null, 'overview'); }}
-              onFollow={followFeature} onFunction={(name, at) => void showNamedFunction(name, at)} />
-            <PlanCompare state={planCompare} mode={ai.mode} checking={ai.checking}
-              onFile={fileId => { setView('code'); void readFile(fileId); }} onImport={site => void showImport(site)}
-              readiness={ai.connections?.modes.find(item => item.mode === ai.mode) ?? null}
-              onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
-              locked={busy || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'} />
-            <section className="card card--wide">
-              <h3>확인한 범위와 모르는 부분</h3>
-              <p className="stat">읽을 수 있는 파일 <b>{project.files.length}</b>개</p>
-              <details><summary>제외 항목</summary>
-                <ul>{Object.entries(project.excluded).map(([reason, count]) => <li key={reason}>{reason}: {count}</li>)}</ul>
-              </details>
-              <ul className="checklist">
-                <li><span className="tag tag--ok">확인됨</span>파일 목록과 TS/JS 함수 안의 구문 위치{intro && ', README에 적힌 소개 문구'}</li>
-                <li><span className="tag tag--unknown">확인하지 못함</span>프로젝트 목적(문서 내용이 코드와 맞는지 포함), 기능의 실제 실행 순서. 파일끼리 가져다 쓰는 관계는 ‘프로젝트 지도’에서 볼 수 있어요.</li>
-              </ul>
-              {project.warnings.map(message => <p key={message} className="hint">{message}</p>)}
-              <p className="hint">새 파일 목록은 폴더를 다시 열어 갱신합니다. 현재 파일·제외 규칙의 변경은 읽기 전에 다시 확인합니다.</p>
-            </section>
-            </details>}
+          <div className="overview-layout">
+            <div className="overview-main">
+              {view === 'overview' && <section className="card overview-intro" aria-labelledby="overview-intro">
+                <div className="overview-intro__heading"><h3 id="overview-intro">이 프로젝트는 무엇을 하나요?</h3>
+                  {intro && <span className="tag tag--doc">문서에 적힌 소개</span>}
+                </div>
+                {intro ? <>
+                  {intro.title && <p className="intro__title">{intro.title}</p>}
+                  {intro.text && <p className="intro__text">{intro.text}</p>}
+                  <div className="overview-intro__source"><p className="hint">{intro.relativePath}{intro.startLine !== null && ` · ${intro.startLine}–${intro.endLine}줄`} · 문서 내용이 실제 코드와 맞는지는 확인하지 않았어요.</p>
+                  <button className="btn btn--chip" disabled={busy} onClick={() => { setView('code'); void readFile(intro.fileId); }}>{intro.relativePath} 열기</button></div>
+                </> : <p className="unknown"><span className="tag tag--unknown">확인하지 못함</span>프로젝트 목적: 아직 확인하지 못했습니다.</p>}
+              </section>}
+              <FeatureChooser key={project.files[0]?.id ?? project.id} project={project} state={features}
+                mode={ai.mode} running={planCompare.running || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'}
+                checking={ai.checking} connections={ai.connections} onInspect={ai.inspectConnections} onEnsure={ai.ensureConnections} onRunning={ai.setFeatureGuideRunning}
+                revision={revision.current} locked={busy} onFollow={(index, start) => void followFeatureRoute(index, start)}
+                starts={
+                  <section className="card overview-starts" aria-labelledby="overview-start">
+                    <h3 id="overview-start">어디부터 읽을까요?</h3>
+                    {project.overview.candidates.length > 0 ? <ul className="starts">{project.overview.candidates.map(item =>
+                      <li key={`${item.fileId}:${item.startUtf16}`}>
+                        <button className="starts__item" disabled={busy} data-anchor={`start:${item.fileId}:${item.startUtf16}`} onClick={() => void startFrom(item)}>
+                          <b>{item.name ?? '이 파일 살펴보기'}</b> <span className="path">{item.relativePath}</span>
+                        </button>
+                        <span className="hint">{candidateReasons[item.reason]}</span>
+                      </li>)}</ul>
+                      : <p>시작점 후보를 찾지 못했어요. <b>코드 읽기</b>에서 궁금한 파일을 골라 시작해 보세요.</p>}
+                    <p className="hint"><span className="tag tag--unknown">학습 시작점 후보</span>TS/JS 파일 {project.overview.checkedFiles}개를 살펴봤어요{project.overview.limited && '(전체 중 일부)'}. 코드 구조로 고른 후보이고, 실제 실행 시작점인지는 확인하지 않았어요.</p>
+                    {project.overview.notes.map(note => <p key={note} className="hint">{note}</p>)}
+                  </section>
+                } />
+            </div>
+            <aside className="overview-side">
+              {learning.resume?.projectId === project.id && !learning.topic && <ResumeCard saved={learning.resume.saved} files={project.files} locked={busy}
+                onResume={() => void resumeLearning()} />}
+              {learning.marks?.projectId === project.id && <LearningMarksCard marks={learning.marks.list} files={project.files} locked={busy}
+                onOpen={mark => void openMark(mark)} />}
+              {view === 'overview' && <React.Fragment key={ai.overviewCard}>
+                <OverviewAi project={project} state={ai.overview} locked={busy || planCompare.running || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning}
+                  stale={ai.overview?.status === 'done' && (ai.overview.revision !== revision.current || ai.overview.changed)}
+                  readiness={ai.connections?.modes.find(item => item.mode === 'local-worker') ?? null} checking={ai.checking}
+                  revealAnchor={learning.topic?.anchor ?? null} topicName={learning.topic ? learning.topic.name.trim() || learning.topic.original : null} onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
+                  onStart={startFileId => void ai.startOverview(startFileId)} onCancel={() => void ai.cancelOverview()} onDelete={() => void ai.deleteOverview()}
+                  onEvidence={next => { setView('code'); void showEvidence(next, null, 'overview'); }}
+                  onFollow={followFeature} onFunction={(name, at) => void showNamedFunction(name, at)} />
+                <PlanCompare state={planCompare} mode={ai.mode} checking={ai.checking}
+                  onFile={fileId => { setView('code'); void readFile(fileId); }} onImport={site => void showImport(site)}
+                  readiness={ai.connections?.modes.find(item => item.mode === ai.mode) ?? null}
+                  onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
+                  locked={busy || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'} />
+                <section className="card card--wide">
+                  <h3>확인한 범위와 모르는 부분</h3>
+                  <p className="stat">읽을 수 있는 파일 <b>{project.files.length}</b>개</p>
+                  <details><summary>제외 항목</summary>
+                    <ul>{Object.entries(project.excluded).map(([reason, count]) => <li key={reason}>{reason}: {count}</li>)}</ul>
+                  </details>
+                  <ul className="checklist">
+                    <li><span className="tag tag--ok">확인됨</span>파일 목록과 TS/JS 함수 안의 구문 위치{intro && ', README에 적힌 소개 문구'}</li>
+                    <li><span className="tag tag--unknown">확인하지 못함</span>프로젝트 목적(문서 내용이 코드와 맞는지 포함), 기능의 실제 실행 순서. 파일끼리 가져다 쓰는 관계는 ‘프로젝트 지도’에서 볼 수 있어요.</li>
+                  </ul>
+                  {project.warnings.map(message => <p key={message} className="hint">{message}</p>)}
+                  <p className="hint">새 파일 목록은 폴더를 다시 열어 갱신합니다. 현재 파일·제외 규칙의 변경은 읽기 전에 다시 확인합니다.</p>
+                </section>
+              </React.Fragment>}
+            </aside>
           </div>
         </div>
 
@@ -754,21 +759,24 @@ function App() {
               disabled={busy || features.stale} onFollow={(index, start) => void followFeatureRoute(index, start)} />}
           </>}
           {features.flow && features.routes && <FlowWalk flow={features.flow}
-            title={flowTitle}
+            title={flowTitle} route={flowRoute}
             about={features.selectedFeature?.about}
             codeName={flowCodeName} walk={features.walk} selection={features.selection}
             summary={features.summary} setSummary={features.setSummary}
             setStory={id => void showFlowNode(features.setStory(id))} setStep={index => void showFlowNode(features.setStep(index))}
             setNode={id => void showFlowNode(features.setNode(id))} locked={busy} stale={features.stale}
-            readCode={readFlowCode} onChoose={features.clearFlow} onCode={site => void showValueSite(site)} onSite={(id, site) => void showFlowSite(id, site)}
+            readCode={readFlowCode} onChoose={features.clearFlow} onMap={() => { setMapTab('feature'); setView('map'); }} onCode={site => void showValueSite(site)} onSite={(id, site) => void showFlowSite(id, site)}
             onFunction={target => void showCallFunction(target)} onAsk={(node, question, topic) => void askFlowStep(node, question, topic)}>
             {features.currentNode && (source && evidence && hasFlowCode(source, evidence, features.currentNode, features.walk.site)
               ? <div className="code flow-walk-code" data-testid="flow-code">
-                <p className="evidence" data-testid="evidence-range" data-utf16={`${evidence.startUtf16},${evidence.endUtf16}`}>근거: {source.relativePath} · {evidence.startLine}–{evidence.endLine}줄</p>
+                <div className="flow-walk-code__heading">
+                  <p className="evidence" data-testid="evidence-range" data-utf16={`${evidence.startUtf16},${evidence.endUtf16}`}>근거: {source.relativePath} · {evidence.startLine}–{evidence.endLine}줄</p>
+                  <button className="btn btn--small" disabled={busy} onClick={() => setView('code')}>코드 읽기에서 열기</button>
+                </div>
                 <Reader source={source} evidence={evidence} codeSize={codeSize} wrap={wrap}
                   symbolId={null} stepId={null} locked={busy || stale} />
               </div>
-              : <button className="btn" disabled={busy} onClick={() => void showFlowNode(features.currentNode)}>이 단계 코드 보기</button>)}
+              : <div className="flow-walk-code flow-walk-code--empty"><button className="btn" disabled={busy} onClick={() => void showFlowNode(features.currentNode)}>이 단계 코드 보기</button></div>)}
           </FlowWalk>}
           <FlowLimits project={project} routes={features.routes} flow={features.flow} locked={busy} onCode={site => void showValueSite(site)} />
         </div>}

@@ -69,7 +69,7 @@ it('highlights the selected node in each request group without marking other ste
 });
 
 const walkProps = {
-  title: '삭제', codeName: '지우기 · /dogs', walk: { through: null, storyId: null, step: 0, nodeId: null, site: null },
+  title: '삭제', route: 'DELETE /dogs/:id', onMap() {}, codeName: '지우기 · /dogs', walk: { through: null, storyId: null, step: 0, nodeId: null, site: null },
   summary: ['', '', ''] as [string, string, string], setSummary() {}, async readCode() { return null; },
   locked: false, stale: false, setStory() {}, setStep() {}, setNode() {}, onSite() {}, onCode() {}, onFunction() {}, onChoose() {}, onAsk() {},
 };
@@ -87,21 +87,24 @@ const fullStoryFlow: FeatureFlow = { ...flow, nodes: [
   { ...flow.edges[0], from: 'back', to: 'service', kind: 'calls' }] };
 
 it.each([
-  [0, '화면', '화면 쪽'], [1, '프론트 처리', '화면 쪽'], [2, '요청', '부탁(요청)이 가는 중'],
-  [3, '서버 받는 곳', '서버 쪽'], [4, '서버 처리', '서버 쪽'], [5, '저장소', '저장소(DB)'], [6, '화면 결과', '화면 쪽'],
+  [0, '화면', '화면 쪽'], [1, '프론트 처리', '화면 쪽'], [2, '요청', '요청'],
+  [3, '서버 받는 곳', '서버 쪽'], [4, '서버 처리', '서버 쪽'], [5, '저장소', '서버 쪽'], [6, '화면 결과', '화면 쪽'],
 ])('marks the current location and names step %s', (index, label, location) => {
   const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: fullStoryFlow, walk: { ...walkProps.walk, step: index as number } }));
   const picture = html.match(/<ol[^>]*aria-label="지금 여기">(.*?)<\/ol>/)![1];
   const current = picture.match(/<li[^>]*aria-current="location"[^>]*>(.*?)<\/li>/g)!;
   expect(current).toHaveLength(1);
   expect(current[0]).toContain(location);
-  expect(current[0]).toContain(index === 2 ? 'class="picture__arrow"' : 'class="picture__box"');
   expect(html).toContain(`aria-label="${Number(index) + 1}단계 ${label}"`);
-  expect(html).toContain(`지금 여기: 삭제 기능의 ${Number(index) + 1}번째 단계 · ${label}`);
-  expect(picture).toContain('<span class="tag tag--unknown">추정 연결</span> 방식 모름');
-  expect(picture.match(/<[^>]+aria-hidden="true"[^>]*>.*?<\/[^>]+>/g)).toEqual([
-    '<span aria-hidden="true">→</span>', '<span aria-hidden="true">→</span>',
-  ]);
+  expect(picture).toContain('<span class="tag tag--unknown" title="방식 모름">추정 연결</span>');
+  const spans = [...picture.matchAll(/grid-column:span (\d+)/g)].map(match => Number(match[1]));
+  expect(spans).toEqual([2, 1, 3, 1]);
+  expect(spans.reduce((sum, count) => sum + count, 0)).toBe(7);
+  expect(html).toContain('DELETE /dogs/:id');
+  const steps = storyOf(fullStoryFlow);
+  const buttons = [...html.matchAll(/<button[^>]*aria-label="\d+단계 [^"]+"[^>]*>(.*?)<\/button>/g)];
+  expect(buttons).toHaveLength(steps.length);
+  buttons.forEach((button, stepIndex) => expect(button[1]).toContain(`title="${steps[stepIndex].representative.name}"`));
   if (index === 6) expect(html).toContain('응답이 돌아와 화면 쪽으로 다시 왔어요');
 });
 
@@ -110,10 +113,12 @@ it('draws only the locations found in the story', () => {
   const picture = server.match(/<ol[^>]*aria-label="지금 여기">(.*?)<\/ol>/)![1];
   expect(picture.match(/<li /g)).toHaveLength(1);
   expect(picture).toContain('서버 쪽');
-  expect(picture).not.toMatch(/화면 쪽|요청을 보내는 코드|picture__arrow|저장소/);
+  expect(picture).not.toMatch(/화면 쪽|요청을 보내는 코드|overview-picture__arrow|저장소/);
   const requestOnly = renderToStaticMarkup(walkOf({ ...walkProps, flow: { ...flow, nodes: [nodes[1]], edges: [] } }));
   const requestPicture = requestOnly.match(/<ol[^>]*aria-label="지금 여기">(.*?)<\/ol>/)![1];
-  expect(requestPicture).toContain('요청을 보내는 코드');
+  expect(requestPicture.match(/<li /g)).toHaveLength(1);
+  expect(requestPicture).toContain('요청');
+  expect(requestPicture).not.toContain('요청을 보내는 코드');
   expect(requestPicture).not.toMatch(/<b>서버 쪽|저장소/);
 });
 
@@ -124,10 +129,43 @@ it('uses code wording throughout the navigation and location without screen or e
     const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: changed, walk: { ...walkProps.walk, step: index } }));
     expect(html.match(/<nav.*?<\/nav>/)![0]).not.toContain('화면');
     expect(html.match(/<ol[^>]*aria-label="지금 여기">.*?<\/ol>/)![0]).not.toContain('화면');
-    expect(html.match(/<p>지금 여기:.*?<\/p>/)![0]).not.toContain('화면');
+    expect(html.match(/<div class="flow-pagination">.*?<\/div>/)![0]).not.toContain('화면');
     expect(html).toContain('요청을 보내는 코드');
     if (index === steps.length - 1) expect(html).toContain('요청 뒤 처리 코드를 보고 있어요');
   }
+});
+
+it('shows a sending-code zone before the request when there is front code without screen evidence', () => {
+  const requestWithCode = { ...flow, nodes: [nodes[1], { ...nodes[2], event: null }], edges: [flow.edges[1]] };
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: requestWithCode }));
+  const zones = html.match(/<ol[^>]*aria-label="지금 여기">(.*?)<\/ol>/)![1];
+  expect(zones.match(/<li /g)).toHaveLength(2);
+  expect(zones).toContain('요청을 보내는 코드');
+  expect(zones).not.toContain('화면');
+  expect(zones.indexOf('요청을 보내는 코드')).toBeLessThan(zones.lastIndexOf('요청'));
+});
+
+it('opens the same feature in the map through the supplied callback', () => {
+  const onMap = vi.fn();
+  let openMap: (() => void) | undefined;
+  function Probe() {
+    const tree = FlowWalk({ ...walkProps, flow, onMap, selection: walkSelection(flow, walkProps.walk) });
+    const pending: React.ReactNode[] = [tree];
+    while (pending.length) {
+      const item = pending.pop();
+      if (!React.isValidElement<{ children?: React.ReactNode; onClick?: () => void; disabled?: boolean }>(item)) continue;
+      if (item.type === 'button' && item.props.children === '지도에서 보기') {
+        expect(item.props.disabled).toBe(false);
+        openMap = item.props.onClick;
+      }
+      pending.push(...React.Children.toArray(item.props.children));
+    }
+    return tree;
+  }
+  renderToStaticMarkup(React.createElement(Probe));
+  expect(openMap).toBeTypeOf('function');
+  openMap!();
+  expect(onMap).toHaveBeenCalledExactlyOnceWith();
 });
 
 it('shows the summary only at the end, with bounded named inputs and a completed sentence', () => {
@@ -197,10 +235,10 @@ it('shows one of three steps, disables previous at the start, and marks the curr
   expect(html).toContain('훅이 돌려준 값 remove를 써요');
   expect(html.match(/data-testid="story-step"/g)).toHaveLength(1);
   expect(html).toContain('1 / 3');
-  expect(html).toMatch(/disabled="">◀ 이전/);
-  expect(html).toMatch(/<button class="btn">다음 ▶/);
-  expect(html.match(/>[①②③] [^<]+<\/button>/g)).toHaveLength(3);
-  expect(html).toContain('aria-current="step">①');
+  expect(html).toMatch(/aria-label="이전 단계" disabled=""><small>◀ 이전 단계/);
+  expect(html).toMatch(/aria-label="다음 단계"><small>다음 단계 ▶/);
+  expect(html.match(/class="flow-strip__number">[123]<\/span>/g)).toHaveLength(3);
+  expect(html).toContain('aria-current="step"><span class="flow-strip__number">1');
   expect(html).not.toContain('<details open');
   const requestStep = renderToStaticMarkup(walkOf({ ...walkProps, flow, walk: { ...walkProps.walk, step: 1 } }));
   expect(requestStep).toContain('방식 모름');
@@ -208,8 +246,8 @@ it('shows one of three steps, disables previous at the start, and marks the curr
   const requestOnly = renderToStaticMarkup(walkOf({ ...walkProps, flow: { ...flow, nodes: [nodes[1]], edges: [] } }));
   expect(requestOnly).toContain('DELETE /dogs/${id} 요청을 보내요');
   expect(requestOnly).not.toContain('이 함수 안 순서');
-  expect(requestOnly).toMatch(/disabled="">◀ 이전/);
-  expect(requestOnly).toMatch(/disabled="">다음 ▶/);
+  expect(requestOnly).toMatch(/aria-label="이전 단계" disabled=""><small>◀ 이전 단계/);
+  expect(requestOnly).toMatch(/aria-label="다음 단계" disabled=""><small>다음 단계 ▶/);
 });
 it('reports missing frontend and cycles, escapes names, and disables every story navigation button when locked', () => {
   const changed = { ...flow, nodes: [{ ...nodes[0], name: '<script>bad()</script>' }],
@@ -234,9 +272,9 @@ it('shows the selected function and disables next on the last step', () => {
   const html = renderToStaticMarkup(walkOf({ ...walkProps, flow, walk: { through: null, storyId: 'request', step: 0, nodeId: 'screen', site: null } }));
   expect(html).toMatch(/aria-pressed="true">DogsPage/);
   const last = renderToStaticMarkup(walkOf({ ...walkProps, flow, walk: { ...walkProps.walk, step: 2 } }));
-  expect(last).toMatch(/disabled="">다음 ▶/);
+  expect(last).toMatch(/aria-label="다음 단계" disabled=""><small>다음 단계 ▶/);
   const stale = renderToStaticMarkup(walkOf({ ...walkProps, flow, stale: true }));
-  expect(stale).toMatch(/disabled="">다음 ▶/);
+  expect(stale).toMatch(/aria-label="다음 단계" disabled=""><small>다음 단계 ▶/);
 });
 it.each([false, true])('shows the selected function location only while the story is current (stale=%s)', stale => {
   for (const nodeId of ['screen', 'event']) {
@@ -398,13 +436,13 @@ it('renders the sixth step button and folded outside calls with their total coun
     { ...flow.edges[0], from: 'back', to: 'service' }] };
   const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: changed, walk: { ...walkProps.walk, step: 4 } }));
   expect(html).toContain('5 / 6 · 서버 처리');
-  expect(html).toContain('aria-label="6단계 저장소">⑥ 저장소</button>');
+  expect(html).toContain('aria-label="6단계 저장소"><span class="flow-strip__number">6</span><b>저장소</b>');
   expect(html).toContain('<details><summary>코드에서 부르는 다른 것 5개</summary>');
   expect(html).toContain('외 4개 더');
   expect(html).not.toContain('<details open');
   const last = renderToStaticMarkup(walkOf({ ...walkProps, flow: changed, walk: { ...walkProps.walk, step: 5 } }));
   expect(last).toContain('6 / 6 · 저장소');
-  expect(last).toContain('aria-label="6단계 저장소" aria-current="step">⑥ 저장소</button>');
+  expect(last).toContain('aria-label="6단계 저장소" aria-current="step"><span class="flow-strip__number">6</span><b>저장소</b>');
   expect(last).not.toContain('함수끼리 어떤 순서로 실행되는지는 확인하지 않았어요.');
 });
 const project = {
@@ -437,12 +475,14 @@ it('draws found screens, local requests, servers and unique links, leaving the R
   expect(html).toContain('이 프로젝트는 이렇게 나뉘어요');
   for (const text of ['화면 1개', '요청 4개', '기능 2개', 'web 폴더', 'api 폴더',
     '확실히 이어짐 1개 · 추정 1개', '서버 주소를 찾지 못한 요청 2개', '사람이 보고 누르는 곳',
-    '서버에 부탁(요청)을 보내는 코드', '부탁을 받아 일을 하는 곳']) expect(html).toContain(text);
-  expect(html.match(/class="picture__box"/g)).toHaveLength(3);
-  expect(html.match(/class="picture__arrow"/g)).toHaveLength(1);
-  expect(html.indexOf('<b>요청을 보내는 코드</b>')).toBeLessThan(html.indexOf('class="picture__arrow"'));
-  expect(html.indexOf('class="picture__arrow"')).toBeLessThan(html.indexOf('<b>서버</b>'));
-  expect(html).not.toContain('aria-hidden');
+    '요청 · 서버에 보내는 부탁', '부탁을 받아 일을 하는 곳']) expect(html).toContain(text);
+  expect(html.match(/class="overview-picture__box(?: overview-picture__box--request)?"/g)).toHaveLength(3);
+  expect(html.match(/class="overview-picture__arrow"/g)).toHaveLength(1);
+  expect(html.indexOf('<p>요청 · 서버에 보내는 부탁</p>')).toBeLessThan(html.indexOf('class="overview-picture__arrow"'));
+  expect(html.indexOf('class="overview-picture__arrow"')).toBeLessThan(html.indexOf('<p>서버 쪽 · 부탁을 받아 일을 하는 곳</p>'));
+  expect(html).toContain('class="overview-picture__arrow" aria-hidden="true">→');
+  const requestBox = html.match(/<li class="overview-picture__box overview-picture__box--request">(.*?)<\/li>/)![1];
+  expect(requestBox).toContain('확실히 이어짐 1개 · 추정 1개');
   expect(html).toContain('<span class="tag">일반 설명</span>');
   expect(html).toContain('웹 프로그램은 보통 이렇게 움직여요. 사람이 화면에서 버튼을 누르면, 화면 쪽 코드가 서버에 요청(부탁)을 보내고, 서버가 일을 한 뒤 결과를 돌려줘요. 이 프로젝트에서 실제로 어떻게 이어지는지는 기능을 하나 골라 따라가 보면 확인할 수 있어요.');
   expect(html).not.toContain('첫 문단 그대로.');
@@ -450,14 +490,14 @@ it('draws found screens, local requests, servers and unique links, leaving the R
 it('draws request code without claiming a screen for non-Next projects', () => {
   const nonNext = { ...project, files: project.files.filter(file => file.id !== 'config') };
   const html = overviewOf(routes, nonNext);
-  expect(html).not.toContain('<b>화면</b>');
-  expect(html).toContain('<b>요청을 보내는 코드</b>');
+  expect(html).not.toContain('<p>화면 쪽 · 사람이 보고 누르는 곳</p>');
+  expect(html).toContain('<p>요청 · 서버에 보내는 부탁</p>');
   expect(html).toContain('화면은 찾지 못했어요. 지금은 Next.js 화면만 알아봐요.');
 });
 it('omits the server, arrow, general explanation and the repeated no-server sentence when no routes were found', () => {
   const html = overviewOf({ ...routes, routes: [], links: [] });
-  expect(html).not.toContain('<b>서버</b>');
-  expect(html).not.toContain('picture__arrow');
+  expect(html).not.toContain('<p>서버 쪽 · 부탁을 받아 일을 하는 곳</p>');
+  expect(html).not.toContain('overview-picture__arrow');
   expect(html).not.toContain('일반 설명');
   expect(html).not.toContain('서버 주소를 찾지 못한 요청');
   // The chooser's notice right below says this; the picture does not repeat it.
@@ -465,18 +505,18 @@ it('omits the server, arrow, general explanation and the repeated no-server sent
 });
 it('does not connect screens to servers when no requests were found', () => {
   const html = overviewOf({ ...routes, requests: [], links: [] });
-  expect(html).toContain('<b>화면</b>');
-  expect(html).toContain('<b>서버</b>');
-  expect(html).not.toContain('<b>요청을 보내는 코드</b>');
-  expect(html).not.toContain('picture__arrow');
+  expect(html).toContain('<p>화면 쪽 · 사람이 보고 누르는 곳</p>');
+  expect(html).toContain('<p>서버 쪽 · 부탁을 받아 일을 하는 곳</p>');
+  expect(html).not.toContain('<p>요청 · 서버에 보내는 부탁</p>');
+  expect(html).not.toContain('overview-picture__arrow');
   expect(html).not.toContain('일반 설명');
 });
 it('counts external requests separately without drawing a local request box or arrow', () => {
   const external = { ...routes, requests: routes.requests.map(request => ({ ...request, host: 'example.com' })), links: [] };
   const html = overviewOf(external);
   expect(html).toContain('다른 서버로 보내는 요청 4개');
-  expect(html).not.toContain('<b>요청을 보내는 코드</b>');
-  expect(html).not.toContain('picture__arrow');
+  expect(html).not.toContain('<p>요청 · 서버에 보내는 부탁</p>');
+  expect(html).not.toContain('overview-picture__arrow');
   expect(html).not.toContain('일반 설명');
   expect(html).not.toContain('서버 주소를 찾지 못한 요청');
 });
@@ -498,27 +538,27 @@ it('does not assign a single folder when local requests span folders or the fold
 });
 it('reports missing links without drawing an arrow or general explanation', () => {
   const html = overviewOf({ ...routes, links: [] });
-  expect(html).toContain('<b>요청을 보내는 코드</b>');
-  expect(html).toContain('<b>서버</b>');
+  expect(html).toContain('<p>요청 · 서버에 보내는 부탁</p>');
+  expect(html).toContain('<p>서버 쪽 · 부탁을 받아 일을 하는 곳</p>');
   expect(html).toContain('요청을 보내는 코드와 서버 사이의 연결은 확인하지 못했어요.');
   expect(html).toContain('서버 주소를 찾지 못한 요청 4개');
-  expect(html).not.toContain('picture__arrow');
+  expect(html).not.toContain('overview-picture__arrow');
   expect(html).not.toContain('일반 설명');
 });
 it('draws inferred links without a general explanation when there are no sure links', () => {
   const inferred = { ...routes, links: routes.links.map(link => ({ ...link, sure: false })) };
   const html = overviewOf(inferred);
-  expect(html).toContain('picture__arrow');
+  expect(html).toContain('overview-picture__arrow');
   expect(html).toContain('확실히 이어짐 0개 · 추정 2개');
   expect(html).not.toContain('일반 설명');
 });
-it('places the escaped AI summary above the picture', () => {
+it('places the escaped AI summary below the picture', () => {
   const guide = { summary: '<script>요약</script>', groups: [], unknowns: [] };
   const html = overviewOf(routes, project, guide);
   expect(html).toContain('AI 정리');
   expect(html).toContain('&lt;script&gt;요약&lt;/script&gt;');
   expect(html).not.toContain('<script>');
-  expect(html.indexOf('요약')).toBeLessThan(html.indexOf('class="picture"'));
+  expect(html.indexOf('요약')).toBeGreaterThan(html.indexOf('class="overview-picture__grid"'));
 });
 
 it('provides a follow button per feature and disables every route action when locked', () => {
@@ -560,6 +600,7 @@ it('does not recommend an empty list or features without sure links', () => {
 });
 
 const chooserProps: Parameters<typeof FeatureChooser>[0] = {
+  starts: React.createElement('section', { 'aria-label': '어디부터 읽을까요?' }, '시작 파일 후보'),
   project: { ...project, warnings: ['파일별 최대 256 KiB까지만 읽어요.'] },
   state: { routes, groups, stale: false, finding: false, error: '', guide: null, search: '', selected: null,
     groupingProps: { flows: null, grouping: false, groupError: '', onRegroup() {}, onCancelGrouping() {} },
@@ -599,6 +640,7 @@ it.each([
   }
   const html = renderToStaticMarkup(React.createElement(Probe));
   expect(html).toContain('같으면 정보를 보기만 하는 GET 기능 먼저');
+  expect(html).toContain(`<code class="feature-route">${addresses.routes[expected].method} /dogs/${expected}</code>`);
   expect(follow).toBeTypeOf('function');
   follow!();
   expect(onFollow).toHaveBeenCalledExactlyOnceWith(expected, undefined);
@@ -611,15 +653,17 @@ it('offers start files instead of recommendation, feature list and AI controls w
   expect(html).not.toContain('기능 고르기');
   expect(html).not.toContain('처음 따라갈 기능');
   expect(html).not.toContain('AI로 기능 정리하기');
+  expect(html.indexOf('서버 코드(요청을 받는 곳)를 찾지 못해서')).toBeLessThan(html.indexOf('시작 파일 후보'));
 });
 it('places the recommendation before the list, moves AI controls inside the list and omits duplicate warnings', () => {
   const html = renderToStaticMarkup(React.createElement(FeatureChooser, chooserProps));
   expect(html.indexOf('aria-label="큰 그림"')).toBeLessThan(html.indexOf('aria-label="처음 따라갈 기능"'));
-  expect(html.indexOf('aria-label="처음 따라갈 기능"')).toBeLessThan(html.indexOf('<h3>기능 고르기</h3>'));
+  expect(html.indexOf('aria-label="처음 따라갈 기능"')).toBeLessThan(html.indexOf('시작 파일 후보'));
+  expect(html.indexOf('시작 파일 후보')).toBeLessThan(html.indexOf('<h3>기능 고르기</h3>'));
   expect(html).toMatch(/<section aria-label="기능 목록"><h3>기능 고르기<\/h3>.*<details open=""><summary hidden=""><\/summary><div class="feature-guide-ai"[^>]*>.*?AI로 기능 정리하기<\/button><\/div><p>기능 목록/);
   expect(html).toContain('이 기능에 요청을 보내는 코드 3곳을 확실히 찾았어요. 요청을 보내는 쪽부터 서버까지 따라가 볼 수 있어요.');
   expect(html).toContain('고른 기준: 요청을 보내는 코드와 확실히 이어진 곳이 가장 많은 기능(같으면 정보를 보기만 하는 GET 기능 먼저)');
-  expect(html).toMatch(/<button class="btn">이 기능부터 따라가기<\/button>/);
+  expect(html).toMatch(/<button class="btn btn--primary">이 기능부터 따라가기<\/button>/);
   expect(html).not.toContain(chooserProps.project.warnings[0]);
 });
 it.each([{ locked: true, stale: false }, { locked: false, stale: true }])('disables the recommendation for %o', ({ locked, stale }) => {
@@ -633,6 +677,7 @@ it.each([{ finding: true, error: '' }, { finding: false, error: '주소 찾기 �
   expect(html).not.toContain('서버 코드(요청을 받는 곳)를 찾지 못해서');
   expect(html).not.toContain('처음 따라갈 기능');
   expect(html).toContain(status.finding ? '주소를 찾는 중' : '주소 찾기 실패');
+  expect(html.indexOf('시작 파일 후보')).toBeGreaterThan(html.indexOf(status.finding ? '주소를 찾는 중' : '주소 찾기 실패'));
 });
 it('keeps the same recommendation while searching and renders current AI names from groups', () => {
   const named = withFeatures(feature => ({ name: `AI ${feature.name}`, about: 'AI 설명', ai: true }));
