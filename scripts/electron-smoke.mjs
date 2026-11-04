@@ -397,7 +397,7 @@ async function openLoginFlowQuestion() {
   await page.getByRole('heading', { name: '로그인 흐름 프로젝트', exact: true }).waitFor();
   await openTreeFile('web/lib/auth.ts');
   await page.getByRole('button', { name: 'login', exact: true }).click();
-  await openAiSection('질문하기');
+  await openAiPanel();
   await page.getByTestId('question-scope').waitFor();
   const question = page.getByRole('textbox', { name: '선택한 코드에 질문' });
   await question.fill('기존 질문 유지');
@@ -682,12 +682,15 @@ try {
         await ask.click();
         await page.getByRole('textbox', { name: '선택한 코드에 질문', exact: true }).waitFor();
       } else {
-        await openAiSection(entry === 'settings' ? '설정' : '질문하기');
+        if (entry === 'settings') await openAiSection('설정');
+        else await openAiPanel();
       }
       await until(async () => (await calls()).length === 1);
       assert.deepEqual(await calls(), [{ automatic: true }]);
       await openAiPanel();
       const panel = page.locator('.ai-panel');
+      assert.equal(await panel.getByRole('textbox', { name: '선택한 코드에 질문', exact: true }).isVisible(), true);
+      assert.equal(await panel.getByRole('button', { name: '질문하기', exact: true }).count(), 0);
       if (entry === 'question') {
         await page.getByTestId('send-blocked').getByText('로컬 AI 설치를 확인하는 중이에요.', { exact: true }).waitFor();
         await openAiSection('설정');
@@ -706,19 +709,21 @@ try {
         await panel.getByRole('alert').waitFor();
         assert.equal((await calls()).length, 1);
       } else {
-        assert.match(await panel.getByRole('group', { name: 'AI 연결', exact: true }).innerText(),
-          entry === 'unusable' || entry === 'missing' ? /사용할 수 없음/ : /준비됨/);
+        // The drawer checks from an effect after it opens, so its result can land after the call was seen.
+        const expected = entry === 'unusable' || entry === 'missing' ? /사용할 수 없음/ : /준비됨/;
+        await until(async () => expected.test(await panel.getByRole('group', { name: 'AI 연결', exact: true }).innerText()));
       }
       if (['ipc-failure', 'ipc-rejection', 'unusable', 'missing'].includes(entry)) {
-        // No render-triggered retry: only closing and opening the question requests another check.
-        await panel.getByRole('button', { name: '질문하기', exact: true }).click();
+        // No render-triggered retry: only closing and opening the drawer requests another check.
+        await panel.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
         assert.equal((await calls()).length, 1);
-        await openAiSection('질문하기');
+        await openAiPanel();
         const expected = entry === 'missing' ? 1 : 2;
         await until(async () => (await calls()).length === expected);
         await until(async () => !await panel.getByRole('button', { name: '설치 확인 중…', includeHidden: true }).count());
         assert.deepEqual(await calls(), Array.from({ length: expected }, () => ({ automatic: true })));
         if (entry !== 'missing') await panel.getByText('AI · 로컬 워커 · 준비됨', { exact: true }).waitFor();
+        if (entry === 'ipc-failure' || entry === 'ipc-rejection') assert.equal(await panel.getByRole('alert').count(), 0);
       }
       if (entry === 'question') {
         const note = panel.getByText('자동 확인은 Codex·Antigravity만 해요. Claude Code까지 보려면 ‘로컬 AI 설치 확인’을 눌러요.', { exact: true });
@@ -785,16 +790,23 @@ try {
     await question.click();
     assert.equal(await question.getAttribute('aria-pressed'), 'true');
     assert.equal(await panel.isVisible(), true);
+    assert.equal(await panel.getByRole('textbox', { name: '선택한 코드에 질문', exact: true }).isVisible(), true);
     await question.click();
     assert.equal(await question.getAttribute('aria-pressed'), 'false');
     assert.equal(await panel.isVisible(), false);
     assert.equal(await panel.locator('.ai-panel').count(), 1);
+    await question.click();
+    await panel.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
+    assert.equal(await panel.isVisible(), false);
+    assert.equal(await question.getAttribute('aria-pressed'), 'false');
     for (const name of ['프로젝트 폴더 열기', '프로젝트 닫기']) {
       const button = page.getByRole('banner').getByRole('button', { name, exact: true });
       assert.equal(await button.getAttribute('title'), name);
       assert.equal(await button.innerText(), '');
       assert.equal(await button.locator('svg[aria-hidden="true"]').count(), 1);
     }
+    // Opening the drawer starts the automatic installation check; let it finish so it cannot change the next check's screen.
+    await until(async () => !await panel.getByRole('button', { name: '설치 확인 중…', includeHidden: true }).count());
   });
   await check('Plan document picker, sections, byte limits and persistent selection without AI', async () => {
     await checkPlanCompare(app, page, temporary, fixture);
@@ -850,12 +862,12 @@ try {
     await openAiPanel();
     const panel = page.locator('aside[aria-label="AI 질문"]');
     assert.deepEqual(await panel.locator(':scope > *').evaluateAll(elements => elements.map(element => element.className)),
-      ['panel__head', 'panel__body ai-panel', 'card']);
+      ['ai-panel', 'card']);
     assert.equal(await panel.locator('.file-guide, .scope, [aria-label="설명"]').count(), 0);
     assert.equal(await panel.getByText('이 파일은', { exact: true }).count(), 0);
     assert.equal(await panel.getByText('현재 범위', { exact: true }).count(), 0);
     await panel.getByRole('group', { name: 'AI 연결', exact: true }).waitFor();
-    await panel.getByRole('button', { name: '질문하기', exact: true }).waitFor();
+    await panel.getByRole('button', { name: '질문 칸 닫기', exact: true }).waitFor();
     await panel.getByText('AI로 이 파일 설명 만들기', { exact: true }).waitFor();
     const region = page.getByRole('region', { name: '이 파일 안내', exact: true });
     const guide = region.locator('.file-guide');
@@ -878,7 +890,7 @@ try {
     await page.getByRole('button', { name: '주문', exact: true }).click();
     await region.getByText('코드에서 확인됨', { exact: true }).waitFor();
     assert.match(await region.locator('.fact').innerText(), /주문 함수는 원본 1–6줄/);
-    await page.getByRole('button', { name: 'AI 칸 접기', exact: true }).click();
+    await page.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
     assert.equal(await panel.isVisible(), false);
     assert.equal(await region.isVisible(), true);
     await page.getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
@@ -1637,7 +1649,7 @@ try {
     await openTreeFile('api/controller.ts');
     await page.getByRole('button', { name: 'DogsController.remove', exact: true }).click();
     // The question scope is visible once its input area is open.
-    await openAiSection('질문하기');
+    await openAiPanel();
     await page.getByTestId('question-scope').waitFor();
     const scope = await page.getByTestId('question-scope').innerText();
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
@@ -2780,6 +2792,11 @@ try {
           return matches;
         }), true, `${mode} selected file row uses accent-soft`);
       });
+      // At 1280px the 380px question drawer leaves the neighbourhood at its 900px minimum either way, so there is
+      // nothing to refit; at 1440px opening the drawer narrows it (1040px → 900px).
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1440, 800));
+      await until(async () => await page.evaluate(() => window.outerWidth === 1440));
+      await checkCanvasFits(canvas, 21);
       const initialZoom = await canvas.locator('.react-flow__viewport').evaluate(element => new DOMMatrix(getComputedStyle(element).transform).a);
       await checkCanvasPanelRefit(canvas);
       const refittedZoom = await canvas.locator('.react-flow__viewport').evaluate(element => new DOMMatrix(getComputedStyle(element).transform).a);
@@ -3474,7 +3491,7 @@ try {
     await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
     await page.getByRole('button', { name: '주문', exact: true }).click();
-    await openAiSection('질문하기');
+    await openAiPanel();
     const blocked = page.getByTestId('send-blocked');
     await until(async () => !await page.locator('.ai-panel').getByRole('button', { name: '설치 확인 중…', includeHidden: true }).count());
     assert.match(await blocked.innerText(), /^(질문을 적어 주세요\.|지금 고른 AI 방식은 쓸 수 없어요\.)/);
@@ -3484,13 +3501,13 @@ try {
     const sendBox = await send.boundingBox();
     const reasonBox = await blocked.boundingBox();
     assert.ok(sendBox && reasonBox && reasonBox.y >= sendBox.y + sendBox.height, 'the reason sits below the send button');
-    await page.getByRole('button', { name: '질문하기', exact: true }).click();
+    await page.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
     assert.equal(await blocked.isVisible(), false);
-    await openAiSection('질문하기');
+    await openAiPanel();
     assert.equal(await blocked.isVisible(), true);
     assert.equal(await page.getByRole('button', { name: '설정', exact: true }).getAttribute('aria-expanded'), 'false');
     assert.equal(await page.getByRole('combobox', { name: 'AI 사용 방식' }).isVisible(), false);
-    assert.match(await page.getByRole('group', { name: 'AI 연결', exact: true }).innerText(), /AI · 로컬 워커 · (준비됨|사용할 수 없음)/);
+    await until(async () => /AI · 로컬 워커 · (준비됨|사용할 수 없음)/.test(await page.getByRole('group', { name: 'AI 연결', exact: true }).innerText()));
     await openAiSection('설정');
     const selector = page.getByRole('combobox', { name: 'AI 사용 방식' });
     assert.equal(await selector.inputValue(), 'local-worker');
@@ -3527,12 +3544,12 @@ try {
     assert.equal(await page.getByRole('checkbox').isEnabled(), false);
     await checkConsentDisclosure(page.locator('.ai-panel'), '선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·질문·최근 답변을 Claude Code에 보내는 데 동의합니다. 다른 파일은 더 읽지 않습니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.');
     await selector.selectOption('local-worker');
-    await page.getByRole('button', { name: 'AI 칸 접기', exact: true }).click();
+    await page.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
     await page.getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
     assert.equal(await selector.inputValue(), 'local-worker');
     assert.equal(await page.getByRole('textbox', { name: '선택한 코드에 질문' }).inputValue(), '설정 보존 확인');
   });
-  await check('FAKE AI IPC: completion before start response is retained across panel/question folding', async () => {
+  await check('FAKE AI IPC: completion before start response is retained across drawer closing and reopening', async () => {
     // Test-only replacement after ALL real IPC checks. This never starts an AI CLI.
     await app.evaluate(({ ipcMain }) => {
       for (const channel of ['learning:connections', 'learning:explain', 'learning:cancel-explanation']) ipcMain.removeHandler(channel);
@@ -3604,7 +3621,7 @@ try {
     // Reopen with no file read yet: a wake-up must ask for a read before asking for a code selection.
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
-    await openAiSection('질문하기');
+    await openAiPanel();
     const blocked = page.getByTestId('send-blocked');
     const send = page.getByRole('button', { name: '질문 보내기', exact: true });
     const selectionReason = '코드 읽기에서 함수나 구문을 골라 주세요. 고른 부분이 질문할 범위가 돼요.';
@@ -3648,16 +3665,45 @@ try {
     await page.getByText('가짜 설명: 빠른 응답', { exact: true }).waitFor();
     await page.getByText('AI · 로컬 워커 · 준비됨', { exact: true }).waitFor();
     await page.getByText('Antigravity · 호출 모델 gemini-3.8-flash-high · 응답 모델 미보고', { exact: true }).waitFor();
-    await page.getByRole('button', { name: 'AI 칸 접기', exact: true }).click();
-    await page.getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
-    await page.getByRole('button', { name: '질문하기', exact: true }).click();
+    await page.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
+    await openAiPanel();
+    assert.equal(await page.getByRole('textbox', { name: '선택한 코드에 질문' }).isVisible(), true);
+    assert.equal(await page.locator('.ai-question').getByTestId('question-scope').count(), 1);
     assert.equal(await page.getByText('가짜 설명: 빠른 응답', { exact: true }).isVisible(), true);
     assert.equal(await page.getByTestId('question-scope').isVisible(), true);
     assert.equal(await page.getByTestId('question-scope').count(), 1);
-    await openAiSection('질문하기');
+    await openAiPanel();
     await page.getByText('가짜 설명: 빠른 응답', { exact: true }).waitFor();
     assert.equal(await page.getByRole('region', { name: 'AI 설명' }).count(), 1);
     assert.equal(await page.getByRole('region', { name: '예시로 따라가기', exact: true }).count(), 0);
+  });
+  await check('Question drawer: 380px width, full-width send button and no horizontal overflow', async () => {
+    const windowSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
+    try {
+      for (const width of [1440, 760]) {
+        await until(async () => {
+          await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
+          return await page.evaluate(expected => window.outerWidth === expected, width);
+        });
+        await checkPanelLayout(width);
+        const layout = await page.locator('#ai-question-panel').evaluate(panel => {
+          const bounds = panel.getBoundingClientRect();
+          const question = panel.querySelector('.ai-question');
+          const send = question.querySelector('.ai-actions > .btn--primary').getBoundingClientRect();
+          const style = getComputedStyle(question);
+          const center = document.querySelector('.center').getBoundingClientRect();
+          return { width: bounds.width, top: bounds.top, centerBottom: center.bottom,
+            questionWidth: question.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+            sendWidth: send.width, sendHeight: send.height };
+        });
+        if (width === 1440) assert.ok(Math.abs(layout.width - 380) <= 1, 'The desktop drawer is 380px wide');
+        if (width === 760) assert.ok(layout.top >= layout.centerBottom - 1, 'The narrow drawer is below the main content');
+        assert.ok(Math.abs(layout.sendWidth - layout.questionWidth) <= 1, 'Send fills the question content width');
+        assert.ok(Math.abs(layout.sendHeight - 42) <= 1, 'Send is 42px tall');
+      }
+    } finally {
+      await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), windowSize);
+    }
   });
   await check('FAKE AI IPC: cancelled job completion is ignored and a subsequent question succeeds', async () => {
     await app.evaluate(() => { globalThis.testFakeAiBehavior = 'hold'; });
@@ -3666,14 +3712,16 @@ try {
     await until(() => app.evaluate(() => globalThis.testFakeAiCalls.length === 2));
     // Allow the immediate start response to register its job before cancellation.
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    await page.getByRole('button', { name: '질문하기', exact: true }).click();
+    await page.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
     assert.equal(await page.getByRole('textbox', { name: '선택한 코드에 질문' }).isVisible(), false);
-    assert.equal(await page.locator('.ai-panel > [role="status"]').isVisible(), true);
+    await openAiPanel();
+    assert.equal(await page.getByRole('textbox', { name: '선택한 코드에 질문' }).isVisible(), true);
+    assert.equal(await page.locator('.ai-panel > .panel__body > [role="status"]').isVisible(), true);
     assert.equal(await page.getByTestId('question-scope').isVisible(), true);
     assert.equal(await page.getByTestId('question-scope').count(), 1);
     await page.getByRole('button', { name: 'AI 작업 취소', exact: true }).click();
     await page.getByText('AI 작업을 취소했습니다.', { exact: true }).waitFor();
-    await openAiSection('질문하기');
+    await openAiPanel();
     await until(() => app.evaluate(() => globalThis.testFakeAiCancelled.includes(globalThis.testFakeAiCalls[1].jobId)));
     await app.evaluate(() => globalThis.testFakeAiLate());
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -3722,21 +3770,24 @@ try {
     await page.getByRole('button', { name: '주문', exact: true }).click();
     assert.equal(await page.getByRole('region', { name: 'AI 설명' }).count(), 0);
   });
-  await check('AI question failure stays visible when the question is folded', async () => {
+  await check('AI question failure survives closing and reopening the drawer', async () => {
     await app.evaluate(() => { globalThis.testFakeAiBehavior = 'fail'; });
-    await openAiSection('질문하기');
+    await openAiPanel();
     const panel = page.locator('.ai-panel');
     await panel.getByRole('textbox').fill('실패할 질문');
     await panel.getByRole('checkbox').check();
     await panel.getByRole('button', { name: '질문 보내기', exact: true }).click();
     await panel.getByRole('alert').filter({ hasText: '가짜 질문 실패' }).waitFor();
-    await panel.getByRole('button', { name: '질문하기', exact: true }).click();
-    assert.equal(await panel.getByRole('alert').isVisible(), true);
+    await panel.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
     assert.equal(await panel.getByRole('textbox').isVisible(), false);
+    await openAiPanel();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await panel.getByRole('alert').filter({ hasText: '가짜 질문 실패' }).waitFor();
+    assert.equal(await panel.getByRole('textbox').isVisible(), true);
     await app.evaluate(() => { globalThis.testFakeAiBehavior = 'early'; });
   });
   await check('FAKE AI IPC: a question finishes while the panel is hidden and survives reopening', async () => {
-    await openAiSection('질문하기');
+    await openAiPanel();
     await page.getByRole('textbox', { name: '선택한 코드에 질문' }).fill('숨긴 칸의 응답');
     await app.evaluate(() => { globalThis.testFakeAiBehavior = 'hold'; });
     await page.getByRole('button', { name: '질문 보내기', exact: true }).click();
@@ -3768,18 +3819,18 @@ try {
     const range = await story.getByTestId('evidence-range').innerText();
     const code = await story.getByTestId('flow-code').innerText();
     const calls = await app.evaluate(() => globalThis.testFakeAiCalls.length);
-    await page.getByRole('button', { name: '질문하기', exact: true }).click();
-    await page.getByRole('button', { name: 'AI 칸 접기', exact: true }).click();
+    await page.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
     await ask.click();
     // The step's code is read first, then the question panel opens.
     await until(async () => await page.getByRole('banner').getByRole('button', { name: '질문', exact: true }).getAttribute('aria-pressed') === 'true');
     await until(async () => await question.inputValue() === expected);
-    assert.equal(await page.getByRole('button', { name: '질문하기', exact: true }).getAttribute('aria-expanded'), 'true');
+    assert.equal(await page.getByRole('banner').getByRole('button', { name: '질문', exact: true }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await question.isVisible(), true);
     assert.equal(await page.getByRole('button', { name: '흐름 따라가기', exact: true }).getAttribute('aria-current'), 'page');
     assert.equal(await story.getByRole('button', { name: '4단계 서버 받는 곳', exact: true }).getAttribute('aria-current'), 'step');
     assert.equal(await story.getByTestId('evidence-range').innerText(), range);
     assert.equal(await story.getByTestId('flow-code').innerText(), code);
-    assert.equal(await page.getByTestId('question-scope').innerText(), '질문 기준: api/controller.ts · 1–1행');
+    assert.equal(await page.getByTestId('question-scope').innerText(), 'api/controller.ts · 1–1행');
     assert.equal(await app.evaluate(() => globalThis.testFakeAiCalls.length), calls);
     const panel = page.locator('.ai-panel');
     const consent = panel.getByRole('checkbox', { name: '보낼 자료에 동의', exact: true });
@@ -3841,7 +3892,7 @@ try {
       assert.equal(await story.getByTestId('evidence-range').innerText(), narrowRange);
       assert.equal(await story.getByTestId('flow-code').innerText(), narrowCode);
       assert.equal(await story.getByRole('button', { name: '5단계 화면 결과', exact: true }).getAttribute('aria-current'), 'step');
-      assert.equal(await page.getByTestId('question-scope').innerText(), '질문 기준: web/app/login/page.tsx · 4–7행');
+      assert.equal(await page.getByTestId('question-scope').innerText(), 'web/app/login/page.tsx · 4–7행');
       await story.getByTestId('flow-code').locator('.cm-content').focus();
       await until(async () => await page.evaluate(() => getSelection()?.toString()) === "router.push('/')");
       await app.evaluate(() => { globalThis.testFakeAiLate(); globalThis.testFakeAiBehavior = 'early'; });
@@ -3955,7 +4006,7 @@ try {
             await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
             await openTreeFile('order.ts');
             await page.getByRole('button', { name: '주문', exact: true }).click();
-            await openAiSection('질문하기');
+            await openAiPanel();
             await page.getByTestId('question-scope').waitFor();
             await question.fill('새 프로젝트 질문');
           }
@@ -4482,11 +4533,12 @@ try {
     await page.getByText('표시는 살펴볼 곳이에요. 나쁜 코드라는 판정이 아니에요. 기준: 본문 60줄 넘음, 중첩 4단계 넘음.', { exact: true }).first().waitFor();
     // A step inside makes the step the question's code, until the AI button chooses the whole function again.
     await page.getByRole('list', { name: 'long 내부 구문' }).getByRole('button', { name: '조건 확인', exact: true }).click();
-    await openAiSection('질문하기');
+    await openAiPanel();
     await until(async () => (await page.getByTestId('question-scope').innerText()).endsWith('4–6행'));
     await page.getByRole('button', { name: 'AI에게 단순하게 쓰는 법 묻기', exact: true }).click();
-    await until(async () => (await page.getByTestId('question-scope').innerText()) === '질문 기준: src/work.ts · 3–66행');
-    assert.equal(await page.getByRole('button', { name: '질문하기', exact: true }).getAttribute('aria-expanded'), 'true');
+    await until(async () => (await page.getByTestId('question-scope').innerText()) === 'src/work.ts · 3–66행');
+    assert.equal(await page.getByRole('banner').getByRole('button', { name: '질문', exact: true }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.getByRole('textbox', { name: '선택한 코드에 질문' }).isVisible(), true);
     const question = '이 함수를 더 단순하고 읽기 쉽게 쓸 수 있을까요? 바꾼다면 어디를 어떻게 바꾸면 좋을지 알려 주세요.';
     // The draft effect fills the question box and opens its input area.
     await until(async () => await page.getByRole('textbox', { name: '선택한 코드에 질문' }).inputValue() === question);
@@ -4898,7 +4950,7 @@ try {
     const ninthId = await ninth.getAttribute('data-symbol-id');
     assert.equal(await guide.locator('[data-symbol-id]').count(), 8);
     await guide.locator(':scope > summary').click();
-    await page.getByRole('button', { name: 'AI 칸 접기', exact: true }).click();
+    await page.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
     await ninth.click();
     await until(async () => await page.locator('.symbols__item[aria-pressed="true"]').innerText() === 'run8');
     await until(() => visibleCard(ninthId));
@@ -4979,7 +5031,7 @@ try {
     await guide.getByText('NestJS 컨트롤러', { exact: true }).waitFor();
     assert.match(await guide.innerText(), /POST \/auth\/login[\s\S]*앱 공통 앞 경로는 빼고 봤어요/);
     await guide.getByRole('button', { name: '이 함수 고르기', exact: true }).click();
-    await openAiSection('질문하기');
+    await openAiPanel();
     await until(async () => await page.locator('.symbols__item[aria-pressed="true"]').innerText() === 'Auth.login');
     await until(async () => /auth.controller.ts · 3–3행/.test(await page.getByTestId('question-scope').innerText()));
     const card = page.getByRole('region', { name: '이 함수', exact: true });
@@ -5082,12 +5134,14 @@ try {
     assert.equal(await card.getByRole('checkbox').count(), 0);
     assert.equal(await app.evaluate(() => globalThis.testFileExplanationCalls.length), 0);
     await page.getByRole('button', { name: 'run', exact: true }).click();
-    await openAiSection('질문하기');
+    await openAiPanel();
     const panel = page.locator('.ai-panel');
     await openAiSection('설정');
     for (const [mode, recipient] of [['local-worker', 'Gemini와 Codex'], ['antigravity', 'Gemini(Antigravity)'], ['claude-code', 'Claude Code']]) {
       await panel.getByRole('combobox', { name: 'AI 사용 방식' }).selectOption(mode);
       await card.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
+      await card.getByText('방식은 ‘질문’ 칸의 ‘설정’에서 고를 수 있어요.', { exact: false }).waitFor();
+      assert.equal(await card.getByText('오른쪽 AI 칸', { exact: false }).count(), 0);
       await checkConsentDisclosure(card, `이 파일의 경로와 원문(비밀값처럼 보이는 형태는 가림)·덩어리 목록(ID·종류·이름·행 범위)을 ${recipient}에 보내는 데 동의합니다. 다른 파일은 보내지 않습니다. 모든 비밀값을 찾는다고 보장하지는 않습니다.`);
       assert.equal(await card.getByRole('button', { name: '동의하고 파일 설명 만들기', exact: true }).isDisabled(), true);
       if (mode === 'claude-code') assert.equal(await card.getByRole('checkbox').isDisabled(), true);
@@ -5208,7 +5262,7 @@ try {
     assert.equal(await card.getByTestId('file-summary').count(), 0);
     await disclosure.locator(':scope > summary').click();
     assert.equal(await card.getByRole('button', { name: 'AI 작업 취소', exact: true }).isVisible(), true);
-    await page.getByRole('button', { name: 'AI 칸 접기', exact: true }).click();
+    await page.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
     await page.locator('.topbar').getByText('파일 설명 진행 중', { exact: false }).waitFor();
     await page.getByRole('button', { name: '파일 설명 작업 취소', exact: true }).click();
     await page.getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
@@ -5248,7 +5302,7 @@ try {
     await card.getByRole('button', { name: 'AI 작업 취소', exact: true }).waitFor();
     assert.equal(await page.locator('.ai-panel').getByRole('combobox', { name: 'AI 사용 방식' }).isDisabled(), true);
     await until(() => app.evaluate(() => typeof globalThis.testFileExplanationLate === 'function'));
-    await page.getByRole('button', { name: 'AI 칸 접기', exact: true }).click();
+    await page.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
     await page.locator('.topbar').getByText('파일 설명 진행 중', { exact: false }).waitFor();
     await page.getByRole('button', { name: '파일 설명 작업 취소', exact: true }).click();
     await page.getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
@@ -5333,6 +5387,8 @@ try {
     const aiFeature = list.getByRole('listitem').filter({ hasText: '반려견 정보를 조회하거나 삭제해요.' });
     await overview.getByText('기능 2개', { exact: true }).waitFor();
     await list.getByRole('button', { name: 'AI로 기능 정리하기', exact: true }).click();
+    await list.getByText('방식은 ‘질문’ 칸의 ‘설정’에서 고를 수 있어요.', { exact: false }).waitFor();
+    assert.equal(await list.getByText('오른쪽 AI 칸', { exact: false }).count(), 0);
     await list.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
     await until(async () => await list.getByRole('checkbox').isEnabled());
     await checkConsentDisclosure(list, '프로젝트 이름, 앱이 찾은 서버 주소·요청·화면 목록(파일 경로와 함수 이름 포함)을 Gemini와 Codex에 보내는 데 동의합니다. 코드 원문은 보내지 않습니다. 비밀값처럼 보이는 부분은 가리지만 모두 찾는다고 보장하지 않습니다.');
@@ -6136,7 +6192,7 @@ try {
     const prepare = async () => {
       await readFileInView('saved.ts');
       await page.getByRole('button', { name: 'saved', exact: true }).click();
-      await openAiSection('질문하기');
+      await openAiPanel();
       await page.getByTestId('question-scope').waitFor();
       await until(() => page.locator('.ai-question').getByRole('checkbox').isEnabled());
     };
@@ -6144,7 +6200,7 @@ try {
       await page.getByRole('textbox', { name: '선택한 코드에 질문' }).fill(question);
       await page.locator('.ai-question').getByRole('checkbox').check();
       await page.getByRole('button', { name: '질문 보내기', exact: true }).click();
-      await page.locator('.ai-panel > section[aria-label="AI 설명"]').getByText(`저장 답: ${question}`, { exact: true }).waitFor();
+      await page.locator('.ai-panel > .panel__body > section[aria-label="AI 설명"]').getByText(`저장 답: ${question}`, { exact: true }).waitFor();
     };
     const savedCount = count => history().getByText(`지난 질문과 답 · ${count}개`, { exact: true }).waitFor();
     const waitPaint = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -6229,7 +6285,12 @@ try {
         ipcMain.handle('learning:save-answer', () => ({ ok: false, code: 'IO', message: '시험용 저장 실패' }));
       });
       await prepare(); await ask('저장 실패 질문');
-      await page.getByText('질문과 답을 저장하지 못했어요. 앱을 닫으면 사라져요.', { exact: true }).waitFor();
+      const saveError = page.locator('.ai-panel').getByRole('alert').filter({ hasText: '질문과 답을 저장하지 못했어요. 앱을 닫으면 사라져요.' });
+      await saveError.waitFor();
+      await page.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
+      await openAiPanel();
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await saveError.waitFor();
       await savedCount(0);
       await app.evaluate(({ ipcMain }) => {
         ipcMain.removeHandler('learning:saved-answers');

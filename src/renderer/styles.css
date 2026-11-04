@@ -86,11 +86,11 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .app {
   display: grid;
   height: 100vh;
-  grid-template-columns: minmax(0, 1fr) 300px;
+  grid-template-columns: minmax(0, 1fr) 380px;
   grid-template-rows: auto auto minmax(0, 1fr);
   grid-template-areas: "top top" "notice notice" "center panel";
 }
-.app--files { grid-template-columns: 210px minmax(0, 1fr) 300px; grid-template-areas: "top top top" "notice notice notice" "side center panel"; }
+.app--files { grid-template-columns: 210px minmax(0, 1fr) 380px; grid-template-areas: "top top top" "notice notice notice" "side center panel"; }
 .app--panel-closed { grid-template-columns: minmax(0, 1fr); grid-template-areas: "top" "notice" "center"; }
 .app--files.app--panel-closed { grid-template-columns: 210px minmax(0, 1fr); grid-template-areas: "top top" "notice notice" "side center"; }
 .app--empty { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); grid-template-areas: "top" "notice" "center"; }
@@ -383,11 +383,17 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .panel { grid-area: panel; display: flex; flex-direction: column; min-height: 0; overflow: auto; border-left: 1px solid var(--line); background: var(--side); }
 .panel > * { flex-shrink: 0; min-width: 0; }
 .panel .card { overflow-wrap: anywhere; }
-.ai-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
+.ai-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.ai-head h2 { font-size: 18px; font-weight: 700; }
+.ai-head > .btn { flex: 0 0 auto; margin-left: auto; }
+.ai-line { display: flex; flex: 1 1 200px; min-width: 0; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
 .ai-line > span { flex: 1 1 auto; overflow-wrap: anywhere; }
 .ai-line > button { flex: 0 0 auto; }
 .ai-settings, .ai-question { display: grid; gap: 12px; }
-.ai-settings[hidden], .ai-question[hidden] { display: none; }
+.ai-settings[hidden] { display: none; }
+.ai-question { padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.question-target { display: grid; gap: 6px; min-width: 0; }
+.question-target__code { padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--raised); color: var(--ink); font: 14px/1.6 var(--mono); overflow-wrap: anywhere; }
 .panel[hidden] { display: none; }
 .ai-panel label { display: grid; gap: 6px; font-size: 14px; }
 .ai-panel select, .ai-panel textarea { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink); font: inherit; }
@@ -396,10 +402,17 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .consent-details { font-size: 14px; color: var(--muted); }
 .consent-details summary { cursor: pointer; }
 .ai-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.ai-actions > .btn--primary { width: 100%; height: 42px; font-size: 15px; font-weight: 700; }
 .ai-actions > .hint { flex-basis: 100%; }
 .ai-panel ul { display: grid; gap: 8px; }
 .ai-panel .fact { overflow-wrap: anywhere; }
-.panel__head { display: flex; align-items: center; justify-content: flex-end; padding: 8px 12px 0; border-bottom: 1px solid var(--line); }
+/* Answers read as open text like the mockup; the installation list in settings keeps its boxes. */
+/* The question block's bottom line already separates the first answer; later answers get their own line. */
+.ai-panel section.fact { background: none; border: 0; border-radius: 0; padding: 0; }
+.ai-panel section.fact + section.fact { border-top: 1px solid var(--line); padding-top: 16px; }
+.ai-panel section.fact > h4:first-of-type + p { font-size: 15px; line-height: 1.65; }
+.ai-panel section.fact .btn--chip { background: var(--raised); color: var(--accent); font: 12px/1.6 var(--mono); }
+.saved-answers > summary { height: 36px; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: 13px; font-weight: 700; text-align: left; cursor: pointer; }
 .panel__body { display: grid; gap: 12px; padding: 16px; }
 .fact { background: var(--raised); display: grid; gap: 6px; justify-items: start; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); }
 .fact p { font-size: 15px; }
@@ -523,7 +536,8 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .changes-help p { margin-top: 8px; }
 .changes-layout { display: flex; flex-wrap: wrap; gap: 20px; align-items: stretch; }
 .changes-list-card { flex: 1 1 380px; max-width: 380px; min-width: 0; }
-.changes-comparison { flex: 999 1 640px; min-width: 0; }
+/* 560px keeps the list and the comparison side by side at 1440px with the 380px question drawer open. */
+.changes-comparison { flex: 999 1 560px; min-width: 0; }
 .changes-layout--single .changes-list-card { max-width: none; }
 .change-list-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .change-list-heading h3 { font-size: 17px; font-weight: 700; }

@@ -145,7 +145,7 @@ try {
   assert.deepEqual(await changed.locator('li').allInnerTexts(), ['수정 price.ts 비교 보기']);
   const question = page.getByRole('banner').getByRole('button', { name: '질문', exact: true });
   if (await question.getAttribute('aria-pressed') === 'false') await question.click();
-  await page.getByRole('button', { name: '질문하기', exact: true }).click();
+  await page.getByRole('textbox', { name: '선택한 코드에 질문', exact: true }).waitFor();
   await page.getByRole('button', { name: '설정', exact: true }).click();
   assert.equal(await page.getByRole('combobox', { name: 'AI 사용 방식' }).inputValue(), 'local-worker');
   await page.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();

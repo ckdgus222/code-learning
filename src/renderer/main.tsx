@@ -954,10 +954,7 @@ function App() {
       </main>
 
       <aside id="ai-question-panel" className="panel" aria-label="AI 질문" hidden={!panelOpen}>
-        <div className="panel__head">
-          <button className="btn btn--ghost btn--icon" aria-label="AI 칸 접기" title="AI 칸 접기" onClick={() => setPanelOpen(false)}><Icon name="collapse" /></button>
-        </div>
-        <AiPanel key={project.id} projectId={project.id} openedAt={openedAt.current}
+        <AiPanel key={project.id} open={panelOpen} onClose={() => setPanelOpen(false)} projectId={project.id} openedAt={openedAt.current}
           onSavedEvidence={value => {
             request.current++; setBusy(false); setError(''); setNotice(''); setView('code');
             setSource(value.source); setReaderEvidence(value.evidence); selectSymbol(null); selectStep(null);

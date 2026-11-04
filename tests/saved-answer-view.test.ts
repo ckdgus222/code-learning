@@ -35,6 +35,7 @@ it('retains the live answer topic without adding a topic to saved answers', () =
 
 it('starts history folded and explains storage and conversation boundaries', () => {
   const html = renderToStaticMarkup(React.createElement(AiPanel, {
+    open: true, onClose() {},
     projectId: 'project', openedAt: 1, evidence: null, relativePath: '', stale: false, draft: null,
     connections: null, checking: false, otherRunning: false, mode: 'local-worker',
     onMode() {}, onRunning() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onEvidence() {}, onSavedEvidence() {},
