@@ -31,8 +31,9 @@ import { useAiJobs } from './use-ai-jobs';
 import { useLearning } from './use-learning';
 import { usePlanCompare } from './use-plan-compare';
 import { PlanCompare, PlanCompareEntry } from './plan-compare';
-import { savedDate, ResumeCard, restoreSpot, OverviewAi, TopicBar, type Place, type Topic } from './overview';
+import { ResumeCard, restoreSpot, OverviewAi, TopicBar, type Place, type Topic } from './overview';
 import type { OverviewFeature, FileExplanationRange } from '../shared/ai';
+import { Welcome } from './welcome';
 import './styles.css';
 
 const views: { id: Exclude<View, 'function' | 'plan'>; label: string }[] = [
@@ -618,8 +619,8 @@ function App() {
           onClick={() => setPanelOpen(open => !open)}><Icon name="question" />질문
           {!panelOpen && ai.questionRunning && <span className="topbar__question-progress" aria-hidden="true" />}
         </button>
-        <button className="btn btn--icon" aria-label="프로젝트 폴더 열기" title="프로젝트 폴더 열기"
-          onClick={() => void openProject()} disabled={busy}><Icon name="folder" /></button>
+        {project && <button className="btn btn--icon" aria-label="프로젝트 폴더 열기" title="프로젝트 폴더 열기"
+          onClick={() => void openProject()} disabled={busy}><Icon name="folder" /></button>}
         <button className="btn btn--ghost btn--icon" aria-label="프로젝트 닫기" title="프로젝트 닫기"
           onClick={cancel} disabled={!project && !busy}><Icon name="close" /></button>
       </div>
@@ -632,28 +633,7 @@ function App() {
       {project && stale && <p role="alert" className="notice notice--warn"><b>코드 변경 또는 잠자기 복귀:</b> 다시 확인 필요. 이전 코드 기준의 강조를 해제했습니다. 파일을 다시 읽으면 최신 코드로 이어서 볼 수 있어요.</p>}
     </div>}
 
-    {!project ? <main className="welcome">
-      <h2>프로젝트를 열어 코드를 읽어 보세요</h2>
-      <p className="welcome__lead">폴더 하나를 고르면 어떤 파일이 있는지 보여주고, 함수 안의 조건·반환 같은 부분을 실제 코드 위치와 함께 짚어 줘요.</p>
-      {learning.recentProjects.length > 0 && <section className="welcome__recent" aria-label="최근 프로젝트">
-        <h3>최근 프로젝트</h3>
-        <ul className="recent-projects">{learning.recentProjects.map(recent => <li key={recent.id}>
-          <button className="btn" disabled={busy} onClick={() => void openProject(recent.id)}>
-            <b>{recent.name}</b><small>{recent.root}</small>
-            <small>{savedDate(recent.openedAt)}</small>
-          </button>
-        </li>)}</ul>
-      </section>}
-      <ol className="welcome__steps">
-        <li><b>폴더 열기</b><span>위 폴더 아이콘(프로젝트 폴더 열기)을 눌러요.</span></li>
-        <li><b>파일과 함수 고르기</b><span>‘코드 읽기’에서 읽을 파일을 골라요.</span></li>
-        <li><b>코드 위치 확인</b><span>구문을 누르면 해당 줄이 강조돼요.</span></li>
-      </ol>
-      <ul className="welcome__promises">
-        <li>원본 파일을 수정하지 않아요.</li>
-        <li>AI에는 위 ‘질문’에서 동의한 질문만 보내요. 알려진 한계는 README에 있어요.</li>
-      </ul>
-    </main> : <>
+    {!project ? <Welcome recentProjects={learning.recentProjects} busy={busy} onOpen={openProject} /> : <>
       {filesVisible && <aside className="sidebar" aria-label="보기와 파일">
         <section aria-label="파일 목록" className="files">
           <h3 className="eyebrow">파일 {project.files.length}개</h3>

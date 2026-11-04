@@ -751,6 +751,114 @@ try {
     });
     await app.close();
   }
+  // Welcome layout uses its own profile so the existing fresh-profile checks still start empty.
+  const welcomeProfile = path.join(temporary, 'welcome-profile');
+  const welcomeBootstrap = path.join(temporary, 'welcome-bootstrap.cjs');
+  const longWelcomeName = 'w'.repeat(120);
+  const longWelcomeFolder = path.join(temporary, longWelcomeName);
+  await mkdir(welcomeProfile);
+  await mkdir(longWelcomeFolder);
+  await writeFile(path.join(longWelcomeFolder, 'index.ts'), 'export const welcome = 1;\n');
+  await writeFile(welcomeBootstrap, bootstrapFor(welcomeProfile));
+  await launch(welcomeBootstrap);
+  await check('Welcome: one folder button, full-height grid and responsive steps in both themes', async () => {
+    assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible()), false);
+    assert.deepEqual(await page.evaluate(() => window.learning.recentProjects()), { ok: true, value: [] });
+    assert.equal(await page.getByRole('region', { name: '최근 프로젝트', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).count(), 1);
+    assert.equal(await page.getByRole('banner').getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).count(), 0);
+    assert.equal(await page.locator('main.welcome').getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).count(), 1);
+    await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
+    await eachTheme(async mode => {
+      for (const width of [1440, 760]) {
+        await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
+        await page.waitForFunction(width => innerWidth === width, width);
+        const layout = await page.locator('main.welcome').evaluate(welcome => {
+          const bounds = welcome.getBoundingClientRect();
+          const cards = [...welcome.querySelectorAll('.welcome__steps > li')];
+          const probe = document.createElement('span');
+          probe.style.backgroundColor = 'var(--accent-soft)';
+          welcome.append(probe);
+          const accent = getComputedStyle(probe).backgroundColor;
+          probe.remove();
+          return {
+            top: bounds.top, bottom: bounds.bottom, headerBottom: document.querySelector('.topbar').getBoundingClientRect().bottom,
+            height: innerHeight, overflow: welcome.scrollWidth > welcome.clientWidth,
+            grid: getComputedStyle(welcome).backgroundImage, accent,
+            cards: cards.map(card => ({ y: card.getBoundingClientRect().y, background: getComputedStyle(card).backgroundColor })),
+            arrow: getComputedStyle(cards[1], '::before').content,
+          };
+        });
+        assert.equal(await page.locator('.notices').count(), 0);
+        assert.ok(Math.abs(layout.top - layout.headerBottom) <= 1);
+        assert.ok(Math.abs(layout.bottom - layout.height) <= 1);
+        assert.equal(layout.overflow, false);
+        assert.match(layout.grid, /linear-gradient/);
+        assert.equal(layout.cards.length, 3);
+        assert.equal(layout.cards[1].background, layout.accent);
+        assert.notEqual(layout.cards[0].background, layout.accent);
+        assert.notEqual(layout.cards[2].background, layout.accent);
+        assert.equal(layout.arrow, width === 1440 ? '"→"' : '"↓"');
+        if (width === 1440) assert.ok(layout.cards.every(card => Math.abs(card.y - layout.cards[0].y) <= 1));
+        if (width === 760) assert.ok(layout.cards[0].y < layout.cards[1].y && layout.cards[1].y < layout.cards[2].y);
+        await page.screenshot({ path: path.join(artifacts, `${mode}-welcome-empty-${width}.png`) });
+      }
+    });
+  });
+  await check('Welcome: recent rows wrap long names and paths and remain reachable at minimum size', async () => {
+    // No AI is requested here; use real folder opening and the existing local recent-project storage.
+    for (const folder of [longWelcomeFolder, second]) {
+      await dialogTo(folder);
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      await page.waitForFunction(() => document.querySelector('.topbar [aria-label="프로젝트 폴더 열기"]')?.disabled === false);
+      await page.getByRole('banner').getByRole('heading', { name: path.basename(folder), exact: true }).waitFor();
+      assert.equal(await page.getByRole('banner').getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).count(), 1);
+      await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
+      await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
+    }
+    const rows = page.getByRole('region', { name: '최근 프로젝트', exact: true }).getByRole('button');
+    await until(async () => await rows.count() === 2);
+    assert.equal(await rows.last().locator('b').innerText(), longWelcomeName);
+    await eachTheme(async mode => {
+      for (const [width, height] of [[1440, 900], [760, 900], [760, 560]]) {
+        await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), [width, height]);
+        await page.waitForFunction(({ width, height }) => innerWidth === width && outerHeight === height, { width, height });
+        await page.locator('main.welcome').evaluate(element => { element.scrollTop = 0; });
+        const positions = await page.locator('.welcome__steps > li').evaluateAll(cards => cards.map(card => card.getBoundingClientRect().y));
+        if (width === 1440) assert.ok(positions.every(y => Math.abs(y - positions[0]) <= 1));
+        if (width === 760) assert.ok(positions[0] < positions[1] && positions[1] < positions[2]);
+        assert.equal(await page.locator('main.welcome').evaluate(element => element.scrollWidth <= element.clientWidth), true);
+        await page.screenshot({ path: path.join(artifacts, `${mode}-welcome-recent-${width}-${height}.png`) });
+      }
+      const wrapping = await rows.last().evaluate(row => {
+        const bounds = row.getBoundingClientRect();
+        return [...row.querySelectorAll('b, code')].map(element => {
+          const rect = element.getBoundingClientRect();
+          return { lines: rect.height / parseFloat(getComputedStyle(element).lineHeight),
+            inside: rect.left >= bounds.left && rect.right <= bounds.right && rect.top >= bounds.top && rect.bottom <= bounds.bottom,
+            overflow: element.scrollWidth > element.clientWidth };
+        });
+      });
+      assert.equal(wrapping.length, 2);
+      assert.ok(wrapping.every(element => element.lines >= 2 && element.inside && !element.overflow));
+      // Scrolling this pane alone must expose the final row and promise completely.
+      const reachable = await page.locator('main.welcome').evaluate(welcome => {
+        welcome.scrollTop = welcome.scrollHeight;
+        const bounds = welcome.getBoundingClientRect();
+        return { scrolled: welcome.scrollTop > 0, visible: [welcome.querySelector('.welcome__recent li:last-child'), welcome.querySelector('.welcome__promise')].map(element => {
+          const rect = element.getBoundingClientRect();
+          return rect.top >= bounds.top && rect.bottom <= bounds.bottom;
+        }) };
+      });
+      assert.equal(reachable.scrolled, true);
+      assert.deepEqual(reachable.visible, [true, true]);
+      await page.screenshot({ path: path.join(artifacts, `${mode}-welcome-recent-bottom-760-560.png`) });
+    });
+    await rows.filter({ hasText: longWelcomeName }).click();
+    await page.waitForFunction(() => document.querySelector('.topbar [aria-label="프로젝트 폴더 열기"]')?.disabled === false);
+    await page.getByRole('banner').getByRole('heading', { name: longWelcomeName, exact: true }).waitFor();
+  });
+  await app.close();
   await launch();
   await check('SQLite uses isolated profile; renderer is sandboxed', async () => {
     const state = await app.evaluate(({ app, BrowserWindow }) => {
@@ -770,8 +878,8 @@ try {
       await page.screenshot({ path: path.join(artifacts, `${mode}-welcome.png`) });
     });
     assert.equal(await page.getByRole('contentinfo', { name: '작업 상태' }).count(), 0);
-    await page.getByText('원본 파일을 수정하지 않아요.', { exact: true }).waitFor();
-    await page.getByText('‘코드 읽기’에서 읽을 파일을 골라요.', { exact: true }).waitFor();
+    assert.match(await page.locator('p.welcome__promise').innerText(), /원본 파일을 바꾸거나 실행하지 않아요/);
+    await page.getByRole('list', { name: '쓰는 순서', exact: true }).getByText('흐름 따라가기', { exact: true }).waitFor();
     assert.equal(await page.getByRole('navigation', { name: '보기', exact: true }).count(), 0);
     assert.equal(await page.getByRole('region', { name: '파일 목록', exact: true }).count(), 0);
     assert.equal(await page.locator('.topbar').getByText('AI는 동의한 질문만').count(), 0);
@@ -2496,7 +2604,7 @@ try {
     await page.getByText('흐름을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 주소를 다시 찾아 주세요.', { exact: true }).waitFor();
     assert.equal(await story.getByTestId('flow-code').count(), 0);
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
-    await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+    await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
     await writeFile(changedFile, featureFlowFiles['web/lib/dogs.ts']);
   });
   await check('Project map tabs: retry in place, share the flow and build the file map only on demand', async () => {
@@ -2691,7 +2799,7 @@ try {
     await boxes.filter({ hasText: '(최상위 폴더) 바로 아래 파일 · 1개' }).waitFor();
     assert.equal(await chips.count(), 0);
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
-    await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+    await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
   });
   await check('Large file maps select one folder, distinguish the root and track manual folds', async () => {
     await dialogTo(folderFileViewFixture);
@@ -2740,7 +2848,7 @@ try {
     assert.deepEqual(await select.locator('option:checked').allTextContents(), ['폴더 고르기']);
     assert.equal(await chips.count(), 0);
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
-    await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+    await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
   });
   await check('Big folder lists keep neighbourhoods readable at default and minimum window widths', async () => {
     await dialogTo(neighborhoodFixture);
@@ -2887,7 +2995,7 @@ try {
       await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), originalSize);
     }
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
-    await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+    await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
   });
   await check('Project map focus: linked arrows, file buttons and clearing on area or view changes', async () => {
     await dialogTo(areaMapFixture);
@@ -3038,7 +3146,7 @@ try {
     await focus.waitFor({ state: 'detached' });
     await until(async () => await boxes.count() === 3 && await arrows.count() === 0);
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
-    await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+    await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
   });
   await check('Project map hover: faint arrows, computed emphasis, stale hover and connection-list focus', async () => {
     await dialogTo(areaMapFixture);
@@ -3115,7 +3223,7 @@ try {
     assert.equal(await libButton.getAttribute('aria-pressed'), 'false');
     assert.equal(await canvas.locator('.map-box--dim, .map-box--focus').count(), 0);
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
-    await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+    await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
   });
   await check('Path aliases: map arrow, file guide and unused candidates agree', async () => {
     await dialogTo(aliasFixture);
@@ -3997,7 +4105,7 @@ try {
             await until(() => app.evaluate(() => globalThis.testFlowQuestion.otherWaiting));
           } else {
             await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
-            await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+            await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
             await until(() => page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).isEnabled());
           }
           if (transition === 'switch') {
@@ -5345,7 +5453,7 @@ try {
     await card.getByText('다시 확인 필요: 설명을 만든 뒤 코드가 바뀌었어요.', { exact: true }).waitFor();
     assert.equal(await card.getByRole('button', { name: '파일 전체 근거', exact: true }).isDisabled(), true);
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
-    await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+    await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
   });
   await check('Feature guide (fake AI): consent, grouped routes, route-specific stories, refresh and late result rejection', async () => {
     // Real route and story analysis, with only the AI result replaced. No AI CLI is started.
@@ -5498,7 +5606,7 @@ try {
     await list.getByText('다시 확인 필요: 기능 정리를 만든 뒤 서버 주소나 그 코드가 바뀌었어요. 다시 정리해 주세요.', { exact: true }).waitFor();
     assert.equal(await list.getByRole('heading', { name: '반려견 관리', exact: true }).count(), 0);
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
-    await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+    await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
   });
   // Start with real handlers again: earlier checks replace several handlers with AI fixtures.
   await app.close();
@@ -5515,7 +5623,7 @@ try {
     const warning = () => card().getByText('다시 확인 필요: 기능 정리를 만든 뒤 서버 주소나 그 코드가 바뀌었어요. 다시 정리해 주세요.', { exact: true });
     const closeProject = async () => {
       await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
-      await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+      await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
     };
     // Observe the real read without creating a second routes search or a second restore request.
     const observeReads = async () => {
@@ -5924,7 +6032,7 @@ try {
     const savedDate = () => card().getByText(/저장됨 ·/);
     const closeProject = async () => {
       await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
-      await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+      await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
     };
     const openRecent = async () => {
       await page.getByRole('region', { name: '최근 프로젝트', exact: true }).getByRole('button').filter({ hasText: '개요 저장 프로젝트' }).click();
