@@ -508,13 +508,48 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .map-big-folder button[aria-pressed="true"] { font-weight: 700; }
 
 /* Plan v2.3 C-2: kinds of change, and the read-only comparison. */
-.tag--change { background: var(--raised); color: var(--ink); }
-.tag--modified { background: var(--warn-soft); color: var(--warn); }
-.tag--added, .tag--untracked { background: var(--ok-soft); color: var(--ok); }
-.tag--renamed { background: var(--accent-soft); color: var(--accent); }
-.tag--deleted { background: var(--danger-soft); color: var(--danger); }
-.diff-card { margin-top: 12px; }
-.diff-view { border: 1px solid var(--line); border-radius: var(--radius-sm); margin-top: 8px; max-height: 70vh; overflow: auto; }
+.tag--change { min-width: 52px; border: 1px solid currentColor; text-align: center; background: var(--accent-soft); color: var(--accent); }
+.tag--change.tag--modified { background: var(--warn-soft); color: var(--warn); }
+.tag--change.tag--added, .tag--change.tag--untracked { background: var(--ok-soft); color: var(--ok); }
+.tag--change.tag--renamed { background: var(--accent-soft); color: var(--accent); }
+.tag--change.tag--deleted { background: var(--danger-soft); color: var(--danger); }
+.changes-page { max-width: none; }
+.changes-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.changes-heading .page__title { margin: 0; font-size: 30px; font-weight: 700; }
+.changes-commit { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 100%; min-width: 0; font-size: 14px; }
+.changes-commit select { height: 40px; min-width: min(360px, 100%); max-width: 100%; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink); font: inherit; }
+.changes-help { margin: 12px 0 20px; color: var(--muted); font-size: 14px; }
+.changes-help summary { cursor: pointer; }
+.changes-help p { margin-top: 8px; }
+.changes-layout { display: flex; flex-wrap: wrap; gap: 20px; align-items: stretch; }
+.changes-list-card { flex: 1 1 380px; max-width: 380px; min-width: 0; }
+.changes-comparison { flex: 999 1 640px; min-width: 0; }
+.changes-layout--single .changes-list-card { max-width: none; }
+.change-list-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.change-list-heading h3 { font-size: 17px; font-weight: 700; }
+.change-counts { color: var(--muted); font-size: 13px; }
+.change-list { min-width: 0; }
+/* Tag, path and button stay inline, so the row reads as '{kind} {path} 비교 보기' (tests and screen readers);
+   a long path wraps instead of being cut, the narrow list would leave only a few characters otherwise. */
+.change-list li { min-width: 0; padding: 8px; }
+.change-list .tag { width: 72px; }
+.change-list .path { font: 14px var(--mono); overflow-wrap: anywhere; }
+.change-list__selected { background: var(--accent-soft); }
+.changes-attribution { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 12px; color: var(--muted); font-size: 13px; }
+.changes-placeholder { height: 100%; border-style: dashed; color: var(--muted); font-size: 14px; }
+.diff-card { min-width: 0; border-top: 3px solid var(--accent); }
+.diff-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
+.diff-heading h3 { display: flex; align-items: center; min-width: 0; max-width: 100%; }
+.diff-heading .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 700 15px var(--mono); }
+.diff-heading .btn { margin-left: auto; }
+.diff-counts, .diff-fold-hint { color: var(--muted); font-size: 13px; }
+.diff-counts { white-space: nowrap; }
+.diff-counts__added { color: var(--ok); }
+.diff-counts__removed { color: var(--danger); }
+.diff-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); background: var(--raised); font-size: 13px; font-weight: 700; }
+.diff-columns span { padding: 8px 12px; }
+.diff-view { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius-sm); margin-top: 8px; max-height: 70vh; overflow: auto; }
+.diff-columns + .diff-view { margin-top: 0; }
 .diff-view .cm-mergeView, .diff-view .cm-editor { font: 14px/1.6 var(--mono); }
 /* Plan G1·E1: the sources a step or claim names, beside it. */
 .ai-panel ul.sources, ul.sources { display: flex; flex-wrap: wrap; gap: 6px; }
