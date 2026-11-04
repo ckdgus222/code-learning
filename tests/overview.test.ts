@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import { scanProject } from '../src/core/project/files';
 import { restoreSpot, spotOf, type Topic, type Place } from '../src/renderer/overview';
@@ -17,7 +18,7 @@ async function overview() { return buildOverview(root, await scanProject(root, r
 const picked = async () => (await overview()).candidates.map(item => [item.relativePath, item.name, item.reason]);
 
 beforeEach(async () => {
-  sandbox = await mkdtemp('/private/tmp/learning-overview-test-');
+  sandbox = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-overview-test-')));
   root = path.join(sandbox, 'project');
   await mkdir(root);
 });

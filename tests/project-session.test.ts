@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, realpath, readdir, readFile, readlink, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import type { FSWatcher } from 'chokidar';
 import { LocalWorkerWorkflow } from '../src/core/ai/workflow';
@@ -116,8 +117,8 @@ let marks: string;
 let workerPath: string;
 let session: ProjectSession;
 beforeEach(async () => {
-  root = await mkdtemp('/private/tmp/learning-session-test-');
-  marks = await mkdtemp('/private/tmp/learning-session-marks-');
+  root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-session-test-')));
+  marks = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-session-marks-')));
   process.env.MARK_DIR = marks;
   workerPath = path.join(root, '..', `${path.basename(root)}-worker.cjs`);
   await writeFile(workerPath, fakeWorker);
@@ -322,7 +323,7 @@ describe('the value-shape search runs in a worker of its own and ends its checke
     expect(await done()).toBe(true);
   };
   let deps: string;
-  beforeEach(async () => { deps = await mkdtemp('/private/tmp/learning-session-deps-'); });
+  beforeEach(async () => { deps = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-session-deps-'))); });
   afterEach(async () => { await rm(deps, { recursive: true, force: true }); });
   const stateOf = async (file: string) => {
     const state = await lstat(file);

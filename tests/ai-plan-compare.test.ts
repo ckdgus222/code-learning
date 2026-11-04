@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, realpath, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { checkPlanCompare, planCompareResultSchema, planCompareSchema, type PlanCompareResult, type PlanCompareAnswer, type PlanCompareRequest, type PlanSelection } from '../src/shared/plan-compare';
@@ -15,7 +16,7 @@ import type { LearningEvent, LearningMode } from '../src/shared/ai';
 const temporary: string[] = [];
 afterEach(async () => { await Promise.all(temporary.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 async function fixture(text = '# 장\n기획대로\n다름\n확인 못 함\n못 찾음\n설계', files = { 'main.ts': 'export const x = 1;' } as Record<string, string>) {
-  const base = await mkdtemp('/private/tmp/plan-compare-');
+  const base = await realpath(await mkdtemp(path.join(os.tmpdir(), 'plan-compare-')));
   temporary.push(base);
   const root = path.join(base, 'project');
   await mkdir(root);
@@ -526,7 +527,7 @@ describe('plan workflow with fake AI only', () => {
     await expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
   });
   it.each(['local-worker', 'codex', 'antigravity'] as const)('passes the five fixture cases and design mismatch through fake AI in %s', async mode => {
-    const base = await mkdtemp('/private/tmp/plan-fixtures-'); temporary.push(base);
+    const base = await realpath(await mkdtemp(path.join(os.tmpdir(), 'plan-fixtures-'))); temporary.push(base);
     await cp(path.resolve('tests/fixtures/plan-compare'), base, { recursive: true });
     const files: Record<string, string> = {};
     for (const name of ['order.ts', 'settings.ts', 'screen.ts', 'store.ts', 'extra.ts']) files[name] = await readFile(path.join(base, name), 'utf8');

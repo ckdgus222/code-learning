@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { maskSecrets, PRIVATE_KEY_MASK, SECRET_MASK } from '../src/core/ai/secrets';
 
 // Test values are made-up strings in the shape of real secrets; none of them is a real credential.
@@ -107,7 +108,7 @@ describe('masking secrets before code is sent to an AI provider', () => {
   it('stays fast on crafted 32 KiB inputs, measured in a separate process with a time limit', () => {
     // A runaway pattern would block this process for good, so the timing runs in a child that is killed.
     const script = `
-      const { maskSecrets } = await import(${JSON.stringify(path.resolve('src/core/ai/secrets.ts'))});
+      const { maskSecrets } = await import(${JSON.stringify(pathToFileURL(path.resolve('src/core/ai/secrets.ts')).href)});
       const inputs = {
         identifier: 'a'.repeat(32 * 1024), words: 'token'.repeat(6500), dotted: 'a.'.repeat(16 * 1024),
         dashed: 'eyJ-'.repeat(8 * 1024), url: 'postgres://' + 'a:'.repeat(16 * 1024),

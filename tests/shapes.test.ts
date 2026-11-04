@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { appendFileSync, linkSync, mkdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { appendFileSync, linkSync, mkdirSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdtemp, realpath, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import { readAllowed, readTypeFile, scanProject } from '../src/core/project/files';
 import { analyzeSource } from '../src/core/analysis/syntax';
@@ -79,8 +80,8 @@ let root: string;
 let outsideDir: string;
 let project: ProjectFiles;
 beforeEach(async () => {
-  root = await mkdtemp('/private/tmp/learning-shapes-test-');
-  outsideDir = await mkdtemp('/private/tmp/learning-shapes-outside-');
+  root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-shapes-test-')));
+  outsideDir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-shapes-outside-')));
   for (const [name, text] of Object.entries(files)) {
     await mkdir(path.dirname(path.join(root, name)), { recursive: true });
     await writeFile(path.join(root, name), text);
@@ -310,15 +311,19 @@ describe('dependency type files (plan v2.3 V-2 reading rules)', () => {
     expect(fs.getAccessibleEntries!(at('packages'))).toEqual({ files: [], directories: [] });
   });
 
-  it('reads a type file the way readStable does: no waiting on a special file, changes caught', () => {
+  it.skipIf(process.platform === 'win32')('reads a type file without waiting on a named pipe, and catches a swap to one', () => {
     const real = at('node_modules/pricing/index.d.ts');
-    expect(readTypeFile(root, real).text).toContain('discount');
     execFileSync('mkfifo', [at('node_modules/pricing/fifo.d.ts')]);
     expect(() => readTypeFile(root, at('node_modules/pricing/fifo.d.ts'))).toThrow(expect.objectContaining({ code: 'NOT_ALLOWED' }));
     expect(() => readTypeFile(root, real, undefined, { beforeOpen: () => {
       unlinkSync(real);
       execFileSync('mkfifo', [real]);
     } })).toThrow(expect.objectContaining({ code: 'CHANGED' }));
+  });
+
+  it('reads a type file the way readStable does: changes while reading are caught', () => {
+    const real = at('node_modules/pricing/index.d.ts');
+    expect(readTypeFile(root, real).text).toContain('discount');
     rmSync(real);
     writeFileSync(real, 'export declare const x: 1;\n');
     expect(() => readTypeFile(root, real, undefined, { afterRead: () => appendFileSync(real, '// more\n') }))
@@ -337,7 +342,7 @@ describe('dependency type files (plan v2.3 V-2 reading rules)', () => {
     const link = at('node_modules/pnpm-style');
     // Reinstalling another version re-points the link; the old version's files stay, so only the link tells.
     const { callbacks: fs, stopCode } = fileCallbacks(root, code.texts, code.allowedDirs, '/nowhere/lib/', newStopSlots(), SHAPE_LIMITS,
-      { afterRead: () => { unlinkSync(link); execFileSync('ln', ['-s', '.pnpm/pnpm-style@2.0.0/node_modules/pnpm-style', link]); } });
+      { afterRead: () => { unlinkSync(link); symlinkSync('.pnpm/pnpm-style@2.0.0/node_modules/pnpm-style', link, 'dir'); } });
     expect(() => fs.readFile!(at('node_modules/pnpm-style/index.d.ts'))).toThrow('CHANGED');
     expect(stopCode()).toBe('CHANGED');
   });

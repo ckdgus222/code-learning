@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import { scanProject, readAllowed } from '../src/core/project/files';
 import { analyzeSource } from '../src/core/analysis/syntax';
@@ -186,7 +187,7 @@ export function build() {
 let root: string;
 let project: ProjectFiles;
 beforeEach(async () => {
-  root = await mkdtemp('/private/tmp/learning-calls-test-');
+  root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-calls-test-')));
   for (const [name, text] of Object.entries(files)) {
     await mkdir(path.dirname(path.join(root, name)), { recursive: true });
     await writeFile(path.join(root, name), text);

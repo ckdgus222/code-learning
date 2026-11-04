@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, mkdir, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
@@ -65,7 +66,7 @@ let temporary: string;
 let project: ProjectView;
 let result: LearningResult;
 beforeAll(async () => {
-  temporary = await mkdtemp('/private/tmp/learning-saved-answer-main-');
+  temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-saved-answer-main-')));
   host.folder = path.join(temporary, 'project'); host.profile = path.join(temporary, 'profile');
   await mkdir(host.folder);
   vi.stubGlobal('MAIN_WINDOW_VITE_NAME', 'main_window');

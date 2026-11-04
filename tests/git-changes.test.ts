@@ -3,6 +3,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync, symli
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import { scanProject } from '../src/core/project/files';
 import { compareWith, findGit, GIT_LIMITS, gitJob, repositoryOf, type Repository } from '../src/core/project/git';
@@ -25,7 +26,7 @@ let root: string;
 let temp: string[];
 beforeEach(async () => {
   temp = [];
-  root = await realpath(await mkdtemp('/private/tmp/learning-git-test-'));
+  root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-git-test-')));
   temp.push(root);
 });
 afterEach(async () => { for (const folder of temp) await rm(folder, { recursive: true, force: true }); });
@@ -145,11 +146,11 @@ describe('changes against a chosen commit (plan v2.3 C-2)', () => {
     const found = await history(root, project);
     expect(found).toMatchObject({ available: true, reason: null });
     expect(found.commits.map(item => [item.subject, item.head])).toEqual([['second', true], ['first', false]]);
-    const plain = await realpath(await mkdtemp('/private/tmp/learning-git-plain-'));
+    const plain = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-git-plain-')));
     temp.push(plain);
     write(plain, 'a.ts', 'export const a = 1;\n');
     expect(await history(plain, await open(plain))).toMatchObject({ available: false, reason: '이 폴더는 Git 저장소가 아니에요.', commits: [] });
-    const empty = await realpath(await mkdtemp('/private/tmp/learning-git-empty-'));
+    const empty = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-git-empty-')));
     temp.push(empty);
     git(empty, 'init', '-q');
     write(empty, 'a.ts', 'export const a = 1;\n');
@@ -353,7 +354,7 @@ describe('changes against a chosen commit (plan v2.3 C-2)', () => {
 
   it('refuses history kept outside the repository folder: a .git link or gitdir file, and borrowed objects', async () => {
     // B: another repository with a private file in its history.
-    const other = await realpath(await mkdtemp('/private/tmp/learning-git-other-'));
+    const other = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-git-other-')));
     temp.push(other);
     git(other, 'init', '-q');
     write(other, 'private.ts', 'export const privateValue = 1;\n');
@@ -405,7 +406,7 @@ describe('changes against a chosen commit (plan v2.3 C-2)', () => {
   it('keeps to the history folder it checked, even when that repository\'s core.worktree points to a folder above', async () => {
     // X: another repository with a file under A/ in its history. P/.git points at X; P/A is its own repository whose
     // core.worktree is P, so git reports P as A's top. Commands run at P must still read A's history, never X's.
-    const other = await realpath(await mkdtemp('/private/tmp/learning-git-other-'));
+    const other = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-git-other-')));
     temp.push(other);
     git(other, 'init', '-q');
     write(other, 'A/private.ts', 'export const privateValue = 1;\n');
@@ -500,7 +501,7 @@ describe('a repository cannot make the app run programs or change it (plan v2.3 
     }
   });
 
-  it('lets git start no other program inside its sandbox', async () => {
+  it.runIf(process.platform === 'darwin')('lets git start no other program inside its sandbox', async () => {
     const tool = (await findGit())!;
     expect(tool).toBeTruthy();
     const mark = path.join(root, 'started');

@@ -166,11 +166,12 @@ describe('feature guide workflow', () => {
 
 describe('names sent to the AI', () => {
   it('replaces computed names, whose expression is code, after the real analyzer', async () => {
-    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { mkdtemp, realpath, writeFile, rm } = await import('node:fs/promises');
     const path = await import('node:path');
+    const os = await import('node:os');
     const { scanProject } = await import('../src/core/project/files');
     const { findProjectRoutes } = await import('../src/core/analysis/routes');
-    const root = await mkdtemp('/private/tmp/learning-guide-names-');
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-guide-names-')));
     try {
       await writeFile(path.join(root, 'controller.ts'), "@Controller('dogs') export class DogsController { @Get('x') ['a' + 'CODE_IN_NAME_ROUTE']() {} @Get('y') plain() {} }");
       await writeFile(path.join(root, 'client.ts'), "export const api = { ['k' + 'CODE_IN_NAME_REQUEST']() { return fetch('/dogs/x'); }, load() { return fetch('/dogs/y'); } };");

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, readFile, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import * as projectFiles from '../src/core/project/files';
 import { scanProject } from '../src/core/project/files';
@@ -11,7 +12,7 @@ import { storyOf } from '../src/core/analysis/flow-story';
 import { MAP_LIMITS } from '../src/core/analysis/project-map';
 
 let root: string;
-beforeEach(async () => { root = await mkdtemp('/private/tmp/learning-feature-flow-'); });
+beforeEach(async () => { root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-feature-flow-'))); });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 async function put(name: string, text: string) {
   await mkdir(path.dirname(path.join(root, name)), { recursive: true });

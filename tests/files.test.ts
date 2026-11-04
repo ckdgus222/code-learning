@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, link, readdir, lstat } from 'node:fs/promises';
+import { mkdtemp, realpath, mkdir, writeFile, readFile, rm, symlink, link, readdir, lstat } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import { MAX_FILE_BYTES, readAllowed, readStable, scanProject } from '../src/core/project/files';
 
@@ -23,7 +24,7 @@ async function snapshot(directory: string): Promise<Record<string, string>> {
   return result;
 }
 beforeEach(async () => {
-  sandbox = await mkdtemp('/private/tmp/learning-files-test-');
+  sandbox = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-files-test-')));
   root = path.join(sandbox, 'project');
   await mkdir(root);
 });
@@ -155,7 +156,7 @@ describe('project file boundary', () => {
     await expect(scanProject(path.join(sandbox, 'linked-root'), randomUUID())).rejects.toMatchObject({ code: 'NOT_ALLOWED' });
   });
 
-  it('rejects a named pipe without waiting for a writer', async () => {
+  it.skipIf(process.platform === 'win32')('rejects a named pipe without waiting for a writer', async () => {
     execFileSync('/usr/bin/mkfifo', [path.join(root, 'pipe.ts')]);
     expect(await paths()).not.toContain('pipe.ts');
     await expect(readAllowed(root, 'pipe.ts')).rejects.toMatchObject({ code: 'NOT_ALLOWED' });
