@@ -238,7 +238,11 @@ await writeFile(path.join(manyFixture, 'big.txt'), 'x'.repeat(300 * 1024));
 gitMany('add', '-A');
 gitMany('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'big');
 await writeFile(path.join(manyFixture, 'big.txt'), 'small now\n');
-for (let index = 0; index < 301; index++) await writeFile(path.join(manyFixture, `new${String(index).padStart(3, '0')}.txt`), `${index}\n`);
+const longChangePath = `new300-${'long-path-'.repeat(20)}.txt`;
+for (let index = 0; index < 301; index++) {
+  const name = index === 300 ? longChangePath : `new${String(index).padStart(3, '0')}.txt`;
+  await writeFile(path.join(manyFixture, name), `${index}\n`);
+}
 // Test harness lives outside the shipped app. Production IPC has no path injection/test API.
 // A test-only entry: the app code is unchanged, but its windows open hidden and keep drawing, and there is no
 // Dock icon, so a test run does not cover or take focus from whatever else is on the screen.
@@ -4654,17 +4658,82 @@ try {
     assert.deepEqual(await listed.locator('li').allInnerTexts(), ['추가 src/added.ts 비교 보기', '삭제 src/deleted.ts 비교 보기', '수정 src/edit.ts 비교 보기',
       '이름 변경 src/old-name.ts → src/new-name.ts 비교 보기', '미추적 src/untracked.ts 비교 보기']);
     assert.match(await page.getByRole('combobox', { name: '기준 커밋' }).locator('option:checked').innerText(), /^[0-9a-f]{7} · .+ · HEAD · first version$/);
+    await page.getByRole('heading', { name: '바뀐 파일 5개', exact: true }).waitFor();
+    await page.locator('.changes-placeholder').getByText('왼쪽에서 파일의 ‘비교 보기’를 누르면 이전 코드와 지금 코드를 나란히 보여 줘요.', { exact: true }).waitFor();
+    const help = page.locator('.changes-help');
+    assert.equal(await help.evaluate(element => element.open), false);
+    await help.locator('summary').click();
+    await help.getByText('앱은 Git의 필터·줄 끝 바꾸기를 실행하지 않고', { exact: false }).waitFor();
+    await help.getByText('새 커밋이나 스테이징 뒤에는', { exact: false }).waitFor();
+    await help.locator('summary').click();
+    await eachTheme(async mode => {
+      assert.equal(await listed.evaluate(element => {
+        const probe = document.createElement('span');
+        element.append(probe);
+        const matches = [['modified', '--warn-soft'], ['added', '--ok-soft'], ['deleted', '--danger-soft'],
+          ['renamed', '--accent-soft'], ['untracked', '--ok-soft']].every(([kind, token]) => {
+          probe.style.backgroundColor = `var(${token})`;
+          const tag = element.querySelector(`.tag--change.tag--${kind}`);
+          const style = getComputedStyle(tag);
+          return style.backgroundColor === getComputedStyle(probe).backgroundColor
+            && style.borderTopWidth === '1px' && tag.getBoundingClientRect().width >= 52;
+        });
+        probe.remove();
+        return matches;
+      }), true);
+      await page.screenshot({ path: path.join(artifacts, `changes-unopened-${mode}.png`) });
+    });
     // A modification: the commit's code next to the code now.
     await listed.locator('li').nth(2).getByRole('button', { name: '비교 보기', exact: true }).click();
     const diff = page.getByRole('region', { name: '고른 변경 비교' });
     await diff.getByText('왼쪽은 고른 커밋, 오른쪽은 지금 파일이에요. 바뀌지 않은 부분은 접어 두었어요.', { exact: true }).waitFor();
     await diff.getByRole('textbox', { name: '고른 커밋의 코드 (읽기 전용)' }).getByText('export const edit = 1;').waitFor();
     await diff.getByRole('textbox', { name: '지금 코드 (읽기 전용)' }).getByText('export const edit = 2;').waitFor();
+    assert.equal(await diff.locator('.diff-counts').innerText(), '+1 −1');
+    const commit = await page.getByRole('combobox', { name: '기준 커밋' }).inputValue();
+    assert.deepEqual(await diff.locator('.diff-columns span').allInnerTexts(), [`이전 코드 · ${commit.slice(0, 7)}`, '지금 코드']);
+    await eachTheme(async mode => {
+      assert.equal(await listed.locator('li').nth(2).evaluate(row => {
+        const probe = document.createElement('span');
+        probe.style.backgroundColor = 'var(--accent-soft)';
+        row.append(probe);
+        const matches = getComputedStyle(row).backgroundColor === getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return matches;
+      }), true);
+      await page.screenshot({ path: path.join(artifacts, `changes-opened-${mode}.png`) });
+    });
+    const windowSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
+    const questionToggle = page.getByRole('banner').getByRole('button', { name: /^질문(?: · 진행 중)?$/ });
+    const wasPanelOpen = await questionToggle.getAttribute('aria-pressed');
+    try {
+      for (const width of [1440, 760]) {
+        await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
+        await until(async () => await page.evaluate(() => window.outerWidth) === width);
+        for (const panelOpen of ['false', 'true']) {
+          if (await questionToggle.getAttribute('aria-pressed') !== panelOpen) await questionToggle.click();
+          await until(() => page.evaluate(width => {
+            const list = document.querySelector('.changes-list-card').getBoundingClientRect();
+            const comparison = document.querySelector('.changes-comparison').getBoundingClientRect();
+            return width === 1440 ? comparison.left >= list.right && Math.abs(comparison.top - list.top) <= 1 : comparison.top >= list.bottom;
+          }, width));
+          assert.equal(await page.locator('.center').evaluate(element => element.scrollWidth <= element.clientWidth + 1), true);
+          assert.equal(await diff.evaluate(element => element.scrollWidth <= element.clientWidth + 1), true);
+        }
+      }
+    } finally {
+      if (await questionToggle.getAttribute('aria-pressed') !== wasPanelOpen) await questionToggle.click();
+      await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), windowSize);
+    }
     await page.screenshot({ path: path.join(artifacts, 'changes-diff.png') });
     // A deleted file and a rename's old path have no file now; their code from the commit opens.
     await listed.locator('li').nth(1).getByRole('button', { name: '비교 보기', exact: true }).click();
     await diff.getByText('고른 커밋의 코드예요. 지금은 이 경로에 파일이 없어요.', { exact: true }).waitFor();
     await diff.getByText('export const gone = 1;').waitFor();
+    assert.equal(await diff.locator('.diff-counts').innerText(), '−1');
+    await listed.locator('li').nth(0).getByRole('button', { name: '비교 보기', exact: true }).click();
+    await diff.getByText('고른 커밋에는 없던 파일이에요. 지금 코드예요.', { exact: true }).waitFor();
+    assert.equal(await diff.locator('.diff-counts').innerText(), '+1');
     await listed.locator('li').nth(3).getByRole('button', { name: '비교 보기', exact: true }).click();
     await diff.getByRole('textbox', { name: '고른 커밋의 코드 (읽기 전용)' }).getByText('export const moved = 1;').waitFor();
     // Back in the reader, the function's steps still lead to their code.
@@ -4693,6 +4762,31 @@ try {
     await until(async () => !(await listed.locator('li').allInnerTexts()).includes('수정 src/edit.ts 비교 보기'));
     assert.equal(await page.getByRole('combobox', { name: '기준 커밋' }).locator('option').count(), 2);
   });
+  await check('Changes: zero changes use the entire page width without an empty comparison card', async () => {
+    gitHere('add', '-A');
+    gitHere('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'clean comparison');
+    await page.getByRole('button', { name: '다시 비교', exact: true }).click();
+    const list = page.getByRole('region', { name: '바뀐 파일 목록' });
+    await list.getByRole('heading', { name: '바뀐 파일 0개', exact: true }).waitFor();
+    await list.getByText('고른 커밋 뒤로 바뀐 파일이 없어요.', { exact: true }).waitFor();
+    assert.equal(await page.locator('.changes-comparison').count(), 0);
+    const windowSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
+    try {
+      for (const width of [1440, 760]) {
+        await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
+        await until(async () => await page.evaluate(() => window.outerWidth) === width);
+        await until(() => list.evaluate(element => {
+          const page = document.querySelector('.changes-page');
+          const style = getComputedStyle(page);
+          const innerWidth = page.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+          return Math.abs(element.getBoundingClientRect().width - innerWidth) <= 1;
+        }));
+        assert.equal(await page.locator('.center').evaluate(element => element.scrollWidth <= element.clientWidth + 1), true);
+      }
+    } finally {
+      await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), windowSize);
+    }
+  });
   await check('Changes: every change reachable past 300, and a side that cannot be opened is said, not taken as added or deleted', async () => {
     await dialogTo(manyFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
@@ -4703,11 +4797,31 @@ try {
     assert.equal(await listed.locator('li').count(), 300);
     await page.getByRole('region', { name: '바뀐 파일 목록' }).getByRole('button', { name: '2개 더 보기', exact: true }).click();
     assert.equal(await listed.locator('li').count(), 302);
+    const longPath = listed.locator('.path').filter({ hasText: longChangePath });
+    assert.equal(await longPath.getAttribute('title'), longChangePath);
+    const windowSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
+    const questionToggle = page.getByRole('banner').getByRole('button', { name: /^질문(?: · 진행 중)?$/ });
+    const wasPanelOpen = await questionToggle.getAttribute('aria-pressed');
+    try {
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(760, 900));
+      await until(async () => await page.evaluate(() => window.outerWidth) === 760);
+      await openAiPanel();
+      assert.equal(await longPath.evaluate(element => {
+        const style = getComputedStyle(element);
+        return style.overflowWrap === 'anywhere' && element.scrollWidth <= element.clientWidth + 1;
+      }), true);
+      assert.equal(await page.locator('.center').evaluate(element => element.scrollWidth <= element.clientWidth + 1), true);
+    } finally {
+      if (await questionToggle.getAttribute('aria-pressed') !== wasPanelOpen) await questionToggle.click();
+      await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), windowSize);
+    }
+
     await listed.locator('li').filter({ hasText: 'big.txt' }).getByRole('button', { name: '비교 보기', exact: true }).click();
     const diff = page.getByRole('region', { name: '고른 변경 비교' });
     await diff.getByText('이전 코드를 열 수 없어요: 이전 코드가 256 KiB를 넘어 열지 않아요.', { exact: true }).waitFor();
     await diff.getByText('지금 코드만 열 수 있어 그것만 보여요.', { exact: true }).waitFor();
     assert.equal(await diff.getByText('고른 커밋에는 없던 파일이에요. 지금 코드예요.', { exact: true }).count(), 0);
+    assert.equal(await diff.locator('.diff-counts').count(), 0);
   });
   await check('Function bands: exact lines, source-only search and copy, card focus, toggling and stale removal', async () => {
     await dialogTo(guideFixture);

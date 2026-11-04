@@ -1,10 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView, lineNumbers } from '@codemirror/view';
 import { syntaxHighlighting } from '@codemirror/language';
 import { codeTheme, codeHighlightStyle } from './code-theme';
 import { javascript } from '@codemirror/lang-javascript';
 import { MergeView } from '@codemirror/merge';
+import { changedLineCounts, codeLines } from './changed-line-counts';
 import type { ChangeKind, FileChange, GitCommit, GitHistory, ProjectChanges } from '../shared/contracts';
 
 /*
@@ -29,16 +30,22 @@ const changePath = (change: FileChange) => change.oldPath ? `${change.oldPath} �
 const PAGE = 300;
 
 /** The changes of a comparison, by kind; shown in the changes view and next to the map. */
-export function ChangeList({ result, locked, onOpen }: { result: ProjectChanges; locked: boolean; onOpen(change: FileChange): void }) {
+export function ChangeList({ result, locked, onOpen, selected, heading }: {
+  result: ProjectChanges; locked: boolean; onOpen(change: FileChange): void; selected?: FileChange | null; heading?: string;
+}) {
   const counts = kindOrder.map(kind => [kind, result.changes.filter(change => change.kind === kind).length] as const).filter(([, count]) => count);
   const [shown, setShown] = useState(PAGE);
   const left = result.changes.length - shown;
   return <>
-    <p>{counts.length ? counts.map(([kind, count]) => <span key={kind} className={`tag tag--change tag--${kind}`}>{kindLabels[kind]} {count}</span>)
-      : '고른 커밋 뒤로 바뀐 파일이 없어요.'}</p>
-    {result.changes.length > 0 && <ul className="map-list" aria-label="바뀐 파일">
-      {result.changes.slice(0, shown).map(change => <li key={`${change.kind}:${change.path}`}>
-        <span className={`tag tag--change tag--${change.kind}`}>{kindLabels[change.kind]}</span> <span className="path">{changePath(change)}</span>{' '}
+    <div className="change-list-heading">
+      {heading && <h3>{heading}</h3>}
+      <p className="change-counts">{counts.length ? counts.map(([kind, count]) => `${kindLabels[kind]} ${count}`).join(' · ')
+        : '고른 커밋 뒤로 바뀐 파일이 없어요.'}</p>
+    </div>
+    {result.changes.length > 0 && <ul className="map-list change-list" aria-label="바뀐 파일">
+      {result.changes.slice(0, shown).map(change => <li key={`${change.kind}:${change.path}`}
+        className={selected?.kind === change.kind && selected.path === change.path ? 'change-list__selected' : undefined}>
+        <span className={`tag tag--change tag--${change.kind}`}>{kindLabels[change.kind]}</span> <span className="path" title={changePath(change)}>{changePath(change)}</span>{' '}
         <button className="btn btn--small" disabled={locked} onClick={() => onOpen(change)}>비교 보기</button>
       </li>)}
     </ul>}
@@ -55,55 +62,85 @@ export function ChangesView({ history, changes, stale, diff, locked, onRetryHist
   onOpenCode(fileId: string): void;
 }) {
   const commits = history?.status === 'done' ? history.value.commits : [];
-  const chosen = commits.find(commit => commit.oid === changes?.commit);
   const comparing = changes?.state.status === 'loading';
+  const available = history?.status === 'done' && history.value.available;
+  const result = available && changes?.state.status === 'done' ? changes.state.value : null;
+  const showComparison = !!diff || !!result?.changes.length;
   return <div className="page changes-page">
-    <h2 className="page__title">달라진 내용</h2>
-    <p className="hint">고른 커밋과 지금 파일을 비교해요. 사람이 바꿨는지 AI가 바꿨는지는 가려내지 않아요. 앱은 Git의 필터·줄 끝 바꾸기를 실행하지 않고
-      내용 그대로 비교해요. 그런 설정을 쓰는 저장소는 Git과 달리 수정으로 보일 수 있어요.</p>
+    <div className="changes-heading">
+      <h2 className="page__title">달라진 내용</h2>
+      {available && <>
+        <label className="changes-commit">기준 커밋{' '}
+          <select value={changes?.commit ?? ''} disabled={comparing} onChange={event => onCompare(event.target.value)}>
+            {commits.map(commit => <option key={commit.oid} value={commit.oid}>{commitLabel(commit)}</option>)}
+          </select>
+        </label>
+        {comparing ? <>
+          <span role="status" className="busy"><span className="spinner" aria-hidden="true" />비교하는 중…</span>
+          <button className="btn btn--small" onClick={onCancel}>비교 취소</button>
+        </> : changes && <button className="btn btn--small" onClick={onRefresh}>다시 비교</button>}
+      </>}
+      <span className="hint">↔ 지금 파일 · 읽기만 하고 브랜치·파일은 바꾸지 않아요</span>
+    </div>
+    <details className="changes-help">
+      <summary>비교 방법과 한계</summary>
+      <p className="hint">고른 커밋과 지금 파일을 비교해요. 사람이 바꿨는지 AI가 바꿨는지는 가려내지 않아요. 앱은 Git의 필터·줄 끝 바꾸기를 실행하지 않고
+        내용 그대로 비교해요. 그런 설정을 쓰는 저장소는 Git과 달리 수정으로 보일 수 있어요.</p>
+      <p className="hint">새 커밋이나 스테이징 뒤에는 ‘다시 비교’를 눌러 주세요. 커밋 목록도 다시 읽고, HEAD와 비교하던 중이면 새 HEAD와 비교해요.
+        폴더를 연 뒤 새로 만든 파일은 폴더를 다시 열어야 들어와요.</p>
+    </details>
     {!history || history.status === 'loading' ? <span role="status" className="busy"><span className="spinner" aria-hidden="true" />Git 기록을 읽는 중…</span>
       : history.status === 'failed' ? <p>{history.message} <button className="btn btn--small" onClick={onRetryHistory}>다시 읽기</button></p>
       : !history.value.available ? <p className="notice">{history.value.reason}</p>
       : <>
-        <div className="map-actions">
-          <label>기준 커밋{' '}
-            <select value={changes?.commit ?? ''} disabled={comparing} onChange={event => onCompare(event.target.value)}>
-              {commits.map(commit => <option key={commit.oid} value={commit.oid}>{commitLabel(commit)}</option>)}
-            </select>
-          </label>
-          {comparing ? <>
-            <span role="status" className="busy"><span className="spinner" aria-hidden="true" />비교하는 중…</span>
-            <button className="btn btn--small" onClick={onCancel}>비교 취소</button>
-          </> : changes && <button className="btn btn--small" onClick={onRefresh}>다시 비교</button>}
-        </div>
         {changes && stale && <p className="notice notice--warn"><b>다시 확인 필요:</b> 비교한 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 다시 비교해 주세요.</p>}
         {changes?.state.status === 'failed' && <p className="notice notice--warn">{changes.state.message}</p>}
-        {changes?.state.status === 'done' && <section className="card" aria-label="바뀐 파일 목록">
-          <h3>기준 {chosen ? chosen.oid.slice(0, 7) : changes.commit.slice(0, 7)} ↔ 지금 파일 · {changes.state.value.changes.length}개</h3>
-          <ChangeList result={changes.state.value} locked={locked} onOpen={onOpen} />
-        </section>}
-        <p className="hint">새 커밋이나 스테이징 뒤에는 ‘다시 비교’를 눌러 주세요. 커밋 목록도 다시 읽고, HEAD와 비교하던 중이면 새 HEAD와 비교해요.
-          폴더를 연 뒤 새로 만든 파일은 폴더를 다시 열어야 들어와요.</p>
       </>}
-    {diff && <DiffPane entry={diff} onOpenCode={onOpenCode} />}
+    {(result || diff) && <div className={`changes-layout${!result || !showComparison ? ' changes-layout--single' : ''}`}>
+      {result && <section className="card changes-list-card" aria-label="바뀐 파일 목록">
+        <ChangeList result={result} locked={locked} onOpen={onOpen} selected={diff?.change} heading={`바뀐 파일 ${result.changes.length}개`} />
+        <p className="changes-attribution">사람이 바꿨는지 AI가 바꿨는지는 가려내지 않아요.</p>
+      </section>}
+      {showComparison && <div className="changes-comparison">
+        {diff ? <DiffPane entry={diff} commit={changes?.commit ?? ''} onOpenCode={onOpenCode} />
+          : <div className="card changes-placeholder">왼쪽에서 파일의 ‘비교 보기’를 누르면 이전 코드와 지금 코드를 나란히 보여 줘요.</div>}
+      </div>}
+    </div>}
   </div>;
 }
 
-function DiffPane({ entry, onOpenCode }: { entry: DiffEntry; onOpenCode(fileId: string): void }) {
+function DiffPane({ entry, commit, onOpenCode }: { entry: DiffEntry; commit: string; onOpenCode(fileId: string): void }) {
   const { change, old, now } = entry;
   const failed = [old?.status === 'failed' && `이전 코드를 열 수 없어요: ${old.message}`, now?.status === 'failed' && `지금 코드를 열 수 없어요: ${now.message}`]
     .filter(Boolean) as string[];
   const loading = old?.status === 'loading' || now?.status === 'loading';
   const before = old?.status === 'done' ? old.value : null;
   const after = now?.status === 'done' ? now.value : null;
+  const counts = useMemo(() => {
+    if (before !== null && after !== null) return changedLineCounts(before, after);
+    return { added: after === null ? 0 : codeLines(after).length, removed: before === null ? 0 : codeLines(before).length };
+  }, [before, after]);
+  const both = before !== null && after !== null;
+  // A side is missing only when the kind of change says so or it failed to open; a failure shows no counts.
+  const showCounts = !loading && failed.length === 0 && (both
+    || ((change.kind === 'added' || change.kind === 'untracked') && after !== null)
+    || (change.kind === 'deleted' && before !== null));
   return <section className="card diff-card" aria-label="고른 변경 비교">
-    <h3><span className={`tag tag--change tag--${change.kind}`}>{kindLabels[change.kind]}</span> <span className="path">{changePath(change)}</span></h3>
-    {change.fileId && <button className="btn btn--small" onClick={() => onOpenCode(change.fileId!)}>코드 읽기에서 열기</button>}
+    <div className="diff-heading">
+      <h3><span className={`tag tag--change tag--${change.kind}`}>{kindLabels[change.kind]}</span> <span className="path" title={changePath(change)}>{changePath(change)}</span></h3>
+      {showCounts && <span className="diff-counts">{counts === null
+        ? <span title="바뀐 줄이 너무 많아 줄 수를 세지 않았어요.">줄 수 생략</span>
+        : <>{after !== null && <span className="diff-counts__added">+{counts.added}</span>}{both && ' '}
+          {before !== null && <span className="diff-counts__removed">−{counts.removed}</span>}</>}</span>}
+      {both && <span className="diff-fold-hint">바뀌지 않은 부분은 접어요</span>}
+      {change.fileId && <button className="btn btn--small" onClick={() => onOpenCode(change.fileId!)}>코드 읽기에서 열기</button>}
+    </div>
     {loading && <span role="status" className="busy"><span className="spinner" aria-hidden="true" />코드를 여는 중…</span>}
     {failed.map(message => <p key={message} className="notice notice--warn">{message}</p>)}
     {/* Whether a side exists comes from the kind of change; a side that failed to open is a failure, said above. */}
     {before !== null && after !== null ? <>
       <p className="hint">왼쪽은 고른 커밋, 오른쪽은 지금 파일이에요. 바뀌지 않은 부분은 접어 두었어요.</p>
+      <div className="diff-columns"><span>이전 코드 · {commit.slice(0, 7)}</span><span>지금 코드</span></div>
       <Merge before={before} after={after} file={change.path} />
     </> : !loading && <>
       {before !== null && <>
@@ -125,6 +162,8 @@ function readOnly(file: string, label: string): Extension[] {
   const typescript = ['.ts', '.tsx', '.mts', '.cts'].includes(extension);
   const code = typescript || ['.js', '.jsx', '.mjs', '.cjs'].includes(extension);
   return [EditorState.lineSeparator.of('\n'), EditorState.readOnly.of(true), EditorView.editable.of(false), codeTheme, lineNumbers(),
+    // The folded unchanged part is labelled by the merge view; the rest of the app speaks Korean.
+    EditorState.phrases.of({ '$ unchanged lines': '바뀌지 않은 줄 $개' }),
     EditorView.contentAttributes.of({ 'aria-label': label, role: 'textbox', 'aria-readonly': 'true', tabindex: '0' }),
     ...(code ? [javascript({ typescript, jsx: true }), syntaxHighlighting(codeHighlightStyle)] : [])];
 }
