@@ -7,7 +7,7 @@ import path from 'node:path';
 // Opening a project returns to the overview; moving to the plan page before it finishes would be undone.
 async function openFolder(page) {
   await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
-  await page.waitForFunction(() => !document.querySelector('[aria-label="프로젝트 폴더 열기"]').disabled);
+  await page.waitForFunction(() => document.querySelector('.welcome__open, [aria-label="프로젝트 폴더 열기"]')?.disabled === false);
 }
 
 // Shared by development and packaged smoke tests. The picker can return only these temporary fixtures.
@@ -143,10 +143,10 @@ export async function checkPlanCompare(app, page, temporary, project) {
     await checkPlanCompareRequests(app, page, card, pick, temporary, showCard, dialogTo);
     // The checks that follow start from the welcome screen, so leave the app as it was found.
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
-    await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+    await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
     // Installation state is shared across projects; reload to discard the fake readiness report too.
     await page.reload();
-    await page.getByRole('heading', { name: '프로젝트를 열어 코드를 읽어 보세요', exact: true }).waitFor();
+    await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
   } finally {
     await app.evaluate(({ ipcMain, dialog }, project) => {
       for (const [channel, handler] of globalThis.planTestAiHandlers) ipcMain._invokeHandlers.set(channel, handler);
