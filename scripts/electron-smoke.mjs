@@ -1308,13 +1308,26 @@ try {
     // loop.ts changed in the flow check and files were read again since; the overview still asks for a re-check.
     await page.locator('.overview-stale').getByText('다시 확인 필요:', { exact: false }).waitFor();
     await eachTheme(async mode => {
+      const surfaces = await page.evaluate(() => {
+        const center = document.querySelector('.center');
+        const card = document.querySelector('.overview-intro');
+        const probe = document.createElement('span');
+        center.append(probe);
+        probe.style.backgroundColor = 'var(--bg)';
+        const paper = getComputedStyle(center).backgroundColor === getComputedStyle(probe).backgroundColor;
+        probe.style.backgroundColor = 'var(--surface)';
+        const surface = getComputedStyle(card).backgroundColor === getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return { paper, surface };
+      });
+      assert.deepEqual(surfaces, { paper: true, surface: true }, `${mode} overview surfaces`);
       await page.screenshot({ path: path.join(artifacts, `${mode}-overview.png`) });
     });
     await page.screenshot({ path: path.join(artifacts, 'local-overview.png') });
     const starts = page.getByRole('region', { name: '어디부터 읽을까요?' });
     const noServer = page.getByText('서버 코드(요청을 받는 곳)를 찾지 못해서 기능별로 따라갈 수 없어요.', { exact: false });
     await noServer.waitFor();
-    assert.equal(await page.locator('details[aria-label="더 알아보기"]').evaluate(element => element.open), true);
+    assert.equal(await starts.isVisible(), true);
     // The notice points down to the start candidates, so they must come after it on the page.
     assert.equal(await noServer.evaluate(element =>
       !!(element.compareDocumentPosition(document.getElementById('overview-start')) & Node.DOCUMENT_POSITION_FOLLOWING)), true);
@@ -1527,6 +1540,24 @@ try {
     await overview.getByText('기능 1개', { exact: true }).waitFor();
     const picture = await overview.innerText();
     for (const text of [/화면 1개/, /요청 1개/, /확실히 이어짐 1개 · 추정 0개/, /api 폴더/, /web 폴더/]) assert.match(picture, text);
+    const overviewWindowSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
+    for (const width of [1440, 760]) {
+      await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const main = await page.locator('.overview-main').boundingBox();
+      const side = await page.locator('.overview-side').boundingBox();
+      if (width === 1440) {
+        assert.ok(side.x >= main.x + main.width - 1, 'overview side column is on the right');
+        const boxes = await overview.locator('.overview-picture__box').evaluateAll(items => items.map(item => item.getBoundingClientRect().top));
+        assert.equal(boxes.length, 3);
+        assert.ok(boxes.every(top => Math.abs(top - boxes[0]) <= 1), 'overview boxes share one row');
+      } else {
+        assert.ok(side.y >= main.y + main.height - 1, 'overview side column wraps below the main column');
+      }
+      assert.equal(await page.locator('.center').evaluate(element => element.scrollWidth <= element.clientWidth), true);
+      assert.equal(await page.locator('.overview-side').evaluate(element => element.scrollWidth <= element.clientWidth), true);
+    }
+    await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), overviewWindowSize);
     const recommendation = page.getByRole('region', { name: '처음 따라갈 기능', exact: true });
     await recommendation.getByText('지우기 · /api/dogs/:id', { exact: true }).waitFor();
     await recommendation.getByText('‘삭제’ 버튼 · 지우기', { exact: true }).waitFor();
@@ -1556,20 +1587,16 @@ try {
     await connection.waitFor();
     assert.equal(await connection.getAttribute('title'), '프론트 요청 확실 1곳 · 추정 0곳');
     assert.equal(await page.getByRole('button', { name: '다시 찾기', exact: true }).count(), 0);
-    const more = page.locator('details[aria-label="더 알아보기"]');
-    assert.equal(await more.evaluate(element => element.open), false);
     assert.equal(await page.getByRole('contentinfo', { name: '작업 상태' }).count(), 0);
-    await more.locator(':scope > summary').click();
-    const candidate = more.locator('.starts__item').first();
+    const candidate = page.locator('.starts__item').first();
+    assert.equal(await candidate.isVisible(), true);
     const anchor = await candidate.getAttribute('data-anchor');
     await candidate.click();
     const topic = page.getByRole('region', { name: '학습 주제' });
     await topic.waitFor();
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
-    assert.equal(await more.evaluate(element => element.open), false);
     await topic.getByRole('button', { name: '한눈에 보기로', exact: true }).click();
     await until(() => page.evaluate(anchor => document.activeElement?.getAttribute('data-anchor') === anchor, anchor));
-    assert.equal(await more.evaluate(element => element.open), true);
     assert.equal(await candidate.isVisible(), true);
     await topic.getByRole('button', { name: '주제 닫기', exact: true }).click();
     await openTreeFile('api/controller.ts');
@@ -1594,8 +1621,8 @@ try {
     const location = story.getByRole('list', { name: '지금 여기', exact: true });
     assert.match(await location.locator('[aria-current="location"]').innerText(), /화면 쪽/);
     await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
-    assert.equal(await story.getByRole('button', { name: '◀ 이전', exact: true }).isDisabled(), true);
-    assert.equal(await story.getByRole('navigation', { name: '이야기 단계' }).getByRole('button').count(), 9);
+    assert.equal(await story.getByRole('button', { name: '이전 단계', exact: true }).isDisabled(), true);
+    assert.equal(await story.getByRole('navigation', { name: '이야기 단계' }).getByRole('button').count(), 7);
     const windowSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
     for (const width of [1000, 1280, 1440]) {
       await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
@@ -1603,25 +1630,92 @@ try {
       const nav = story.getByRole('navigation', { name: '이야기 단계' });
       const bounds = await nav.boundingBox();
       const buttons = await Promise.all((await nav.getByRole('button').all()).map(button => button.boundingBox()));
-      assert.equal(buttons.length, 9);
+      assert.equal(buttons.length, 7);
       assert.ok(buttons.every(Boolean));
-      const previous = buttons[0], next = buttons.at(-1);
-      assert.ok(Math.abs(previous.y - next.y) <= 1, `next stayed beside previous at ${width}px`);
-      assert.ok(buttons.slice(1, -1).some(button => Math.abs(button.y - next.y) <= 1), `next shares a row with steps at ${width}px`);
       for (const [index, button] of buttons.entries()) {
         assert.ok(button.width > 0 && button.height > 0);
-        assert.ok(button.x >= bounds.x - 1 && button.x + button.width <= bounds.x + bounds.width + 1, `button fits at ${width}px`);
         assert.ok(button.y >= bounds.y - 1 && button.y + button.height <= bounds.y + bounds.height + 1);
-        for (const other of buttons.slice(index + 1)) {
-          assert.ok(button.x + button.width <= other.x + 1 || other.x + other.width <= button.x + 1
-            || button.y + button.height <= other.y + 1 || other.y + other.height <= button.y + 1, `buttons do not overlap at ${width}px`);
-        }
+        for (const other of buttons.slice(index + 1)) assert.ok(button.x + button.width <= other.x + 1, `steps do not overlap at ${width}px`);
       }
-      assert.equal(await nav.evaluate(element => element.scrollWidth <= element.clientWidth), true);
+      const zones = await location.locator('li').evaluateAll(items => items.map(item => ({
+        x: item.getBoundingClientRect().x, count: Number(item.style.gridColumn.replace('span ', '')),
+      })));
+      let firstStep = 0;
+      for (const zone of zones) {
+        assert.ok(Math.abs(zone.x - buttons[firstStep].x) <= 1, `zone and step columns align at ${width}px`);
+        firstStep += zone.count;
+      }
+      assert.equal(firstStep, 7);
+      const current = await nav.locator('[aria-current="step"]').boundingBox();
+      assert.ok(current.x >= bounds.x && current.x + current.width <= bounds.x + bounds.width + 1);
+      const previous = story.getByRole('button', { name: '이전 단계', exact: true });
+      const next = story.getByRole('button', { name: '다음 단계', exact: true });
+      assert.equal(await previous.isVisible(), true);
+      assert.equal(await next.isVisible(), true);
+      const previousBounds = await previous.boundingBox(), nextBounds = await next.boundingBox();
+      assert.ok(previousBounds.x + previousBounds.width <= nextBounds.x + 1
+        || previousBounds.y + previousBounds.height <= nextBounds.y + 1);
+      assert.equal(await page.locator('.center').evaluate(element => element.scrollWidth <= element.clientWidth), true);
+      const text = await story.locator('.story-step__text').boundingBox();
+      const code = await story.locator('.story-step__code').boundingBox();
+      if (width === 1440) assert.ok(code.x >= text.x + text.width - 1, 'wide story places code on the right');
       await checkPanelLayout(width);
     }
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(760, 900));
+    await openAiPanel();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const narrowText = await story.locator('.story-step__text').boundingBox();
+    const narrowCode = await story.locator('.story-step__code').boundingBox();
+    assert.ok(narrowCode.y >= narrowText.y + narrowText.height - 1, 'narrow story places code below the explanation');
+    await story.getByRole('button', { name: '6단계 저장소', exact: true }).click();
+    await until(async () => await story.getByRole('button', { name: '다음 단계', exact: true }).isEnabled());
+    // Delay the real read to inspect the loading slot, without changing its response.
+    await app.evaluate(({ ipcMain }) => {
+      const read = ipcMain._invokeHandlers.get('learning:read');
+      globalThis.d3ReadWaiting = false;
+      globalThis.d3RestoreRead = () => {
+        ipcMain._invokeHandlers.set('learning:read', read);
+        globalThis.d3ReleaseRead?.();
+      };
+      ipcMain._invokeHandlers.set('learning:read', async (event, request) => {
+        globalThis.d3ReadWaiting = true;
+        await new Promise(resolve => { globalThis.d3ReleaseRead = resolve; });
+        return read(event, request);
+      });
+    });
+    let loadingHeight;
+    try {
+      await story.getByRole('button', { name: '다음 단계', exact: true }).click();
+      await until(() => app.evaluate(() => globalThis.d3ReadWaiting));
+      assert.equal(await story.getByRole('button', { name: '이 단계 코드 보기', exact: true }).isDisabled(), true);
+      assert.equal(await story.getByRole('button', { name: '지도에서 보기', exact: true }).isDisabled(), true);
+      loadingHeight = (await story.locator('.story-step__code').boundingBox()).height;
+      const nav = story.getByRole('navigation', { name: '이야기 단계' });
+      const bounds = await nav.boundingBox();
+      const current = await nav.locator('[aria-current="step"]').boundingBox();
+      assert.ok(current.x >= bounds.x && current.x + current.width <= bounds.x + bounds.width + 1, 'next step stays horizontally visible');
+      assert.equal(await nav.locator('[aria-current="step"]').getAttribute('aria-label'), '7단계 화면 결과');
+    } finally {
+      await app.evaluate(() => globalThis.d3RestoreRead());
+    }
+    await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
+    assert.ok(Math.abs((await story.locator('.story-step__code').boundingBox()).height - loadingHeight) <= 1, 'code slot keeps its loading height');
+    const sameEvidence = await story.getByTestId('evidence-range').innerText();
+    await story.getByRole('button', { name: '코드 읽기에서 열기', exact: true }).click();
+    assert.equal(await page.getByRole('button', { name: '코드 읽기', exact: true }).getAttribute('aria-current'), 'page');
+    assert.equal(await page.getByTestId('evidence-range').innerText(), sameEvidence);
+    await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    const sameTitle = await story.locator('.flow-walk__heading > h3').innerText();
+    assert.equal(await story.locator('.flow-walk__heading > .feature-route').innerText(), 'DELETE /api/dogs/:id');
+    await story.getByRole('button', { name: '지도에서 보기', exact: true }).click();
+    await page.getByRole('heading', { name: '프로젝트 지도', exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: '기능별 연결', exact: true }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.locator('.map-actions--feature > h3').innerText(), sameTitle);
+    await page.getByRole('button', { name: '흐름 따라가기에서 단계별로 보기', exact: true }).click();
+    await story.getByRole('button', { name: '1단계 화면', exact: true }).click();
+    await until(async () => await story.getByRole('button', { name: '다음 단계', exact: true }).isEnabled());
     await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), windowSize);
-    await story.getByRole('button', { name: '다음 ▶', exact: true }).click();
+    await story.getByRole('button', { name: '다음 단계', exact: true }).click();
     await story.getByText('2 / 7 · 프론트 처리', { exact: true }).waitFor();
     await story.getByRole('heading', { name: '화면 쪽 코드가 요청을 준비해요', exact: true }).waitFor();
     assert.match(await story.locator('[data-kind="front"]').innerText(), /removeDog → useDeleteDog → mutationFn/);
@@ -1654,8 +1748,7 @@ try {
     assert.equal(await story.getByTestId('evidence-range').innerText(), selectedEvidence);
     await story.getByRole('button', { name: '3단계 요청', exact: true }).click();
     await story.getByText('DELETE /api/dogs/${id} 요청을 보내요', { exact: true }).waitFor();
-    assert.equal(await location.locator('.picture__arrow[aria-current="location"]').count(), 1);
-    await location.getByText('부탁(요청)이 가는 중', { exact: true }).waitFor();
+    assert.equal(await location.locator('[aria-current="location"]').innerText(), '요청');
     assert.equal(await story.getByRole('button', { name: '이 함수 안 순서', exact: true }).count(), 0);
     await story.getByRole('button', { name: '4단계 서버 받는 곳', exact: true }).click();
     await story.getByText('DogsController.remove가 요청을 받아요 → DogsService.remove에 넘겨요', { exact: true }).waitFor();
@@ -1675,7 +1768,9 @@ try {
     await outside.locator('summary').click();
     assert.match(await outside.innerText(), /안쪽 함수에서 tx.dog.delete/);
     const sixth = story.getByRole('button', { name: '6단계 저장소', exact: true });
-    assert.equal(await sixth.innerText(), '⑥ 저장소');
+    assert.equal(await sixth.locator('.flow-strip__number').innerText(), '6');
+    assert.equal(await sixth.locator('b').innerText(), '저장소');
+    assert.equal(await sixth.locator('code').innerText(), 'DogsService.remove');
     await sixth.click();
     await story.getByText('6 / 7 · 저장소', { exact: true }).waitFor();
     await story.getByRole('heading', { name: '저장소(DB)를 써요', exact: true }).waitFor();
@@ -1685,7 +1780,7 @@ try {
     await storage.getByRole('button', { name: '이 줄 보기', exact: true }).first().click();
     await until(async () => /api\/service.ts · 4–4줄/.test(await story.getByTestId('evidence-range').innerText()));
     assert.equal(await page.getByRole('button', { name: '흐름 따라가기', exact: true }).getAttribute('aria-current'), 'page');
-    assert.equal(await story.getByRole('button', { name: '다음 ▶', exact: true }).isDisabled(), false);
+    assert.equal(await story.getByRole('button', { name: '다음 단계', exact: true }).isDisabled(), false);
     await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
     assert.match(await story.getByTestId('evidence-range').innerText(), /api\/service.ts/);
     await story.getByRole('button', { name: '7단계 화면 결과', exact: true }).click();
@@ -1699,7 +1794,7 @@ try {
     await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
     await story.getByTestId('flow-code').locator('.cm-content').focus();
     await until(async () => await page.evaluate(() => getSelection()?.toString()) === 'queryClient.setQueryData(key, dogs => dogs.filter(dog => dog.id !== id))');
-    assert.equal(await story.getByRole('button', { name: '다음 ▶', exact: true }).isDisabled(), true);
+    assert.equal(await story.getByRole('button', { name: '다음 단계', exact: true }).isDisabled(), true);
     assert.equal(await page.getByTestId('question-scope').innerText(), scope);
     const summary = story.getByRole('region', { name: '한 문장으로 정리', exact: true });
     await summary.getByRole('textbox', { name: '받는 것', exact: true }).fill('삭제 요청');
@@ -2014,7 +2109,7 @@ try {
     await result.getByRole('button', { name: '이 줄 보기', exact: true }).click();
     await until(async () => /web\/app\/login\/page.tsx · 6–6줄/.test(await story.getByTestId('evidence-range').innerText()));
     await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
-    assert.equal(await story.getByRole('button', { name: '다음 ▶', exact: true }).isDisabled(), true);
+    assert.equal(await story.getByRole('button', { name: '다음 단계', exact: true }).isDisabled(), true);
     await story.getByTestId('flow-code').locator('.cm-content').focus();
     await until(async () => await page.evaluate(() => getSelection()?.toString()) === "router.push('/')");
     await page.screenshot({ path: path.join(artifacts, 'feature-flow-login-result.png') });
@@ -3746,12 +3841,6 @@ try {
     await app.evaluate(() => { globalThis.testOverviewHold = true; });
     await create.click();
     await card.getByText('개요 작업 시작 중', { exact: true }).waitFor();
-    const more = page.locator('details[aria-label="더 알아보기"]');
-    await more.locator(':scope > summary').click();
-    assert.equal(await more.evaluate(element => element.open), true);
-    await more.locator(':scope > summary').focus();
-    await page.keyboard.press('Enter');
-    assert.equal(await more.evaluate(element => element.open), true);
     assert.equal(await card.getByText('개요 작업 시작 중', { exact: true }).isVisible(), true);
     assert.equal(await card.getByRole('button', { name: '개요 작업 취소', exact: true }).isVisible(), true);
     await openAiSection('설정');
@@ -6104,7 +6193,7 @@ try {
     await mkdir(folder);
     await writeFile(path.join(folder, 'start.ts'), text);
     const editor = () => page.locator('.learning-mark');
-    const marksCard = () => page.locator('.cards [aria-label="학습 기록"]');
+    const marksCard = () => page.locator('.overview-side [aria-label="학습 기록"]');
     const resumeCard = () => page.getByRole('region', { name: '지난번 학습 이어서 보기', exact: true });
     const overview = () => page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
     const closeProject = async () => {

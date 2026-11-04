@@ -102,16 +102,16 @@ function SiteList({ items, omitted, disabled, onSite }: {
   </>;
 }
 
-export function FlowWalk({ flow, title, about, codeName, walk, selection, setStory, setStep, setNode, locked, stale,
-  summary, setSummary, onFunction, onCode, onSite, onChoose, onAsk, readCode, children }: {
-  flow: FeatureFlow; title: string; about?: string; codeName: string; walk: Walk; selection: WalkSelection;
+export function FlowWalk({ flow, title, route, about, codeName, walk, selection, setStory, setStep, setNode, locked, stale,
+  summary, setSummary, onFunction, onCode, onSite, onChoose, onMap, onAsk, readCode, children }: {
+  flow: FeatureFlow; title: string; route: string; about?: string; codeName: string; walk: Walk; selection: WalkSelection;
   setStory(id: string): void; setStep(index: number): void; setNode(id: string): void;
   summary: [string, string, string]; setSummary(index: 0 | 1 | 2, value: string): void;
   locked: boolean; stale: boolean; onFunction(target: CallTarget): void; onCode(site: ValueSite): void;
   onSite(nodeId: string, site: ValueSite): void;
   onAsk(node: FlowNode, question: string, topic: string): void;
   readCode(fileId: string): Promise<Result<SourceView> | null>;
-  onChoose(): void; children?: React.ReactNode;
+  onChoose(): void; onMap(): void; children?: React.ReactNode;
 }) {
   const { stories, storyId, steps, step, currentNode } = selection;
   const stepHeading = useRef<HTMLHeadingElement>(null);
@@ -124,13 +124,36 @@ export function FlowWalk({ flow, title, about, codeName, walk, selection, setSto
   const disabled = locked || stale;
   const otherCount = step ? otherCountOf(step) : 0;
   const screenEvidence = steps[0]?.screenEvidence ?? false;
-  const zones = new Set(steps.map(item => zoneOf[item.kind]));
-  // A request alone still has code that sent it, so the front box shows with the arrow.
-  const front = zones.has('front') || zones.has('arrow');
-  const server = zones.has('server');
-  const store = zones.has('store');
-  const here = step && zoneOf[step.kind];
+  const groups: { name: string; start: number; count: number }[] = [];
+  for (const [index, item] of steps.entries()) {
+    const zone = zoneOf[item.kind];
+    const name = zone === 'front' ? (screenEvidence ? '화면 쪽' : '요청을 보내는 코드')
+      : zone === 'arrow' ? '요청' : '서버 쪽';
+    const previous = groups.at(-1);
+    if (previous?.name === name) { previous.count++; continue; }
+    groups.push({ name, start: index, count: 1 });
+  }
+  const strip = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    const nav = strip.current;
+    if (!nav) return;
+    const reveal = () => {
+      const button = nav.querySelector<HTMLButtonElement>('[aria-current="step"]');
+      if (!button) return;
+      const bounds = nav.getBoundingClientRect();
+      const current = button.getBoundingClientRect();
+      const left = bounds.left + nav.clientLeft;
+      const right = left + nav.clientWidth;
+      if (current.left < left) nav.scrollTo({ left: nav.scrollLeft + current.left - left });
+      if (current.right > right) nav.scrollTo({ left: nav.scrollLeft + current.right - right });
+    };
+    reveal();
+    const observer = new ResizeObserver(reveal);
+    observer.observe(nav);
+    return () => observer.disconnect();
+  }, [step]);
   const request = steps.find(item => item.kind === 'request');
+  const stepName = (index: number) => `${String.fromCodePoint(0x2460 + index)} ${steps[index].label} · ${steps[index].representative.name}`;
   const hints = hintSteps(steps);
   const fields = [
     { label: '받는 것', hint: hints.takes, suffix: '을(를) 받아서, ' },
@@ -143,8 +166,14 @@ export function FlowWalk({ flow, title, about, codeName, walk, selection, setSto
     focusHint.current = true;
     setStep(index);
   }
-  return <section aria-label="기능 따라가기">
-    <div className="map-actions"><h3>{title}</h3><button className="btn" disabled={locked} onClick={onChoose}>다른 기능 고르기</button></div>
+  return <section className="flow-walk" aria-label="기능 따라가기">
+    <div className="map-actions flow-walk__heading">
+      <h3>{title}</h3><code className="feature-route">{route}</code>
+      <div className="map-actions flow-walk__actions">
+        <button className="btn" disabled={locked} onClick={onChoose}>다른 기능 고르기</button>
+        <button className="btn" disabled={locked} onClick={onMap}>지도에서 보기</button>
+      </div>
+    </div>
     {(about || codeName !== title) && <p>{about && `${about} · `}{codeName !== title && codeName}</p>}
     {!flow.nodes.some(node => node.side === 'request') && <p>프론트 시작점은 찾지 못했어요</p>}
     {stories.length > 1 && <div role="group" aria-label="요청 고르기">요청 고르기: {stories.map(id => {
@@ -153,92 +182,95 @@ export function FlowWalk({ flow, title, about, codeName, walk, selection, setSto
         onClick={() => setStory(id)}>{request.relativePath} {request.range.startLine}행 · {request.name}</button>;
     })}</div>}
     {step && currentNode && <>
-      {/* Above the step: the code below it can be long, and the way on should stay in view. */}
-      <nav aria-label="이야기 단계" className="flow-nav">
-        <button className="btn" disabled={disabled || walk.step === 0} onClick={() => setStep(walk.step - 1)}>◀ 이전</button>
-        <div className="flow-nav__steps">{steps.map((item, index) => <button key={item.kind} className="btn" disabled={disabled}
-          aria-label={`${index + 1}단계 ${item.label}`} aria-current={index === walk.step ? 'step' : undefined}
-          onClick={() => setStep(index)}>{String.fromCodePoint(0x2460 + index)} {item.label}</button>)}</div>
-        <button className="btn" disabled={disabled || walk.step === steps.length - 1} onClick={() => setStep(walk.step + 1)}>다음 ▶</button>
+      <nav ref={strip} aria-label="이야기 단계" className="flow-strip" style={{ '--steps': steps.length } as React.CSSProperties}>
+        <ol className="flow-strip__zones" aria-label="지금 여기">
+          {groups.map(group => <li key={group.start} style={{ gridColumn: `span ${group.count}` }}
+            aria-current={walk.step >= group.start && walk.step < group.start + group.count ? 'location' : undefined}>
+            {group.name}{group.name === '요청' && request?.inferred && <>{' '}
+              <span className="tag tag--unknown" title={request.reasons.join(' · ')}>추정 연결</span>
+            </>}
+          </li>)}
+        </ol>
+        <ol className="flow-strip__steps">{steps.map((item, index) => <li key={item.kind}>
+          <button className={`flow-strip__step${index < walk.step ? ' flow-strip__step--past' : ''}`} disabled={disabled}
+            aria-label={`${index + 1}단계 ${item.label}`} aria-current={index === walk.step ? 'step' : undefined}
+            onClick={() => setStep(index)}>
+            <span className="flow-strip__number">{index + 1}</span>
+            <b>{item.label}</b><code title={item.representative.name}>{item.representative.name}</code>
+          </button>
+        </li>)}</ol>
       </nav>
-      <ol className="picture picture--mini" aria-label="지금 여기">
-        {front && <li className="picture__box" aria-current={here === 'front' ? 'location' : undefined}>
-          <b>{screenEvidence ? '화면 쪽' : '요청을 보내는 코드'}</b>
-          <p>{screenEvidence ? '사람이 보고 누르는 곳' : '서버에 부탁(요청)을 보내는 코드'}</p>
-        </li>}
-        {request && <li className="picture__arrow" aria-current={here === 'arrow' ? 'location' : undefined}>
-          <span aria-hidden="true">→</span>
-          {step.kind === 'request' && <p>부탁(요청)이 가는 중</p>}
-          {request.inferred && <p><span className="tag tag--unknown">추정 연결</span> {request.reasons.join(' · ')}</p>}
-        </li>}
-        {server && <li className="picture__box" aria-current={here === 'server' ? 'location' : undefined}>
-          <b>서버 쪽</b><p>부탁을 받아 일을 하는 곳</p>
-        </li>}
-        {server && store && <li className="picture__arrow"><span aria-hidden="true">→</span></li>}
-        {store && <li className="picture__box" aria-current={here === 'store' ? 'location' : undefined}>
-          <b>저장소(DB)</b><p>정보를 오래 보관하는 곳</p>
-        </li>}
-      </ol>
-      <p>지금 여기: {title} 기능의 {walk.step + 1}번째 단계 · {step.label}
-        {step.kind === 'result' && ` · ${screenEvidence ? '응답이 돌아와 화면 쪽으로 다시 왔어요' : '요청 뒤 처리 코드를 보고 있어요'}`}</p>
-      <article className="card" data-testid="story-step" data-kind={step.kind}>
-        <p>{walk.step + 1} / {steps.length} · {step.label}</p>
-        <h3 ref={stepHeading} tabIndex={-1}>{step.title}</h3><p>{step.text}</p>
-        {!stale && <p data-testid="story-function-location">{currentNode.name} · {currentNode.relativePath} {currentNode.range.startLine}–{currentNode.range.endLine}행</p>}
-        {otherCount > 0 && <section aria-label="다른 경우">
-          <h4>다른 경우 {otherCount}개</h4>
-          <SiteList items={[...step.stops.items.map(stop => ({ nodeId: stop.nodeId, site: stop.site, text: stopText(stop),
-            hint: stop.condition !== null ? <>조건(코드): <code>{stop.condition}</code></> : null })),
-            ...step.asks.items.map(ask => ({ nodeId: ask.nodeId, site: ask.site,
-              text: `${ask.message === null ? '' : `‘${ask.message}’ `}확인 창에서 취소하면 여기서 멈춰요`,
-              hint: codeHint(ask.site) }))]}
-            omitted={step.stops.omitted + step.asks.omitted} disabled={disabled} onSite={onSite} />
-          {step.stops.items.length + step.stops.omitted > 0 && <p className="hint">코드에 적힌 오류예요. 다른 곳에서 이 오류를 잡아 계속 진행하는지는 확인하지 않았어요.</p>}
-        </section>}
-        {step.afterGroups.groups.length > 0 && <section aria-label="응답 뒤 화면">
-          {step.afterGroups.groups.map(group => <section key={group.node.id}>
-            <h4>{group.node.name}</h4>
-            {byWhen(group.items).map(({ when, items }) => <section key={when}>
-              <h5>{afterWhen[when]}</h5>
-              <SiteList items={items.map(item => ({ nodeId: group.node.id,
-                site: item.site, text: afterText(item), hint: codeHint(item.site) }))}
-                omitted={0} disabled={disabled} onSite={onSite} />
+      <article className="card story-step" data-testid="story-step" data-kind={step.kind}>
+        <div className="story-step__text">
+          <p className="story-step__position">{walk.step + 1} / {steps.length} · {step.label}</p>
+          {step.kind === 'result' && <p className="story-step__result">{screenEvidence ? '응답이 돌아와 화면 쪽으로 다시 왔어요' : '요청 뒤 처리 코드를 보고 있어요'}</p>}
+          <h3 ref={stepHeading} tabIndex={-1}>{step.title}</h3><p className="story-step__description">{step.text}</p>
+          {!stale && <p data-testid="story-function-location">{currentNode.name} · {currentNode.relativePath} {currentNode.range.startLine}–{currentNode.range.endLine}행</p>}
+          {otherCount > 0 && <section aria-label="다른 경우">
+            <h4>다른 경우 {otherCount}개</h4>
+            <SiteList items={[...step.stops.items.map(stop => ({ nodeId: stop.nodeId, site: stop.site, text: stopText(stop),
+              hint: stop.condition !== null ? <>조건(코드): <code>{stop.condition}</code></> : null })),
+              ...step.asks.items.map(ask => ({ nodeId: ask.nodeId, site: ask.site,
+                text: `${ask.message === null ? '' : `‘${ask.message}’ `}확인 창에서 취소하면 여기서 멈춰요`,
+                hint: codeHint(ask.site) }))]}
+              omitted={step.stops.omitted + step.asks.omitted} disabled={disabled} onSite={onSite} />
+            {step.stops.items.length + step.stops.omitted > 0 && <p className="hint">코드에 적힌 오류예요. 다른 곳에서 이 오류를 잡아 계속 진행하는지는 확인하지 않았어요.</p>}
+          </section>}
+          {step.afterGroups.groups.length > 0 && <section aria-label="응답 뒤 화면">
+            {step.afterGroups.groups.map(group => <section key={group.node.id}>
+              <h4>{group.node.name}</h4>
+              {byWhen(group.items).map(({ when, items }) => <section key={when}>
+                <h5>{afterWhen[when]}</h5>
+                <SiteList items={items.map(item => ({ nodeId: group.node.id,
+                  site: item.site, text: afterText(item), hint: codeHint(item.site) }))}
+                  omitted={0} disabled={disabled} onSite={onSite} />
+              </section>)}
             </section>)}
-          </section>)}
-          {step.afterGroups.omitted > 0 && <p className="hint">외 {step.afterGroups.omitted}개 더</p>}
-          <p className="hint">{AFTER_FLOW_NOTE}</p>
-          {step.afterGroups.groups.length > 1 && <p className="hint">{FLOW_ORDER_NOTE}</p>}
-        </section>}
-        {step.storeGroups.groups.length > 0 && <section aria-label="저장소 호출">
-          {step.storeGroups.groups.map((group, index) => <section key={group.node.id}>
-            <h4>{group.node.name}</h4>
-            <SiteList items={group.items.map(store => ({ nodeId: group.node.id, site: store.site, text: storeText(store),
-              hint: codeHint(store.site) }))}
-              omitted={index === step.storeGroups.groups.length - 1 ? step.storeGroups.omitted : 0} disabled={disabled} onSite={onSite} />
-          </section>)}
-          <p className="hint">{STORE_FLOW_NOTE}</p>
-          {step.storeGroups.groups.length > 1 && <p className="hint">{FLOW_ORDER_NOTE}</p>}
-        </section>}
-        {step.outside.items.length > 0 && <details><summary>코드에서 부르는 다른 것 {step.outside.items.length + step.outside.omitted}개</summary>
-          <ul className="map-list">{step.outside.items.map((text, index) => <li key={index}><code>{text}</code></li>)}</ul>
-          {step.outside.omitted > 0 && <p className="hint">외 {step.outside.omitted}개 더</p>}
-        </details>}
-        {step.inferred && <p><span className="tag tag--unknown">추정</span> {step.reasons.join(' · ')}</p>}
-        {step.typed && <p><span className="tag tag--doc">타입으로 찾음</span></p>}
-        {step.stopped && <p>서로 부르는 함수가 있어 여기서 멈췄어요</p>}
-        {step.nodes.length > 1 && <div role="group" aria-label="이 단계의 함수">이 단계의 함수: {step.nodes.map(node =>
-          <button key={node.id} className="btn btn--small" aria-pressed={node.id === currentNode.id} disabled={disabled}
-            onClick={() => setNode(node.id)}>{node.name}</button>)}</div>}
-        <p>근거: {currentNode.relativePath} · {currentNode.name}{' '}
-          {currentNode.side !== 'request' && <>
-            <button className="btn btn--small" disabled={disabled}
-              onClick={() => onFunction(targetOf(currentNode))}>이 함수 안 순서</button>{' '}
-            <button className="btn btn--small" disabled={disabled}
-              onClick={() => onAsk(currentNode, stepQuestion(title, walk.step + 1, step.title), title)}>AI에게 쉽게 물어보기</button>
-          </>}
-        </p>
-        {children}
+            {step.afterGroups.omitted > 0 && <p className="hint">외 {step.afterGroups.omitted}개 더</p>}
+            <p className="hint">{AFTER_FLOW_NOTE}</p>
+            {step.afterGroups.groups.length > 1 && <p className="hint">{FLOW_ORDER_NOTE}</p>}
+          </section>}
+          {step.storeGroups.groups.length > 0 && <section aria-label="저장소 호출">
+            {step.storeGroups.groups.map((group, index) => <section key={group.node.id}>
+              <h4>{group.node.name}</h4>
+              <SiteList items={group.items.map(store => ({ nodeId: group.node.id, site: store.site, text: storeText(store),
+                hint: codeHint(store.site) }))}
+                omitted={index === step.storeGroups.groups.length - 1 ? step.storeGroups.omitted : 0} disabled={disabled} onSite={onSite} />
+            </section>)}
+            <p className="hint">{STORE_FLOW_NOTE}</p>
+            {step.storeGroups.groups.length > 1 && <p className="hint">{FLOW_ORDER_NOTE}</p>}
+          </section>}
+          {step.outside.items.length > 0 && <details><summary>코드에서 부르는 다른 것 {step.outside.items.length + step.outside.omitted}개</summary>
+            <ul className="map-list">{step.outside.items.map((text, index) => <li key={index}><code>{text}</code></li>)}</ul>
+            {step.outside.omitted > 0 && <p className="hint">외 {step.outside.omitted}개 더</p>}
+          </details>}
+          {step.inferred && <p><span className="tag tag--unknown">추정</span> {step.reasons.join(' · ')}</p>}
+          {step.typed && <p><span className="tag tag--doc">타입으로 찾음</span></p>}
+          {step.stopped && <p>서로 부르는 함수가 있어 여기서 멈췄어요</p>}
+          {step.nodes.length > 1 && <div role="group" aria-label="이 단계의 함수">이 단계의 함수: {step.nodes.map(node =>
+            <button key={node.id} className="btn btn--small" aria-pressed={node.id === currentNode.id} disabled={disabled}
+              onClick={() => setNode(node.id)}>{node.name}</button>)}</div>}
+          <p className="story-step__evidence">근거: {currentNode.relativePath} · {currentNode.name}{' '}
+            {currentNode.side !== 'request' && <>
+              <button className="btn btn--small" disabled={disabled}
+                onClick={() => onFunction(targetOf(currentNode))}>이 함수 안 순서</button>{' '}
+              <button className="btn btn--small" disabled={disabled}
+                onClick={() => onAsk(currentNode, stepQuestion(title, walk.step + 1, step.title), title)}>AI에게 쉽게 물어보기</button>
+            </>}
+          </p>
+        </div>
+        <div className="story-step__code">{children}</div>
       </article>
+      <div className="flow-pagination">
+        <button className="btn" aria-label="이전 단계" disabled={disabled || walk.step === 0} onClick={() => setStep(walk.step - 1)}>
+          <small>◀ 이전 단계</small>
+          {walk.step > 0 && <b>{stepName(walk.step - 1)}</b>}
+        </button>
+        <button className="btn btn--primary" aria-label="다음 단계" disabled={disabled || walk.step === steps.length - 1} onClick={() => setStep(walk.step + 1)}>
+          <small>다음 단계 ▶</small>
+          {walk.step < steps.length - 1 && <b>{stepName(walk.step + 1)}</b>}
+        </button>
+      </div>
       {walk.step === steps.length - 1 && <section className="card flow-summary" aria-label="한 문장으로 정리">
         <h3>한 문장으로 정리해 보기</h3>
         <p>내 말로 적어 보는 칸이에요. 맞는지 채점하지 않아요. 이 프로젝트를 닫으면 사라져요.</p>
@@ -295,23 +327,22 @@ export function FeatureOverview({ project, routes, guide }: { project: ProjectVi
   // Links exist only between local requests and routes (routes.ts), so a link already means both boxes are drawn.
   const linked = sure + inferred > 0;
   // With no routes the chooser's notice says what is missing and where to go instead.
-  return <section className="card" aria-label="큰 그림">
+  return <section className="card overview-picture" aria-label="큰 그림">
     <h3>이 프로젝트는 이렇게 나뉘어요</h3>
-    {guide && <p><span className="tag tag--unknown">AI 정리</span> {guide.summary}</p>}
-    <ol className="picture">
-      {screens > 0 && <li className="picture__box">
-        <b>화면</b><p>화면 {screens}개</p><p>사람이 보고 누르는 곳</p>
+    <ol className="overview-picture__grid">
+      {screens > 0 && <li className="overview-picture__box">
+        <p>화면 쪽 · 사람이 보고 누르는 곳</p><b>화면 {screens}개</b>
       </li>}
-      {local > 0 && <li className="picture__box">
-        <b>요청을 보내는 코드</b><p>요청 {local}개</p>{front && <p>{front} 폴더</p>}<p>서버에 부탁(요청)을 보내는 코드</p>
+      {local > 0 && <li className="overview-picture__box overview-picture__box--request">
+        <p>요청 · 서버에 보내는 부탁</p><b>요청 {local}개</b>
+        {linked && <p>확실히 이어짐 {sure}개 · 추정 {inferred}개</p>}{front && <p>{front} 폴더</p>}
       </li>}
-      {linked && <li className="picture__arrow">
-        <span>→</span><p>확실히 이어짐 {sure}개 · 추정 {inferred}개</p>
-      </li>}
-      {routeCount > 0 && <li className="picture__box">
-        <b>서버</b><p>기능 {routeCount}개</p>{server && <p>{server} 폴더</p>}<p>부탁을 받아 일을 하는 곳</p>
+      {linked && <li className="overview-picture__arrow" aria-hidden="true">→</li>}
+      {routeCount > 0 && <li className="overview-picture__box">
+        <p>서버 쪽 · 부탁을 받아 일을 하는 곳</p><b>기능 {routeCount}개</b>{server && <p>{server} 폴더</p>}
       </li>}
     </ol>
+    {guide && <p><span className="tag tag--unknown">AI 정리</span> {guide.summary}</p>}
     {unlinked > 0 && routeCount > 0 && <p>서버 주소를 찾지 못한 요청 {unlinked}개</p>}
     {local > 0 && routeCount > 0 && !linked && <p>요청을 보내는 코드와 서버 사이의 연결은 확인하지 못했어요.</p>}
     {external > 0 && <p>다른 서버로 보내는 요청 {external}개</p>}
@@ -897,8 +928,8 @@ export function FeatureList({ groups, routes, selected, disabled, onFollow, sear
   </section>;
 }
 
-export function FeatureChooser({ project, state, revision, locked, onFollow, mode, running, checking, connections, onInspect, onEnsure, onRunning }: {
-  project: ProjectView; state: FeatureFlows; revision: number; locked: boolean; onFollow(routeIndex: number, start?: FlowStart): void;
+export function FeatureChooser({ project, state, starts, revision, locked, onFollow, mode, running, checking, connections, onInspect, onEnsure, onRunning }: {
+  project: ProjectView; state: FeatureFlows; starts: React.ReactNode; revision: number; locked: boolean; onFollow(routeIndex: number, start?: FlowStart): void;
   mode: LearningMode; running: boolean; checking: boolean; connections: ConnectionReport | null;
   onInspect(): Promise<string | null>; onEnsure(): Promise<string | null>; onRunning(value: boolean): void;
 }) {
@@ -910,15 +941,16 @@ export function FeatureChooser({ project, state, revision, locked, onFollow, mod
   const guideCard = routes && <FeatureGuideCard key={`${routes.routesId}:${revision}`} projectId={project.id} routesId={routes.routesId}
     result={guide} mode={mode} locked={disabled || routes.routes.length === 0} running={running} checking={checking} connections={connections}
     onInspect={onInspect} onEnsure={onEnsure} onResult={setGuideResult} onRunning={onRunning} onDelete={state.deleteGuide} storageError={state.guideError} />;
-  return <div className="card--wide">
+  return <div className="feature-chooser">
     <RoutesStatus state={state} />
     {routes && <>
       <FeatureOverview project={project} routes={routes} guide={guide?.changed ? undefined : guide?.guide} />
       {routes.routes.length === 0 && guide && guideCard}
       {routes.routes.length === 0 ? <p className="notice">서버 코드(요청을 받는 곳)를 찾지 못해서 기능별로 따라갈 수 없어요. 아래 ‘어디부터 읽을까요?’에서 시작 파일을 골라 읽어 보세요.</p> : <>
-        {feature && <section className="card" aria-label="처음 따라갈 기능">
+        {feature && <section className="card overview-recommendation" aria-label="처음 따라갈 기능">
           <h3>처음이라면 이 기능부터 따라가 보세요</h3>
-          <b>{indexed?.name ?? feature.name}</b>
+          <div className="overview-recommendation__heading"><b>{indexed?.name ?? feature.name}</b>
+            <code className="feature-route">{routeLabel(routes.routes[feature.routes[0]])}</code></div>
           {indexed && <>{' '}<IndexTags feature={indexed} />
             <p className="hint">{indexed.source}</p>
             <p className="hint">{feature.name}</p>
@@ -926,13 +958,14 @@ export function FeatureChooser({ project, state, revision, locked, onFollow, mod
           {feature.about && <p className="hint">{feature.about}</p>}
           <p>이 기능에 요청을 보내는 코드 {feature.sure}곳을 확실히 찾았어요. 요청을 보내는 쪽부터 서버까지 따라가 볼 수 있어요.</p>
           <p className="hint">고른 기준: 요청을 보내는 코드와 확실히 이어진 곳이 가장 많은 기능(같으면 정보를 보기만 하는 GET 기능 먼저)</p>
-          <button className="btn" disabled={disabled} onClick={() => onFollow(feature.routes[0], indexed?.start ?? undefined)}>이 기능부터 따라가기</button>
+          <button className="btn btn--primary" disabled={disabled} onClick={() => onFollow(feature.routes[0], indexed?.start ?? undefined)}>이 기능부터 따라가기</button>
         </section>}
-        <FeatureList {...state.groupingProps} search={state.search} setSearch={state.setSearch} groups={state.groups} routes={routes} selected={state.selected} disabled={disabled} onFollow={onFollow}>
-          {guideCard}
-        </FeatureList>
       </>}
     </>}
+    {starts}
+    {routes && routes.routes.length > 0 && <FeatureList {...state.groupingProps} search={state.search} setSearch={state.setSearch} groups={state.groups} routes={routes} selected={state.selected} disabled={disabled} onFollow={onFollow}>
+      {guideCard}
+    </FeatureList>}
   </div>;
 }
 
