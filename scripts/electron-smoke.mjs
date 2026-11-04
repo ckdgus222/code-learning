@@ -150,7 +150,7 @@ await writeFile(path.join(neighborhoodFixture, 'package.json'), JSON.stringify({
 await writeFile(path.join(neighborhoodFixture, 'large/right.ts'), dependencyNames.map((name, i) =>
   `import { value as value${i} } from '../neighbors/${name.slice(0, -3)}';`).join('\n') + '\nexport const right = 1;\n');
 await writeFile(path.join(neighborhoodFixture, 'large/left.ts'), 'export const left = 1;\n');
-for (let i = 0; i < 29; i++) await writeFile(path.join(neighborhoodFixture, `large/isolated${i}.ts`), 'export const isolated = 1;\n');
+for (let i = 0; i < 29; i++) await writeFile(path.join(neighborhoodFixture, `large/${i === 0 ? longNeighbor : `isolated${i}.ts`}`), 'export const isolated = 1;\n');
 for (const name of dependencyNames) await writeFile(path.join(neighborhoodFixture, 'neighbors', name), 'export const value = 1;\n');
 for (let i = 0; i < 31; i++) await writeFile(path.join(neighborhoodFixture, `users/user${String(i).padStart(2, '0')}.ts`),
   i < 7 ? "import { left } from '../large/left';\nexport const user = left;\n" : 'export const user = 1;\n');
@@ -2520,6 +2520,7 @@ try {
       await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
       const mapPage = page.locator('.map-page');
       const tabs = mapPage.getByRole('group', { name: '지도 종류', exact: true });
+      assert.equal(await mapPage.locator('.map-heading__note').innerText(), '코드에서 찾은 연결 · 실행 기록이 아니에요');
       assert.equal(await tabs.getByRole('button', { name: '기능별 연결', exact: true }).getAttribute('aria-pressed'), 'true');
       assert.equal(await tabs.getByRole('button', { name: '파일 연결', exact: true }).getAttribute('aria-pressed'), 'false');
       await openServerFeatures();
@@ -2610,6 +2611,7 @@ try {
       await page.getByRole('button', { name: '프로젝트 지도', exact: true }).click();
       assert.equal(await app.evaluate(() => globalThis.mapTabCalls.map), 0);
       await tabs.getByRole('button', { name: '파일 연결', exact: true }).click();
+      assert.equal(await mapPage.locator('.map-heading__note').innerText(), '화살표는 ‘가져다 씀(import)’이에요 · 실행 순서가 아니에요');
       await mapPage.getByRole('button', { name: '지도 다시 만들기', exact: true }).waitFor();
       await mapPage.getByTestId('map-canvas').waitFor();
       await checkCanvasPanelRefit(mapPage.getByTestId('map-canvas'));
@@ -2731,6 +2733,15 @@ try {
     await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
     await page.getByRole('region', { name: '바뀐 파일 목록' }).getByText(`neighbors/${longNeighbor}`, { exact: true }).waitFor();
     await openFileMap();
+    const folderBoxes = page.getByTestId('map-canvas').locator('.react-flow__node');
+    await folderBoxes.filter({ hasText: 'neighbors · 파일 20개' }).getByText('바뀐 파일 1개', { exact: true }).waitFor();
+    assert.equal(await folderBoxes.evaluateAll(nodes => {
+      const boxes = nodes.map(node => ({ node, rect: node.getBoundingClientRect() }));
+      return boxes.every(({ node, rect }, i) => node.offsetHeight <= 100 && rect.height > 0
+        && boxes.slice(i + 1).every(({ rect: other }) => rect.right <= other.left + 1 || other.right <= rect.left + 1
+          || rect.bottom <= other.top + 1 || other.bottom <= rect.top + 1));
+    }), true, 'Tagged folders stay within the unchanged 112px row spacing');
+    assert.equal(await folderBoxes.filter({ hasText: 'neighbors · 파일 20개' }).locator('.map-box__label > b').textContent(), 'neighbors · 파일 20개');
     const select = page.getByRole('combobox', { name: '파일 볼 폴더', exact: true });
     await select.selectOption('folder:large');
     const list = page.getByRole('region', { name: '큰 폴더 파일 목록', exact: true });
@@ -2750,6 +2761,21 @@ try {
       await list.getByRole('button', { name: 'large/right.ts', exact: true }).click();
       await until(async () => await nodes.count() === 21);
       await checkCanvasFits(canvas, 21);
+      const pickedCard = page.getByRole('region', { name: '고른 상자', exact: true });
+      assert.equal(await pickedCard.locator('.map-picked__path').innerText(), 'large/right.ts');
+      assert.equal(await pickedCard.locator('.map-connections p').count(), 2);
+      assert.match(await pickedCard.locator('.map-connections').innerText(), /가져다 씀 20곳: /);
+      assert.ok((await pickedCard.locator('.map-connections').innerText()).includes(`neighbors/${longNeighbor}`));
+      await eachTheme(async mode => {
+        assert.equal(await list.locator('li:has(button[aria-pressed="true"])').evaluate(row => {
+          const probe = document.createElement('span');
+          probe.style.backgroundColor = 'var(--accent-soft)';
+          row.append(probe);
+          const matches = getComputedStyle(row).backgroundColor === getComputedStyle(probe).backgroundColor;
+          probe.remove();
+          return matches;
+        }), true, `${mode} selected file row uses accent-soft`);
+      });
       const initialZoom = await canvas.locator('.react-flow__viewport').evaluate(element => new DOMMatrix(getComputedStyle(element).transform).a);
       await checkCanvasPanelRefit(canvas);
       const refittedZoom = await canvas.locator('.react-flow__viewport').evaluate(element => new DOMMatrix(getComputedStyle(element).transform).a);
@@ -2805,6 +2831,31 @@ try {
         assert.equal(await scroll.evaluate(element => getComputedStyle(element).overflowX), 'auto');
         if (width === 760) assert.equal(await scroll.evaluate(element => element.scrollWidth > element.clientWidth), true);
       }
+      const questionToggle = page.getByRole('banner').getByRole('button', { name: '질문', exact: true });
+      const wasPanelOpen = await questionToggle.getAttribute('aria-pressed');
+      try {
+        for (const width of [1440, 760]) {
+          await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
+          await until(async () => await page.evaluate(() => window.outerWidth) === width);
+          for (const panelOpen of ['false', 'true']) {
+            if (await questionToggle.getAttribute('aria-pressed') !== panelOpen) await questionToggle.click();
+            await select.selectOption('folder:large');
+            await list.getByRole('button', { name: `large/${longNeighbor}`, exact: true }).click();
+            assert.equal(await pickedCard.locator('.map-picked__path').textContent(), `large/${longNeighbor}`);
+            assert.equal(await pickedCard.locator('.map-connections p').count(), 2);
+            assert.equal(await pickedCard.evaluate(card => card.scrollWidth <= card.clientWidth + 1), true);
+            assert.equal(await page.locator('.center').evaluate(center => center.scrollWidth <= center.clientWidth + 1), true);
+            await select.selectOption('folder:neighbors');
+            await page.getByTestId('map-canvas').getByRole('button', { name: `${longNeighbor} 이어진 것만 보기`, exact: true }).click();
+            assert.equal(await pickedCard.locator('.map-picked__name').textContent(), `neighbors/${longNeighbor}`);
+            assert.equal(await pickedCard.evaluate(card => card.scrollWidth <= card.clientWidth + 1), true);
+            assert.equal(await page.locator('.center').evaluate(center => center.scrollWidth <= center.clientWidth + 1), true);
+          }
+        }
+      } finally {
+        if (await questionToggle.getAttribute('aria-pressed') !== wasPanelOpen) await questionToggle.click();
+      }
+      await select.selectOption('folder:large');
       await list.getByRole('button', { name: 'large/right.ts', exact: true }).click();
       const dependency = nodes.filter({ hasText: 'dep01.ts' });
       await dependency.click();
@@ -2832,6 +2883,50 @@ try {
     const libFocus = canvas.getByRole('button', { name: 'web/lib · 파일 1개 이어진 것만 보기', exact: true });
     const directFocus = canvas.getByRole('button', { name: 'web 바로 아래 파일 · 1개 이어진 것만 보기', exact: true });
     await until(async () => await boxes.count() === 3);
+    const pickedCard = page.getByRole('region', { name: '고른 상자', exact: true });
+    const originalSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
+    const questionToggle = page.getByRole('banner').getByRole('button', { name: '질문', exact: true });
+    const wasPanelOpen = await questionToggle.getAttribute('aria-pressed');
+    try {
+      for (const width of [1440, 760]) {
+        await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
+        await until(async () => await page.evaluate(() => window.outerWidth) === width);
+        for (const panelOpen of ['false', 'true']) {
+          if (await questionToggle.getAttribute('aria-pressed') !== panelOpen) await questionToggle.click();
+          await until(async () => await page.locator('.map-layout').evaluate((layout, width) => {
+            const main = layout.querySelector('.map-main').getBoundingClientRect();
+            const side = layout.querySelector('.map-side').getBoundingClientRect();
+            return width === 1440 ? side.left >= main.right && Math.abs(side.top - main.top) <= 1 : side.top >= main.bottom;
+          }, width));
+          assert.equal(await page.locator('.center').evaluate(center => center.scrollWidth <= center.clientWidth + 1), true);
+        }
+      }
+    } finally {
+      if (await questionToggle.getAttribute('aria-pressed') !== wasPanelOpen) await questionToggle.click();
+      await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), originalSize);
+    }
+    const help = page.locator('.map-help');
+    await help.locator('summary').click();
+    assert.ok((await help.innerText()).includes('상자를 누르면 그 안을 한 단계 펼쳐요. 위 ‘접기’로 다시 접어요.'));
+    assert.ok((await help.innerText()).includes('설계 보기는 폴더끼리, 파일 보기는 파일끼리 보여 줘요.'));
+    await help.locator('summary').click();
+    const review = page.getByRole('region', { name: '살펴볼 곳', exact: true });
+    for (const [label, id] of [
+      ['아무도 가져다 쓰지 않는 파일 후보', 'map-unused-files'],
+      ['다른 파일이 가져다 쓰지 않는 export 후보', 'map-unused-exports'],
+      ['어려운 코드 살펴볼 곳', 'map-complex-functions'], ['확인 못 한 import', 'map-unresolved'],
+    ]) {
+      const heading = page.locator(`#${id}`);
+      const count = (await heading.innerText()).match(/ · (\d+)개$/)[1];
+      const button = review.getByRole('button', { name: `${label} ${count}개`, exact: true });
+      assert.equal(await button.locator('b').innerText(), count);
+      await button.click();
+      assert.equal(await heading.evaluate(element => document.activeElement === element), true);
+      if (id === 'map-unresolved') {
+        assert.equal(count, '0');
+        assert.equal(await heading.evaluate(element => element.closest('details').open), true);
+      }
+    }
     await boxes.filter({ hasText: 'web · 파일 4개' }).locator('.map-box__label').click();
     await until(async () => await boxes.count() === 6 && await arrows.count() === 2);
 
@@ -2840,6 +2935,20 @@ try {
     assert.equal(await boxes.count(), 6);
     assert.deepEqual(await chips.getByRole('button').allTextContents(), ['web 접기']);
     assert.match(await focus.innerText(), /가져다 씀 1곳 · 이 상자를 가져다 씀 0곳/);
+    assert.equal(await pickedCard.locator('.map-picked__name').innerText(), 'web/app');
+    assert.equal(await pickedCard.locator('.map-connections').innerText(), '가져다 씀 1곳: lib/');
+    await eachTheme(async mode => {
+      assert.equal(await canvas.evaluate(element => {
+        const probe = document.createElement('span');
+        element.append(probe);
+        const matches = ['.map-box--focus', '.map-box:not(.map-box--focus)'].every((selector, i) => {
+          probe.style.backgroundColor = i === 0 ? 'var(--accent-soft)' : 'var(--surface)';
+          return getComputedStyle(element.querySelector(selector)).backgroundColor === getComputedStyle(probe).backgroundColor;
+        });
+        probe.remove();
+        return matches;
+      }), true, `${mode} file map boxes use the surface and accent-soft tokens`);
+    });
     assert.equal(await appFocus.getAttribute('aria-pressed'), 'true');
     assert.match(await appBox.getAttribute('class'), /\bmap-box--focus\b/);
     assert.match(await boxes.filter({ hasText: 'web/e2e · 파일 1개' }).getAttribute('class'), /\bmap-box--dim\b/);
@@ -2865,7 +2974,10 @@ try {
     assert.equal(await canvas.locator('button[aria-pressed="true"]').count(), 0);
     assert.equal(await canvas.locator('.map-box--dim, .map-box--focus').count(), 0);
 
-    await appBox.locator('.map-box__label').click();
+    assert.equal(await pickedCard.locator('.hint').innerText(), '상자의 ‘이어진 것만’을 누르면 그 상자의 연결이 여기에 보여요.');
+    await appFocus.click();
+    await pickedCard.getByRole('button', { name: '안의 파일 펼치기', exact: true }).click();
+
     const fileBox = boxes.filter({ hasText: 'page.ts' });
     await fileBox.getByRole('button', { name: 'page.ts 이어진 것만 보기', exact: true }).click();
     await until(async () => await arrows.count() === 1);
@@ -3138,8 +3250,12 @@ try {
         return original.call(this, event, listener);
       };
     });
+    await page.getByTestId('map-canvas').getByRole('button', { name: /이어진 것만 보기$/ }).first().click();
+    const pickedBeforeBuild = await page.getByRole('region', { name: '고른 상자', exact: true }).innerText();
     await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).click();
     await page.getByText('지도를 만드는 중…', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('region', { name: '고른 상자', exact: true }).innerText(), pickedBeforeBuild);
+    assert.equal(await page.getByRole('group', { name: '이어진 것만 보는 중', exact: true }).count(), 1);
     await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
     if (await page.getByRole('button', { name: '폴더 shared', exact: true }).getAttribute('aria-expanded') === 'false') {
       await page.getByRole('button', { name: '폴더 shared', exact: true }).click();

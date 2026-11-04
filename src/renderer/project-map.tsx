@@ -35,12 +35,17 @@ interface BoxData { box: MapBox; change: ChangeKind | null; changed: number; foc
 
 function BoxLabel({ box, change, changed }: Pick<BoxData, 'box' | 'change' | 'changed'>) {
   const status = box.file && box.file.checked !== 'full' ? checkedLabels[box.file.checked] : null;
-  return <span className="map-box__label">
-    <b>{box.label}</b>
-    {box.file?.start && <span className="tag tag--doc">시작점 후보</span>}
-    {status && <span className="tag tag--unknown">{status}</span>}
-    {change && <span className={`tag tag--change tag--${change}`}>{kindLabels[change]}</span>}
-    {changed > 0 && <span className="tag tag--change">바뀐 파일 {changed}개</span>}
+  const separator = box.kind === 'folder' ? box.label.lastIndexOf(' · ') : -1;
+  return <span className="map-box__label" title={boxName(box)}>
+    <b>{separator < 0 ? box.label : <>
+      <span className="map-box__name">{box.label.slice(0, separator)}</span><span className="visually-hidden"> · </span><span className="map-box__count">{box.label.slice(separator + 3)}</span>
+    </>}</b>
+    <span className="map-box__tags">
+      {box.file?.start && <span className="tag tag--doc">시작점 후보</span>}
+      {status && <span className="tag tag--unknown">{status}</span>}
+      {change && <span className={`tag tag--change tag--${change}`}>{kindLabels[change]}</span>}
+      {changed > 0 && <span className="tag tag--change">바뀐 파일 {changed}개</span>}
+    </span>
   </span>;
 }
 
@@ -194,22 +199,46 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
   const userNames = neighborhood?.users.map(file => file.relativePath) ?? [];
   const usedNames = neighborhood?.used.map(file => file.relativePath) ?? [];
   const neighborhoodHeight = Math.max(1, ...graph.boxes.map(box => box.y / NEIGHBOR_ROW_HEIGHT + 1)) * NEIGHBOR_ROW_HEIGHT + 80;
+  const focusedBox = focused ? placeOf.get(focused)! : null;
+  const focusedUses = connections?.arrows.filter(arrow => arrow.source === focused) ?? [];
+  const focusedUsers = connections?.arrows.filter(arrow => arrow.target === focused) ?? [];
+  const reviewPlaces = [
+    { id: 'map-unused-files', label: '아무도 가져다 쓰지 않는 파일 후보', count: map.unused.candidates.length },
+    { id: 'map-unused-exports', label: '다른 파일이 가져다 쓰지 않는 export 후보', count: map.unused.exports.candidates.length },
+    { id: 'map-complex-functions', label: '어려운 코드 살펴볼 곳', count: map.complexFunctions.length },
+    { id: 'map-unresolved', label: '확인 못 한 import', count: map.unresolved.length },
+  ];
+  const openBox = (id: string) => {
+    const box = graph.boxes.find(item => item.id === id);
+    if (box?.file) { onOpenFile(box.file.id); return; }
+    if (box?.kind !== 'folder') return;
+    const next = new Set([...opened, box.id]);
+    const big = large ? shownBigFolder(next, folders, expandable) : null;
+    setOpened(big === null ? next : fileViewOf(big, expandable));
+  };
 
-  return <>
+  return <div className="file-map">
     <div className="map-actions" role="group" aria-label="지도 보기">
-      <button className="btn btn--small" aria-pressed={opened.size === 0} onClick={() => setOpened(new Set())}>설계 보기</button>
-      {large ? <>
+      <div className="map-view-toggle">
+        <button className="btn btn--small" aria-pressed={opened.size === 0} onClick={() => setOpened(new Set())}>설계 보기</button>
+        {!large && <button className="btn btn--small" aria-pressed={graph.boxes.every(box => box.kind === 'file')}
+          onClick={() => setOpened(new Set(expandable))}>파일 보기</button>}
+      </div>
+      {large && <>
         <label>파일 볼 폴더 <select aria-label="파일 볼 폴더" value={fileFolder === null ? '' : `folder:${fileFolder}`}
           onChange={event => setOpened(event.target.value ? fileViewOf(event.target.value.slice('folder:'.length), expandable) : new Set())}>
           <option value="">폴더 고르기</option>
           {folders.map(({ folder, count }) => <option key={folder} value={`folder:${folder}`}>{folderName(folder)} · 파일 {count}개</option>)}
         </select></label>
         {!listMode && <span className="hint">파일이 {map.files.length}개라 한 번에 그리면 선이 엉켜요. 폴더를 고르면 그 폴더의 파일을 상자로 보여 줘요.</span>}
-      </> : <button className="btn btn--small" aria-pressed={graph.boxes.every(box => box.kind === 'file')}
-        onClick={() => setOpened(new Set(expandable))}>파일 보기</button>}
-      {!listMode && <span className="hint">상자를 누르면 그 안을 한 단계 펼쳐요. 위 ‘접기’로 다시 접어요. 파일 상자를 누르면 코드를 열어요. 점선은 오른쪽에서 왼쪽으로 거꾸로 가는 연결이라, 서로 가져다 쓰는 곳일 수 있어요. 상자에 마우스를 올리면 그 상자의 화살표가 진해져요. ‘이어진 것만’을 누르면 그 상자와 이어진 화살표만 남아요. 펼치거나 접으면 다시 모두 보여요.</span>}
+      </>}
+      {!listMode && <span className="hint map-instruction">상자를 누르면 그 안을 펼쳐요 · 파일 상자를 누르면 코드를 열어요</span>}
       {listMode && <span className="hint">'{folderName(fileFolder!)}' 바로 아래 파일이 {files.length}개라 상자로 그리면 화살표가 엉켜요. 많이 쓰이는 파일부터 보여 줘요. 파일을 고르면 바로 이어진 파일만 지도로 보여 줘요.</span>}
     </div>
+    {!listMode && <details className="map-help"><summary>지도 읽는 법</summary>
+      <p>설계 보기는 폴더끼리, 파일 보기는 파일끼리 보여 줘요.</p>
+      <p>상자를 누르면 그 안을 한 단계 펼쳐요. 위 ‘접기’로 다시 접어요. 파일 상자를 누르면 코드를 열어요. 점선은 오른쪽에서 왼쪽으로 거꾸로 가는 연결이라, 서로 가져다 쓰는 곳일 수 있어요. 상자에 마우스를 올리면 그 상자의 화살표가 진해져요. ‘이어진 것만’을 누르면 그 상자와 이어진 화살표만 남아요. 펼치거나 접으면 다시 모두 보여요.</p>
+    </details>}
     {openChips.length > 0 && <div className="map-actions" role="group" aria-label="펼친 곳">
       <span className="hint">펼친 곳</span>
       {openChips.map(id => <button key={id} className="btn btn--small"
@@ -217,45 +246,71 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
         {folderName(id.slice(id.indexOf(':') + 1))}{id.startsWith('files:') ? ' 바로 아래 파일' : ''} 접기
       </button>)}
     </div>}
-    {connections && <div className="map-actions" role="group" aria-label="이어진 것만 보는 중">
-      <span className="hint">‘{graph.boxes.find(box => box.id === focused)!.label}’과 이어진 것만 보는 중 · {connections.arrows.length
-        ? `가져다 씀 ${connections.uses}곳 · 이 상자를 가져다 씀 ${connections.usedBy}곳`
-        : '지금 보이는 다른 상자와 이어진 import가 없어요.'}</span>
-      <button className="btn btn--small" onClick={() => setFocus(null)}>모두 보기</button>
-    </div>}
-    {listMode ? <>
-      <section className="card" aria-label="큰 폴더 파일 목록">
-        <h3>{folderName(fileFolder!)} 바로 아래 파일 · {files.length}개</h3>
-        <ul className="map-list map-big-folder">{files.map(({ file, uses, usedBy }) => <li key={file.id}>
-          <button className="btn btn--small" aria-label={file.relativePath} aria-pressed={pickedId === file.id}
-            onClick={() => setPickedFile({ fileId: file.id, opened })}>{file.relativePath.split('/').at(-1)}</button>
-          <span>가져다 씀 {uses}곳 · 이 파일을 가져다 씀 {usedBy}곳</span>
-        </li>)}</ul>
-      </section>
-      {neighborhood ? <>
-        <div className="map-neighborhood-scroll">
-          <MapCanvas testId="map-neighborhood" canvasKey={pickedId!} height={neighborhoodHeight} fitPadding={0.02}
-            nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodeClick={onOpenFile}
-            onEdgeClick={id => setSelected(graph.arrows.find(item => item.id === id) ?? null)} />
-        </div>
-        {neighborhood.hidden.users > 0 && <p className="hint">지도에는 '이 파일을 가져다 씀'을 {NEIGHBOR_LIMIT}개까지만 그렸어요. 나머지 {neighborhood.hidden.users}개는 아래 목록에 있어요.</p>}
-        {neighborhood.hidden.used > 0 && <p className="hint">지도에는 '가져다 씀'을 {NEIGHBOR_LIMIT}개까지만 그렸어요. 나머지 {neighborhood.hidden.used}개는 아래 목록에 있어요.</p>}
-        <div className="map-connections">
-          <p>이 파일을 가져다 씀 {userNames.length}곳: {userNames.join(', ') || '없음'}</p>
-          <p>가져다 씀 {usedNames.length}곳: {usedNames.join(', ') || '없음'}</p>
-        </div>
-      </> : <p className="hint">파일을 고르면 그 파일과 바로 이어진 파일만 지도로 보여 줘요.</p>}
-    </> : <MapCanvas testId="map-canvas" canvasKey={[...opened].sort().join('|')} nodes={nodes} edges={edges} nodeTypes={nodeTypes}
-      onNodeClick={id => {
-        const box = graph.boxes.find(item => item.id === id);
-        if (box?.file) { onOpenFile(box.file.id); return; }
-        if (box?.kind !== 'folder') return;
-        const next = new Set([...opened, box.id]);
-        const big = large ? shownBigFolder(next, folders, expandable) : null;
-        setOpened(big === null ? next : fileViewOf(big, expandable));
-      }}
-      onNodeHover={id => setHovered(id === null ? null : { id, opened })}
-      onEdgeClick={id => setSelected(graph.arrows.find(item => item.id === id) ?? null)} />}
+    <div className="map-layout">
+      <div className="map-main">
+        {listMode ? <>
+          <section className="card" aria-label="큰 폴더 파일 목록">
+            <div className="map-list-heading"><h3>{folderName(fileFolder!)} 바로 아래 파일 · {files.length}개</h3>
+              <span className="hint">많이 쓰이는 파일부터 · 고르면 바로 이어진 파일만 지도로</span></div>
+            <ul className="map-list map-big-folder">{files.map(({ file, uses, usedBy }) => <li key={file.id}>
+              <button className="btn btn--small" aria-label={file.relativePath} aria-pressed={pickedId === file.id}
+                onClick={() => setPickedFile({ fileId: file.id, opened })}>{file.relativePath.split('/').at(-1)}</button>
+              <span>가져다 씀 {uses}곳 · 이 파일을 가져다 씀 {usedBy}곳</span>
+            </li>)}</ul>
+          </section>
+          {neighborhood ? <>
+            <div className="map-neighborhood-scroll">
+              <MapCanvas testId="map-neighborhood" canvasKey={pickedId!} height={neighborhoodHeight} fitPadding={0.02}
+                nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodeClick={onOpenFile}
+                onEdgeClick={id => setSelected(graph.arrows.find(item => item.id === id) ?? null)} />
+            </div>
+            {neighborhood.hidden.users > 0 && <p className="hint">지도에는 '이 파일을 가져다 씀'을 {NEIGHBOR_LIMIT}개까지만 그렸어요. 나머지 {neighborhood.hidden.users}개는 고른 상자 카드의 목록에 있어요.</p>}
+            {neighborhood.hidden.used > 0 && <p className="hint">지도에는 '가져다 씀'을 {NEIGHBOR_LIMIT}개까지만 그렸어요. 나머지 {neighborhood.hidden.used}개는 고른 상자 카드의 목록에 있어요.</p>}
+          </> : null}
+        </> : <MapCanvas testId="map-canvas" canvasKey={[...opened].sort().join('|')} nodes={nodes} edges={edges} nodeTypes={nodeTypes}
+          onNodeClick={openBox}
+          onNodeHover={id => setHovered(id === null ? null : { id, opened })}
+          onEdgeClick={id => setSelected(graph.arrows.find(item => item.id === id) ?? null)} />}
+      </div>
+      <aside className="map-side">
+        <section className="card map-picked" aria-label="고른 상자">
+          <p className="map-side__label">고른 상자</p>
+          {listMode ? neighborhood ? <>
+            <p className="map-picked__path">{pathOf(pickedId!)}</p>
+            <div className="map-connections">
+              <p>이 파일을 가져다 씀 {userNames.length}곳: {userNames.join(', ') || '없음'}</p>
+              <p>가져다 씀 {usedNames.length}곳: {usedNames.join(', ') || '없음'}</p>
+            </div>
+          </> : <p className="hint">파일을 고르면 그 파일과 바로 이어진 파일만 지도로 보여 줘요.</p>
+            : focusedBox && connections ? <>
+              <p className="map-picked__name">{boxName(focusedBox)}</p>
+              <div className="map-actions" role="group" aria-label="이어진 것만 보는 중">
+                <span className="hint">‘{focusedBox.label}’과 이어진 것만 보는 중 · {connections.arrows.length
+                  ? `가져다 씀 ${connections.uses}곳 · 이 상자를 가져다 씀 ${connections.usedBy}곳`
+                  : '지금 보이는 다른 상자와 이어진 import가 없어요.'}</span>
+                <button className="btn btn--small" onClick={() => setFocus(null)}>모두 보기</button>
+              </div>
+              <div className="map-connections">
+                {focusedUses.length > 0 && <p>가져다 씀 {focusedUses.length}곳: {namesOf(focusedUses, arrow => arrow.target, boxPlace(focusedBox).area)}</p>}
+                {focusedUsers.length > 0 && <p>이 상자를 가져다 씀 {focusedUsers.length}곳: {namesOf(focusedUsers, arrow => arrow.source, boxPlace(focusedBox).area)}</p>}
+              </div>
+              {focusedBox.kind === 'folder' && <button className="btn btn--small" onClick={() => openBox(focusedBox.id)}>안의 파일 펼치기</button>}
+            </> : <p className="hint">상자의 ‘이어진 것만’을 누르면 그 상자의 연결이 여기에 보여요.</p>}
+        </section>
+        <section className="card map-review" aria-label="살펴볼 곳">
+          <p className="map-side__label">살펴볼 곳</p>
+          {reviewPlaces.map(({ id, label, count }) => <button key={id} className="map-review__link" aria-label={`${label} ${count}개`}
+            onClick={() => {
+              const heading = document.getElementById(id);
+              if (!heading) return;
+              const details = heading.closest('details');
+              if (details) details.open = true;
+              heading.scrollIntoView({ block: 'start' });
+              heading.focus({ preventScroll: true });
+            }}><span>{label}</span><b>{count}</b></button>)}
+        </section>
+      </aside>
+    </div>
     {!listMode && <section className="card" aria-label="상자별 연결">
       <h3>상자별 연결 · 상자 {graph.boxes.length}개</h3>
       <p className="hint">지금 지도에 보이는 상자끼리의 import예요. 펼치거나 접으면 함께 바뀌어요.</p>
@@ -298,7 +353,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
       <Omitted count={design.length} />
     </section>
     <section className="card" aria-label="아무도 가져다 쓰지 않는 파일 후보">
-      <h3>아무도 가져다 쓰지 않는 파일 후보 · {map.unused.candidates.length}개</h3>
+      <h3 id="map-unused-files" tabIndex={-1}>아무도 가져다 쓰지 않는 파일 후보 · {map.unused.candidates.length}개</h3>
       <p className="hint">지도가 확인한 범위에서, 다른 파일의 정적 import로 연결되지 않은 파일 후보예요. 실행 명령·프레임워크·다른 프로그램이 직접 부를 수도 있으니 지우기 전에 직접 확인해 주세요.</p>
       {map.unused.candidates.length ? <ul className="map-list">{firstRows(map.unused.candidates).map(file => <li key={file.fileId}>
         <button className="btn btn--small path" disabled={locked} onClick={() => onOpenFile(file.fileId)}>{file.relativePath}</button>
@@ -314,7 +369,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
       {map.unused.notes.map(note => <p key={note} className="hint">{note}</p>)}
     </section>
     <section className="card" aria-label="다른 파일이 가져다 쓰지 않는 export 후보">
-      <h3>다른 파일이 가져다 쓰지 않는 export 후보 · {map.unused.exports.candidates.length}개</h3>
+      <h3 id="map-unused-exports" tabIndex={-1}>다른 파일이 가져다 쓰지 않는 export 후보 · {map.unused.exports.candidates.length}개</h3>
       <p className="hint">다른 파일의 import에 이름이 나오지 않는 함수·클래스·값이에요. 프레임워크나 다른 프로그램이 이름으로 부를 수도 있으니 직접 확인해 주세요.</p>
       {map.unused.exports.candidates.length ? <ul className="map-list">{firstRows(map.unused.exports.candidates).map(item =>
         <li key={`${item.fileId}:${item.startUtf16}:${item.name}`}>
@@ -333,7 +388,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
       {map.unused.exports.notes.map(note => <p key={note} className="hint">{note}</p>)}
     </section>
     <section className="card" aria-label="어려운 코드 살펴볼 곳">
-      <h3>어려운 코드 살펴볼 곳 · {map.complexFunctions.length}개</h3>
+      <h3 id="map-complex-functions" tabIndex={-1}>어려운 코드 살펴볼 곳 · {map.complexFunctions.length}개</h3>
       <p className="hint">{COMPLEXITY_NOTE}</p>
       {map.complexFunctions.length ? <ul className="map-list">{firstRows(map.complexFunctions).map(item => <li key={`${item.fileId}:${item.startUtf16}`}>
         <span className="path">{pathOf(item.fileId)} {item.startLine}행</span> <b>{item.name}</b> <ComplexityTags lines={item.lines} depth={item.depth} />
@@ -347,7 +402,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
       </li>)}</ul>
       <Omitted count={map.edges.length} />
     </details>
-    <details className="card" open={map.unresolved.length > 0}><summary>확인 못 함 · {map.unresolved.length}개</summary>
+    <details className="card" open={map.unresolved.length > 0}><summary id="map-unresolved" tabIndex={-1}>확인 못 함 · {map.unresolved.length}개</summary>
       <ul className="map-list">{firstRows(map.unresolved).map(item => <li key={`${item.fromFileId}:${item.startUtf16}`}>
         <span className="path">{pathOf(item.fromFileId)} {item.startLine}행</span> <code>{item.text}</code> · {item.reasonText ?? unresolvedLabels[item.reason]}
         {item.candidates.length > 0 && <> · 후보: {item.candidates.join(', ')}</>} {showButton(item)}
@@ -366,7 +421,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
       <Omitted count={unexamined.length} />
     </details>}
     {map.notes.map(note => <p key={note} className="notice notice--warn">{note}</p>)}
-  </>;
+  </div>;
 }
 
 export function ProjectMapView({ project, entry, stale, mapping, locked, changes, onBuild, onCancel, onOpenFile, onShowImport, onShowFunction,
@@ -377,7 +432,6 @@ export function ProjectMapView({ project, entry, stale, mapping, locked, changes
   onBuild(): void; onCancel(): void; onOpenFile(fileId: string): void; onShowImport(item: MapImport): void; onShowFunction(item: MapFunction | MapExport): void;
 }) {
   return <>
-    <p className="hint">화살표는 ‘가져다 씀(import)’이에요. 실행 순서가 아니에요. 설계 보기는 폴더끼리, 파일 보기는 파일끼리 보여 줘요.</p>
     {/* The map only covers the files listed when the folder was opened, so a cut-short scan is said here too. */}
     {project.warnings.length > 0 && <p className="notice"><b>폴더를 열 때:</b> {project.warnings.join(' ')}</p>}
     {entry && stale && <p className="notice notice--warn"><b>다시 확인 필요:</b> 지도를 만든 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 지도를 다시 만들어 주세요.</p>}
