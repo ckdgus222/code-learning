@@ -114,6 +114,7 @@ export function FlowWalk({ flow, title, route, about, codeName, walk, selection,
   onChoose(): void; onMap(): void; children?: React.ReactNode;
 }) {
   const { stories, storyId, steps, step, currentNode } = selection;
+  const nextStep = steps[walk.step + 1];
   const stepHeading = useRef<HTMLHeadingElement>(null);
   const focusHint = useRef(false);
   useLayoutEffect(() => {
@@ -205,7 +206,13 @@ export function FlowWalk({ flow, title, route, about, codeName, walk, selection,
           <p className="story-step__position">{walk.step + 1} / {steps.length} · {step.label}</p>
           {step.kind === 'result' && <p className="story-step__result">{screenEvidence ? '응답이 돌아와 화면 쪽으로 다시 왔어요' : '요청 뒤 처리 코드를 보고 있어요'}</p>}
           <h3 ref={stepHeading} tabIndex={-1}>{step.title}</h3><p className="story-step__description">{step.text}</p>
-          {!stale && <p data-testid="story-function-location">{currentNode.name} · {currentNode.relativePath} {currentNode.range.startLine}–{currentNode.range.endLine}행</p>}
+          {!stale && <dl className="story-step__facts" data-testid="story-function-location">
+            <dt>{currentNode.side === 'request' ? '요청' : '함수'}</dt><dd><code>{currentNode.name}</code></dd>
+            <dt>파일</dt><dd><code>{currentNode.relativePath} · {currentNode.range.startLine}–{currentNode.range.endLine}행</code></dd>
+            {step.kind === 'request' && nextStep?.kind === 'handler' && <>
+              <dt>받는 곳</dt><dd>{nextStep.representative.name} (다음 단계)</dd>
+            </>}
+          </dl>}
           {otherCount > 0 && <section aria-label="다른 경우">
             <h4>다른 경우 {otherCount}개</h4>
             <SiteList items={[...step.stops.items.map(stop => ({ nodeId: stop.nodeId, site: stop.site, text: stopText(stop),
@@ -834,11 +841,12 @@ function IndexTags({ feature }: { feature: IndexFeature }) {
   </>;
 }
 
-export function FeatureList({ groups, routes, selected, disabled, onFollow, search, setSearch, children, flows, guide, index, grouping = false, groupError = '', onRegroup, onCancelGrouping }: {
+export function FeatureList({ groups, routes, selected, disabled, onFollow, search, setSearch, children, flows, guide, index, grouping = false, groupError = '', onRegroup, onCancelGrouping, headingRef }: {
   groups: ReturnType<typeof featureGroups>; routes: ProjectRoutes; selected: number | null;
   disabled: boolean; onFollow(routeIndex: number, start?: FlowStart): void; search: string; setSearch(value: string): void;
   children?: React.ReactNode; flows: FeatureFlow[] | null; guide?: FeatureGuide; grouping?: boolean; groupError?: string;
   index?: IndexGroup[] | null;
+  headingRef?: React.Ref<HTMLHeadingElement>;
   onRegroup?(): void; onCancelGrouping?(): void;
 }) {
   const query = search.toLowerCase();
@@ -878,7 +886,7 @@ export function FeatureList({ groups, routes, selected, disabled, onFollow, sear
     </li>)}</ul>
   </details>;
   return <section aria-label="기능 목록">
-    <h3>기능 고르기</h3>
+    <h3 ref={headingRef} tabIndex={-1}>기능 고르기</h3>
     {routes.requests.length === 0 && <p className="hint">이 프로젝트에서는 서버에 요청을 보내는 코드를 찾지 못했어요. 서버 쪽 흐름만 따라갈 수 있어요.</p>}
     {grouping && <p role="status">화면별로 묶는 중… <button className="btn btn--small" onClick={onCancelGrouping}>취소</button></p>}
     {groupError && <p role="alert">화면별로 묶지 못했어요: {groupError.replace(/[.。]$/, '')}. 서버 주소 기준으로 보여 줘요.{' '}
@@ -938,6 +946,11 @@ export function FeatureChooser({ project, state, starts, revision, locked, onFol
   const disabled = locked || stale;
   const index = state.groupingProps.index;
   const indexed = index?.flatMap(group => group.features).find(item => item.routeIndex === feature?.routes[0]);
+  const flow = state.groupingProps.flows?.find(item => item.routeIndex === feature?.routes[0]);
+  const start = indexed?.start;
+  const steps = flow ? walkSelection(flow, { through: start?.through ?? null, storyId: start?.storyId ?? null,
+    step: 0, nodeId: null, site: null }).steps : [];
+  const listHeading = useRef<HTMLHeadingElement>(null);
   const guideCard = routes && <FeatureGuideCard key={`${routes.routesId}:${revision}`} projectId={project.id} routesId={routes.routesId}
     result={guide} mode={mode} locked={disabled || routes.routes.length === 0} running={running} checking={checking} connections={connections}
     onInspect={onInspect} onEnsure={onEnsure} onResult={setGuideResult} onRunning={onRunning} onDelete={state.deleteGuide} storageError={state.guideError} />;
@@ -951,6 +964,9 @@ export function FeatureChooser({ project, state, starts, revision, locked, onFol
           <h3>처음이라면 이 기능부터 따라가 보세요</h3>
           <div className="overview-recommendation__heading"><b>{indexed?.name ?? feature.name}</b>
             <code className="feature-route">{routeLabel(routes.routes[feature.routes[0]])}</code></div>
+          {steps.length > 0 && <ol className="overview-recommendation__steps" aria-label="따라갈 단계">
+            {steps.map(step => <li key={step.kind}><span className="step-chip">{step.label} · {step.representative.name}</span></li>)}
+          </ol>}
           {indexed && <>{' '}<IndexTags feature={indexed} />
             <p className="hint">{indexed.source}</p>
             <p className="hint">{feature.name}</p>
@@ -958,12 +974,19 @@ export function FeatureChooser({ project, state, starts, revision, locked, onFol
           {feature.about && <p className="hint">{feature.about}</p>}
           <p>이 기능에 요청을 보내는 코드 {feature.sure}곳을 확실히 찾았어요. 요청을 보내는 쪽부터 서버까지 따라가 볼 수 있어요.</p>
           <p className="hint">고른 기준: 요청을 보내는 코드와 확실히 이어진 곳이 가장 많은 기능(같으면 정보를 보기만 하는 GET 기능 먼저)</p>
-          <button className="btn btn--primary" disabled={disabled} onClick={() => onFollow(feature.routes[0], indexed?.start ?? undefined)}>이 기능부터 따라가기</button>
+          <div className="overview-recommendation__actions">
+            <button className="btn btn--primary" disabled={disabled} onClick={() => onFollow(feature.routes[0], start ?? undefined)}>이 기능부터 따라가기</button>
+            <button className="btn" onClick={() => {
+              state.setSearch('');
+              listHeading.current?.scrollIntoView({ block: 'start' });
+              listHeading.current?.focus({ preventScroll: true });
+            }}>기능 {routes.routes.length}개 모두 보기</button>
+          </div>
         </section>}
       </>}
     </>}
     {starts}
-    {routes && routes.routes.length > 0 && <FeatureList {...state.groupingProps} search={state.search} setSearch={state.setSearch} groups={state.groups} routes={routes} selected={state.selected} disabled={disabled} onFollow={onFollow}>
+    {routes && routes.routes.length > 0 && <FeatureList {...state.groupingProps} headingRef={listHeading} search={state.search} setSearch={state.setSearch} groups={state.groups} routes={routes} selected={state.selected} disabled={disabled} onFollow={onFollow}>
       {guideCard}
     </FeatureList>}
   </div>;

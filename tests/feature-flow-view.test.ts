@@ -283,13 +283,41 @@ it.each([false, true])('shows the selected function location only while the stor
       walk: { ...walkProps.walk, storyId: 'request', nodeId } }));
     expect(html).toContain('data-testid="story-step"');
     expect(html.includes('data-testid="story-function-location"')).toBe(!stale);
-    const location = `${node.name} · ${node.relativePath} ${node.range.startLine}–${node.range.endLine}행`;
-    expect(html.includes(location)).toBe(!stale);
+    const facts = html.match(/<dl class="story-step__facts" data-testid="story-function-location">(.*?)<\/dl>/)?.[1] ?? '';
+    expect(facts.includes(`<dt>함수</dt><dd><code>${node.name}</code></dd>`)).toBe(!stale);
+    expect(facts.includes(`<dt>파일</dt><dd><code>${node.relativePath} · ${node.range.startLine}–${node.range.endLine}행</code></dd>`)).toBe(!stale);
   }
 });
 it('omits the function location when the story has no current node', () => {
   const html = renderToStaticMarkup(walkOf({ ...walkProps, flow: { ...flow, nodes: [], edges: [] } }));
   expect(html).not.toContain('data-testid="story-function-location"');
+});
+it.each([false, true])('names the request and its immediate receiving handler only while current (stale=%s)', stale => {
+  const steps = walkSelection(flow, walkProps.walk).steps;
+  const step = steps.findIndex(item => item.kind === 'request');
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow, stale, walk: { ...walkProps.walk, step } }));
+  const facts = html.match(/data-testid="story-function-location">(.*?)<\/dl>/)?.[1] ?? '';
+  expect(facts.includes(`<dt>요청</dt><dd><code>${steps[step].representative.name}</code></dd>`)).toBe(!stale);
+  expect(facts.includes(`<dt>받는 곳</dt><dd>${steps[step + 1].representative.name} (다음 단계)</dd>`)).toBe(!stale);
+  expect(facts).not.toContain('<dt>함수</dt>');
+});
+it.each(['screen', 'handler'] as const)('omits the receiver on a %s step', kind => {
+  const steps = walkSelection(flow, walkProps.walk).steps;
+  const step = steps.findIndex(item => item.kind === kind);
+  expect(step).toBeGreaterThanOrEqual(0);
+  const html = renderToStaticMarkup(walkOf({ ...walkProps, flow, walk: { ...walkProps.walk, step } }));
+  expect(html).not.toContain('<dt>받는 곳</dt>');
+});
+it.each(['missing', 'back'] as const)('omits the receiver when the next step is %s', next => {
+  const steps = walkSelection(flow, walkProps.walk).steps;
+  const step = steps.findIndex(item => item.kind === 'request');
+  const walk = { ...walkProps.walk, step };
+  const selection = walkSelection(flow, walk);
+  selection.steps = steps.slice(0, step + 1);
+  if (next === 'back') selection.steps.push({ ...steps[step + 1], kind: 'back' });
+  const html = renderToStaticMarkup(React.createElement(FlowWalk, { ...walkProps, flow, walk, selection }));
+  expect(html).toContain('<dt>요청</dt>');
+  expect(html).not.toContain('<dt>받는 곳</dt>');
 });
 it('shows a failure with an enabled retry and escapes the message', () => {
   const state = { finding: false, error: '<failed>', stale: false, find() {}, cancelFind() {} } as unknown as Parameters<typeof RoutesStatus>[0]['state'];
@@ -659,8 +687,8 @@ it('places the recommendation before the list, moves AI controls inside the list
   const html = renderToStaticMarkup(React.createElement(FeatureChooser, chooserProps));
   expect(html.indexOf('aria-label="큰 그림"')).toBeLessThan(html.indexOf('aria-label="처음 따라갈 기능"'));
   expect(html.indexOf('aria-label="처음 따라갈 기능"')).toBeLessThan(html.indexOf('시작 파일 후보'));
-  expect(html.indexOf('시작 파일 후보')).toBeLessThan(html.indexOf('<h3>기능 고르기</h3>'));
-  expect(html).toMatch(/<section aria-label="기능 목록"><h3>기능 고르기<\/h3>.*<details open=""><summary hidden=""><\/summary><div class="feature-guide-ai"[^>]*>.*?AI로 기능 정리하기<\/button><\/div><p>기능 목록/);
+  expect(html.indexOf('시작 파일 후보')).toBeLessThan(html.indexOf('<h3 tabindex="-1">기능 고르기</h3>'));
+  expect(html).toMatch(/<section aria-label="기능 목록"><h3 tabindex="-1">기능 고르기<\/h3>.*<details open=""><summary hidden=""><\/summary><div class="feature-guide-ai"[^>]*>.*?AI로 기능 정리하기<\/button><\/div><p>기능 목록/);
   expect(html).toContain('이 기능에 요청을 보내는 코드 3곳을 확실히 찾았어요. 요청을 보내는 쪽부터 서버까지 따라가 볼 수 있어요.');
   expect(html).toContain('고른 기준: 요청을 보내는 코드와 확실히 이어진 곳이 가장 많은 기능(같으면 정보를 보기만 하는 GET 기능 먼저)');
   expect(html).toMatch(/<button class="btn btn--primary">이 기능부터 따라가기<\/button>/);
@@ -669,6 +697,30 @@ it('places the recommendation before the list, moves AI controls inside the list
 it.each([{ locked: true, stale: false }, { locked: false, stale: true }])('disables the recommendation for %o', ({ locked, stale }) => {
   const html = renderToStaticMarkup(React.createElement(FeatureChooser, { ...chooserProps, locked, state: { ...chooserProps.state, stale } }));
   expect(html).toMatch(/<button[^>]*disabled=""[^>]*>이 기능부터 따라가기<\/button>/);
+  expect(html).toContain(`<button class="btn">기능 ${routes.routes.length}개 모두 보기</button>`);
+});
+it.each([
+  { name: 'not grouped', flows: null },
+  { name: 'missing flow', flows: [flow] },
+  { name: 'empty story', flows: [{ ...flow, routeIndex: 1, nodes: [], edges: [] }] },
+])('omits recommendation chips with $name, keeping both actions', ({ flows }) => {
+  const state = { ...chooserProps.state, groupingProps: { ...chooserProps.state.groupingProps, flows } };
+  const html = renderToStaticMarkup(React.createElement(FeatureChooser, { ...chooserProps, state }));
+  expect(html).not.toContain('aria-label="따라갈 단계"');
+  expect(html).toContain('이 기능부터 따라가기</button>');
+  expect(html).toContain(`<button class="btn">기능 ${routes.routes.length}개 모두 보기</button>`);
+});
+it('previews the default story without an indexed start, using one representative per step', () => {
+  const graph = { ...flow, routeIndex: 1 };
+  const state = { ...chooserProps.state, groupingProps: { ...chooserProps.state.groupingProps, flows: [graph] } };
+  const steps = walkSelection(graph, walkProps.walk).steps;
+  expect(steps.some(step => step.nodes.length > 1)).toBe(true);
+  const html = renderToStaticMarkup(React.createElement(FeatureChooser, { ...chooserProps, state }));
+  const list = html.match(/<ol class="overview-recommendation__steps" aria-label="따라갈 단계">(.*?)<\/ol>/)![1];
+  expect([...list.matchAll(/<li><span class="step-chip">(.*?)<\/span><\/li>/g)].map(match => match[1]))
+    .toEqual(steps.map(step => `${step.label} · ${step.representative.name}`));
+  expect(html.indexOf('overview-recommendation__heading')).toBeLessThan(html.indexOf('overview-recommendation__steps'));
+  expect(html.indexOf('overview-recommendation__steps')).toBeLessThan(html.indexOf('이 기능에 요청을 보내는 코드'));
 });
 it.each([{ finding: true, error: '' }, { finding: false, error: '주소 찾기 실패' }])('does not mistake unavailable routes for an empty result: %o', status => {
   const html = renderToStaticMarkup(React.createElement(FeatureChooser, { ...chooserProps,
@@ -1008,6 +1060,11 @@ it('recommends the supplied indexed name and evidence and follows the same named
     expect(follow).toBeTypeOf('function');
     follow!();
     expect(onFollow).toHaveBeenCalledExactlyOnceWith(0, { through: 'z', storyId: 'request@z' });
+    const steps = walkSelection(graph, { ...walkProps.walk, ...onFollow.mock.calls[0][1] }).steps;
+    const chips = card.match(/<ol class="overview-recommendation__steps" aria-label="따라갈 단계">(.*?)<\/ol>/)![1];
+    expect([...chips.matchAll(/<li><span class="step-chip">(.*?)<\/span><\/li>/g)].map(match => match[1]))
+      .toEqual(steps.map(step => `${step.label} · ${step.representative.name}`));
+    expect(card.indexOf('overview-recommendation__steps')).toBeLessThan(card.indexOf('>버튼 문구</span>'));
   } finally { index.mockRestore(); }
 });
 

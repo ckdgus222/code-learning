@@ -1766,31 +1766,70 @@ try {
     await overview.getByText('기능 1개', { exact: true }).waitFor();
     const picture = await overview.innerText();
     for (const text of [/화면 1개/, /요청 1개/, /확실히 이어짐 1개 · 추정 0개/, /api 폴더/, /web 폴더/]) assert.match(picture, text);
-    const overviewWindowSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
-    for (const width of [1440, 760]) {
-      await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
-      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-      const main = await page.locator('.overview-main').boundingBox();
-      const side = await page.locator('.overview-side').boundingBox();
-      if (width === 1440) {
-        assert.ok(side.x >= main.x + main.width - 1, 'overview side column is on the right');
-        const boxes = await overview.locator('.overview-picture__box').evaluateAll(items => items.map(item => item.getBoundingClientRect().top));
-        assert.equal(boxes.length, 3);
-        assert.ok(boxes.every(top => Math.abs(top - boxes[0]) <= 1), 'overview boxes share one row');
-      } else {
-        assert.ok(side.y >= main.y + main.height - 1, 'overview side column wraps below the main column');
-      }
-      assert.equal(await page.locator('.center').evaluate(element => element.scrollWidth <= element.clientWidth), true);
-      assert.equal(await page.locator('.overview-side').evaluate(element => element.scrollWidth <= element.clientWidth), true);
-    }
-    await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), overviewWindowSize);
     const recommendation = page.getByRole('region', { name: '처음 따라갈 기능', exact: true });
+    await recommendation.getByRole('list', { name: '따라갈 단계', exact: true }).waitFor();
+    const overviewWindowSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
+    await eachTheme(async () => {
+      for (const width of [1440, 760]) {
+        await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const main = await page.locator('.overview-main').boundingBox();
+        const side = await page.locator('.overview-side').boundingBox();
+        if (width === 1440) {
+          assert.ok(side.x >= main.x + main.width - 1, 'overview side column is on the right');
+          const boxes = await overview.locator('.overview-picture__box').evaluateAll(items => items.map(item => item.getBoundingClientRect().top));
+          assert.equal(boxes.length, 3);
+          assert.ok(boxes.every(top => Math.abs(top - boxes[0]) <= 1), 'overview boxes share one row');
+        } else {
+          assert.ok(side.y >= main.y + main.height - 1, 'overview side column wraps below the main column');
+        }
+        assert.equal(await page.locator('.center').evaluate(element => element.scrollWidth <= element.clientWidth), true);
+        assert.equal(await page.locator('.overview-side').evaluate(element => element.scrollWidth <= element.clientWidth), true);
+        for (const selector of ['.overview-recommendation__steps', '.overview-recommendation__actions']) {
+          assert.equal(await recommendation.locator(selector).evaluate(element => {
+            const bounds = element.getBoundingClientRect();
+            return element.scrollWidth <= element.clientWidth && [...element.children].every(child => {
+              const box = child.getBoundingClientRect();
+              return box.left >= bounds.left - 1 && box.right <= bounds.right + 1;
+            });
+          }), true);
+        }
+        if (width === 760) {
+          const rows = await recommendation.locator('.step-chip').evaluateAll(items => items.map(item => item.getBoundingClientRect().top));
+          assert.ok(Math.max(...rows) > Math.min(...rows), 'recommendation steps wrap on narrow screens');
+        }
+      }
+    });
+    await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), overviewWindowSize);
     await recommendation.getByText('지우기 · /api/dogs/:id', { exact: true }).waitFor();
     await recommendation.getByText('‘삭제’ 버튼 · 지우기', { exact: true }).waitFor();
     await recommendation.getByText('버튼 문구', { exact: true }).waitFor();
     await recommendation.getByText('화면 /dogs · web/components/DogList.tsx onClick 함수 (1행)', { exact: true }).waitFor();
+    const featureList = page.getByRole('region', { name: '기능 목록', exact: true });
+    const featureHeading = featureList.getByRole('heading', { name: '기능 고르기', exact: true });
+    const allFeatures = recommendation.getByRole('button', { name: '기능 1개 모두 보기', exact: true });
+    const featureCount = await featureList.getByRole('region', { name: '기능 목차', exact: true }).locator('li').count();
+    assert.ok(featureCount > 0);
+    for (const search of ['', 'no-such-feature']) {
+      await featureList.getByRole('textbox', { name: '기능 검색' }).fill(search);
+      if (search) assert.equal(await featureList.getByRole('region', { name: '기능 목차', exact: true }).locator('li').count(), 0);
+      await allFeatures.click();
+      await until(async () => await featureHeading.evaluate(element => document.activeElement === element));
+      assert.equal(await featureHeading.evaluate(element => {
+        const bounds = element.getBoundingClientRect();
+        const center = element.closest('.center').getBoundingClientRect();
+        return bounds.top >= center.top && bounds.bottom <= Math.min(center.bottom, innerHeight);
+      }), true);
+      assert.equal(await featureList.getByRole('textbox', { name: '기능 검색' }).inputValue(), '');
+      assert.equal(await featureList.getByRole('region', { name: '기능 목차', exact: true }).locator('li').count(), featureCount);
+      assert.equal(await page.getByRole('button', { name: '한눈에 보기', exact: true }).getAttribute('aria-current'), 'page');
+    }
+    const previewSteps = await recommendation.locator('.step-chip').allTextContents();
     await recommendation.getByRole('button', { name: '이 기능부터 따라가기', exact: true }).click();
     await page.getByRole('region', { name: '기능 따라가기', exact: true }).getByText('1 / 7 · 화면', { exact: true }).waitFor();
+    const followedSteps = await page.locator('.flow-strip__step').evaluateAll(items => items.map(item =>
+      `${item.querySelector('b').textContent} · ${item.querySelector('code').textContent}`));
+    assert.deepEqual(previewSteps, followedSteps);
     assert.equal(await page.getByRole('button', { name: '흐름 따라가기', exact: true }).getAttribute('aria-current'), 'page');
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
     const index = page.getByRole('region', { name: '기능 목차', exact: true });
@@ -1842,7 +1881,7 @@ try {
     await story.getByText('1 / 7 · 화면', { exact: true }).waitFor();
     await page.getByTestId('story-step').getByRole('heading', { name: '화면 동작에서 시작해요', exact: true }).waitFor();
     assert.match(await page.getByTestId('story-step').innerText(), /1 \/ 7 · 화면/);
-    assert.match(await page.getByTestId('story-step').innerText(), / · web\/components\/DogList.tsx \d+–\d+행/);
+    assert.match(await page.getByTestId('story-function-location').innerText(), /web\/components\/DogList.tsx · \d+–\d+행/);
     await story.getByRole('heading', { name: '화면 동작에서 시작해요', exact: true }).waitFor();
     const location = story.getByRole('list', { name: '지금 여기', exact: true });
     assert.match(await location.locator('[aria-current="location"]').innerText(), /화면 쪽/);
@@ -1960,7 +1999,7 @@ try {
     const explanation = page.getByTestId('story-step');
     assert.match(await explanation.innerText(), /2 \/ 7 · 프론트 처리/);
     assert.equal(await page.locator('.panel [data-testid="flow-step-explanation"]').count(), 0);
-    assert.ok((await explanation.innerText()).includes(`${selectedName} · `));
+    assert.equal(await explanation.getByTestId('story-function-location').locator('dd').first().innerText(), selectedName);
     await story.getByTestId('flow-code').locator('.cm-selectionBackground').first().waitFor();
     const selectedEvidence = await story.getByTestId('evidence-range').innerText();
     await story.getByRole('button', { name: '이 함수 안 순서', exact: true }).click();
@@ -1974,10 +2013,17 @@ try {
     assert.equal(await story.getByTestId('evidence-range').innerText(), selectedEvidence);
     await story.getByRole('button', { name: '3단계 요청', exact: true }).click();
     await story.getByText('DELETE /api/dogs/${id} 요청을 보내요', { exact: true }).waitFor();
+    const requestFacts = story.getByTestId('story-function-location');
+    assert.deepEqual(await requestFacts.locator('dt').allTextContents(), ['요청', '파일', '받는 곳']);
+    assert.equal(await requestFacts.locator('dd').first().innerText(),
+      await story.getByRole('button', { name: '3단계 요청', exact: true }).locator('code').innerText());
+    assert.equal(await requestFacts.locator('dd').nth(2).innerText(),
+      `${await story.getByRole('button', { name: '4단계 서버 받는 곳', exact: true }).locator('code').innerText()} (다음 단계)`);
     assert.equal(await location.locator('[aria-current="location"]').innerText(), '요청');
     assert.equal(await story.getByRole('button', { name: '이 함수 안 순서', exact: true }).count(), 0);
     await story.getByRole('button', { name: '4단계 서버 받는 곳', exact: true }).click();
     await story.getByText('DogsController.remove가 요청을 받아요 → DogsService.remove에 넘겨요', { exact: true }).waitFor();
+    assert.deepEqual(await story.getByTestId('story-function-location').locator('dt').allTextContents(), ['함수', '파일']);
     assert.match(await story.innerText(), /타입으로 찾음/);
     await page.getByTestId('story-step').getByText('타입으로 찾음', { exact: true }).waitFor();
     await story.getByRole('button', { name: '5단계 서버 처리', exact: true }).click();
@@ -2421,13 +2467,14 @@ try {
       await dialogTo(loginFlowFixture);
       await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
       await page.getByRole('heading', { name: '로그인 흐름 프로젝트', exact: true }).waitFor();
+      await until(async () => await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).isEnabled());
       await openScreenFeatures();
       await page.getByRole('region', { name: '화면 /login', exact: true }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
       const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
       await story.getByTestId('flow-code').waitFor();
       const explanation = page.locator('.feature-page');
       await explanation.getByTestId('story-function-location').waitFor();
-      assert.match(await explanation.innerText(), / · web\/app\/login\/page.tsx \d+–\d+행/);
+      assert.match(await explanation.getByTestId('story-function-location').innerText(), /web\/app\/login\/page.tsx · \d+–\d+행/);
       try {
         await writeFile(path.join(loginFlowFixture, relativePath), loginFlowFiles[relativePath] + '\n// panel stale check\n');
         await explanation.locator(':scope > .notice').getByText('다시 확인 필요: 파일이 바뀌었거나 잠자기에서 돌아왔어요. 주소를 다시 찾아 주세요.', { exact: true }).waitFor();

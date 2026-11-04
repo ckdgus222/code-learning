@@ -688,7 +688,12 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .overview-recommendation > h3 { font-size: 12px; letter-spacing: .08em; color: var(--muted); }
 .overview-recommendation__heading > b { font-size: 22px; color: var(--ink); }
 .feature-route { font: 600 14px var(--mono); color: var(--accent); overflow-wrap: anywhere; }
-.overview-recommendation > .btn { min-height: 42px; }
+.overview-recommendation__steps { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0; list-style: none; }
+.overview-recommendation__steps > li { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.overview-recommendation__steps > li + li::before { content: '→'; color: var(--accent); flex: none; }
+.step-chip { min-width: 0; padding: 4px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--raised); font-size: 14px; overflow-wrap: anywhere; }
+.overview-recommendation__actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.overview-recommendation__actions > .btn { min-height: 42px; }
 .overview-starts .starts { gap: 0; }
 .overview-starts .starts li { padding-block: 12px; }
 .overview-starts .starts li + li { border-top: 1px solid var(--line); }
@@ -720,7 +725,10 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .story-step__result { font-size: 13px; color: var(--muted); }
 .story-step__text h3 { font-size: 24px; }
 .story-step__description { font-size: 17px; line-height: 1.65; }
-.story-step__text [data-testid="story-function-location"] { font: 14px var(--mono); }
+.story-step__facts { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px 12px; font-size: 14px; }
+.story-step__facts dt { color: var(--muted); }
+.story-step__facts dd { margin: 0; overflow-wrap: anywhere; }
+.story-step__facts code { font: 14px var(--mono); }
 .story-step__evidence { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
 .story-step__code { min-width: 0; min-height: clamp(320px, 60vh, 680px); align-self: start; }
 .flow-pagination { display: flex; flex-wrap: wrap; gap: 18px; }
