@@ -12,15 +12,21 @@ export function useMap({ project, revision, view, tab, setError }: {
   const [projectMap, setProjectMap] = useState<MapEntry | null>(null);
   const [mapping, setMapping] = useState(false);
   const mapRequest = useRef(0);
+  const attempted = useRef(false);
 
   // The map is drawn the first time it is looked at after a folder opens.
   useEffect(() => {
     if (view === 'map' && tab === 'file' && project && !projectMap && !mapping) void buildMap();
   }, [view, project, tab]);
 
-  function forgetMap() { mapRequest.current++; setProjectMap(null); setMapping(false); }
+  useEffect(() => {
+    if (view === 'overview' && project && !projectMap && !mapping && !attempted.current) void buildMap();
+  }, [view, project, projectMap, mapping]);
+
+  function forgetMap() { mapRequest.current++; attempted.current = false; setProjectMap(null); setMapping(false); }
   async function buildMap() {
     if (!project) return;
+    attempted.current = true;
     const current = ++mapRequest.current;
     const atRevision = revision.current;
     setMapping(true); setError('');

@@ -818,3 +818,35 @@ describe('plan restoration has an independent map worker', () => {
     expect(await markers('map-replied')).toBe(2);
   });
 });
+
+describe('plan comparison has an independent map worker', () => {
+  it.each(['map', 'plan-compare-map'] as const)('runs %s alongside comparison, file map and restoration', async first => {
+    process.env.MAP_DELAY = '100';
+    const pending = session.map(30_000, first);
+    const other = session.map(30_000, first === 'map' ? 'plan-compare-map' : 'map');
+    const restored = session.map(30_000, 'plan-map');
+    await expect(session.map(30_000, first)).rejects.toMatchObject({ code: 'INVALID_REQUEST', message: '이미 지도를 만드는 중입니다.' });
+    await Promise.all([expect(pending).resolves.toMatchObject({ edges: [] }),
+      expect(other).resolves.toMatchObject({ edges: [] }), expect(restored).resolves.toMatchObject({ edges: [] })]);
+  });
+  it.each(['map', 'plan-compare-map'] as const)('cancels only %s', async cancelled => {
+    process.env.MAP_DELAY = '100';
+    const map = session.map();
+    const compared = session.map(30_000, 'plan-compare-map');
+    const restored = session.map(30_000, 'plan-map');
+    const stopped = expect(cancelled === 'map' ? map : compared).rejects.toMatchObject({ code: 'CANCELLED' });
+    if (cancelled === 'map') session.cancelMap();
+    if (cancelled === 'plan-compare-map') session.cancelPlanCompareMap();
+    await Promise.all([stopped, expect(cancelled === 'map' ? compared : map).resolves.toMatchObject({ edges: [] }),
+      expect(restored).resolves.toMatchObject({ edges: [] })]);
+  });
+  it('closes file, comparison and restoration map workers', async () => {
+    process.env.MAP_DELAY = '-1';
+    const pending = [session.map(), session.map(30_000, 'plan-compare-map'), session.map(30_000, 'plan-map')];
+    const stopped = Promise.all(pending.map(job => expect(job).rejects.toMatchObject({ code: 'CANCELLED' })));
+    await session.close();
+    await stopped;
+    await workersStopped();
+    expect(await markers('map-replied')).toBe(3);
+  });
+});
