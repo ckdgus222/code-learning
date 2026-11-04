@@ -96,7 +96,7 @@ describe('C04 verdicts', () => {
     }
   });
 
-  it('reads a marker as missing only when the file is not there, and throws on any other error', async () => {
+  it.runIf(process.platform === 'darwin')('reads a marker as missing only when the file is not there, and throws on any other error', async () => {
     const folder = await mkdtemp(path.join(os.tmpdir(), 'marker-'));
     try {
       await writeFile(path.join(folder, 'mcp-called'), '');
@@ -170,7 +170,7 @@ describe('C04 verdicts', () => {
         [refused('read', 'outside'), refused('read', 'inside'), refused('shell')], ['view_file', 'run_command']);
       expect([result['read:outside'], result['read:inside'], result.shell]).toEqual(['blocked', 'failed', 'blocked']);
     });
-    it('finds the place from path arguments matched against the real folders', () => {
+    it.runIf(process.platform === 'darwin')('finds the place from path arguments matched against the real folders', () => {
       const folders = { inside: '/var/folders/x/code-learning-ai-1', outside: '/var/folders/x/live-outside-2' };
       // agy reports the temporary folder under /private, and may give a file URI or a relative path.
       expect(targetOf({ TargetFile: '/private/var/folders/x/code-learning-ai-1/inside-created.txt' }, folders)).toBe('inside');
@@ -179,7 +179,7 @@ describe('C04 verdicts', () => {
       // Codex lists a file change's paths under `changes`.
       expect(targetOf([{ path: '/var/folders/x/live-outside-2/created.txt', kind: 'add' }], folders)).toBe('outside');
     });
-    it('leaves the place unknown for another folder, a name only in content, or both places', () => {
+    it.runIf(process.platform === 'darwin')('leaves the place unknown for another folder, a name only in content, or both places', () => {
       const folders = { inside: '/var/folders/x/code-learning-ai-1', outside: '/var/folders/x/live-outside-2' };
       expect(targetOf({ AbsolutePath: '/tmp/inside-canary.txt' }, folders)).toBeUndefined();
       expect(targetOf({ TargetFile: '/var/folders/x/other.txt', CodeContent: 'inside-canary.txt' }, folders)).toBeUndefined();

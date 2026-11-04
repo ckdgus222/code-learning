@@ -202,8 +202,9 @@ describe('file guide text', () => {
     const started = performance.now();
     guide(text);
     // Was over 3 seconds when each chunk filtered all nodes; generous for slow machines.
-    expect(performance.now() - started).toBeLessThan(2000);
-  });
+    // Windows CI ran this about 3 times slower (2.6 seconds observed).
+    expect(performance.now() - started).toBeLessThan(process.platform === 'win32' ? 6000 : 2000);
+  }, 10_000);
 });
 
 describe('file guide imports', () => {

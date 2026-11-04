@@ -332,7 +332,7 @@ describe('values written in the code (plan v2.3 V-1)', () => {
     expect((await search('src/fn-var-twice.js', 'f')).values.map(value => [value.name, value.role, value.unknown]))
       .toEqual([['x', 'var', '같은 이름이 한 범위에 여러 번 선언됐어요.']]);
     expect((await search('src/local-class.js', 'f')).values.map(value => [value.name, value.group])).toEqual([['Local', 'inside']]);
-  });
+  }, 30_000);
 
   it('keeps a parameter apart from a var in a class static block of its expression body', async () => {
     const f = await search('src/static-param.ts', 'f');

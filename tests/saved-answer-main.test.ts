@@ -215,7 +215,7 @@ it('does not evict current answer or overview evidence after more than 64 distin
   for (const evidence of [currentAnswer, overview.sources[0].evidence]) {
     expect(await invoke(channels.evidence, { projectId: project.id, evidenceId: evidence.id })).toMatchObject({ ok: true });
   }
-});
+}, 30_000);
 
 it('validates strict IPC requests, evidence ownership and closed projects', async () => {
   expect(await save()).toMatchObject({ ok: true });

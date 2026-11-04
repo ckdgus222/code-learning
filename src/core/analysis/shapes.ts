@@ -69,7 +69,7 @@ export async function findValueShapes(root: string, projectId: string, files: Pr
   return { shapes: { ...shapes, notes: [...new Set([...shapes.notes, ...project.notes, ...checkerFiles.notes])] }, watch: checkerFiles.watch };
 
   function ask(api: TsApi): ValueShapes {
-    const chosen = path.join(root, project.chosen.relativePath);
+    const chosen = slashed(path.join(root, project.chosen.relativePath));
     const snapshot = api.updateSnapshot({ openFiles: [chosen] });
     checkerFiles.checkStop();
     const opened = snapshot.getDefaultProjectForFile(chosen);
@@ -144,7 +144,7 @@ export async function findValueShapes(root: string, projectId: string, files: Pr
     if (query.expect) {
       // V-1 followed this import to a declaration: a shape only when the checker found that same one.
       const file = files.find(item => item.id === query.expect!.fileId);
-      const at = file && path.join(root, file.relativePath);
+      const at = file && slashed(path.join(root, file.relativePath));
       // Asking about a file outside the checker's program is an error, not an empty answer.
       const expected = at && inProgram(at) ? checker.getSymbolAtPosition(at, query.expect.startUtf16) : undefined;
       const same = (a: TsSymbol, b: TsSymbol) => a.id === b.id || a.getExportSymbol().id === b.getExportSymbol().id;
@@ -190,6 +190,10 @@ export async function readProjectCode(root: string, files: ProjectFile[], target
   return { chosen, texts, allowedDirs, notes };
 }
 
+// The checker writes paths with / on every OS (C:/Users/… on Windows); the app's paths use the OS separator.
+const native = (name: string) => path.sep === '/' ? name : name.replaceAll('/', path.sep);
+const slashed = (name: string) => path.sep === '/' ? name : name.replaceAll(path.sep, '/');
+
 /**
  * How every file question of the checker is answered. A project file: only the ones read now. A dependency type
  * file: under the user's exception (files.ts), read here. The checker's own lib folder is the one place left to the
@@ -210,7 +214,7 @@ export function fileCallbacks(root: string, texts: ReadonlyMap<string, string>, 
   const checkStop = () => { if (stopRequested(slots)) halt('CANCELLED'); };
   const own = (name: string) => name.startsWith(libDir) || name + path.sep === libDir;
   const relativeOf = (name: string) =>
-    name === root ? '' : name.startsWith(root + path.sep) && path.resolve(name) === name ? name.slice(root.length + 1) : null;
+    name === root ? '' : name.startsWith(root + path.sep) && path.resolve(name) === name ? slashed(name.slice(root.length + 1)) : null;
   const aboveRoot = (name: string) => name === path.sep || root.startsWith(name.endsWith(path.sep) ? name : name + path.sep);
   const isFileAt = (real: string) => { try { return lstatSync(real).isFile(); } catch { return false; } };
   const isDirAt = (real: string) => { try { return lstatSync(real).isDirectory(); } catch { return false; } };
@@ -232,6 +236,7 @@ export function fileCallbacks(root: string, texts: ReadonlyMap<string, string>, 
 
   const callbacks: FileSystem = {
     readFile(name) {
+      name = native(name);
       checkStop();
       if (own(name)) return undefined;
       const text = texts.get(name);
@@ -260,6 +265,7 @@ export function fileCallbacks(root: string, texts: ReadonlyMap<string, string>, 
       return read.text;
     },
     fileExists(name) {
+      name = native(name);
       checkStop();
       if (own(name)) return undefined;
       if (texts.has(name)) return true;
@@ -267,6 +273,7 @@ export function fileCallbacks(root: string, texts: ReadonlyMap<string, string>, 
       return !!real && (texts.has(real) || (isTypeFileName(path.basename(real)) && isFileAt(real)));
     },
     directoryExists(name) {
+      name = native(name);
       checkStop();
       if (own(name)) return undefined;
       // The checker looks up through parent folders for settings; nothing in them is shown to it.
@@ -279,6 +286,7 @@ export function fileCallbacks(root: string, texts: ReadonlyMap<string, string>, 
     },
     /** A project folder lists the files read now; a dependency folder lists from disk what the rules allow. */
     getAccessibleEntries(name) {
+      name = native(name);
       checkStop();
       if (own(name)) return undefined;
       const relative = relativeOf(name);
@@ -286,7 +294,7 @@ export function fileCallbacks(root: string, texts: ReadonlyMap<string, string>, 
       if (allowedDirs.has(relative)) {
         const prefix = relative ? relative + '/' : '';
         const childOf = (item: string) => item.startsWith(prefix) && item.length > prefix.length && !item.slice(prefix.length).includes('/');
-        const filesHere = [...texts.keys()].map(file => file.slice(root.length + 1)).filter(childOf).map(file => file.slice(prefix.length));
+        const filesHere = [...texts.keys()].map(file => slashed(file.slice(root.length + 1))).filter(childOf).map(file => file.slice(prefix.length));
         const directories = [...allowedDirs].filter(childOf).map(dir => dir.slice(prefix.length));
         const modules = dependency(path.join(name, 'node_modules'));
         if (modules && isDirAt(modules)) directories.push('node_modules');
@@ -305,10 +313,12 @@ export function fileCallbacks(root: string, texts: ReadonlyMap<string, string>, 
       }
       return entries;
     },
-    realpath(name) {
+    realpath(checkerName) {
+      const name = native(checkerName);
       checkStop();
       if (own(name)) return undefined;
-      return dependency(name) ?? name;
+      const real = dependency(name);
+      return real ? slashed(real) : checkerName;
     },
   };
   return { callbacks, watch, notes, checkStop, stopCode: () => stopCode };
@@ -322,7 +332,7 @@ function tsgoPaths(): { exe: string; libDir: string } {
   // A packaged app keeps it unpacked next to the archive (forge.config.ts), where it can run and be read directly.
   const unpacked = path.dirname(manifest).replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
   const libDir = path.join(unpacked, 'lib');
-  return { exe: path.join(libDir, 'tsc'), libDir: libDir + path.sep };
+  return { exe: path.join(libDir, process.platform === 'win32' ? 'tsc.exe' : 'tsc'), libDir: libDir + path.sep };
 }
 
 /** The tsgo process behind the API. Not public in typescript 7.0.2 (pinned); any other form fails closed. */
