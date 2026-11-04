@@ -30,12 +30,12 @@ import { callsKey, useCalls } from './use-calls';
 import { useAiJobs } from './use-ai-jobs';
 import { useLearning } from './use-learning';
 import { usePlanCompare } from './use-plan-compare';
-import { PlanCompare } from './plan-compare';
+import { PlanCompare, PlanCompareEntry } from './plan-compare';
 import { savedDate, ResumeCard, restoreSpot, OverviewAi, TopicBar, type Place, type Topic } from './overview';
 import type { OverviewFeature, FileExplanationRange } from '../shared/ai';
 import './styles.css';
 
-const views: { id: Exclude<View, 'function'>; label: string }[] = [
+const views: { id: Exclude<View, 'function' | 'plan'>; label: string }[] = [
   { id: 'overview', label: '한눈에 보기' }, { id: 'flow', label: '흐름 따라가기' },
   { id: 'code', label: '코드 읽기' }, { id: 'map', label: '프로젝트 지도' }, { id: 'changes', label: '달라진 내용' },
 ];
@@ -589,9 +589,10 @@ function App() {
   const intro = project?.overview.intro;
   const scope = [project?.name, source?.relativePath, symbol?.name, step?.title].filter(Boolean);
   const filesVisible = showsFiles(view);
+  const tab = view === 'function' ? 'code' : view === 'plan' ? 'overview' : view;
 
   const viewButton = (item: typeof views[number]) => <button key={item.id} className="views__item"
-    aria-current={(view === 'function' ? 'code' : view) === item.id ? 'page' : undefined}
+    aria-current={tab === item.id ? 'page' : undefined}
     onClick={() => setView(item.id)}><Icon name={item.id} /><span>{item.label}</span></button>;
   return <div className={`app${project ? '' : ' app--empty'}${project && filesVisible ? ' app--files' : ''}${panelOpen ? '' : ' app--panel-closed'}`}>
     <header className="topbar">
@@ -730,11 +731,7 @@ function App() {
                   onStart={startFileId => void ai.startOverview(startFileId)} onCancel={() => void ai.cancelOverview()} onDelete={() => void ai.deleteOverview()}
                   onEvidence={next => { setView('code'); void showEvidence(next, null, 'overview'); }}
                   onFollow={followFeature} onFunction={(name, at) => void showNamedFunction(name, at)} />
-                <PlanCompare state={planCompare} mode={ai.mode} checking={ai.checking}
-                  onFile={fileId => { setView('code'); void readFile(fileId); }} onImport={site => void showImport(site)}
-                  readiness={ai.connections?.modes.find(item => item.mode === ai.mode) ?? null}
-                  onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
-                  locked={busy || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'} />
+                <PlanCompareEntry state={planCompare} onOpen={() => setView('plan')} />
                 <section className="card card--wide">
                   <h3>확인한 범위와 모르는 부분</h3>
                   <p className="stat">읽을 수 있는 파일 <b>{project.files.length}</b>개</p>
@@ -752,6 +749,12 @@ function App() {
             </aside>
           </div>
         </div>
+
+        {view === 'plan' && <PlanCompare state={planCompare} mode={ai.mode} checking={ai.checking}
+          onFile={fileId => { setView('code'); void readFile(fileId); }} onImport={site => void showImport(site)}
+          readiness={ai.connections?.modes.find(item => item.mode === ai.mode) ?? null}
+          onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
+          locked={busy || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'} />}
 
         {view === 'flow' && <div className="page feature-page">
           <h2 className="page__title">흐름 따라가기</h2>
