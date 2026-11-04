@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import { BIG_FOLDER_LIMIT, boxName, boxPlace, closeArea, expandableIds, FILE_VIEW_LIMIT, fileViewFolder, fileViewOf, folderArrows, folderFileList, foldersWithFiles,
   linkedArrows, matchCallStep, matchFunction, matchImport, NEIGHBOR_LIMIT, NEIGHBOR_ROW_HEIGHT, neighborhoodGraph, shownBigFolder, visibleGraph } from '../src/renderer/map-layout';
@@ -370,7 +371,7 @@ describe('opening project areas one level at a time', () => {
 
 describe('finding the code evidence of a map entry', () => {
   let sandbox: string;
-  beforeEach(async () => { sandbox = await mkdtemp('/private/tmp/learning-map-layout-test-'); });
+  beforeEach(async () => { sandbox = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-map-layout-test-'))); });
   afterEach(async () => { await rm(sandbox, { recursive: true, force: true }); });
 
   async function entries(relativePath: string, text: string) {

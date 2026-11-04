@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import type { MapFile, MapImport, ProjectMap, UnusedExcludeKind } from '../src/shared/contracts';
 import { MAX_FILE_BYTES, scanProject } from '../src/core/project/files';
@@ -152,7 +153,7 @@ describe('unused file candidates', () => {
 
 describe('package script files', () => {
   let root: string;
-  beforeEach(async () => { root = await mkdtemp('/private/tmp/learning-unused-test-'); });
+  beforeEach(async () => { root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-unused-test-'))); });
   afterEach(async () => { await rm(root, { recursive: true, force: true }); });
   async function put(name: string, text: string) {
     await mkdir(path.dirname(path.join(root, name)), { recursive: true });

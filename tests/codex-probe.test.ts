@@ -60,7 +60,7 @@ describe('local Codex request inventory', () => {
     expect(inventory(declaration('view_image', 'different'))).toMatchObject({ names: [], status: 'unrecognized', exhaustive: false });
   });
 
-  it('restricts network access to the listener and denies personal configuration and credential paths', () => {
+  it.runIf(process.platform === 'darwin')('restricts network access to the listener and denies personal configuration and credential paths', () => {
     const profile = probeProfile('/private/tmp/probe', '/private/tmp/cwd', '/Users/fixture', 12345);
     expect(profile).toContain('(deny network*)');
     expect(profile).toContain('(remote ip "localhost:12345")');

@@ -5,6 +5,10 @@ import { GEMINI_MODEL } from '../src/shared/ai';
 import { runProcess, type ProcessRequest } from '../src/core/ai/process';
 import { access, chmod, lstat, mkdir, open, realpath, rm } from 'node:fs/promises';
 import os from 'node:os';
+import path from 'node:path';
+
+// AI CLIs start only inside the macOS fence; the non-macOS test below checks that they never start elsewhere.
+const onMac = process.platform === 'darwin';
 
 // The CLI and its own arguments inside `sandbox-exec -p <profile> <CLI> …`, or the request as it is.
 const inner = (request: ProcessRequest) => request.executable === '/usr/bin/sandbox-exec'
@@ -13,13 +17,14 @@ const inner = (request: ProcessRequest) => request.executable === '/usr/bin/sand
 vi.mock('../src/core/ai/process', async original => ({ ...(await original<typeof import('../src/core/ai/process')>()), runProcess: vi.fn() }));
 vi.mock('node:fs/promises', () => ({
   realpath: vi.fn(async (name: string) => name), access: vi.fn(async () => undefined),
-  stat: vi.fn(async () => ({ isFile: () => true })), mkdtemp: vi.fn(async () => '/private/tmp/ai-runtime-fixture'),
+  stat: vi.fn(async () => ({ isFile: () => true })), mkdtemp: vi.fn(async () => runDirectory),
   rm: vi.fn(async () => undefined), writeFile: vi.fn(async () => undefined), open: vi.fn(), mkdir: vi.fn(async () => undefined),
   readFile: vi.fn(async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); }),
   lstat: vi.fn(async () => ({ isDirectory: () => true, isSymbolicLink: () => false })), chmod: vi.fn(async () => undefined),
 }));
-const appCodexHome = '/private/tmp/app-data/codex-home';
-const appAgyHome = '/private/tmp/app-data/agy-home';
+const runDirectory = path.resolve(os.tmpdir(), 'ai-runtime-fixture');
+const appCodexHome = path.resolve(os.tmpdir(), 'app-data/codex-home');
+const appAgyHome = path.resolve(os.tmpdir(), 'app-data/agy-home');
 // The first bytes each fake file starts with; unknown files look like a native executable.
 let heads: Record<string, string> = {};
 // What the runtime wrote through a file handle, by file name.
@@ -44,7 +49,23 @@ beforeEach(() => {
 });
 
 describe('local connection readiness', () => {
-  it('automatically probes only Codex and Antigravity without looking for Claude Code', async () => {
+  it.runIf(!onMac)('refuses installed Codex and Antigravity without starting a process outside macOS', async () => {
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
+    const report = await runtime.checkConnections({ automatic: true });
+    const refused = 'AI 프로그램을 안전한 울타리 안에서 실행할 수 없어 실행하지 않았습니다. macOS에서만 실행할 수 있습니다.';
+    expect(report.providers).toMatchObject([
+      { provider: 'codex', installation: 'unusable', message: refused },
+      { provider: 'antigravity', installation: 'unusable', message: refused },
+    ]);
+    expect(runProcess).not.toHaveBeenCalled();
+    for (const provider of ['codex', 'antigravity'] as const) {
+      await expect(runtime.run({ stage: 'explaining', provider, prompt: 'PROMPT', schema: {}, signal: new AbortController().signal }))
+        .rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: SINGLE_NEEDS[provider] });
+      expect(runProcess).not.toHaveBeenCalled();
+    }
+  });
+
+  it.runIf(onMac)('automatically probes only Codex and Antigravity without looking for Claude Code', async () => {
     const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
     const report = await runtime.checkConnections({ automatic: true });
     expect(report.providers.map(item => item.provider)).toEqual(['codex', 'antigravity']);
@@ -59,12 +80,12 @@ describe('local connection readiness', () => {
     expect(report.modes.find(item => item.mode === 'claude-code')).toMatchObject({ ready: false, reason: CLAUDE_CODE_CLOSED });
     expect((await runtime.checkConnections()).providers.map(item => item.provider)).toEqual(['codex', 'antigravity', 'claude-code']);
   });
-  it('uses fixed install locations, never the selected project or a shell command', () => {
+  it.runIf(onMac)('uses fixed install locations, never the selected project or a shell command', () => {
     expect(executableCandidates('codex', '/Users/test')).toEqual([
       '/Users/test/.local/bin/codex', '/Users/test/.npm-global/bin/codex', '/opt/homebrew/bin/codex', '/usr/local/bin/codex',
     ]);
   });
-  it('only probes versions and never claims authentication or isolation succeeded', async () => {
+  it.runIf(onMac)('only probes versions and never claims authentication or isolation succeeded', async () => {
     const report = await new LocalAiRuntime(appCodexHome, appAgyHome).checkConnections();
     expect(report.providers).toHaveLength(3);
     expect(report.providers.every(item => item.installation === 'found' && item.authentication === 'unchecked' && item.isolation === 'unverified')).toBe(true);
@@ -78,15 +99,15 @@ describe('local connection readiness', () => {
     }
     expect(rm).toHaveBeenCalled();
   });
-  it('checks the codex and agy versions inside the fence with their own app home; Claude Code, without one, as it is', async () => {
+  it.runIf(onMac)('checks the codex and agy versions inside the fence with their own app home; Claude Code, without one, as it is', async () => {
     await new LocalAiRuntime(appCodexHome, appAgyHome).checkConnections();
     const calls = vi.mocked(runProcess).mock.calls.map(([request]) => request);
     const of = (binary: string) => calls.find(request => inner(request).executable.endsWith(`/${binary}`))!;
     for (const [binary, own, other] of [['codex', appCodexHome, appAgyHome], ['agy', appAgyHome, appCodexHome]]) {
       expect(of(binary).executable, binary).toBe('/usr/bin/sandbox-exec');
-      expect(of(binary).args[1]).toContain(`(allow file-write* (subpath "${own}") (subpath "/private/tmp/ai-runtime-fixture")`);
+      expect(of(binary).args[1]).toContain(`(allow file-write* (subpath "${own}") (subpath "${runDirectory}")`);
       expect(of(binary).args[1]).not.toContain(other);
-      expect(of(binary).env?.TMPDIR).toBe('/private/tmp/ai-runtime-fixture');
+      expect(of(binary).env?.TMPDIR).toBe(runDirectory);
     }
     expect(of('claude').executable).toBe(`${os.homedir()}/.local/bin/claude`);
   });
@@ -101,7 +122,7 @@ describe('local connection readiness', () => {
     expect(report.providers.every(item => item.installation === 'unusable')).toBe(true);
     expect(JSON.stringify(report)).not.toContain('PRIVATE_');
   });
-  it('starts a Node script with a node from the fixed locations, never from PATH', async () => {
+  it.runIf(onMac)('starts a Node script with a node from the fixed locations, never from PATH', async () => {
     heads['/Users/test/.npm-global/bin/codex'] = '#!/usr/bin/env node\n// launcher';
     // Only Homebrew's node exists among the fixed node locations.
     vi.mocked(access).mockImplementation(async name => {
@@ -111,14 +132,14 @@ describe('local connection readiness', () => {
       .toEqual({ executable: '/opt/homebrew/bin/node', prefix: ['/Users/test/.npm-global/bin/codex'] });
     expect(await resolveLaunch('/Users/test/.local/bin/agy', '/Users/test')).toEqual({ executable: '/Users/test/.local/bin/agy', prefix: [] });
   });
-  it('reports a Node script without a usable node as unusable, and starts other scripts as they are', async () => {
+  it.runIf(onMac)('reports a Node script without a usable node as unusable, and starts other scripts as they are', async () => {
     heads['/Users/test/.local/bin/codex'] = '#!/usr/bin/env node\n';
     heads['/Users/test/.local/bin/tool'] = '#!/bin/sh\necho';
     vi.mocked(access).mockImplementation(async name => { if (String(name).endsWith('/node')) throw new Error('missing'); });
     expect(await resolveLaunch('/Users/test/.local/bin/codex', '/Users/test')).toBeUndefined();
     expect(await resolveLaunch('/Users/test/.local/bin/tool', '/Users/test')).toEqual({ executable: '/Users/test/.local/bin/tool', prefix: [] });
   });
-  it('uses the resolved launch for the version probe of a Node-script install', async () => {
+  it.runIf(onMac)('uses the resolved launch for the version probe of a Node-script install', async () => {
     const home = (await import('node:os')).homedir();
     // As npm installs it: the command is a link to a script inside the package, which the fence reopens.
     const script = `${home}/.npm-global/lib/node_modules/@openai/codex/bin/codex.js`;
@@ -129,7 +150,7 @@ describe('local connection readiness', () => {
     const codexCall = vi.mocked(runProcess).mock.calls.map(([request]) => inner(request)).find(request => request.args[0] === script);
     expect(codexCall).toMatchObject({ executable: `${home}/.local/bin/node`, args: [script, '--version'] });
   });
-  it("gives codex its app-only CODEX_HOME and agy its app-only HOME, created private; claude is unchanged", async () => {
+  it.runIf(onMac)("gives codex its app-only CODEX_HOME and agy its app-only HOME, created private; claude is unchanged", async () => {
     const before = process.env.CODEX_HOME;
     process.env.CODEX_HOME = '/Users/test/.codex';
     try {
@@ -171,7 +192,7 @@ describe('local connection readiness', () => {
       expect(vi.mocked(runProcess).mock.calls.some(([request]) => inner(request).executable.endsWith('/codex'))).toBe(false);
     }
   });
-  it('deduplicates simultaneous inspections', async () => {
+  it.runIf(onMac)('deduplicates simultaneous inspections', async () => {
     const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
     const first = runtime.checkConnections();
     expect(runtime.checkConnections()).toBe(first);
@@ -179,7 +200,7 @@ describe('local connection readiness', () => {
     expect(runProcess).toHaveBeenCalledTimes(3);
   });
   const privateStage = () => ({ stage: 'explaining' as const, provider: 'antigravity' as const, prompt: 'private code', schema: {}, signal: new AbortController().signal });
-  it('opens a mode only after this run found its CLIs, and never Claude Code', async () => {
+  it.runIf(onMac)('opens a mode only after this run found its CLIs, and never Claude Code', async () => {
     const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
     // Before an installation check nothing is started.
     await expect(runtime.run(privateStage())).rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: SINGLE_NEEDS.antigravity });
@@ -188,7 +209,7 @@ describe('local connection readiness', () => {
     for (const mode of ['local-worker', 'codex', 'antigravity'] as const) expect(() => runtime.assertReady(mode)).not.toThrow();
     expect(() => runtime.assertReady('claude-code')).toThrow(CLAUDE_CODE_CLOSED);
   });
-  it('keeps the local worker and Gemini single closed when Antigravity is missing; Codex single still opens', async () => {
+  it.runIf(onMac)('keeps the local worker and Gemini single closed when Antigravity is missing; Codex single still opens', async () => {
     vi.mocked(realpath).mockImplementation(async (name: unknown) => {
       if (String(name).endsWith('/agy')) throw new Error('missing');
       return String(name);
@@ -202,7 +223,7 @@ describe('local connection readiness', () => {
     await expect(runtime.run(privateStage())).rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: SINGLE_NEEDS.antigravity });
     expect(runProcess).not.toHaveBeenCalled();
   });
-  it('opens Gemini single without Codex, and runs its stage; the local worker and Codex single stay closed', async () => {
+  it.runIf(onMac)('opens Gemini single without Codex, and runs its stage; the local worker and Codex single stay closed', async () => {
     vi.mocked(realpath).mockImplementation(async (name: unknown) => {
       if (String(name).endsWith('/codex')) throw new Error('missing');
       return String(name);
@@ -228,7 +249,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
   const agy = (...events: object[]) => events.map(event => JSON.stringify(event)).join('\n');
   const init = (model?: string) => ({ event: 'init', conversation_id: 'c', init: { cwd: '/tmp', tools: [], permission_mode: 'request-review', ...(model ? { model } : {}) } });
   const ok = { event: 'result', conversation_id: 'c', status: 'SUCCESS', structured_output: { summary: 'example' } };
-  it.each([
+  it.runIf(onMac).each([
     { provider: 'antigravity' as const, timeoutMs: undefined, expected: 120_000 },
     { provider: 'antigravity' as const, timeoutMs: 240_000, expected: 240_000 },
     { provider: 'codex' as const, timeoutMs: undefined, expected: 120_000 },
@@ -281,7 +302,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
   ])('rejects agy output with %s', (_name, events) => {
     expect(() => parseStageOutput('antigravity', agy(...events), 0)).toThrow();
   });
-  it('sends the agy prompt on stdin as one stream-json user message, never as an argument', async () => {
+  it.runIf(onMac)('sends the agy prompt on stdin as one stream-json user message, never as an argument', async () => {
     const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
     await runtime.checkConnections();
     vi.mocked(runProcess).mockClear();
@@ -305,7 +326,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     expect(message.message.content.startsWith(prompt)).toBe(true);
     expect(message.message.content).toContain(JSON.stringify(schema));
   });
-  it.each([
+  it.runIf(onMac).each([
     ['1.4.12', true], ['1.4.13', true], ['1.5.0', true], ['1.10.0', true], ['2.0.0', true],
     ['1.4.12-beta', true], ['1.4.12+build.1', true],
     ['1.4.11', false], ['1.3.5', false], ['0.10.20', false],
@@ -323,7 +344,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     expect(args).toEqual(['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', GEMINI_MODEL,
       '--mode', 'plan', '--sandbox', ...(supported ? ['--disable-slash-commands'] : []), '--print-timeout', '120s']);
   });
-  it('drops the slash expansion option when the same runtime rechecks agy 1.4.12 as 1.4.11', async () => {
+  it.runIf(onMac)('drops the slash expansion option when the same runtime rechecks agy 1.4.12 as 1.4.11', async () => {
     const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
     for (const version of ['1.4.12', '1.4.11']) {
       vi.mocked(runProcess).mockResolvedValue({ stdout: `agy ${version}\n`, stderr: '', exitCode: 0 });
@@ -335,7 +356,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
       expect(inner(vi.mocked(runProcess).mock.calls[0][0]).args.includes('--disable-slash-commands')).toBe(version === '1.4.12');
     }
   });
-  it.each(['missing', 'nonzero exit', 'unreadable version', 'process failure'])('refuses agy after a successful check followed by %s', async failure => {
+  it.runIf(onMac).each(['missing', 'nonzero exit', 'unreadable version', 'process failure'])('refuses agy after a successful check followed by %s', async failure => {
     const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
     vi.mocked(runProcess).mockResolvedValue({ stdout: 'agy 1.4.12\n', stderr: '', exitCode: 0 });
     await runtime.checkConnections();
@@ -357,7 +378,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
       .rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: SINGLE_NEEDS.antigravity });
     expect(runProcess).not.toHaveBeenCalled();
   });
-  it('passes explicit Codex restrictions for shell, hooks, agents, images, image generation, history notes, web, apps and plugins', async () => {
+  it.runIf(onMac)('passes explicit Codex restrictions for shell, hooks, agents, images, image generation, history notes, web, apps and plugins', async () => {
     const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
     vi.mocked(runProcess).mockResolvedValue({ stdout: 'cli 1.4.12\n', stderr: '', exitCode: 0 });
     await runtime.checkConnections();
@@ -376,7 +397,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     expect(args).toContain('--sandbox read-only');
     expect(args).toContain('web_search="disabled"');
   });
-  it('starts every stage inside the macOS fence, with its own app home, the run folder as TMPDIR and the CLI after the profile', async () => {
+  it.runIf(onMac)('starts every stage inside the macOS fence, with its own app home, the run folder as TMPDIR and the CLI after the profile', async () => {
     const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
     await runtime.checkConnections();
     vi.mocked(runProcess).mockClear();
@@ -388,9 +409,9 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     expect(request.args[0]).toBe('-p');
     expect(request.args[2]).toBe(`${os.homedir()}/.local/bin/codex`);
     expect(request.args[3]).toBe('exec');
-    expect(request.args[1]).toContain(`(allow file-write* (subpath "${appCodexHome}") (subpath "/private/tmp/ai-runtime-fixture")`);
+    expect(request.args[1]).toContain(`(allow file-write* (subpath "${appCodexHome}") (subpath "${runDirectory}")`);
     expect(request.args[1]).not.toContain(appAgyHome);
-    expect(request.env).toMatchObject({ CODEX_HOME: appCodexHome, TMPDIR: '/private/tmp/ai-runtime-fixture' });
+    expect(request.env).toMatchObject({ CODEX_HOME: appCodexHome, TMPDIR: runDirectory });
   });
   const fenceFailures: [string, () => void][] = [
     ['sandbox-exec is missing', () => vi.mocked(access).mockImplementation(async name => { if (name === '/usr/bin/sandbox-exec') throw new Error('missing'); })],
@@ -408,7 +429,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     expect(vi.mocked(runProcess).mock.calls.some(([request]) => inner(request).executable.endsWith('/codex')
       || inner(request).args[0]?.endsWith('/codex'))).toBe(false);
   });
-  it('does not start a stage at all when sandbox-exec is gone after the version check', async () => {
+  it.runIf(onMac)('does not start a stage at all when sandbox-exec is gone after the version check', async () => {
     const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
     await runtime.checkConnections();
     fenceFailures[0][1]();
@@ -416,7 +437,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     await expect(stage(runtime, 'codex')).rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: expect.stringContaining('울타리') });
     expect(runProcess).not.toHaveBeenCalled();
   });
-  it('does not retry without the fence when sandbox-exec cannot apply the profile, for a version check or a stage', async () => {
+  it.runIf(onMac)('does not retry without the fence when sandbox-exec cannot apply the profile, for a version check or a stage', async () => {
     vi.mocked(runProcess).mockImplementation(async request => request.executable === '/usr/bin/sandbox-exec'
       ? { stdout: '', stderr: 'sandbox-exec: invalid profile', exitCode: 65 } : { stdout: 'claude 1.2.3\n', stderr: '', exitCode: 0 });
     const report = await new LocalAiRuntime(appCodexHome, appAgyHome).checkConnections();

@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
@@ -54,7 +55,7 @@ async function invoke<T = unknown>(channel: string, input?: unknown): Promise<Re
 let temporary: string;
 let main: typeof import('../src/main/main');
 beforeAll(async () => {
-  temporary = await mkdtemp('/private/tmp/learning-plan-main-');
+  temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-plan-main-')));
   host.folder = path.join(temporary, 'project'); host.profile = path.join(temporary, 'profile');
   await mkdir(host.folder);
   vi.stubGlobal('MAIN_WINDOW_VITE_NAME', 'main_window');

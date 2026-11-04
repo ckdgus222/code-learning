@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { SANDBOX_EXEC, fenceProfile, launchReadPaths } from '../src/core/ai/fence';
+import { SANDBOX_EXEC, fenceProfile, fencedLaunch, launchReadPaths } from '../src/core/ai/fence';
 import { runProcess } from '../src/core/ai/process';
 
 // Real files in a temporary folder laid out like a home folder, and the real macOS sandbox.
@@ -28,6 +28,12 @@ beforeEach(async () => {
   await writeFile(path.join(packageRoot, 'bin', 'cli.js'), '');
 });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+
+// fencedLaunch only builds the launch; without the fence it refuses, so the caller never starts the CLI.
+it.runIf(process.platform !== 'darwin')('refuses a fenced launch outside macOS', async () => {
+  await expect(fencedLaunch({ executable: process.execPath, prefix: [] }, { appHome: codexHome, runDirectory: run }))
+    .rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: 'AI 프로그램을 안전한 울타리 안에서 실행할 수 없어 실행하지 않았습니다. macOS에서만 실행할 수 있습니다.' });
+});
 
 describe('AI CLI fence profile', () => {
   it('opens only its own app home, the run folder and the program files again', () => {

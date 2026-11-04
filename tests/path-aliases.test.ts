@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { scanProject } from '../src/core/project/files';
 import { NO_ALIASES, readPathAliases, resolveImport, type PathAliases } from '../src/core/analysis/path-aliases';
@@ -7,7 +8,7 @@ import { candidatesFor } from '../src/core/analysis/project-map';
 import type { ProjectFile } from '../src/shared/contracts';
 
 let root: string;
-beforeEach(async () => { root = await mkdtemp('/private/tmp/learning-path-aliases-'); });
+beforeEach(async () => { root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-path-aliases-'))); });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 async function put(name: string, text: string) {
   await mkdir(path.dirname(path.join(root, name)), { recursive: true });

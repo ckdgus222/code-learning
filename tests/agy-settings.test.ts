@@ -20,11 +20,15 @@ describe('agy restrictions in the app-only HOME', () => {
     expect(await json(hooksFile())).toEqual(AGY_NO_TOOLS_HOOK);
     expect(AGY_NO_TOOLS_HOOK['code-learning-no-tools'].PreToolUse[0].matcher).toBe('*');
     expect(await json(mcpFile())).toEqual({ mcpServers: {} });
+  });
+
+  it.skipIf(process.platform === 'win32')('creates the settings files 0o600 and their folders 0o700', async () => {
+    await restrictAgy(home);
     for (const file of [settingsFile(), hooksFile(), mcpFile()]) expect((await stat(file)).mode & 0o777).toBe(0o600);
     for (const folder of [path.dirname(settingsFile()), path.dirname(hooksFile())]) expect((await stat(folder)).mode & 0o777).toBe(0o700);
   });
 
-  it('makes existing folders and files private too', async () => {
+  it.skipIf(process.platform === 'win32')('makes existing folders and files private too', async () => {
     await mkdir(path.dirname(settingsFile()), { recursive: true, mode: 0o755 });
     await mkdir(path.dirname(hooksFile()), { recursive: true, mode: 0o755 });
     await writeFile(settingsFile(), '{}', { mode: 0o644 });
@@ -92,7 +96,8 @@ describe('agy restrictions in the app-only HOME', () => {
         await link(target, file);
         await expect(restrictAgy(home)).rejects.toThrow();
         expect(await readFile(target, 'utf8'), file).toBe('{}');
-        expect((await stat(target)).mode & 0o777, file).toBe(0o644);
+        // Windows has no POSIX permission bits.
+        if (process.platform !== 'win32') expect((await stat(target)).mode & 0o777, file).toBe(0o644);
       }
     } finally {
       await rm(outside, { recursive: true, force: true });

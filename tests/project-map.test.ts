@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { appendFile, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, realpath, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import { scanProject } from '../src/core/project/files';
 import { buildProjectMap, MAP_LIMITS } from '../src/core/analysis/project-map';
@@ -44,7 +45,7 @@ const mainSource = [
   "import { up } from './dir/..';",
 ].join('\n') + '\n';
 beforeEach(async () => {
-  sandbox = await mkdtemp('/private/tmp/learning-map-test-');
+  sandbox = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-map-test-')));
   root = path.join(sandbox, 'project');
   await mkdir(root);
   await put('.gitignore', 'src/ignored.ts\n');

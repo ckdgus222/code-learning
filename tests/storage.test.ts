@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { storedLearningMarkSchema } from '../src/shared/contracts';
 import { ProjectStorage } from '../src/core/storage/projects';
 let temp: string;
 let storage: ProjectStorage | undefined;
-beforeEach(async () => { temp = await mkdtemp('/private/tmp/learning-storage-test-'); });
+beforeEach(async () => { temp = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-storage-test-'))); });
 afterEach(async () => { storage?.close(); storage = undefined; await rm(temp, { recursive: true, force: true }); });
 it('persists stable project IDs by root across reopen while separating different roots', () => {
   const filename = path.join(temp, 'app.sqlite');

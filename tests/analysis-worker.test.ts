@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import type { ProjectView, SourceView } from '../src/shared/contracts';
 import type { WorkerRequest, WorkerResponse } from '../src/workers/analysis';
@@ -14,7 +15,7 @@ let root: string;
 afterEach(async () => { if (root) await rm(root, { recursive: true, force: true }); });
 
 it('refreshes the guide after only paths changes while reusing the unchanged source analysis', async () => {
-  root = await mkdtemp('/private/tmp/learning-alias-worker-');
+  root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-alias-worker-')));
   worker.data.root = root;
   await mkdir(path.join(root, 'src'));
   await writeFile(path.join(root, 'main.ts'), "import { value } from '@/api'; export function run() { return value; }");

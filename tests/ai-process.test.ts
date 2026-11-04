@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, readFile, rm } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { localProcessEnv, runProcess } from '../src/core/ai/process';
 
 let root: string;
-beforeEach(async () => { root = await mkdtemp('/private/tmp/learning-ai-process-'); });
+beforeEach(async () => { root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-ai-process-'))); });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 
 function run(source: string, options: Partial<Parameters<typeof runProcess>[0]> = {}) {

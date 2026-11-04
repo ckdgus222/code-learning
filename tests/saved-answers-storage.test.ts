@@ -1,5 +1,6 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
+import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { MAX_SAVED_ANSWERS, ProjectStorage } from '../src/core/storage/projects';
@@ -46,7 +47,7 @@ it('keeps exactly the newest 50 by time then rowid, with trimming isolated to ea
 });
 
 it('skips corrupt JSON without deleting it and rolls back a failed transaction', async () => {
-  const temporary = await mkdtemp('/private/tmp/learning-answers-storage-');
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-answers-storage-')));
   const filename = path.join(temporary, 'learning.sqlite');
   const storage = new ProjectStorage(filename);
   const db = new DatabaseSync(filename);
