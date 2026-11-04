@@ -8,10 +8,11 @@ import { AppError } from '../../shared/errors';
 import { MAX_FILE_BYTES, pathPolicy, readAllowed, validateRelative } from './files';
 
 /*
- * Plan v2.3 C-2: a chosen commit against the files now, read only. The installed git (user decision A) runs inside a
- * sandbox with no writes, no network and no other program, with a clean environment and settings that keep the
- * repository's own config from starting programs. Only read commands are used: rev-parse, log, ls-tree, ls-files and
- * cat-file. diff and status run the repository's filters, so the comparison itself is worked out here.
+ * Plan v2.3 C-2: a chosen commit against the files now, read only. The installed git (user decision A) runs on macOS
+ * inside a sandbox with no writes, no network and no other program, with a clean environment and settings that keep
+ * the repository's own config from starting programs or fetching. Windows has no such sandbox, so v1.0 does not run
+ * git there (user decision 2026-11-05). Only read commands are used: rev-parse, log, ls-tree, ls-files and cat-file.
+ * diff and status run the repository's filters, so the comparison itself is worked out here.
  */
 
 const SANDBOX_EXEC = '/usr/bin/sandbox-exec';
@@ -19,14 +20,24 @@ const SANDBOX_EXEC = '/usr/bin/sandbox-exec';
 const GIT_CANDIDATES = ['/Library/Developer/CommandLineTools/usr/bin/git', '/Applications/Xcode.app/Contents/Developer/usr/bin/git',
   '/opt/homebrew/bin/git', '/usr/local/bin/git'];
 // Nothing of the app's environment (secrets, GIT_DIR and the like) reaches git; no user or system config is read.
+// A partial clone fetches a missing object on read, which can start the repository's ssh command: GIT_ALLOW_PROTOCOL
+// left empty allows no transport, over any protocol.<name>.allow in the repository, and newer git skips the fetch.
 const GIT_ENV = { PATH: '/usr/bin:/bin', HOME: '/var/empty', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
-  GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_ATTR_NOSYSTEM: '1', LC_ALL: 'C' };
-const SAFE_ARGS = ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-c', 'log.showSignature=false'];
+  GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_ATTR_NOSYSTEM: '1', LC_ALL: 'C', GIT_ALLOW_PROTOCOL: '', GIT_NO_LAZY_FETCH: '1' };
+const SAFE_ARGS = ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
+  '-c', 'log.showSignature=false', '-c', 'protocol.allow=never', '-c', 'core.unsetenvvars=', '-c', 'safe.bareRepository=explicit'];
 const COMMAND_MS = 10_000;
 export const GIT_LIMITS = { files: 1000, bytes: 16 * 1024 * 1024, treeEntries: 20_000 };
 const COMMIT_OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 export interface GitTool { exe: string; profile: string }
+
+/** Git always runs inside the macOS sandbox; other platforms and missing profiles are refused. */
+export function gitLaunch(platform: NodeJS.Platform, tool: GitTool, args: string[]): { file: string; args: string[]; env: Record<string, string> } {
+  if (platform !== 'darwin') throw new AppError('UNSUPPORTED', '이 운영체제에서는 Git을 쓸 수 없어요.');
+  if (!tool.profile) throw new AppError('UNSUPPORTED', 'Git 실행을 보호할 프로필이 없어요.');
+  return { file: SANDBOX_EXEC, args: ['-p', tool.profile, tool.exe, ...SAFE_ARGS, ...args], env: GIT_ENV };
+}
 /**
  * Paths are compared by their NFC form: macOS may keep a Korean name decomposed (NFD) on disk while git records it
  * composed. Each path is still read and passed to git in its own form. Case is kept, so a case-only rename is seen.
@@ -50,11 +61,12 @@ export const gitProfile = (exe: string, helpers: string | null) => `(version 1)
 
 function run(tool: GitTool, cwd: string, args: string[], { maxBuffer = 1024 * 1024, stop = () => false }: { maxBuffer?: number; stop?: () => boolean } = {}) {
   return new Promise<Buffer>((resolve, reject) => {
+    const launch = gitLaunch(process.platform, tool, args);
     const controller = new AbortController();
     // The worker waits for git asynchronously, so it can end its own child when asked to stop.
     const poll = setInterval(() => { if (stop()) controller.abort(); }, 50);
-    execFile(SANDBOX_EXEC, ['-p', tool.profile, tool.exe, ...SAFE_ARGS, ...args],
-      { cwd, env: GIT_ENV, encoding: 'buffer', maxBuffer, timeout: COMMAND_MS, killSignal: 'SIGKILL', signal: controller.signal },
+    execFile(launch.file, launch.args,
+      { cwd, env: launch.env, encoding: 'buffer', maxBuffer, timeout: COMMAND_MS, killSignal: 'SIGKILL', signal: controller.signal, windowsHide: true },
       (error, stdout, stderr) => {
         clearInterval(poll);
         if (!error) { resolve(stdout); return; }
@@ -124,7 +136,7 @@ export async function repositoryOf(tool: GitTool, root: string, stop?: () => boo
   const [rootKey, topKey] = [key(root), key(top)];
   // A repository below the opened folder, or one found through a link elsewhere, is not this folder's.
   if (rootKey !== topKey && !rootKey.startsWith(topKey + path.sep)) return { reason: 'Git 저장소 위치가 열린 폴더와 맞지 않아요.' };
-  const expected = rootKey === topKey ? '' : rootKey.slice(topKey.length + 1) + '/';
+  const expected = rootKey === topKey ? '' : rootKey.slice(topKey.length + 1).split(path.sep).join('/') + '/';
   if (key(prefix) !== expected) return { reason: 'Git 저장소 위치가 열린 폴더와 맞지 않아요.' };
   return { top, gitDir, prefix, format };
 }
@@ -361,7 +373,8 @@ async function side(read: () => Promise<string>): Promise<CodeSide> {
 /** One request of the changes view, in a side worker: git and the repository are found again each time. */
 export async function gitJob(root: string, projectId: string, job: GitJob, stop: () => boolean): Promise<GitHistory | ProjectChanges | FileDiff> {
   const tool = await findGit();
-  const repo = tool ? await repositoryOf(tool, root, stop) : { reason: '이 맥에서 Git을 찾지 못해 변경 보기를 쓸 수 없어요.' };
+  const repo = tool ? await repositoryOf(tool, root, stop) : { reason: process.platform === 'win32'
+    ? 'Windows에서는 아직 변경 보기를 쓸 수 없어요.' : '이 컴퓨터에서 Git을 찾지 못해 변경 보기를 쓸 수 없어요.' };
   if (!tool || 'reason' in repo) {
     if (job.mode === 'history') return { projectId, available: false, reason: 'reason' in repo ? repo.reason : null, commits: [] };
     throw new AppError('UNSUPPORTED', 'reason' in repo ? repo.reason : 'Git을 쓸 수 없어요.');

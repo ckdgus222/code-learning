@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { scanProject } from '../src/core/project/files';
-import { compareWith, findGit, GIT_LIMITS, gitJob, repositoryOf, type Repository } from '../src/core/project/git';
+import { compareWith, findGit, GIT_LIMITS, gitJob, gitLaunch, repositoryOf, type Repository } from '../src/core/project/git';
 import { AppError } from '../src/shared/errors';
 import type { FileDiff, GitHistory, ProjectChanges, ProjectFiles } from '../src/shared/contracts';
 
@@ -76,7 +76,33 @@ function fiveKinds() {
   return first;
 }
 
-describe('changes against a chosen commit (plan v2.3 C-2)', () => {
+describe('git launch (M2-2c)', () => {
+  it('always launches macOS git through its sandbox and refuses a missing profile', () => {
+    const tool = { exe: '/installed/git', profile: '(version 1)' };
+    const launch = gitLaunch('darwin', tool, ['--version']);
+    expect(launch.file).toBe('/usr/bin/sandbox-exec');
+    expect(launch.args).toEqual(['-p', tool.profile, tool.exe, '--no-pager', '-c', 'core.fsmonitor=false', '-c',
+      'core.hooksPath=/dev/null', '-c', 'log.showSignature=false', '-c', 'protocol.allow=never', '-c', 'core.unsetenvvars=',
+      '-c', 'safe.bareRepository=explicit', '--version']);
+    expect(launch.env).toMatchObject({ PATH: '/usr/bin:/bin', HOME: '/var/empty', GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_ALLOW_PROTOCOL: '', GIT_NO_LAZY_FETCH: '1' });
+    expect(() => gitLaunch('darwin', { ...tool, profile: '' }, [])).toThrow();
+  });
+
+  it.each(['win32', 'linux'] as const)('refuses %s even with a profile', platform => {
+    expect(() => gitLaunch(platform, { exe: '/installed/git', profile: '(version 1)' }, [])).toThrow();
+    expect(() => gitLaunch(platform, { exe: '/installed/git', profile: '' }, [])).toThrow();
+  });
+
+  it.runIf(process.platform === 'win32')('explains that changes are unavailable on Windows', async () => {
+    const project = await open(root);
+    expect(await history(root, project)).toEqual({
+      projectId: project.id, available: false, reason: 'Windows에서는 아직 변경 보기를 쓸 수 없어요.', commits: [],
+    });
+  });
+});
+
+describe.runIf(process.platform === 'darwin')('changes against a chosen commit (plan v2.3 C-2)', () => {
   it('finds the five kinds of change, and leaves out what the rules exclude without calling it deleted', async () => {
     const first = fiveKinds();
     const project = await open(root);
@@ -174,6 +200,22 @@ describe('changes against a chosen commit (plan v2.3 C-2)', () => {
     ]);
     expect(await oldCode(src, project, first, 'edit.ts')).toBe('export const edit = 1;\n');
     await expect(oldCode(src, project, first, 'docs/readme.md')).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+  });
+
+  it('reads history, changes and old code from a folder two levels below the repository', async () => {
+    git(root, 'init', '-q');
+    write(root, 'src/nested/edit.ts', 'export const edit = 1;\n');
+    write(root, 'outside.ts', 'export const outside = 1;\n');
+    git(root, 'add', '-A');
+    commit(root, 'first');
+    const first = git(root, 'rev-parse', 'HEAD');
+    write(root, 'src/nested/edit.ts', 'export const edit = 2;\n');
+    write(root, 'outside.ts', 'export const outside = 2;\n');
+    const folder = path.join(root, 'src', 'nested');
+    const project = await open(folder);
+    expect(await history(folder, project)).toMatchObject({ available: true, commits: [{ oid: first, subject: 'first', head: true }] });
+    expect(kinds(await compare(folder, project, first))).toEqual(['modified edit.ts']);
+    expect(await oldCode(folder, project, first, 'edit.ts')).toBe('export const edit = 1;\n');
   });
 
   it('leaves a submodule\'s own files out instead of calling them new', async () => {
@@ -389,13 +431,13 @@ describe('changes against a chosen commit (plan v2.3 C-2)', () => {
     const linked = 'Git 기록 폴더 안에 링크가 있어(다른 저장소와 이어질 수 있어요) 읽지 않아요.';
     const objects = path.join(root, '.git/objects');
     rmSync(`${objects}-own`, { recursive: true, force: true });
-    execFileSync('mv', [objects, `${objects}-own`]);
+    renameSync(objects, `${objects}-own`);
     symlinkSync(path.join(other, '.git/objects'), objects);
     expect(await history(root, project)).toMatchObject({ available: false, reason: linked });
     await expect(compare(root, project, privateCommit)).rejects.toMatchObject({ code: 'UNSUPPORTED', message: linked });
     await expect(oldCode(root, project, privateCommit, 'private.ts')).rejects.toMatchObject({ code: 'UNSUPPORTED' });
     rmSync(objects);
-    execFileSync('mv', [`${objects}-own`, objects]);
+    renameSync(`${objects}-own`, objects);
     expect(await history(root, project)).toMatchObject({ available: true });
     mkdirSync(path.join(objects, 'pack'), { recursive: true });
     symlinkSync(path.join(other, '.git/HEAD'), path.join(objects, 'pack', 'borrowed.pack'));
@@ -452,7 +494,7 @@ describe('changes against a chosen commit (plan v2.3 C-2)', () => {
 
 });
 
-describe('a repository cannot make the app run programs or change it (plan v2.3 C-2 security)', () => {
+describe.runIf(process.platform === 'darwin')('a repository cannot make the app run programs or change it (plan v2.3 C-2 security)', () => {
   it('runs nothing the repository\'s config names, and leaves .git as it was', async () => {
     const first = fiveKinds();
     const marks = path.join(root, '..', `${path.basename(root)}-marks`);
@@ -463,9 +505,9 @@ describe('a repository cannot make the app run programs or change it (plan v2.3 
     temp.push(scripts);
     const script = (name: string) => {
       const file = path.join(scripts, `${name}.sh`);
-      writeFileSync(file, `#!/bin/sh\ntouch ${marks}/${name}\ncat\n`);
+      writeFileSync(file, `#!/bin/sh\ntouch '${path.join(marks, name).split(path.sep).join('/')}'\ncat\n`);
       chmodSync(file, 0o755);
-      return file;
+      return `'${file.split(path.sep).join('/')}'`;
     };
     write(root, '.gitattributes', '*.ts filter=evil diff=evil\n');
     git(root, 'config', 'core.fsmonitor', script('fsmonitor'));
@@ -478,6 +520,14 @@ describe('a repository cannot make the app run programs or change it (plan v2.3 
     git(root, 'config', 'core.pager', script('pager'));
     git(root, 'config', 'core.hooksPath', scripts);
     script('post-index-change');
+    git(root, 'status');
+    expect(existsSync(path.join(marks, 'fsmonitor'))).toBe(true);
+    expect(existsSync(path.join(marks, 'clean'))).toBe(true);
+    git(root, 'diff', first);
+    expect(existsSync(path.join(marks, 'extdiff'))).toBe(true);
+    git(root, 'diff', '--no-ext-diff', first);
+    expect(existsSync(path.join(marks, 'textconv'))).toBe(true);
+    for (const name of readdirSync(marks)) rmSync(path.join(marks, name));
     const before = snapshot(path.join(root, '.git'));
     const project = await open(root);
     await history(root, project);
@@ -485,6 +535,41 @@ describe('a repository cannot make the app run programs or change it (plan v2.3 
     await oldCode(root, project, first, 'src/edit.ts');
     expect(readdirSync(marks)).toEqual([]);
     expect(snapshot(path.join(root, '.git'))).toEqual(before);
+  });
+
+  it.each(['ext', 'ssh'] as const)('blocks %s lazy fetch even when repository config allows that transport', async transport => {
+    git(root, 'init', '-q');
+    write(root, 'a.ts', 'export const a = 1;\n');
+    git(root, 'add', '-A');
+    commit(root, 'first');
+    const first = git(root, 'rev-parse', 'HEAD');
+    const blob = git(root, 'rev-parse', `${first}:a.ts`);
+    rmSync(path.join(root, '.git', 'objects', blob.slice(0, 2), blob.slice(2)));
+    write(root, 'a.ts', 'export const a = 2;\n');
+    git(root, 'config', 'core.repositoryformatversion', '1');
+    git(root, 'config', 'extensions.partialClone', 'origin');
+    git(root, 'config', 'remote.origin.promisor', 'true');
+    git(root, 'config', 'core.unsetenvvars', 'GIT_ALLOW_PROTOCOL,GIT_NO_LAZY_FETCH');
+    git(root, 'config', `protocol.${transport}.allow`, 'always');
+    const mark = path.join(root, 'fetched');
+    const script = path.join(root, '.git', 'fetch marker.sh');
+    writeFileSync(script, `#!/bin/sh\ntouch '${mark.split(path.sep).join('/')}'\nexit 1\n`);
+    chmodSync(script, 0o755);
+    const scriptPath = script.split(path.sep).join('/');
+    if (transport === 'ext') {
+      // remote-ext splits arguments itself; % escapes a space or percent, unlike shell quotes.
+      git(root, 'config', 'remote.origin.url', `ext::sh ${scriptPath.replaceAll('%', '%%').replaceAll(' ', '% ')}`);
+    } else {
+      git(root, 'config', 'remote.origin.url', 'ssh://example.invalid/repo');
+      git(root, 'config', 'core.sshCommand', `'${scriptPath}'`);
+    }
+    expect(() => git(root, 'cat-file', '-p', blob)).toThrow();
+    expect(existsSync(mark)).toBe(true);
+    rmSync(mark);
+    const project = await open(root);
+    expect(kinds(await compare(root, project, first))).toEqual(['modified a.ts']);
+    await expect(oldCode(root, project, first, 'a.ts')).rejects.toMatchObject({ code: 'IO', message: 'Git 명령이 실패했어요.' });
+    expect(existsSync(mark)).toBe(false);
   });
 
   it('keeps the app\'s environment from git', async () => {
@@ -501,7 +586,7 @@ describe('a repository cannot make the app run programs or change it (plan v2.3 
     }
   });
 
-  it.runIf(process.platform === 'darwin')('lets git start no other program inside its sandbox', async () => {
+  it('lets git start no other program inside its sandbox', async () => {
     const tool = (await findGit())!;
     expect(tool).toBeTruthy();
     const mark = path.join(root, 'started');
