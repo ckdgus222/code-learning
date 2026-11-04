@@ -5,7 +5,7 @@ import type { aiFunctionSummaries, functionDoes, Importer, importersOf } from '.
 import type { CallsState } from './calls';
 import type { FileUse } from './screen-groups';
 import { ComplexityTags } from './complexity';
-import { functionParams } from './code-bands';
+import { functionCalls, functionParams } from './code-bands';
 
 const kinds = { imports: '가져오기', class: '클래스', function: '메서드/함수', field: '필드', variable: '값', statement: '문장' };
 const importStatuses = { project: '', ambiguous: '어느 파일인지 하나로 정하지 못함', 'not-found': '프로젝트에서 찾지 못함',
@@ -62,7 +62,7 @@ export function FileGuideCard({ open, onToggle, guide, analysis, busy, stale, us
   return <details ref={card} open={open} onToggle={event => {
     if (event.currentTarget.open !== open) onToggle(event.currentTarget.open);
   }} className="card file-guide" aria-label="이 파일은">
-    <summary>이 파일은</summary>
+    <summary>이 파일은 · {guide.role.label}<small> · 코드 모양으로 추정</small></summary>
     <p><span className="badge">{guide.role.label}</span> <span className="badge">코드 모양으로 추정</span></p>
     <p>{guide.role.about}</p>
     <section aria-label="이 파일이 나오는 기능">
@@ -163,7 +163,7 @@ export function FileGuideCard({ open, onToggle, guide, analysis, busy, stale, us
         {fact?.tags.map(tag => <p key={tag}><span className="tag">{tag} · 모양으로 판단</span></p>)}
         {fact?.routeNote && <p className="hint">{fact.routeNote}</p>}
         <p>받는 것: {functionParams(symbol.params)}</p>
-        {!!fact?.calls.length && <p>부르는 것: {fact.calls.join(', ')}{fact.callsOmitted > 0 && ` 외 ${fact.callsOmitted}개`}</p>}
+        {!!fact?.calls.length && <p>부르는 것: {functionCalls(fact.calls, fact.callsOmitted)}</p>}
         {!!fact?.hooks.length && <p>훅처럼 이름 붙인 호출: {fact.hooks.join(', ')}{fact.hooksOmitted > 0 && ` 외 ${fact.hooksOmitted}개`}</p>}
         {hasActions && <>
           <h5>하는 일</h5>

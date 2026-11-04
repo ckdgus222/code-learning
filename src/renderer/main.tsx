@@ -4,6 +4,8 @@ import type { FlowNode, CallSite, ValueSite, CodeSymbol, Evidence, MapExport, Ma
   StartCandidate, LearningMark } from '../shared/contracts';
 import { showsFiles, useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
+import { functionCalls, functionParams } from './code-bands';
+import { symbolMeta } from './reader-view';
 import { Icon } from './icons';
 import { ancestorFolderPaths, buildFileTree, filterFileTree, type TreeFolder } from './file-tree';
 import { AiPanel } from './ai-panel';
@@ -125,6 +127,7 @@ function App() {
     if (view === 'overview' || (view === 'map' && mapTab === 'feature')) features.start();
   }, [project, view, mapTab]);
   const symbol = source?.analysis.symbols.find(item => item.id === symbolId);
+  const symbolGuide = source?.guide?.functions.find(item => item.symbolId === symbolId);
   const step = symbol?.steps.find(item => item.id === stepId);
 
   useEffect(() => {
@@ -653,8 +656,10 @@ function App() {
       {filesVisible && <aside className="sidebar" aria-label="보기와 파일">
         <section aria-label="파일 목록" className="files">
           <h3 className="eyebrow">파일 {project.files.length}개</h3>
-          <input className="search" type="search" aria-label="파일명 검색" placeholder="파일명 검색"
-            value={search} onChange={event => setSearch(event.target.value)} />
+          <label className="files__search">파일명 검색
+            <input className="search" type="search" aria-label="파일명 검색" placeholder="예: auth"
+              value={search} onChange={event => setSearch(event.target.value)} />
+          </label>
           <FileTreeList folder={visibleFileTree} expanded={expandedFolders} searching={search.length > 0}
             currentFileId={source?.fileId} busy={busy} onToggle={path => setExpandedFolders(current => {
               const next = new Set(current);
@@ -848,76 +853,89 @@ function App() {
           <h2 className="page__title">코드 읽기</h2>
           <p>파일을 선택하면 원문과 확인한 함수 구조를 읽을 수 있습니다.</p>
         </div> : <div className="reader">
-          <div className="reader__head">
-            <h3 className="path reader__file">{source.relativePath}</h3>
-            <span className="badge">읽기 전용</span>
-            {symbol && <button className="btn btn--small" onClick={() => setView('function')}>이 함수 흐름으로 보기</button>}
-            <button className="btn btn--small" disabled={busy} onClick={() => readFile(source.fileId)}>파일 다시 읽기</button>
-            <div className="reader__tools" role="group" aria-label="읽기 설정">
-              <button className="btn btn--icon" aria-label="찾기 ⌘F" title="찾기 ⌘F" aria-keyshortcuts="Meta+F" onClick={() => reader.current?.openSearch()}><Icon name="search" /></button>
-              <button className="btn btn--icon" aria-label="코드 글자 작게" title="코드 글자 작게" disabled={codeSize <= CODE_SIZE.min}
-                onClick={() => setCodeSize(size => size - 1)}><Icon name="smaller" /></button>
-              <span className="reader__size" aria-live="polite">코드 {codeSize}px</span>
-              <button className="btn btn--icon" aria-label="코드 글자 크게" title="코드 글자 크게" disabled={codeSize >= CODE_SIZE.max}
-                onClick={() => setCodeSize(size => size + 1)}><Icon name="larger" /></button>
-              <button className="btn btn--icon" aria-label="줄바꿈" title="줄바꿈" aria-pressed={wrap} onClick={() => setWrap(on => !on)}><Icon name="wrap" /></button>
-              <button className="btn btn--small" aria-pressed={bands} onClick={() => setBands(on => !on)}>설명 줄</button>
-            </div>
-            {stale && <p className="hint">파일이 바뀌어 설명 줄을 숨겼어요. 파일 다시 읽기를 눌러 주세요.</p>}
-          </div>
-          <section aria-label="이 파일 안내" className="file-guide-fold">
-            {step && evidence ? <section className="fact">
-              <span className="tag tag--ok">코드에서 확인됨</span>
-              <p><b>{symbol?.name}</b> 함수 안의 <b>{step.title}</b> 부분이에요. 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요.</p>
-            </section> : symbol && evidence ? <section className="fact">
-              <span className="tag tag--ok">코드에서 확인됨</span>
-              <p><b>{symbol.name}</b> 함수는 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요. 왼쪽에서 구문을 골라 한 부분씩 볼 수 있어요.</p>
-            </section> : null}
-            {source.guide && <FileGuideCard key={`${source.fileId}:${source.hash}`} guide={source.guide} analysis={source.analysis} busy={busy} stale={stale}
-              open={fileGuideOpen} onToggle={setFileGuideOpen}
-              ai={aiFunctionSummaries(ai.fileExplanation?.result ?? null, ai.fileExplanationStale, source.analysis.symbols)}
-              importers={{ state: map.mapping ? 'running' : map.entry ? 'ready' : 'none',
-                stale: map.entry !== null && map.entry.revision !== revision.current, result: importers }}
-              onBuildMap={() => void map.build()} onCancelMap={() => void map.cancel()} onShowImport={item => void showImport(item)}
-              does={does} doesState={{ routes: features.stale ? 'stale' : features.routes ? 'ready' : 'none', flows: features.groupingProps.flows !== null }}
-              callers={callSearch.calls && callSearch.guideCaller(callSearch.calls)}
-              onFindCallers={item => void callSearch.find(source, item)}
-              onCancelCallers={() => void callSearch.cancel()} onShowCallSite={site => void showCallSite(site)} pathOf={pathOf}
-              uses={{ ...uses, routes: features.routes ?? null,
-                state: features.stale ? 'stale' : features.groupingProps.grouping ? 'running' : features.groupingProps.flows ? 'ready' : 'none' }}
-              onUse={use => void followFeatureRoute(use.routeIndex, { through: use.through, storyId: use.storyId, step: use.step, nodeId: use.nodeId })}
-              focus={functionFocus?.fileId === source.fileId && functionFocus.hash === source.hash ? functionFocus : null}
-              onOpenFile={fileId => { if (busy || stale) return; void readFile(fileId); }}
-              onShow={showFileGuideRange} onSelect={selectGuideFunction} />}
+          <section aria-label="구문과 코드" className="outline">
+            <h4 className="eyebrow">함수 {source.analysis.symbols.length}개</h4>
+            {source.analysis.warnings.map(message => <p key={message} className="hint">{message}</p>)}
+            {source.analysis.symbols.length === 0 && <p className="hint">이 파일에서 찾은 함수가 없어요.</p>}
+            {source.analysis.symbols.some(item => overLimit(item.complexity)) && <p className="hint">{COMPLEXITY_NOTE}</p>}
+            <ul className="symbols">{source.analysis.symbols.map(item => <li key={item.id} className="symbols__row">
+              <button className="symbols__item" aria-pressed={symbolId === item.id} aria-describedby={`symbol-meta-${item.id}`} disabled={busy || stale}
+                onClick={() => { selectSymbol(item.id); void showEvidence(item.evidence, null); }}>{item.name}</button>
+              <span className="symbols__meta" id={`symbol-meta-${item.id}`}>{symbolMeta(item)}</span>
+              {overLimit(item.complexity) && <div className="symbols__signals">
+                <ComplexityTags {...item.complexity} />
+                {symbol?.id === item.id && <button className="btn btn--small" disabled={busy || stale}
+                  onClick={() => void askSimpler(item)}>AI에게 단순하게 쓰는 법 묻기</button>}
+              </div>}
+              {symbol?.id === item.id && <ol className="steps" aria-label={`${item.name} 내부 구문`}>
+                {item.steps.map((next, index) => <li key={next.id} style={{ paddingLeft: next.depth * 14 }}>
+                  <span className="steps__no" aria-hidden="true">{index + 1}</span>
+                  <button className="steps__item" aria-pressed={stepId === next.id} disabled={busy || stale}
+                    onClick={() => showEvidence(next.evidence, next.id)}>{next.title}</button>
+                </li>)}
+              </ol>}
+            </li>)}</ul>
+            {symbol && <section aria-label="이 함수" className="symbol-card">
+              <h5>이 함수 · {symbol.name}</h5>
+              <dl>
+                <dt>받는 값</dt><dd className="symbol-card__params">{functionParams(symbol.params)}</dd>
+                <dt>위치</dt><dd>{symbol.evidence.startLine}–{symbol.evidence.endLine}행</dd>
+                {symbol.steps.length > 0 && <><dt>단계</dt><dd>{symbol.steps.length}개</dd></>}
+                {!!symbolGuide?.calls.length && <>
+                  <dt>부르는 것</dt><dd>{functionCalls(symbolGuide.calls, symbolGuide.callsOmitted)}</dd>
+                </>}
+              </dl>
+              <p className="hint">돌려주는 값의 모양과 이 함수를 부르는 곳은 ‘이 함수 흐름으로 보기’에서 찾아요.</p>
+              <button className="btn btn--small" onClick={() => setView('function')}>이 함수 흐름으로 보기</button>
+            </section>}
           </section>
-          {ai.functionExplanation && <p className="function-explanation" data-testid="function-chunk-summary">{ai.functionExplanation}</p>}
-          <div className="reader__body">
-            <section aria-label="구문과 코드" className="outline">
-              <h4 className="eyebrow">함수와 구문</h4>
-              {source.analysis.warnings.map(message => <p key={message} className="hint">{message}</p>)}
-              {source.analysis.symbols.length === 0 && <p className="hint">이 파일에서 찾은 함수가 없어요.</p>}
-              {source.analysis.symbols.some(item => overLimit(item.complexity)) && <p className="hint">{COMPLEXITY_NOTE}</p>}
-              <ul className="symbols">{source.analysis.symbols.map(item => <li key={item.id}>
-                <button className="symbols__item" aria-pressed={symbolId === item.id} disabled={busy || stale}
-                  onClick={() => { selectSymbol(item.id); void showEvidence(item.evidence, null); }}>{item.name}</button>
-                {overLimit(item.complexity) && <div className="symbols__signals">
-                  <ComplexityTags {...item.complexity} />
-                  {symbol?.id === item.id && <button className="btn btn--small" disabled={busy || stale}
-                    onClick={() => void askSimpler(item)}>AI에게 단순하게 쓰는 법 묻기</button>}
-                </div>}
-                {symbol?.id === item.id && <ol className="steps" aria-label={`${item.name} 내부 구문`}>
-                  {item.steps.map((next, index) => <li key={next.id} style={{ paddingLeft: next.depth * 14 }}>
-                    <span className="steps__no" aria-hidden="true">{index + 1}</span>
-                    <button className="steps__item" aria-pressed={stepId === next.id} disabled={busy || stale}
-                      onClick={() => showEvidence(next.evidence, next.id)}>{next.title}</button>
-                  </li>)}
-                </ol>}
-              </li>)}</ul>
+          <div className="reader__main">
+            <div className="reader__head">
+              <h3 className="path reader__file">{source.relativePath}</h3>
+              <span className="badge">읽기 전용</span>
+              <button className="btn btn--small" disabled={busy} onClick={() => readFile(source.fileId)}>파일 다시 읽기</button>
+              <div className="reader__tools" role="group" aria-label="읽기 설정">
+                <button className="btn btn--icon" aria-label="찾기 ⌘F" title="찾기 ⌘F" aria-keyshortcuts="Meta+F" onClick={() => reader.current?.openSearch()}><Icon name="search" /></button>
+                <button className="btn btn--icon" aria-label="코드 글자 작게" title="코드 글자 작게" disabled={codeSize <= CODE_SIZE.min}
+                  onClick={() => setCodeSize(size => size - 1)}><Icon name="smaller" /></button>
+                <span className="reader__size" aria-live="polite">코드 {codeSize}px</span>
+                <button className="btn btn--icon" aria-label="코드 글자 크게" title="코드 글자 크게" disabled={codeSize >= CODE_SIZE.max}
+                  onClick={() => setCodeSize(size => size + 1)}><Icon name="larger" /></button>
+                <button className="btn btn--icon" aria-label="줄바꿈" title="줄바꿈" aria-pressed={wrap} onClick={() => setWrap(on => !on)}><Icon name="wrap" /></button>
+                <button className="btn btn--small" aria-pressed={bands} onClick={() => setBands(on => !on)}>설명 줄</button>
+              </div>
+              {stale && <p className="hint">파일이 바뀌어 설명 줄을 숨겼어요. 파일 다시 읽기를 눌러 주세요.</p>}
+            </div>
+            <section aria-label="이 파일 안내" className="file-guide-fold">
+              {step && evidence ? <section className="fact">
+                <span className="tag tag--ok">코드에서 확인됨</span>
+                <p><b>{symbol?.name}</b> 함수 안의 <b>{step.title}</b> 부분이에요. 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요.</p>
+              </section> : symbol && evidence ? <section className="fact">
+                <span className="tag tag--ok">코드에서 확인됨</span>
+                <p><b>{symbol.name}</b> 함수는 원본 {evidence.startLine}–{evidence.endLine}줄에 있어요. 왼쪽에서 구문을 골라 한 부분씩 볼 수 있어요.</p>
+              </section> : null}
+              {source.guide && <FileGuideCard key={`${source.fileId}:${source.hash}`} guide={source.guide} analysis={source.analysis} busy={busy} stale={stale}
+                open={fileGuideOpen} onToggle={setFileGuideOpen}
+                ai={aiFunctionSummaries(ai.fileExplanation?.result ?? null, ai.fileExplanationStale, source.analysis.symbols)}
+                importers={{ state: map.mapping ? 'running' : map.entry ? 'ready' : 'none',
+                  stale: map.entry !== null && map.entry.revision !== revision.current, result: importers }}
+                onBuildMap={() => void map.build()} onCancelMap={() => void map.cancel()} onShowImport={item => void showImport(item)}
+                does={does} doesState={{ routes: features.stale ? 'stale' : features.routes ? 'ready' : 'none', flows: features.groupingProps.flows !== null }}
+                callers={callSearch.calls && callSearch.guideCaller(callSearch.calls)}
+                onFindCallers={item => void callSearch.find(source, item)}
+                onCancelCallers={() => void callSearch.cancel()} onShowCallSite={site => void showCallSite(site)} pathOf={pathOf}
+                uses={{ ...uses, routes: features.routes ?? null,
+                  state: features.stale ? 'stale' : features.groupingProps.grouping ? 'running' : features.groupingProps.flows ? 'ready' : 'none' }}
+                onUse={use => void followFeatureRoute(use.routeIndex, { through: use.through, storyId: use.storyId, step: use.step, nodeId: use.nodeId })}
+                focus={functionFocus?.fileId === source.fileId && functionFocus.hash === source.hash ? functionFocus : null}
+                onOpenFile={fileId => { if (busy || stale) return; void readFile(fileId); }}
+                onShow={showFileGuideRange} onSelect={selectGuideFunction} />}
             </section>
+            {ai.functionExplanation && <p className="function-explanation" data-testid="function-chunk-summary">{ai.functionExplanation}</p>}
             <div className="code">
               {evidence && <p data-testid="evidence-range" data-utf16={`${evidence.startUtf16},${evidence.endUtf16}`} className="evidence">근거: {source.relativePath} · {evidence.startLine}–{evidence.endLine}줄</p>}
               <Reader ref={reader} source={source} evidence={evidence} codeSize={codeSize} wrap={wrap}
-                bands={bands && !stale} onFunction={async id => {
+                tint={!stale} bands={bands && !stale} onFunction={async id => {
                   if (busy || stale) return;
                   if (!await selectGuideFunction(id)) return;
                   setFileGuideOpen(true);

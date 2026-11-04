@@ -276,6 +276,21 @@ async function openFileGuide() {
   if (!await guide.evaluate(element => element.open)) await guide.locator(':scope > summary').click();
   return guide;
 }
+async function checkReaderCodeVisible() {
+  await until(() => page.locator('.reader__main .code .cm-editor').evaluate(editor => {
+    const bounds = editor.getBoundingClientRect();
+    const center = document.querySelector('.center').getBoundingClientRect();
+    const top = Math.max(0, center.top, bounds.top);
+    const bottom = Math.min(innerHeight, center.bottom, bounds.bottom);
+    const left = Math.max(0, center.left, bounds.left);
+    const right = Math.min(innerWidth, center.right, bounds.right);
+    if (bounds.height <= 0 || bounds.top >= innerHeight || bottom <= top || right <= left) return false;
+    return [...editor.querySelectorAll('.cm-line')].some(line => {
+      const rect = line.getBoundingClientRect();
+      return rect.height > 0 && rect.top >= top && rect.bottom <= bottom && rect.left < right && rect.right > left;
+    });
+  }));
+}
 async function checkPanelLayout(width) {
   await openAiPanel();
   const problems = await page.locator('.panel').evaluate(panel => {
@@ -847,7 +862,7 @@ try {
     await guide.getByText('이 파일의 함수 1개', { exact: true }).waitFor();
     await guide.getByText('주문', { exact: true }).waitFor();
     assert.equal(await region.evaluate(element => element.getBoundingClientRect().height <= innerHeight * 0.4 + 1), true);
-    assert.ok(await page.locator('.reader__body').evaluate(element => element.getBoundingClientRect().height) > 0);
+    await checkReaderCodeVisible();
     await page.getByRole('button', { name: 'loop.ts', exact: true }).click();
     await page.getByRole('heading', { name: 'loop.ts', exact: true }).waitFor();
     assert.equal(await guide.evaluate(element => element.open), true);
@@ -894,6 +909,15 @@ try {
         });
         assert.deepEqual(problems, [], `${width}px, ${name}, panel ${panelOpen}`);
         await checkTopbarLayout();
+        if (width === 760 && name === '코드 읽기' && panelOpen) {
+          const guide = await openFileGuide();
+          await checkReaderCodeVisible();
+          assert.equal(await page.locator('.center').evaluate(element => element.scrollWidth <= element.clientWidth), true);
+          assert.ok(await page.locator('.reader > .outline').evaluate(element => Math.abs(element.getBoundingClientRect().width - 200) <= 1));
+          assert.equal(await page.locator('.file-guide-fold').evaluate(element => element.getBoundingClientRect().height <= innerHeight * 0.4 + 1), true);
+          await page.screenshot({ path: path.join(artifacts, 'reader-guide-760.png') });
+          await guide.locator(':scope > summary').click();
+        }
       }
     }
     await until(async () => {
@@ -915,11 +939,39 @@ try {
     assert.equal(selected, 'if (수량 < 1) {\r\n\t\treturn "실패 📦";\r\n\t}');
     assert.equal(await page.locator('.cm-line').allTextContents().then(lines => lines.join('\n')), source.slice(0, -2) + '\r\n');
     await page.locator('.cm-selectionBackground').first().waitFor();
+    await until(async () => await page.locator('.cm-selected-function').count() === 6);
+    const chosen = page.locator('.symbols__row:has(> .symbols__item[aria-pressed="true"])');
+    assert.equal(await chosen.locator('.symbols__meta').innerText(), '1–6행 · 단계 3개');
+    assert.equal(await chosen.locator('.symbols__item').evaluate(button => document.getElementById(button.getAttribute('aria-describedby')).textContent), '1–6행 · 단계 3개');
+    const card = page.getByRole('region', { name: '이 함수', exact: true });
+    assert.equal(await card.locator('.symbol-card__params').innerText(), '수량: number');
+    assert.equal(await card.locator('dt').filter({ hasText: '부르는 것' }).count(), 0);
+    await card.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+    await page.locator('.flow').waitFor();
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+    await page.locator('.cm-selectionBackground').first().waitFor();
     await eachTheme(async mode => {
       assert.equal(await page.locator('.cm-selectionBackground').first().evaluate(element => getComputedStyle(element).backgroundColor),
         mode === 'dark' ? 'rgb(27, 52, 86)' : 'rgb(220, 235, 255)');
       assert.equal(await page.locator('.cm-editor').evaluate(element => getComputedStyle(element).backgroundColor),
         mode === 'dark' ? 'rgb(13, 24, 40)' : 'rgb(255, 255, 255)');
+      assert.deepEqual(await page.evaluate(() => {
+        const probe = document.createElement('span');
+        document.body.append(probe);
+        const pairs = [
+          ['.reader > .outline', '--bg'], ['.reader__main', '--surface'],
+          ['.symbols__row:has(> .symbols__item[aria-pressed="true"])', '--accent-soft'],
+        ];
+        const result = pairs.map(([selector, token]) => {
+          probe.style.backgroundColor = `var(${token})`;
+          return getComputedStyle(document.querySelector(selector)).backgroundColor === getComputedStyle(probe).backgroundColor;
+        });
+        probe.style.backgroundColor = 'color-mix(in srgb, var(--accent) 7%, transparent)';
+        result.push(getComputedStyle(document.querySelector('.cm-selected-function')).backgroundColor === getComputedStyle(probe).backgroundColor);
+        probe.remove();
+        return result;
+      }), [true, true, true, true]);
+      assert.equal(await page.locator('.cm-selectionBackground').first().isVisible(), true);
       await page.screenshot({ path: path.join(artifacts, `${mode}-code-reader.png`) });
       if (mode === 'light') {
         const guide = await openFileGuide();
@@ -1110,6 +1162,15 @@ try {
         return problems;
       });
       assert.deepEqual(workspaceProblems, [], `workspace ${width}x${height}`);
+      if (width === 1440) {
+        assert.equal(await page.locator('.reader').evaluate(reader => {
+          const outline = reader.querySelector(':scope > .outline').getBoundingClientRect();
+          const main = reader.querySelector('.reader__main').getBoundingClientRect();
+          const head = reader.querySelector('.reader__head').getBoundingClientRect();
+          return outline.right <= main.left && head.left >= outline.right && Math.abs(outline.top - main.top) <= 1 &&
+            Math.abs(outline.bottom - main.bottom) <= 1;
+        }), true);
+      }
       await checkPanelLayout(width);
       await page.screenshot({ path: path.join(artifacts, `reader-tools-${width}.png`) });
       // Escape closes the panel from its field; focus is put back there first in case it moved away meanwhile.
@@ -1215,6 +1276,43 @@ try {
     await page.getByRole('button', { name: '조건 확인', exact: true }).click();
     // The step's range is shown once main has checked it against the file, a moment after the click.
     await until(async () => await page.getByTestId('evidence-range').innerText() === evidence);
+  });
+  await check('Selected function tint skips a missing function and ranges outside the document', async () => {
+    const invalidRanges = [null, { startLine: 0 }, { startLine: 6, endLine: 5 }, { endLine: 8 }];
+    for (const range of invalidRanges) {
+      await page.getByRole('button', { name: 'order.ts', exact: true }).click();
+      const button = page.getByRole('button', { name: '주문', exact: true });
+      await until(() => button.isEnabled());
+      await app.evaluate(({ ipcMain }, range) => {
+        const original = ipcMain._invokeHandlers.get('learning:evidence');
+        globalThis.testTintEvidence = original;
+        ipcMain.removeHandler('learning:evidence');
+        ipcMain.handle('learning:evidence', async (event, request) => {
+          const result = await original(event, request);
+          if (!result.ok) return result;
+          const source = result.value.source;
+          const symbols = range === null ? [] : source.analysis.symbols.map(symbol => ({ ...symbol,
+            evidence: { ...symbol.evidence, ...range } }));
+          return { ...result, value: { ...result.value, source: { ...source, analysis: { ...source.analysis, symbols } } } };
+        });
+      }, range);
+      try {
+        await button.click();
+        await page.getByTestId('evidence-range').waitFor();
+        await until(async () => await page.locator('.cm-selected-function').count() === 0);
+        assert.equal(await page.locator('.cm-content').evaluate(element => element.cmTile.root.view.state.doc.toString()), source);
+      } finally {
+        await app.evaluate(({ ipcMain }) => {
+          ipcMain.removeHandler('learning:evidence');
+          ipcMain.handle('learning:evidence', globalThis.testTintEvidence);
+        });
+      }
+    }
+    await page.getByRole('button', { name: 'order.ts', exact: true }).click();
+    await page.getByRole('button', { name: '주문', exact: true }).click();
+    await page.getByRole('button', { name: '조건 확인', exact: true }).click();
+    await until(async () => await page.locator('.cm-selected-function').count() === 6);
+    await until(async () => /order.ts · 2–4줄/.test(await page.getByTestId('evidence-range').innerText()));
   });
   await check('Switching views preserves the selected function, step and evidence', async () => {
     const evidence = await page.getByTestId('evidence-range').innerText();
@@ -1358,18 +1456,22 @@ try {
     assert.equal(await readFile(path.join(fixture, 'order.ts'), 'utf8'), source);
     await page.getByRole('button', { name: 'README.md', exact: true }).click();
     await until(async () => (await page.locator('.cm-content').innerText()).includes('<script>'));
+    await page.getByRole('heading', { name: '함수 0개', exact: true }).waitFor();
+    assert.equal(await page.locator('.symbol-card, .cm-selected-function').count(), 0);
     assert.equal(await page.evaluate(() => globalThis.attacked), undefined);
     assert.equal(await page.locator('img').count(), 0);
   });
   await check('Changed source clears evidence and requires a new read', async () => {
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
     await page.getByRole('button', { name: '주문', exact: true }).click();
+    await until(async () => await page.locator('.cm-selected-function').count() === 6);
     await writeFile(path.join(fixture, 'order.ts'), source.replace('성공', '변경'));
     await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).waitFor();
     assert.equal(await page.getByTestId('evidence-range').count(), 0);
     assert.equal(await page.getByRole('button', { name: '주문', exact: true }).isDisabled(), true);
     assert.equal(await page.locator('.code-step-marker').count(), 3);
     assert.equal(await page.locator('.code-step-marker:not(:disabled)').count(), 0);
+    assert.equal(await page.locator('.cm-selected-function').count(), 0);
     await page.locator('.code-step-marker').first().evaluate(element => element.click());
     assert.equal(await page.getByTestId('evidence-range').count(), 0);
     assert.equal(await page.locator('.steps__item[aria-pressed="true"]').count(), 0);
@@ -4545,6 +4647,8 @@ try {
     await buttons.first().click();
     await until(async () => await page.locator('.symbols__item[aria-pressed="true"]').innerText() === 'Auth.login');
     assert.equal(await guide.evaluate(element => element.open), true);
+    await until(async () => await page.locator('.cm-selected-function.cm-function-band').count() === 1);
+    assert.equal(await page.locator('.cm-selected-function').evaluate(element => getComputedStyle(element).boxShadow !== 'none'), true);
     await until(() => visibleCard(id));
     await until(() => buttons.first().isEnabled());
     await toggle.click();
@@ -4622,6 +4726,8 @@ try {
       await until(() => button.isEnabled());
       assert.equal(await page.locator('.symbols__item[aria-pressed="true"]').innerText(), 'Auth.login');
       assert.equal(await page.locator('.file-guide').count(), 0);
+      assert.equal(await page.locator('.symbol-card__params').innerText(), 'input: string');
+      assert.equal(await page.locator('.symbol-card dt').filter({ hasText: '부르는 것' }).count(), 0);
     } finally {
       await app.evaluate(({ ipcMain }) => {
         globalThis.testBandRelease?.();
@@ -4637,13 +4743,18 @@ try {
     const guide = await openFileGuide();
     assert.equal(await page.locator('.center .file-guide').count(), 1);
     assert.equal(await page.locator('.panel .file-guide, .center .file-explanation, .reader__cards').count(), 0);
-    assert.deepEqual(await page.locator('.reader').evaluate(reader => [...reader.children].map(child => child.className)), ['reader__head', 'file-guide-fold', 'reader__body']);
+    assert.deepEqual(await page.locator('.reader').evaluate(reader => [...reader.children].map(child => child.className)), ['outline', 'reader__main']);
+    assert.deepEqual(await page.locator('.reader__main').evaluate(main => [...main.children].map(child => child.className)), ['reader__head', 'file-guide-fold', 'code']);
+    assert.equal(await guide.locator(':scope > summary').innerText(), '이 파일은 · NestJS 컨트롤러 · 코드 모양으로 추정');
     await guide.getByText('NestJS 컨트롤러', { exact: true }).waitFor();
     assert.match(await guide.innerText(), /POST \/auth\/login[\s\S]*앱 공통 앞 경로는 빼고 봤어요/);
     await guide.getByRole('button', { name: '이 함수 고르기', exact: true }).click();
     await openAiSection('질문하기');
     await until(async () => await page.locator('.symbols__item[aria-pressed="true"]').innerText() === 'Auth.login');
     await until(async () => /auth.controller.ts · 3–3행/.test(await page.getByTestId('question-scope').innerText()));
+    const card = page.getByRole('region', { name: '이 함수', exact: true });
+    assert.equal(await card.locator('.symbol-card__params').innerText(), 'input: string');
+    assert.match(await card.innerText(), /부르는 것\s+this\.service\.login/);
     const scope = await page.getByTestId('question-scope').innerText();
     await guide.getByRole('button', { name: '코드 보기', exact: true }).first().click();
     await until(async () => /auth.controller.ts · 3–3줄/.test(await page.getByTestId('evidence-range').innerText()));

@@ -78,7 +78,7 @@ describe('function bands', () => {
 });
 
 describe('shared function parameters', () => {
-  it.each([['', '없음'], [' ( \n ) ', '없음'], ['(\n input: string,\tcount: number\n)', 'input: string, count: number'],
+  it.each([['', '없음'], ['()', '없음'], ['( \n )', '없음'], [' ( \n ) ', '없음'], ['(\n input: string,\tcount: number\n)', 'input: string, count: number'],
     ['x'.repeat(60), 'x'.repeat(60)], ['x'.repeat(61), `${'x'.repeat(60)}…`]])('formats %j', (params, expected) => {
     expect(functionParams(params)).toBe(expected);
   });

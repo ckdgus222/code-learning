@@ -44,6 +44,7 @@ const sizing = new Compartment();
 const sizeTheme = (px: number) => EditorView.theme({ '.cm-scroller': { fontSize: `${px}px` } });
 const stepGutter = new Compartment();
 const functionBandsCompartment = new Compartment();
+const selectedFunction = new Compartment();
 
 class FunctionHeader extends WidgetType {
   constructor(readonly items: FunctionBandItem[], readonly locked: boolean, readonly onFunction: (id: string) => void) { super(); }
@@ -88,9 +89,9 @@ class StepMarker extends GutterMarker {
 
 export interface ReaderHandle { openSearch(): void }
 
-export function Reader({ source, evidence, codeSize, wrap, symbolId, stepId, locked, onStep, bands = false, onFunction, ref }: {
+export function Reader({ source, evidence, codeSize, wrap, symbolId, stepId, locked, onStep, bands = false, tint = false, onFunction, ref }: {
   source: SourceView; evidence: Evidence | null; codeSize: number; wrap: boolean; ref?: Ref<ReaderHandle>;
-  bands?: boolean; onFunction?: (symbolId: string) => void;
+  bands?: boolean; tint?: boolean; onFunction?: (symbolId: string) => void;
   symbolId: string | null; stepId: string | null; locked: boolean; onStep?: (step: CodeStep) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
@@ -102,7 +103,7 @@ export function Reader({ source, evidence, codeSize, wrap, symbolId, stepId, loc
       extensions: [
         // Keep CR and BOM characters rather than silently changing raw-source offsets.
         EditorState.lineSeparator.of('\n'), EditorState.readOnly.of(true), EditorView.editable.of(false),
-        codeTheme, stepGutter.of([]), functionBandsCompartment.of([]), lineNumbers(), drawSelection(), keymap.of([...readingKeys, ...searchKeymap]), search({ top: true }), searchPhrases,
+        codeTheme, stepGutter.of([]), functionBandsCompartment.of([]), selectedFunction.of([]), lineNumbers(), drawSelection(), keymap.of([...readingKeys, ...searchKeymap]), search({ top: true }), searchPhrases,
         // A new editor is made for each file and starts with the current choices; later changes reconfigure it.
         wrapping.of(wrap ? EditorView.lineWrapping : []), sizing.of(sizeTheme(codeSize)),
         // A non-editable element takes keyboard focus only with a tabindex (CodeMirror read-only example).
@@ -115,6 +116,21 @@ export function Reader({ source, evidence, codeSize, wrap, symbolId, stepId, loc
     view.current = editor;
     return () => { editor.destroy(); view.current = null; };
   }, [source]);
+  useEffect(() => {
+    const editor = view.current;
+    if (!editor) return;
+    const symbol = tint ? source.analysis.symbols.find(item => item.id === symbolId) : undefined;
+    const range = symbol?.evidence;
+    if (!range || range.startLine < 1 || range.endLine < range.startLine || range.endLine > editor.state.doc.lines) {
+      editor.dispatch({ effects: selectedFunction.reconfigure([]) });
+      return;
+    }
+    const lines = [];
+    for (let line = range.startLine; line <= range.endLine; line++) {
+      lines.push(Decoration.line({ class: 'cm-selected-function' }).range(editor.state.doc.line(line).from));
+    }
+    editor.dispatch({ effects: selectedFunction.reconfigure(EditorView.decorations.of(Decoration.set(lines))) });
+  }, [source, symbolId, tint]);
   // The parent passes a new handler on every render; reading the latest one here keeps the gutter from being rebuilt each time.
   const latestOnStep = useRef(onStep);
   useEffect(() => { latestOnStep.current = onStep; });
