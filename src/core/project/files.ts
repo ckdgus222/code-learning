@@ -266,7 +266,7 @@ export function inDependencyFolder(relative: string, allowedDirs: ReadonlySet<st
 
 export interface LinkStep { path: string; target: string }
 const partsInside = (root: string, absolute: string) =>
-  absolute === root ? [] : absolute.startsWith(root + '/') ? absolute.slice(root.length + 1).split('/') : null;
+  absolute === root ? [] : absolute.startsWith(root + path.sep) ? absolute.slice(root.length + 1).split(path.sep) : null;
 
 /**
  * Follows a path in the project folder part by part and resolves each link itself, so that every link on the way
@@ -323,7 +323,7 @@ function inspectSync(root: string, relative: string) {
  */
 export function readTypeFile(root: string, real: string, limit = TYPE_FILE_BYTES,
   hooks: { beforeOpen?(): void; afterRead?(): void } = {}): { text: string; state: FileState } {
-  const relative = real.slice(root.length + 1);
+  const relative = real.slice(root.length + 1).split(path.sep).join('/');
   const first = inspectSync(root, relative);
   hooks.beforeOpen?.();
   let fd: number;

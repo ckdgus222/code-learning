@@ -101,6 +101,8 @@ afterEach(async () => {
 
 const idOf = (relative: string) => project.files.find(file => file.relativePath === relative)!.id;
 const at = (relative: string) => path.join(root, relative);
+// A path with / as the checker writes it on every OS.
+const slashed = (name: string) => name.split(path.sep).join('/');
 async function targetOf(relative: string, name: string) {
   const { text, hash } = await readAllowed(root, relative);
   const symbol = analyzeSource(text, relative, { projectId: project.id, fileId: idOf(relative), fileHash: hash }).symbols.find(item => item.name === name)!;
@@ -145,13 +147,13 @@ describe('value shapes (plan v2.3 V-2)', () => {
     });
     expect(found.notes).toEqual([]);
     // Each real file once; package.json files are read to resolve packages even when their types are not.
-    expect(found.watch.files.map(file => path.relative(root, file.path)).sort()).toEqual([
+    expect(found.watch.files.map(file => slashed(path.relative(root, file.path))).sort()).toEqual([
       'node_modules/.pnpm/pnpm-style@1.0.0/node_modules/pnpm-style/index.d.ts',
       'node_modules/.pnpm/pnpm-style@1.0.0/node_modules/pnpm-style/package.json',
       'node_modules/hard-pkg/package.json', 'node_modules/js-only/package.json',
       'node_modules/pricing/index.d.ts', 'node_modules/pricing/package.json', 'node_modules/vault-pkg/package.json',
       'packages/a/node_modules/a-dep/index.d.ts']);
-    expect(found.watch.links.map(link => [path.relative(root, link.path), link.target])).toEqual([
+    expect(found.watch.links.map(link => [slashed(path.relative(root, link.path)), slashed(link.target)])).toEqual([
       ['node_modules/pnpm-style', '.pnpm/pnpm-style@1.0.0/node_modules/pnpm-style']]);
   });
 
@@ -300,7 +302,20 @@ describe('dependency type files (plan v2.3 V-2 reading rules)', () => {
     expect(top.files.sort()).toEqual(['tsconfig.json']);
     expect(top.directories.sort()).toEqual(['node_modules', 'packages', 'src']);
     expect(fs.getAccessibleEntries!(at('src'))!.files).not.toContain('hidden.ts');
-    expect(fs.realpath!(at('node_modules/pnpm-style'))).toBe(at('node_modules/.pnpm/pnpm-style@1.0.0/node_modules/pnpm-style'));
+    expect(fs.realpath!(at('node_modules/pnpm-style'))).toBe(slashed(at('node_modules/.pnpm/pnpm-style@1.0.0/node_modules/pnpm-style')));
+  });
+
+  it('answers checker paths with forward slashes the same as app paths', async () => {
+    const { callbacks: fs } = await callbacks();
+    for (const relative of ['src/order.ts', 'node_modules/pricing/index.d.ts', 'node_modules/pnpm-style/index.d.ts', 'src/hidden.ts']) {
+      const name = at(relative);
+      expect(fs.readFile!(slashed(name))).toBe(fs.readFile!(name));
+      expect(fs.fileExists!(slashed(name))).toBe(fs.fileExists!(name));
+    }
+    for (const relative of ['', 'src', 'node_modules/pricing', 'node_modules/pnpm-style']) {
+      const name = at(relative);
+      expect(fs.getAccessibleEntries!(slashed(name))).toEqual(fs.getAccessibleEntries!(name));
+    }
   });
 
   it('refuses dependency types inside a folder excluded now, in reading and in listing', async () => {
@@ -328,12 +343,18 @@ describe('dependency type files (plan v2.3 V-2 reading rules)', () => {
     writeFileSync(real, 'export declare const x: 1;\n');
     expect(() => readTypeFile(root, real, undefined, { afterRead: () => appendFileSync(real, '// more\n') }))
       .toThrow(expect.objectContaining({ code: 'CHANGED' }));
+    expect(() => readTypeFile(root, real, 4)).toThrow(expect.objectContaining({ code: 'LIMIT' }));
+  });
+
+  it.skipIf(process.platform === 'win32')('catches a folder swapped while a type file is read', () => {
+    const real = at('node_modules/pricing/index.d.ts');
+    rmSync(real);
+    writeFileSync(real, 'export declare const x: 1;\n// more\n');
     expect(() => readTypeFile(root, real, undefined, { afterRead: () => {
       renameSync(at('node_modules/pricing'), at('node_modules/pricing-old'));
       mkdirSync(at('node_modules/pricing'));
       writeFileSync(real, 'export declare const x: 1;\n// more\n');
     } })).toThrow(expect.objectContaining({ code: 'CHANGED' }));
-    expect(() => readTypeFile(root, real, 4)).toThrow(expect.objectContaining({ code: 'LIMIT' }));
   });
 
   it('stops the checker with CHANGED when a link passed on the way is pointed elsewhere while reading', async () => {
