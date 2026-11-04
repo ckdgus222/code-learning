@@ -32,6 +32,7 @@ const cancelled = () => new AppError('CANCELLED', '작업을 취소했습니다.
 
 export async function findValueShapes(root: string, projectId: string, files: ProjectFile[], target: ShapesTarget,
   queries: ShapeQuery[], slots: Int32Array, limits: ShapeLimits = SHAPE_LIMITS): Promise<{ shapes: ValueShapes; watch: TypeWatch }> {
+  root = native(root);
   const project = await readProjectCode(root, files, target, slots, limits);
   const [{ API, NodeBuilderFlags, SymbolFlags }, { SyntaxKind }] = await Promise.all([
     import('typescript/unstable/sync'), import('typescript/unstable/ast')]);
@@ -190,8 +191,9 @@ export async function readProjectCode(root: string, files: ProjectFile[], target
   return { chosen, texts, allowedDirs, notes };
 }
 
-// The checker writes paths with / on every OS (C:/Users/… on Windows); the app's paths use the OS separator.
-const native = (name: string) => path.sep === '/' ? name : name.replaceAll('/', path.sep);
+// The checker writes paths with / on every OS, and a file it opened with a lowercase drive letter (c:/Users/…). The
+// app's paths use the OS separator and an uppercase drive letter (C:\Users\…); both sides go through native() to compare.
+const native = (name: string) => path.sep === '/' ? name : name.replaceAll('/', path.sep).replace(/^[a-z]:/, drive => drive.toUpperCase());
 const slashed = (name: string) => path.sep === '/' ? name : name.replaceAll(path.sep, '/');
 
 /**
@@ -202,6 +204,8 @@ const slashed = (name: string) => path.sep === '/' ? name : name.replaceAll(path
  */
 export function fileCallbacks(root: string, texts: ReadonlyMap<string, string>, allowedDirs: ReadonlySet<string>, libDir: string,
   slots: Int32Array, limits: ShapeLimits, readHooks?: Parameters<typeof readTypeFile>[3]) {
+  root = native(root);
+  libDir = native(libDir);
   const watch: TypeWatch = { files: [], links: [] };
   const watchedLinks = new Set<string>();
   // One answer per real file: a package reached through a link and through its real path gives the same text, and
@@ -332,7 +336,7 @@ function tsgoPaths(): { exe: string; libDir: string } {
   // A packaged app keeps it unpacked next to the archive (forge.config.ts), where it can run and be read directly.
   const unpacked = path.dirname(manifest).replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
   const libDir = path.join(unpacked, 'lib');
-  return { exe: path.join(libDir, process.platform === 'win32' ? 'tsc.exe' : 'tsc'), libDir: libDir + path.sep };
+  return { exe: path.join(libDir, process.platform === 'win32' ? 'tsc.exe' : 'tsc'), libDir: native(libDir + path.sep) };
 }
 
 /** The tsgo process behind the API. Not public in typescript 7.0.2 (pinned); any other form fails closed. */
