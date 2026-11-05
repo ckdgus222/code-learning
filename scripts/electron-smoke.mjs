@@ -6089,6 +6089,9 @@ try {
       const disclosure = page.locator('.panel > details').filter({ has: page.getByText('AI로 이 파일 설명 만들기', { exact: true }) });
       if (!await disclosure.evaluate(element => element.open)) await disclosure.locator(':scope > summary').click();
       await card().getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
+      // Without an AI CLI installed (CI), the drawer's own check after a restart ran before the fake: check again.
+      const inspect = card().getByRole('button', { name: '로컬 AI 설치 확인', exact: true });
+      if (await inspect.count()) await inspect.click();
       await until(() => card().getByRole('checkbox').isEnabled());
       await card().getByRole('checkbox').check();
       const before = await app.evaluate(() => globalThis.savedExplanationCalls);
