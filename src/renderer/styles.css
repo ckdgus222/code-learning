@@ -689,6 +689,8 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .overview-picture__box p { font-size: 13px; color: var(--muted); }
 .overview-picture__box b { display: block; margin: 8px 0; font-size: 26px; color: var(--ink); }
 .overview-picture__arrow { flex: none; align-self: center; font-size: 24px; color: var(--accent); }
+/* '기능 N개 모두 보기' scrolls this heading to the top: keep it clear of the edge so no part of it is cut. */
+section[aria-label="기능 목록"] > h3 { scroll-margin-top: 16px; }
 .overview-recommendation { border-top: 3px solid var(--accent); }
 .overview-recommendation > h3 { font-size: 12px; letter-spacing: .08em; color: var(--muted); }
 .overview-recommendation__heading > b { font-size: 22px; color: var(--ink); }
