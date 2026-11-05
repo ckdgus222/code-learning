@@ -264,8 +264,11 @@ function bootstrapFor(userData) {
   return `const Module = require('node:module');
 const electron = require('electron');
 // Only the options change: the window is still a plain BrowserWindow, so getAllWindows() and the app see it as before.
+// Hidden only on macOS, where the user works on the same machine. Windows cannot screenshot a window never shown, and its
+// tests run on a CI machine, so there the window shows as the app asks.
 const HiddenWindow = new Proxy(electron.BrowserWindow, { construct: (Window, [options = {}]) => new Window({ ...options,
-  show: false, paintWhenInitiallyHidden: true, webPreferences: { ...options.webPreferences, backgroundThrottling: false } }) });
+  ...(process.platform === 'darwin' ? { show: false, paintWhenInitiallyHidden: true } : {}),
+  webPreferences: { ...options.webPreferences, backgroundThrottling: false } }) });
 const hidden = new Proxy(electron, { get: (target, key) => key === 'BrowserWindow' ? HiddenWindow : Reflect.get(target, key) });
 const load = Module._load;
 Module._load = function (request, ...rest) { return request === 'electron' ? hidden : load.call(this, request, ...rest); };
@@ -792,7 +795,7 @@ try {
   await writeFile(welcomeBootstrap, bootstrapFor(welcomeProfile));
   await launch(welcomeBootstrap);
   await check('Welcome: one folder button, full-height grid and responsive steps in both themes', async () => {
-    assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible()), false);
+    if (onMac) assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible()), false);
     assert.deepEqual(await page.evaluate(() => window.learning.recentProjects()), { ok: true, value: [] });
     assert.equal(await page.getByRole('region', { name: '최근 프로젝트', exact: true }).count(), 0);
     assert.equal(await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).count(), 1);
@@ -897,8 +900,8 @@ try {
         visible: window.isVisible() };
     });
     assert.equal(state.profile, profile); assert.equal(state.sandbox, true); assert.equal(state.isolated, true); assert.equal(state.node, false);
-    // The test entry keeps the window hidden so a run does not cover the screen.
-    assert.equal(state.visible, false);
+    // On macOS the test entry keeps the window hidden so a run does not cover the screen.
+    if (onMac) assert.equal(state.visible, false);
     assert.equal(await page.evaluate(() => typeof window.require), 'undefined');
     assert.ok((await readFile(path.join(profile, 'learning.sqlite'))).length > 0);
   });
