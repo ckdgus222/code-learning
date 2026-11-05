@@ -588,7 +588,8 @@ export async function checkSavedPlanCompare(app, page, temporary, restart) {
       return { profile: app.getPath('userData'), visible: BrowserWindow.getAllWindows()[0].isVisible() };
     });
     assert.ok(state.profile.startsWith(temporary + path.sep));
-    assert.equal(state.visible, false);
+    // Test windows are hidden only on macOS (see electron-smoke.mjs bootstrapFor).
+    if (process.platform === 'darwin') assert.equal(state.visible, false);
     await page.evaluate(() => Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' }));
   };
   const open = async () => {
