@@ -39,3 +39,34 @@ jobs:
       - name: Unit tests
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm test
+
+  electron:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Package
+        id: package
+        run: npm run package
+      - name: Electron tests
+        run: npm run test:electron
+      - name: Packaged tests
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        run: npm run test:packaged
+      - name: Upload failure results
+        uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: electron-results-${{ matrix.os }}
+          path: test-results/
+          retention-days: 7
