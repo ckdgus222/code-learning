@@ -6545,7 +6545,15 @@ try {
       await page.getByRole('button', { name: 'saved', exact: true }).click();
       await openAiPanel();
       await page.getByTestId('question-scope').waitFor();
-      await until(() => page.locator('.ai-question').getByRole('checkbox').isEnabled());
+      const consent = page.locator('.ai-question').getByRole('checkbox');
+      // Without an AI CLI installed (CI), the drawer's own check after a restart ran before the fake: check again.
+      if (!await consent.isEnabled()) {
+        await openAiSection('설정');
+        await page.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
+        await until(() => consent.isEnabled());
+        await page.getByRole('group', { name: 'AI 연결', exact: true }).getByRole('button', { name: '설정', exact: true }).click();
+      }
+      await until(() => consent.isEnabled());
     };
     const ask = async question => {
       await page.getByRole('textbox', { name: '선택한 코드에 질문' }).fill(question);
