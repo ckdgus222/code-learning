@@ -3497,8 +3497,14 @@ try {
     await until(async () => await boxes.count() === 4);
     await page.getByRole('button', { name: '파일 보기', exact: true }).click();
     await until(async () => await boxes.count() === 5);
-    await boxes.filter({ hasText: 'save.ts' }).click();
-    await page.getByRole('heading', { name: 'store/save.ts', exact: true }).waitFor();
+    // On a slower machine the map can still be refitting when the box is clicked, so a click may land beside it; click
+    // again, briefly, until the reader opens.
+    const savedHeading = page.getByRole('heading', { name: 'store/save.ts', exact: true });
+    await until(async () => {
+      if (await savedHeading.isVisible()) return true;
+      await boxes.filter({ hasText: 'save.ts' }).click({ timeout: 1000 }).catch(() => {});
+      return savedHeading.isVisible();
+    });
     const files = page.getByRole('region', { name: '파일 목록', exact: true });
     await files.getByRole('button', { name: 'store/save.ts', exact: true }).waitFor();
     assert.equal(await files.getByRole('button', { name: 'store/save.ts', exact: true }).getAttribute('aria-current'), 'true');
@@ -3614,8 +3620,8 @@ try {
     assert.equal(await app.evaluate(() => 'alive'), 'alive');
     // More than 60 code files: the map starts in the design view, one box per folder.
     await page.getByRole('button', { name: '지도 만들기', exact: true }).click();
-    // About 6.5 MB of code takes longer than the usual wait to draw.
-    await page.getByText('폴더 사이 연결(설계)', { exact: false }).waitFor({ timeout: 30_000 });
+    // About 6.5 MB of code takes longer than the usual wait to draw, and well over 30 seconds on a CI machine.
+    await page.getByText('폴더 사이 연결(설계)', { exact: false }).waitFor({ timeout: 120_000 });
     assert.equal(await boxes.count(), 5);
     assert.equal(await page.getByRole('button', { name: '설계 보기', exact: true }).getAttribute('aria-pressed'), 'true');
     await boxes.filter({ hasText: 'part0 · 파일 13개' }).click();
