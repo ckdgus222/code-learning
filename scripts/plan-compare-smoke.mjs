@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { resizeWindow } from './smoke-window.mjs';
 
 // Reopening the same folder keeps its heading, so wait for the open button, disabled while opening, instead.
 // Opening a project returns to the overview; moving to the plan page before it finishes would be undone.
@@ -300,8 +301,7 @@ async function checkPlanCompareRequests(app, page, card, pick, temporary, showCa
       assert.ok((await card.locator('.plan-item__body blockquote').first().textContent()).includes('기'.repeat(300)));
       for (const [width, panelOpen] of [[1440, true], [1440, false], [760, true]]) {
         if ((await question.getAttribute('aria-pressed') === 'true') !== panelOpen) await question.click();
-        await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
-        await page.waitForFunction(width => window.innerWidth === width, width);
+        await resizeWindow(app, page, width, 900);
         const layout = await card.evaluate(element => {
           const rect = selector => {
             const { x, y, width, height, right, bottom } = element.querySelector(selector).getBoundingClientRect();
