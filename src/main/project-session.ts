@@ -52,6 +52,10 @@ const changedTypes = '모양을 찾는 동안 외부 패키지 타입 파일이 
 // On macOS, chokidar missed 2 of 240 immediate v1 → v2 link replacements; reread targets as an event fallback.
 const LINK_RECHECK_MS = 1000;
 
+// A large project on a slow machine can take well over 30 seconds (user decision 2026-11-05); the map runs in its own
+// worker and can be cancelled, so a longer limit costs nothing but the wait.
+export const MAP_TIMEOUT_MS = 120_000;
+
 export class ProjectSession {
   private worker: Worker;
   private readonly stop = new Int32Array(new SharedArrayBuffer(4));
@@ -223,7 +227,7 @@ export class ProjectSession {
   cancelFeatureFlow(): void { this.flowRun++; this.cancelSide('flow'); }
 
   /** Draws the project map from the files listed when the folder was opened. */
-  async map(timeoutMs = 30_000, job: 'map' | 'plan-map' | 'plan-compare-map' = 'map'): Promise<ProjectMap> {
+  async map(timeoutMs = MAP_TIMEOUT_MS, job: 'map' | 'plan-map' | 'plan-compare-map' = 'map'): Promise<ProjectMap> {
     if (this.closed || !this.project) throw new AppError('PROJECT_CLOSED', '프로젝트가 닫혔습니다. 다시 열어 주세요.');
     if (this.sideRuns[job]) throw new AppError('INVALID_REQUEST', '이미 지도를 만드는 중입니다.');
     const { files, overview } = this.project;

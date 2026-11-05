@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { channels, learningSpotSchema, saveLearningSpotSchema, saveLearningMarkSchema, storedLearningMarkSchema, featureFlowsRequestSchema, featureFlowRequestSchema, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, shapesRequestSchema, changesRequestSchema, diffRequestSchema, type Result, type Evidence } from '../shared/contracts';
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
-import { ProjectSession, workersStopped } from './project-session';
+import { MAP_TIMEOUT_MS, ProjectSession, workersStopped } from './project-session';
 import { learningResultSchema, saveAnswerSchema, savedAnswerRequestSchema, openSavedEvidenceSchema, explanationReferencesMatch, type LearningResult, featureGuideResultSchema, saveFeatureGuideSchema, overviewResultSchema, saveOverviewSchema, type OverviewResult, fileExplanationResultSchema, saveFileExplanationSchema, checkConnectionsSchema, explainRequestSchema, cancelExplanationSchema, overviewRequestSchema, fileExplanationRequestSchema, featureGuideRequestSchema } from '../shared/ai';
 import { LocalAiRuntime } from '../core/ai/runtime';
 import { checkFeatureGuideRoutes } from '../core/ai/feature-guide';
@@ -135,8 +135,8 @@ function validateSender(event: IpcMainInvokeEvent) {
 }
 
 const planSource = (active: ProjectSession, context: ProjectAiContext) =>
-  ({ projectId: active.id, root: active.root, context, map: () => active.map(30_000, 'plan-compare-map'),
-    restoreMap: () => active.map(30_000, 'plan-map'), cancelMap: () => active.cancelPlanCompareMap() });
+  ({ projectId: active.id, root: active.root, context, map: () => active.map(MAP_TIMEOUT_MS, 'plan-compare-map'),
+    restoreMap: () => active.map(MAP_TIMEOUT_MS, 'plan-map'), cancelMap: () => active.cancelPlanCompareMap() });
 
 function current(projectId: string) {
   if (!session || session.id !== projectId) throw new AppError('PROJECT_CLOSED', '현재 선택한 프로젝트가 아닙니다.');
