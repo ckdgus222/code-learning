@@ -3497,14 +3497,9 @@ try {
     await until(async () => await boxes.count() === 4);
     await page.getByRole('button', { name: '파일 보기', exact: true }).click();
     await until(async () => await boxes.count() === 5);
-    // On a slower machine the map can still be refitting when the box is clicked, so a click may land beside it; click
-    // again, briefly, until the reader opens.
-    const savedHeading = page.getByRole('heading', { name: 'store/save.ts', exact: true });
-    await until(async () => {
-      if (await savedHeading.isVisible()) return true;
-      await boxes.filter({ hasText: 'save.ts' }).click({ timeout: 1000 }).catch(() => {});
-      return savedHeading.isVisible();
-    });
+    // The file name, not the box's centre: on a small map the centre can fall on the box's '이어진 것만' button.
+    await boxes.filter({ hasText: 'save.ts' }).getByText('save.ts', { exact: true }).click();
+    await page.getByRole('heading', { name: 'store/save.ts', exact: true }).waitFor();
     const files = page.getByRole('region', { name: '파일 목록', exact: true });
     await files.getByRole('button', { name: 'store/save.ts', exact: true }).waitFor();
     assert.equal(await files.getByRole('button', { name: 'store/save.ts', exact: true }).getAttribute('aria-current'), 'true');

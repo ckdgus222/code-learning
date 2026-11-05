@@ -39,6 +39,7 @@ vi.mock('../src/core/project/files', async importOriginal => {
   return { ...files, readStable: vi.fn(files.readStable) };
 });
 vi.mock('../src/main/project-session', () => ({
+  MAP_TIMEOUT_MS: 120_000,
   workersStopped: async () => {},
   ProjectSession: class {
     constructor(readonly id: string, readonly root: string) { host.projectId = id; }
