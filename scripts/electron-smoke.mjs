@@ -6,6 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { checkPlanCompare, checkSavedPlanCompare } from './plan-compare-smoke.mjs';
+import { resizeWindow } from './smoke-window.mjs';
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, '..');
@@ -800,8 +801,7 @@ try {
     await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
     await eachTheme(async mode => {
       for (const width of [1440, 760]) {
-        await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
-        await page.waitForFunction(width => innerWidth === width, width);
+        await resizeWindow(app, page, width, 900);
         const layout = await page.locator('main.welcome').evaluate(welcome => {
           const bounds = welcome.getBoundingClientRect();
           const cards = [...welcome.querySelectorAll('.welcome__steps > li')];
@@ -850,8 +850,8 @@ try {
     assert.equal(await rows.last().locator('b').innerText(), longWelcomeName);
     await eachTheme(async mode => {
       for (const [width, height] of [[1440, 900], [760, 900], [760, 560]]) {
-        await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), [width, height]);
-        await page.waitForFunction(({ width, height }) => innerWidth === width && outerHeight === height, { width, height });
+        await resizeWindow(app, page, width, height);
+        await page.waitForFunction(height => outerHeight === height, height);
         await page.locator('main.welcome').evaluate(element => { element.scrollTop = 0; });
         const positions = await page.locator('.welcome__steps > li').evaluateAll(cards => cards.map(card => card.getBoundingClientRect().y));
         if (width === 1440) assert.ok(positions.every(y => Math.abs(y - positions[0]) <= 1));
@@ -960,10 +960,7 @@ try {
   await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
   await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
   await check('Open a real folder; secret filenames excluded', async () => {
-    await until(async () => {
-      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
-      return await page.evaluate(() => window.outerWidth === 1280);
-    });
+    await resizeWindow(app, page, 1280, 800);
     assert.equal(await page.locator('.views__item').count(), 5);
     assert.equal(await page.getByRole('contentinfo', { name: '작업 상태' }).count(), 0);
     const menu = page.getByRole('navigation', { name: '보기', exact: true });
@@ -1034,10 +1031,7 @@ try {
   });
   await check('Top navigation fits narrow windows with and without files and the AI panel', async () => {
     for (const width of [760, 1000]) {
-      await until(async () => {
-        await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
-        return await page.evaluate(expected => window.outerWidth === expected, width);
-      });
+      await resizeWindow(app, page, width, 900);
       for (const [name, panelOpen] of [['한눈에 보기', false], ['한눈에 보기', true], ['코드 읽기', false], ['코드 읽기', true]]) {
         await page.getByRole('button', { name, exact: true }).click();
         await page.getByRole('banner').getByRole('button', { name: '질문', exact: true }).click();
@@ -1073,10 +1067,7 @@ try {
         }
       }
     }
-    await until(async () => {
-      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
-      return await page.evaluate(() => window.outerWidth === 1280);
-    });
+    await resizeWindow(app, page, 1280, 800);
   });
   await check('Function → branch → exact original code range (CRLF/emoji/BOM)', async () => {
     await page.getByRole('button', { name: '주문', exact: true }).click();
@@ -1289,11 +1280,7 @@ try {
     });
     assert.ok(await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).isVisible());
     for (const [width, height] of [[1280, 800], [1440, 900], [1000, 900]]) {
-      // The resize is asked for again while waiting: a single request was sometimes not applied (cause not found).
-      await until(async () => {
-        await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(size[0], size[1]), [width, height]);
-        return await page.evaluate(expected => window.outerWidth === expected, width);
-      });
+      await resizeWindow(app, page, width, height);
       await page.getByRole('button', { name: '찾기 ⌘F', exact: true }).click();
       await field.waitFor();
       assert.deepEqual(await layoutProblems(), [], `${width}x${height}`);
@@ -1331,7 +1318,7 @@ try {
       await page.keyboard.press('Escape');
       await until(async () => await page.locator('.cm-search').count() === 0);
     }
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
+    await resizeWindow(app, page, 1280, 800);
     // Search: the button opens the panel with its field focused, in Korean and without replacing.
     await page.getByRole('button', { name: '찾기 ⌘F', exact: true }).click();
     await field.waitFor();
@@ -1803,8 +1790,7 @@ try {
     const overviewWindowSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
     await eachTheme(async () => {
       for (const width of [1440, 760]) {
-        await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
-        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await resizeWindow(app, page, width, 900);
         const main = await page.locator('.overview-main').boundingBox();
         const side = await page.locator('.overview-side').boundingBox();
         if (width === 1440) {
@@ -1922,8 +1908,7 @@ try {
     assert.equal(await story.getByRole('navigation', { name: '이야기 단계' }).getByRole('button').count(), 7);
     const windowSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
     for (const width of [1000, 1280, 1440]) {
-      await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
-      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await resizeWindow(app, page, width, 900);
       const nav = story.getByRole('navigation', { name: '이야기 단계' });
       const bounds = await nav.boundingBox();
       const buttons = await Promise.all((await nav.getByRole('button').all()).map(button => button.boundingBox()));
@@ -1958,7 +1943,7 @@ try {
       if (width === 1440) assert.ok(code.x >= text.x + text.width - 1, 'wide story places code on the right');
       await checkPanelLayout(width);
     }
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(760, 900));
+    await resizeWindow(app, page, 760, 900);
     await openAiPanel();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const narrowText = await story.locator('.story-step__text').boundingBox();
@@ -2711,7 +2696,7 @@ try {
       const review = page.getByRole('region', { name: '살펴볼 곳', exact: true });
       await review.getByRole('status').getByText('세는 중…', { exact: true }).waitFor();
       await until(() => app.evaluate(() => typeof globalThis.releaseOverviewMap === 'function'));
-      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1440, 900));
+      await resizeWindow(app, page, 1440, 900);
       await eachTheme(async mode => {
         await review.scrollIntoViewIfNeeded();
         await page.screenshot({ path: path.join(artifacts, `${mode}-overview-review-counting.png`), fullPage: true });
@@ -2726,8 +2711,7 @@ try {
       assert.equal(await app.evaluate(() => globalThis.overviewMapCalls), 1);
       await eachTheme(async mode => {
         for (const width of [1440, 760]) {
-          await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
-          await until(async () => await page.evaluate(expected => window.outerWidth === expected, width));
+          await resizeWindow(app, page, width, 900);
           assert.equal(await review.evaluate(element => element.scrollWidth <= element.clientWidth), true);
           assert.equal(await page.locator('.center').evaluate(element => element.scrollWidth <= element.clientWidth + 1), true);
           await review.scrollIntoViewIfNeeded();
@@ -2890,8 +2874,7 @@ try {
       const nodeCount = await diagram.locator('.react-flow__node').count();
       try {
         for (const width of [1280, 760]) {
-          await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
-          await until(async () => await page.evaluate(expected => window.outerWidth === expected, width));
+          await resizeWindow(app, page, width, 900);
           await checkCanvasFits(diagram, nodeCount);
           const left = await evidenceStrip.locator('.flow-evidence__code').boundingBox();
           const right = await evidenceStrip.locator('.flow-evidence__details').boundingBox();
@@ -3088,8 +3071,7 @@ try {
     const originalSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
     try {
 
-      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
-      await until(async () => await page.evaluate(() => window.outerWidth === 1280));
+      await resizeWindow(app, page, 1280, 800);
       await list.getByRole('button', { name: 'large/right.ts', exact: true }).click();
       await until(async () => await nodes.count() === 21);
       await checkCanvasFits(canvas, 21);
@@ -3110,8 +3092,7 @@ try {
       });
       // At 1280px the 380px question drawer leaves the neighbourhood at its 900px minimum either way, so there is
       // nothing to refit; at 1440px opening the drawer narrows it (1040px → 900px).
-      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1440, 800));
-      await until(async () => await page.evaluate(() => window.outerWidth === 1440));
+      await resizeWindow(app, page, 1440, 800);
       await checkCanvasFits(canvas, 21);
       const initialZoom = await canvas.locator('.react-flow__viewport').evaluate(element => new DOMMatrix(getComputedStyle(element).transform).a);
       await checkCanvasPanelRefit(canvas);
@@ -3122,7 +3103,7 @@ try {
       ]);
       // Switching directions also checks that each selection gets a new fitView.
       for (const { width, name, count } of scenarios) {
-        await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 800), width);
+        await resizeWindow(app, page, width, 800);
         await list.getByRole('button', { name: `large/${name}.ts`, exact: true }).click();
         await until(async () => await nodes.count() === count && await nodes.evaluateAll(items => items.every(item => {
           const bounds = item.getBoundingClientRect();
@@ -3173,8 +3154,7 @@ try {
       const wasPanelOpen = await questionToggle.getAttribute('aria-pressed');
       try {
         for (const width of [1440, 760]) {
-          await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
-          await until(async () => await page.evaluate(() => window.outerWidth) === width);
+          await resizeWindow(app, page, width, 900);
           for (const panelOpen of ['false', 'true']) {
             if (await questionToggle.getAttribute('aria-pressed') !== panelOpen) await questionToggle.click();
             await select.selectOption('folder:large');
@@ -3227,8 +3207,7 @@ try {
     const wasPanelOpen = await questionToggle.getAttribute('aria-pressed');
     try {
       for (const width of [1440, 760]) {
-        await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
-        await until(async () => await page.evaluate(() => window.outerWidth) === width);
+        await resizeWindow(app, page, width, 900);
         for (const panelOpen of ['false', 'true']) {
           if (await questionToggle.getAttribute('aria-pressed') !== panelOpen) await questionToggle.click();
           await until(async () => await page.locator('.map-layout').evaluate((layout, width) => {
@@ -4036,10 +4015,7 @@ try {
     const windowSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
     try {
       for (const width of [1440, 760]) {
-        await until(async () => {
-          await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
-          return await page.evaluate(expected => window.outerWidth === expected, width);
-        });
+        await resizeWindow(app, page, width, 900);
         await checkPanelLayout(width);
         const layout = await page.locator('#ai-question-panel').evaluate(panel => {
           const bounds = panel.getBoundingClientRect();
@@ -5115,8 +5091,7 @@ try {
     const wasPanelOpen = await questionToggle.getAttribute('aria-pressed');
     try {
       for (const width of [1440, 760]) {
-        await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
-        await until(async () => await page.evaluate(() => window.outerWidth) === width);
+        await resizeWindow(app, page, width, 900);
         for (const panelOpen of ['false', 'true']) {
           if (await questionToggle.getAttribute('aria-pressed') !== panelOpen) await questionToggle.click();
           await until(() => page.evaluate(width => {
@@ -5180,8 +5155,7 @@ try {
     const windowSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
     try {
       for (const width of [1440, 760]) {
-        await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 900), width);
-        await until(async () => await page.evaluate(() => window.outerWidth) === width);
+        await resizeWindow(app, page, width, 900);
         await until(() => list.evaluate(element => {
           const page = document.querySelector('.changes-page');
           const style = getComputedStyle(page);
@@ -5210,8 +5184,7 @@ try {
     const questionToggle = page.getByRole('banner').getByRole('button', { name: /^질문(?: · 진행 중)?$/ });
     const wasPanelOpen = await questionToggle.getAttribute('aria-pressed');
     try {
-      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(760, 900));
-      await until(async () => await page.evaluate(() => window.outerWidth) === 760);
+      await resizeWindow(app, page, 760, 900);
       await openAiPanel();
       assert.equal(await longPath.evaluate(element => {
         const style = getComputedStyle(element);
