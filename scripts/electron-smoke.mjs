@@ -496,7 +496,8 @@ async function openTreeFile(relativePath) {
   const file = page.getByRole('button', { name: relativePath, exact: true });
   const folders = relativePath.split('/').slice(0, -1).map((_, index, parts) => parts.slice(0, index + 1).join('/'));
   const deadline = Date.now() + 8000;
-  while (!(await file.isVisible() && await file.isEnabled())) {
+  // A button seen a moment ago can be redrawn away; a short check lets the next pass look again instead of waiting 30 s.
+  while (!(await file.isVisible() && await file.isEnabled({ timeout: 500 }).catch(() => false))) {
     if (Date.now() > deadline) throw new Error(`Timed out showing ${relativePath} in the file tree`);
     if (await codeTab.getAttribute('aria-current') !== 'page') await codeTab.click({ timeout: 1000 }).catch(() => {});
     for (const folder of folders) {
@@ -538,6 +539,8 @@ async function launch(entry = bootstrap) {
   page = await app.firstWindow();
   page.on('pageerror', error => failures.push(error.message));
   await page.getByRole('heading', { name: 'Code Learning', exact: true }).waitFor();
+  // The app's own first size whatever the screen: on a small CI screen macOS shrinks the first window and the layout narrows.
+  await resizeWindow(app, page, 1280, 800);
 }
 // How the app process ended: a worker ended while Tree-sitter parses aborts it (SIGABRT, Napi::Error).
 // The TypeScript checker processes (plan v2.3 V-2) running from this checkout.
