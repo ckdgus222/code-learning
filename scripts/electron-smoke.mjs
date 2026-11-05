@@ -1,6 +1,7 @@
 import { _electron as electron } from 'playwright';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, rm, rename, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, rename, symlink, realpath, readdir, lstat } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -8,7 +9,12 @@ import { checkPlanCompare, checkSavedPlanCompare } from './plan-compare-smoke.mj
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, '..');
-const temporary = await mkdtemp('/private/tmp/code-learning-electron-');
+// Windows has no changes view in v1.0 (no git there) and other reader keys; macOS keeps every check as it was.
+const onMac = process.platform === 'darwin';
+const readerKeys = onMac
+  ? { lineStart: 'Meta+ArrowLeft', lineEnd: 'Meta+ArrowRight', documentStart: 'Meta+ArrowUp', documentEnd: 'Meta+ArrowDown', selectAll: 'Meta+a', find: 'Meta+f', copy: 'Meta+c' }
+  : { lineStart: 'Home', lineEnd: 'End', documentStart: 'Control+Home', documentEnd: 'Control+End', selectAll: 'Control+a', find: 'Control+f', copy: 'Control+c' };
+const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'code-learning-electron-')));
 const fixture = path.join(temporary, '한글 프로젝트');
 const second = path.join(temporary, '다른 프로젝트');
 const profile = path.join(temporary, 'profile');
@@ -156,9 +162,11 @@ for (let i = 0; i < 31; i++) await writeFile(path.join(neighborhoodFixture, `use
   i < 7 ? "import { left } from '../large/left';\nexport const user = left;\n" : 'export const user = 1;\n');
 const neighborhoodGit = (...args) => execFileSync('git', args, { cwd: neighborhoodFixture,
   env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
-neighborhoodGit('init', '-q');
-neighborhoodGit('add', '-A');
-neighborhoodGit('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'neighborhood fixture');
+if (onMac) {
+  neighborhoodGit('init', '-q');
+  neighborhoodGit('add', '-A');
+  neighborhoodGit('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'neighborhood fixture');
+}
 // Under 256 KiB but over the map's 200,000 syntax-node budget: a real partial-read tag, together
 // with the package main start tag and the Git modification tag, on a name longer than two lines.
 await writeFile(path.join(neighborhoodFixture, 'neighbors', longNeighbor), 'export const value = 2;\n' + 'x;'.repeat(110_000));
@@ -216,27 +224,32 @@ await writeFile(path.join(valuesFixture, 'src/label.ts'), "import { format } fro
 const gitFixture = path.join(temporary, '변경 프로젝트');
 await mkdir(path.join(gitFixture, 'src'), { recursive: true });
 const gitHere = (...args) => execFileSync('git', args, { cwd: gitFixture, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
-gitHere('init', '-q');
+if (onMac) gitHere('init', '-q');
 for (const [name, text] of [['edit.ts', 'export const edit = 1;\n'], ['deleted.ts', 'export const gone = 1;\n'], ['old-name.ts', 'export const moved = 1;\n'],
   ['func.ts', 'export function run(x: number) {\n  if (x > 1) return x;\n  return 0;\n}\n']]) {
   await writeFile(path.join(gitFixture, 'src', name), text);
 }
-gitHere('add', '-A');
-gitHere('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'first version');
+if (onMac) {
+  gitHere('add', '-A');
+  gitHere('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'first version');
+}
 await writeFile(path.join(gitFixture, 'src/edit.ts'), 'export const edit = 2;\n');
 await rm(path.join(gitFixture, 'src/deleted.ts'));
-gitHere('mv', 'src/old-name.ts', 'src/new-name.ts');
+if (onMac) gitHere('mv', 'src/old-name.ts', 'src/new-name.ts');
+else await rename(path.join(gitFixture, 'src/old-name.ts'), path.join(gitFixture, 'src/new-name.ts'));
 await writeFile(path.join(gitFixture, 'src/added.ts'), 'export const added = 1;\n');
-gitHere('add', 'src/added.ts');
+if (onMac) gitHere('add', 'src/added.ts');
 await writeFile(path.join(gitFixture, 'src/untracked.ts'), 'export const fresh = 1;\n');
 // Many changes, and a file whose old version is over the read limit while the new one is not.
 const manyFixture = path.join(temporary, '많은 변경 프로젝트');
 await mkdir(manyFixture, { recursive: true });
 const gitMany = (...args) => execFileSync('git', args, { cwd: manyFixture, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
-gitMany('init', '-q');
+if (onMac) gitMany('init', '-q');
 await writeFile(path.join(manyFixture, 'big.txt'), 'x'.repeat(300 * 1024));
-gitMany('add', '-A');
-gitMany('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'big');
+if (onMac) {
+  gitMany('add', '-A');
+  gitMany('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'big');
+}
 await writeFile(path.join(manyFixture, 'big.txt'), 'small now\n');
 const longChangePath = `new300-${'long-path-'.repeat(20)}.txt`;
 for (let index = 0; index < 301; index++) {
@@ -525,8 +538,24 @@ async function launch(entry = bootstrap) {
 // How the app process ended: a worker ended while Tree-sitter parses aborts it (SIGABRT, Napi::Error).
 // The TypeScript checker processes (plan v2.3 V-2) running from this checkout.
 function checkerProcesses() {
+  if (!onMac) {
+    const command = "$ErrorActionPreference = 'Stop'; @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($env:CODE_LEARNING_CHECKER_PREFIX, [System.StringComparison]::OrdinalIgnoreCase) }).Count";
+    const count = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+      encoding: 'utf8', env: { ...process.env, CODE_LEARNING_CHECKER_PREFIX: path.join(root, 'node_modules', '@typescript') + path.sep },
+    }).trim();
+    assert.match(count, /^\d+$/, 'PowerShell must return the TypeScript checker process count');
+    return Number(count);
+  }
   try { return execFileSync('pgrep', ['-f', path.join(root, 'node_modules/@typescript/')]).toString().trim().split('\n').length; }
   catch { return 0; }
+}
+// Like find/stat: include directories and files, with modification times in whole seconds.
+async function gitState(folder) {
+  const metadata = await lstat(folder);
+  const entries = [[folder, metadata.size, Math.floor(metadata.mtimeMs / 1000)]];
+  if (!metadata.isDirectory()) return entries;
+  for (const name of (await readdir(folder)).sort()) entries.push(...await gitState(path.join(folder, name)));
+  return entries;
 }
 function ending() {
   const child = app.process();
@@ -1208,20 +1237,20 @@ try {
     assert.notEqual(jsColours.keyword, jsColours.plain);
     // The rest of the reading keys, in this LF file whose first line has no indentation.
     await content.focus();
-    await page.keyboard.press('Meta+ArrowDown');
+    await page.keyboard.press(readerKeys.documentEnd);
     assert.deepEqual(await caret(), { anchor: at(4, 0), head: at(4, 0) });
-    await page.keyboard.press('Meta+ArrowUp');
+    await page.keyboard.press(readerKeys.documentStart);
     assert.deepEqual(await caret(), { anchor: at(0, 0), head: at(0, 0) });
-    await page.keyboard.press('Meta+ArrowRight');
+    await page.keyboard.press(readerKeys.lineEnd);
     const firstLine = 'export function greet(name) {'.length;
     assert.deepEqual(await caret(), { anchor: at(0, firstLine), head: at(0, firstLine) });
-    await page.keyboard.press('Meta+ArrowLeft');
+    await page.keyboard.press(readerKeys.lineStart);
     assert.deepEqual(await caret(), { anchor: at(0, 0), head: at(0, 0) });
     await page.keyboard.press('PageDown');
     assert.ok((await caret()).head.line > 0);
     await page.keyboard.press('PageUp');
     assert.equal((await caret()).head.line, 0);
-    await page.keyboard.press('Meta+a');
+    await page.keyboard.press(readerKeys.selectAll);
     assert.deepEqual(await caret(), { anchor: at(0, 0), head: at(4, 0) });
     // Back to the TypeScript step: the same original range is marked again.
     await page.getByRole('button', { name: 'order.ts', exact: true }).click();
@@ -1319,7 +1348,7 @@ try {
     await until(async () => await page.locator('.cm-search').count() === 0);
     // Cmd+F from the code opens it too.
     await content.focus();
-    await page.keyboard.press('Meta+f');
+    await page.keyboard.press(readerKeys.find);
     await field.waitFor();
     await page.keyboard.press('Escape');
     await until(async () => await page.locator('.cm-search').count() === 0);
@@ -1375,7 +1404,7 @@ try {
     await until(overflows);
     // Dragging the mouse over lines selects them, and a drop that carries text changes nothing.
     await content.focus();
-    await page.keyboard.press('Meta+ArrowUp');
+    await page.keyboard.press(readerKeys.documentStart);
     await until(async () => await page.locator('.cm-selectionBackground').count() === 0);
     // Line boxes are measured once the editor has finished scrolling back to the top.
     await until(() => page.evaluate(() => document.querySelector('.cm-scroller').scrollTop === 0));
@@ -1602,16 +1631,19 @@ try {
     await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
     // This folder is no Git repository, so the changes view says so (plan v2.3 C-2). One write can send a second change
     // notice while the history is read; the view then rightly asks to read again.
-    const notRepository = page.getByText('이 폴더는 Git 저장소가 아니에요.', { exact: true });
-    const readAgain = page.getByText('Git 기록을 읽는 동안 파일이 바뀌었어요. 다시 읽어 주세요.', { exact: true });
-    await notRepository.or(readAgain).waitFor();
-    if (await readAgain.isVisible()) await page.getByRole('button', { name: '다시 읽기', exact: true }).click();
-    await notRepository.waitFor();
+    const changesUnavailable = page.getByText(onMac
+      ? '이 폴더는 Git 저장소가 아니에요.' : 'Windows에서는 아직 변경 보기를 쓸 수 없어요.', { exact: true });
+    if (onMac) {
+      const readAgain = page.getByText('Git 기록을 읽는 동안 파일이 바뀌었어요. 다시 읽어 주세요.', { exact: true });
+      await changesUnavailable.or(readAgain).waitFor();
+      if (await readAgain.isVisible()) await page.getByRole('button', { name: '다시 읽기', exact: true }).click();
+    }
+    await changesUnavailable.waitFor();
     await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
     await page.getByRole('button', { name: '파일 다시 읽기', exact: true }).click();
     await until(async () => await page.getByRole('button', { name: '주문', exact: true }).isEnabled());
     await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
-    await page.getByText('이 폴더는 Git 저장소가 아니에요.', { exact: true }).waitFor();
+    await changesUnavailable.waitFor();
     assert.equal(await page.getByText('프로젝트를 연 뒤 감지된 변경이 없어요.', { exact: true }).count(), 0);
     assert.equal(await page.getByText('코드 변경 또는 잠자기 복귀:', { exact: false }).count(), 0);
   });
@@ -3028,11 +3060,13 @@ try {
     await dialogTo(neighborhoodFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '큰 폴더 주변 지도 프로젝트', exact: true }).waitFor();
-    await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
-    await page.getByRole('region', { name: '바뀐 파일 목록' }).getByText(`neighbors/${longNeighbor}`, { exact: true }).waitFor();
+    if (onMac) {
+      await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
+      await page.getByRole('region', { name: '바뀐 파일 목록' }).getByText(`neighbors/${longNeighbor}`, { exact: true }).waitFor();
+    }
     await openFileMap();
     const folderBoxes = page.getByTestId('map-canvas').locator('.react-flow__node');
-    await folderBoxes.filter({ hasText: 'neighbors · 파일 20개' }).getByText('바뀐 파일 1개', { exact: true }).waitFor();
+    if (onMac) await folderBoxes.filter({ hasText: 'neighbors · 파일 20개' }).getByText('바뀐 파일 1개', { exact: true }).waitFor();
     assert.equal(await folderBoxes.evaluateAll(nodes => {
       const boxes = nodes.map(node => ({ node, rect: node.getBoundingClientRect() }));
       return boxes.every(({ node, rect }, i) => node.offsetHeight <= 100 && rect.height > 0
@@ -3120,7 +3154,8 @@ try {
         })), true);
         if (name === 'right') {
           const longBox = nodes.filter({ hasText: longNeighbor });
-          assert.deepEqual(await longBox.locator('.tag').allTextContents(), ['시작점 후보', '일부만 봄', '수정']);
+          assert.deepEqual(await longBox.locator('.tag').allTextContents(),
+            onMac ? ['시작점 후보', '일부만 봄', '수정'] : ['시작점 후보', '일부만 봄']);
           assert.equal(await longBox.locator('.map-box__label > b').evaluate(label => {
             const style = getComputedStyle(label);
             return style.webkitLineClamp === '2' && label.scrollHeight > label.clientHeight
@@ -5015,11 +5050,11 @@ try {
     await summary.getByRole('group', { name: '바깥 이름' }).getByRole('button', { name: 'format', exact: true }).click();
     await summary.getByRole('region', { name: 'format 값' }).getByText('(amount: number) => string', { exact: true }).waitFor();
   });
-  await check('Changes: the last commit against the files now, five kinds listed and marked on the map, old code side by side, read only', async () => {
+  if (onMac) await check('Changes: the last commit against the files now, five kinds listed and marked on the map, old code side by side, read only', async () => {
     await dialogTo(gitFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '변경 프로젝트', exact: true }).waitFor();
-    const gitBefore = execFileSync('find', [path.join(gitFixture, '.git'), '-exec', 'stat', '-f', '%N %z %m', '{}', '+']).toString();
+    const gitBefore = await gitState(path.join(gitFixture, '.git'));
     // A function chosen in the reader first: opening a change of another file must leave it usable.
     await openTreeFile('src/func.ts');
     await page.getByRole('button', { name: 'run', exact: true }).click();
@@ -5122,7 +5157,7 @@ try {
     assert.equal(await page.getByRole('region', { name: '변경 목록' }).getByRole('list', { name: '바뀐 파일' }).locator('li').count(), 5);
     await page.screenshot({ path: path.join(artifacts, 'changes-map.png') });
     // Comparing changed nothing in the repository; a file changed afterwards marks the comparison.
-    assert.equal(execFileSync('find', [path.join(gitFixture, '.git'), '-exec', 'stat', '-f', '%N %z %m', '{}', '+']).toString(), gitBefore);
+    assert.deepEqual(await gitState(path.join(gitFixture, '.git')), gitBefore);
     await writeFile(path.join(gitFixture, 'src/edit.ts'), 'export const edit = 3;\n');
     await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
     await page.getByText('비교한 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 다시 비교해 주세요.', { exact: false }).waitFor();
@@ -5134,7 +5169,7 @@ try {
     await until(async () => !(await listed.locator('li').allInnerTexts()).includes('수정 src/edit.ts 비교 보기'));
     assert.equal(await page.getByRole('combobox', { name: '기준 커밋' }).locator('option').count(), 2);
   });
-  await check('Changes: zero changes use the entire page width without an empty comparison card', async () => {
+  if (onMac) await check('Changes: zero changes use the entire page width without an empty comparison card', async () => {
     gitHere('add', '-A');
     gitHere('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'clean comparison');
     await page.getByRole('button', { name: '다시 비교', exact: true }).click();
@@ -5159,7 +5194,7 @@ try {
       await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), windowSize);
     }
   });
-  await check('Changes: every change reachable past 300, and a side that cannot be opened is said, not taken as added or deleted', async () => {
+  if (onMac) await check('Changes: every change reachable past 300, and a side that cannot be opened is said, not taken as added or deleted', async () => {
     await dialogTo(manyFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: '많은 변경 프로젝트', exact: true }).waitFor();
@@ -5195,6 +5230,15 @@ try {
     assert.equal(await diff.getByText('고른 커밋에는 없던 파일이에요. 지금 코드예요.', { exact: true }).count(), 0);
     assert.equal(await diff.locator('.diff-counts').count(), 0);
   });
+  if (!onMac) await check('Changes: Windows explains that change viewing is not supported yet', async () => {
+    await dialogTo(gitFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: '변경 프로젝트', exact: true }).waitFor();
+    await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
+    await page.getByText('Windows에서는 아직 변경 보기를 쓸 수 없어요.', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('combobox', { name: '기준 커밋' }).count(), 0);
+    assert.equal(await page.getByRole('list', { name: '바뀐 파일', exact: true }).count(), 0);
+  });
   await check('Function bands: exact lines, source-only search and copy, card focus, toggling and stale removal', async () => {
     await dialogTo(guideFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
@@ -5220,7 +5264,7 @@ try {
     const headerText = await buttons.first().innerText();
     assert.equal(original.includes(headerText), false);
     await content.focus();
-    await page.keyboard.press('Meta+f');
+    await page.keyboard.press(readerKeys.find);
     await page.locator('.cm-search input[name="search"]').fill(headerText);
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     assert.equal(await page.locator('.cm-searchMatch, .cm-searchMatch-selected').count(), 0);
@@ -5234,7 +5278,7 @@ try {
       return editor.state.doc.sliceString(0, end);
     });
     await app.evaluate(({ clipboard }) => clipboard.writeText('copy has not run'));
-    await page.keyboard.press('Meta+c');
+    await page.keyboard.press(readerKeys.copy);
     await until(async () => await app.evaluate(({ clipboard }) => clipboard.readText()) === copied);
     assert.equal(copied, original.split('\n').slice(0, 3).join('\n'));
     const visibleCard = id => page.locator('.file-guide [data-symbol-id]').evaluateAll((cards, id) => {

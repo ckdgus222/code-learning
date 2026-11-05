@@ -1,6 +1,6 @@
 import { _electron as electron } from 'playwright';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, realpath } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
@@ -8,7 +8,15 @@ import path from 'node:path';
 import { checkPlanCompare } from './plan-compare-smoke.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
-const temp = await mkdtemp('/private/tmp/code-learning-package-');
+const packagedApp = {
+  darwin: 'out/Code Learning-darwin-arm64/Code Learning.app/Contents/MacOS/Code Learning',
+  win32: 'out/Code Learning-win32-x64/Code Learning.exe',
+}[process.platform];
+if (!packagedApp) throw new Error(`Packaged smoke tests support only macOS and Windows; got ${process.platform}`);
+// Windows has no changes view in v1.0 (no git there) and Ctrl for the reader keys.
+const onMac = process.platform === 'darwin';
+const readerKeys = { find: onMac ? 'Meta+f' : 'Control+f' };
+const temp = await realpath(await mkdtemp(path.join(os.tmpdir(), 'code-learning-package-')));
 const profile = path.join(temp, 'profile');
 const project = path.join(temp, '패키지 시험');
 await Promise.all([mkdir(profile), mkdir(project), mkdir(path.join(root, 'test-results'), { recursive: true })]);
@@ -23,9 +31,11 @@ await writeFile(path.join(project, 'node_modules/money/index.d.ts'), 'export dec
 await writeFile(path.join(project, 'price.ts'), "import { format } from 'money';\nexport function label(amount: number) { return format(amount); }\n");
 // Plan v2.3 C-2: the folder is a Git repository with one commit, and price.ts changed after it.
 const gitHere = (...args) => execFileSync('git', args, { cwd: project, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
-gitHere('init', '-q');
-gitHere('add', 'sample.ts', 'helper.ts', 'price.ts');
-gitHere('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'packaged');
+if (onMac) {
+  gitHere('init', '-q');
+  gitHere('add', 'sample.ts', 'helper.ts', 'price.ts');
+  gitHere('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'packaged');
+}
 await writeFile(path.join(project, 'price.ts'), "import { format } from 'money';\nexport function label(amount: number) { return format(amount); }\n// changed\n");
 // A separate project keeps the existing screen checks and their file counts unchanged.
 const treeFixture = path.join(temp, '폴더 트리 프로젝트');
@@ -42,7 +52,7 @@ async function openFunctionFlow(page) {
 }
 try {
   app = await electron.launch({
-    executablePath: path.join(root, 'out/Code Learning-darwin-arm64/Code Learning.app/Contents/MacOS/Code Learning'),
+    executablePath: path.join(root, packagedApp),
     // Playwright pretends the system is light unless told not to; null lets nativeTheme reach the page as on a real Mac.
     args: [`--user-data-dir=${profile}`], chromiumSandbox: true, timeout: 30_000, colorScheme: null,
   });
@@ -99,7 +109,7 @@ try {
   assert.deepEqual(reader, { tabindex: '0', coloured: true });
   // The search package is in the bundle too: Cmd+F from the code opens the Korean search panel.
   await page.locator('.cm-content').focus();
-  await page.keyboard.press('Meta+f');
+  await page.keyboard.press(readerKeys.find);
   assert.equal(await page.locator('.cm-search input[name="search"]').getAttribute('aria-label'), '찾기');
   await page.keyboard.press('Escape');
   await page.locator('.cm-search').waitFor({ state: 'detached' });
@@ -138,11 +148,16 @@ try {
   assert.match(await arrow.getAttribute('d'), /^M[\d.\s,-]+/);
   assert.equal(await page.locator('.react-flow__node').first().evaluate(node => getComputedStyle(node).position), 'absolute');
   await page.screenshot({ path: path.join(root, 'test-results/packaged-project-map.png') });
-  // git runs from the packaged app inside its sandbox and finds the change.
+  // macOS runs git inside its sandbox; Windows explains that changes are not supported yet.
   await page.getByRole('button', { name: '달라진 내용', exact: true }).click();
-  const changed = page.getByRole('region', { name: '바뀐 파일 목록' }).getByRole('list', { name: '바뀐 파일' });
-  await changed.waitFor({ timeout: 30_000 });
-  assert.deepEqual(await changed.locator('li').allInnerTexts(), ['수정 price.ts 비교 보기']);
+  if (onMac) {
+    const changed = page.getByRole('region', { name: '바뀐 파일 목록' }).getByRole('list', { name: '바뀐 파일' });
+    await changed.waitFor({ timeout: 30_000 });
+    assert.deepEqual(await changed.locator('li').allInnerTexts(), ['수정 price.ts 비교 보기']);
+  } else {
+    await page.getByText('Windows에서는 아직 변경 보기를 쓸 수 없어요.', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('list', { name: '바뀐 파일', exact: true }).count(), 0);
+  }
   const question = page.getByRole('banner').getByRole('button', { name: '질문', exact: true });
   if (await question.getAttribute('aria-pressed') === 'false') await question.click();
   await page.getByRole('textbox', { name: '선택한 코드에 질문', exact: true }).waitFor();
@@ -275,7 +290,7 @@ try {
   await page.getByRole('region', { name: '기능 따라가기', exact: true }).getByText('화면 /login에서 입력 양식을 보내면 시작해요', { exact: true }).waitFor();
   assert.equal(await app.evaluate(() => globalThis.packagedFlowCalls), 0);
   await app.close(); app = undefined;
-  const report = { passed: true, checks: ['screen groups and cached flow selection without flow IPC', 'system light and dark themes, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', 'changes from git inside its sandbox', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel'], state };
+  const report = { passed: true, checks: ['screen groups and cached flow selection without flow IPC', 'system light and dark themes, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', onMac ? 'changes from git inside its sandbox' : 'Windows changes unavailable notice', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel'], state };
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {
