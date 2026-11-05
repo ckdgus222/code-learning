@@ -683,7 +683,8 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .overview-picture > p, .overview-recommendation > p { font-size: 14px; color: var(--muted); }
 .overview-picture__grid, .flow-strip__steps { background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px); background-size: 24px 24px; }
 .overview-picture__grid { display: flex; flex-wrap: wrap; align-items: stretch; gap: 12px; padding: 18px 0; min-width: 0; }
-.overview-picture__box { flex: 1 1 180px; min-width: 0; padding: 16px; border: 1.5px solid var(--accent); border-radius: var(--radius-sm); background: var(--surface); overflow-wrap: anywhere; }
+/* 150px keeps the three boxes in one row in the narrower main column a fixed scrollbar leaves (see .overview-main). */
+.overview-picture__box { flex: 1 1 150px; min-width: 0; padding: 16px; border: 1.5px solid var(--accent); border-radius: var(--radius-sm); background: var(--surface); overflow-wrap: anywhere; }
 .overview-picture__box--request { background: var(--accent-soft); }
 .overview-picture__box p { font-size: 13px; color: var(--muted); }
 .overview-picture__box b { display: block; margin: 8px 0; font-size: 26px; color: var(--ink); }
