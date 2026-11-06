@@ -18,6 +18,9 @@ import { MAX_FILE_BYTES, readStable } from '../core/project/files';
 import { planSections } from '../core/analysis/plan-sections';
 import { checkPlanCompare, planPartFor, planCompareResultSchema, savePlanCompareSchema, planCompareCheckSchema, planCompareRequestSchema, planSelection, type PlanCompareResult, type PlanDocument } from '../shared/plan-compare';
 import { capturePlanCompare, checkPlanCompareBasis, restorePlanCompare, revalidatePlanCompare } from '../core/ai/plan-compare';
+import { handleSquirrelEvent } from './squirrel-startup';
+
+const installing = handleSquirrelEvent();
 
 let window: BrowserWindow | null = null;
 let session: ProjectSession | undefined;
@@ -281,6 +284,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  if (installing) return;
   await mkdir(app.getPath('userData'), { recursive: true });
   storage = new ProjectStorage(path.join(app.getPath('userData'), 'learning.sqlite'));
   // The watcher may miss changes made while the Mac slept (plan 15.6), so waking up asks for a re-check.

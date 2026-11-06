@@ -99,6 +99,17 @@ xattr -dr com.apple.quarantine "/Applications/Code Learning.app"
 
 </details>
 
+<details>
+<summary>Windows 첫 실행 허용 방법 (준비 중)</summary>
+
+서명하지 않은 설치 파일(`Code-Learning-win-x64-Setup.exe`)이라 처음 실행할 때 “Windows의 PC 보호” 화면이 나올 수 있습니다. **추가 정보 → 실행**을 눌러 주세요.
+
+설치는 관리자 권한 없이 내 계정에 됩니다. 시작 메뉴와 바탕화면에 **Code Learning** 바로가기가 생깁니다.
+
+제거하려면 **설정 → 앱**에서 **Code Learning**을 골라 **제거**를 누릅니다.
+
+</details>
+
 ## 🚀 처음 사용하기
 
 1. **프로젝트 폴더 열기**로 살펴볼 폴더를 고릅니다.

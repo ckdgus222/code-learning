@@ -1,0 +1,152 @@
+import { _electron as electron } from 'playwright';
+import assert from 'node:assert/strict';
+import { existsSync, readdirSync } from 'node:fs';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+
+const root = path.resolve(import.meta.dirname, '..');
+const artifacts = path.join(root, 'test-results');
+const passed = [];
+const errors = [];
+const registryKey = String.raw`HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\code_learning`;
+let app;
+let installStarted = false;
+let updater;
+let executable;
+let startMenu;
+let desktopShortcut;
+
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true, timeout: 120_000, ...options });
+  if (result.error) throw result.error;
+  assert.equal(result.status, 0, `${command} ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
+  return result.stdout.trim();
+}
+
+function powershell(script, env = process.env) {
+  return run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); ${script}`],
+  { timeout: 30_000, env });
+}
+
+function registered() {
+  const result = spawnSync('reg.exe', ['query', registryKey], { encoding: 'utf8', windowsHide: true, timeout: 10_000 });
+  if (result.error) throw result.error;
+  assert.ok(result.status === 0 || result.status === 1, `Registry query failed: ${result.stderr}`);
+  return result.status === 0;
+}
+
+function startMenuShortcuts() {
+  if (!existsSync(startMenu)) return [];
+  return readdirSync(startMenu, { recursive: true, withFileTypes: true })
+    .filter(entry => entry.isFile() && entry.name === 'Code Learning.lnk')
+    .map(entry => path.join(entry.parentPath, entry.name));
+}
+
+async function until(check) {
+  const deadline = Date.now() + 120_000;
+  while (true) {
+    try { check(); return; }
+    catch (error) { if (Date.now() >= deadline) throw error; }
+    await delay(500);
+  }
+}
+
+async function closeApp() {
+  let timer;
+  if (app) {
+    await Promise.race([
+      app.close().catch(() => {}),
+      new Promise(resolve => { timer = setTimeout(resolve, 10_000); }),
+    ]);
+    clearTimeout(timer);
+    app = undefined;
+  }
+  // Also catches a process left behind by a failed Playwright launch or installer.
+  const result = spawnSync('taskkill.exe', ['/IM', 'Code Learning.exe', '/F', '/T'],
+    { encoding: 'utf8', windowsHide: true, timeout: 30_000 });
+  if (result.error) throw result.error;
+  assert.ok(result.status === 0 || result.status === 128, `Could not stop Code Learning: ${result.stderr || result.stdout}`);
+}
+
+try {
+  assert.equal(process.platform, 'win32', `Windows installer tests require Windows; got ${process.platform}`);
+  assert.ok(process.env.LOCALAPPDATA && process.env.APPDATA, 'LOCALAPPDATA and APPDATA are required');
+  const { version } = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
+  const setup = path.join(root, 'out/make/squirrel.windows/x64/Code-Learning-win-x64-Setup.exe');
+  const installRoot = path.join(process.env.LOCALAPPDATA, 'code_learning');
+  updater = path.join(installRoot, 'Update.exe');
+  executable = path.join(installRoot, `app-${version}`, 'Code Learning.exe');
+  startMenu = path.join(process.env.APPDATA, 'Microsoft/Windows/Start Menu/Programs');
+  const desktop = powershell("[Environment]::GetFolderPath('DesktopDirectory')");
+  assert.ok(desktop, 'Windows did not return a desktop directory');
+  desktopShortcut = path.join(desktop, 'Code Learning.lnk');
+  const database = path.join(process.env.APPDATA, 'Code Learning/learning.sqlite');
+
+  assert.ok(existsSync(setup), `Installer not found: ${setup}`);
+  // Use a clean Windows runner so stale data cannot hide a failed install or be removed by cleanup.
+  assert.ok(!existsSync(installRoot), 'A clean runner without an existing code_learning installation is required');
+  assert.ok(!existsSync(database), 'A clean runner without an existing learning.sqlite is required');
+  assert.equal(registered(), false, 'An existing uninstall registration was found');
+  assert.deepEqual(startMenuShortcuts(), [], 'An existing Start Menu shortcut was found');
+  assert.ok(!existsSync(desktopShortcut), 'An existing desktop shortcut was found');
+
+  installStarted = true;
+  run(setup, ['--silent']);
+  passed.push('Silent installer exited with code 0');
+  await until(() => {
+    assert.ok(existsSync(updater), 'Installed Update.exe is missing');
+    assert.ok(existsSync(executable), 'Installed Code Learning.exe is missing');
+    assert.ok(startMenuShortcuts().length > 0, 'Start Menu shortcut is missing');
+    assert.ok(existsSync(desktopShortcut), 'Desktop shortcut is missing');
+    assert.equal(registered(), true, 'Uninstall registration is missing');
+  });
+  passed.push('Installed executables, Start Menu and desktop shortcuts, and uninstall registration exist');
+  assert.ok(!existsSync(database), 'Installation started the app and created learning.sqlite');
+  passed.push('Installation did not create learning.sqlite');
+
+  app = await electron.launch({ executablePath: executable, chromiumSandbox: true, timeout: 30_000 });
+  const page = await app.firstWindow({ timeout: 30_000 });
+  await page.getByRole('heading', { name: 'Code Learning', exact: true }).waitFor({ timeout: 30_000 });
+  await until(() => assert.ok(existsSync(database), 'First launch did not create learning.sqlite'));
+  await closeApp();
+  passed.push('Installed app shows Code Learning and creates learning.sqlite on first launch');
+
+  const shortcuts = startMenuShortcuts();
+  assert.ok(shortcuts.length > 0, 'Start Menu shortcut disappeared after first launch');
+  for (const shortcut of shortcuts) {
+    const target = JSON.parse(powershell(
+      '$shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($env:CODE_LEARNING_SHORTCUT); ' +
+      '@{ TargetPath = $shortcut.TargetPath; Arguments = $shortcut.Arguments } | ConvertTo-Json -Compress',
+      { ...process.env, CODE_LEARNING_SHORTCUT: shortcut }));
+    assert.equal(path.resolve(target.TargetPath).toLowerCase(), path.resolve(updater).toLowerCase(), 'Shortcut must target the installed Update.exe');
+    assert.match(target.Arguments, /(?:^|\s)--processStart\s+"Code Learning\.exe"(?:\s|$)/, 'Shortcut must launch Code Learning.exe');
+  }
+  passed.push('Start Menu shortcuts launch Code Learning.exe through the installed Update.exe');
+} catch (error) {
+  console.error(error);
+  errors.push(String(error));
+} finally {
+  // Attempt removal even after an earlier check fails, and report cleanup failures as test failures.
+  if (installStarted) {
+    try { await closeApp(); }
+    catch (error) { console.error(error); errors.push(String(error)); }
+    try {
+      assert.ok(existsSync(updater), 'Cannot uninstall: Update.exe is missing');
+      run(updater, ['--uninstall']);
+      passed.push('Uninstaller exited with code 0');
+      await until(() => {
+        assert.deepEqual(startMenuShortcuts(), [], 'Start Menu shortcut remains after uninstall');
+        assert.ok(!existsSync(desktopShortcut), 'Desktop shortcut remains after uninstall');
+        assert.equal(registered(), false, 'Uninstall registration remains after uninstall');
+        assert.ok(!existsSync(executable), 'Code Learning.exe remains after uninstall');
+      });
+      passed.push('Uninstall removed both shortcuts, registration, and the installed app');
+    } catch (error) { console.error(error); errors.push(String(error)); }
+  }
+  await mkdir(artifacts, { recursive: true });
+  await writeFile(path.join(artifacts, 'windows-installer.json'), JSON.stringify({ passed, errors }, null, 2));
+  if (errors.length > 0) process.exitCode = 1;
+}
