@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, realpath, readFile, rm } from 'node:fs/promises';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { copyFile, mkdir, mkdtemp, realpath, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -7,11 +7,36 @@ import { localProcessEnv, runProcess } from '../src/core/ai/process';
 
 let root: string;
 beforeEach(async () => { root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-ai-process-'))); });
-afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  await rm(root, { recursive: true, force: true });
+});
 
 function run(source: string, options: Partial<Parameters<typeof runProcess>[0]> = {}) {
   return runProcess({ executable: process.execPath, args: ['-e', source], cwd: root,
     signal: new AbortController().signal, timeoutMs: 3000, ...options });
+}
+
+async function readPid(file: string): Promise<number> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const text = await readFile(file, 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; });
+    const pid = Number(text);
+    if (Number.isSafeInteger(pid) && pid > 0) return pid;
+    await delay(10);
+  }
+  throw new Error('CLI did not write its PID');
+}
+
+async function fakeTaskkill(behavior: string): Promise<string> {
+  const windowsRoot = path.join(root, 'fake Windows');
+  await mkdir(path.join(windowsRoot, 'System32'), { recursive: true });
+  await copyFile(process.execPath, path.join(windowsRoot, 'System32', 'taskkill.exe'));
+  const marker = path.join(root, 'taskkill-called');
+  const script = path.join(root, 'taskkill behavior.cjs');
+  await writeFile(script, `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'called\\n');\n${behavior}\n`);
+  vi.stubEnv('SystemRoot', windowsRoot);
+  vi.stubEnv('NODE_OPTIONS', `--require ${JSON.stringify(script)}`);
+  return marker;
 }
 
 describe('local AI process boundary', () => {
@@ -77,7 +102,114 @@ describe('local AI process boundary', () => {
   });
 
   it('times out even when the parent exited and a descendant holds stdout open', async () => {
-    await expect(run(`require('node:child_process').spawn(process.execPath,['-e','process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'],{stdio:['ignore',1,2]});process.exit(0);`, { timeoutMs: 200 })).rejects.toMatchObject({ code: 'LIMIT' });
+    const pidFile = path.join(root, 'child.pid');
+    try {
+      await expect(run(`const child=require('node:child_process').spawn(process.execPath,
+        ['-e','process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'],
+        {detached:process.platform==='win32',stdio:['ignore',1,2]});
+        require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(child.pid));process.exit(0);`,
+      { timeoutMs: 200 })).rejects.toMatchObject({ code: 'LIMIT' });
+    } finally {
+      const childPid = Number(await readFile(pidFile, 'utf8').catch(() => '0'));
+      if (childPid) { try { process.kill(childPid, 'SIGKILL'); } catch { /* already stopped */ } }
+    }
+  });
+
+  it.skipIf(process.platform !== 'win32')('cancels the whole Windows tree including a detached child before returning', async () => {
+    const controller = new AbortController();
+    const parentFile = path.join(root, 'parent.pid');
+    const childFile = path.join(root, 'child.pid');
+    const promise = run(`const child=require('node:child_process').spawn(process.execPath,
+      ['-e','setInterval(()=>{},1000)'],{detached:true,stdio:['ignore',1,2]});
+      const fs=require('node:fs');
+      fs.writeFileSync(${JSON.stringify(parentFile)},String(process.pid));
+      fs.writeFileSync(${JSON.stringify(childFile)},String(child.pid));setInterval(()=>{},1000);`,
+    { signal: controller.signal, timeoutMs: 10_000 });
+    const result = expect(promise).rejects.toMatchObject({ code: 'CANCELLED' });
+    try {
+      const parentPid = await readPid(parentFile);
+      const childPid = await readPid(childFile);
+      controller.abort();
+      await result;
+      expect(() => process.kill(parentPid, 0)).toThrow();
+      expect(() => process.kill(childPid, 0)).toThrow();
+    } finally {
+      controller.abort();
+      await promise.catch(() => {});
+      for (const file of [childFile, parentFile]) {
+        const pid = Number(await readFile(file, 'utf8').catch(() => '0'));
+        if (pid) { try { process.kill(pid, 'SIGKILL'); } catch { /* already stopped */ } }
+      }
+    }
+  }, 10_000);
+
+  it.skipIf(process.platform !== 'win32').each(['missing', 'nonzero', 'hanging'] as const)(
+    'waits for the Windows parent to exit when taskkill is %s', async failure => {
+      const controller = new AbortController();
+      const pidFile = path.join(root, 'parent.pid');
+      const promise = run(`require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>{},1000);`,
+        { signal: controller.signal, timeoutMs: 10_000 });
+      const result = expect(promise).rejects.toMatchObject({ code: 'CANCELLED' });
+      try {
+        const parentPid = await readPid(pidFile);
+        let marker: string | undefined;
+        if (failure === 'missing') vi.stubEnv('SystemRoot', path.join(root, 'missing Windows'));
+        if (failure !== 'missing') marker = await fakeTaskkill(failure === 'nonzero'
+          ? 'process.exit(7);'
+          : 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);');
+        const started = Date.now();
+        controller.abort();
+        await result;
+        const elapsed = Date.now() - started;
+        expect(() => process.kill(parentPid, 0)).toThrow();
+        expect(elapsed).toBeLessThan(6000);
+        if (failure === 'hanging') expect(elapsed).toBeGreaterThanOrEqual(1900);
+        if (marker) expect(await readFile(marker, 'utf8')).toBe('called\n');
+      } finally {
+        controller.abort();
+        await promise.catch(() => {});
+        const pid = Number(await readFile(pidFile, 'utf8').catch(() => '0'));
+        if (pid) { try { process.kill(pid, 'SIGKILL'); } catch { /* already stopped */ } }
+      }
+    }, 10_000,
+  );
+
+  it.skipIf(process.platform !== 'win32')('does not taskkill an exited Windows parent whose detached child holds stdout', async () => {
+    // The CLI itself keeps the real SystemRoot: Windows programs need it to start; only the app's taskkill sees the fake.
+    const env = { ...localProcessEnv(), SYSTEMROOT: process.env.SystemRoot };
+    const marker = await fakeTaskkill('process.exit(7);');
+    const parentFile = path.join(root, 'parent.pid');
+    const childFile = path.join(root, 'child.pid');
+    const controller = new AbortController();
+    const promise = run(`const child=require('node:child_process').spawn(process.execPath,
+      ['-e','setInterval(()=>{},1000)'],{detached:true,stdio:['ignore',1,2]});
+      const fs=require('node:fs');
+      fs.writeFileSync(${JSON.stringify(parentFile)},String(process.pid));
+      fs.writeFileSync(${JSON.stringify(childFile)},String(child.pid));process.exit(0);`,
+    { signal: controller.signal, timeoutMs: 1500, env });
+    const result = expect(promise).rejects.toMatchObject({ code: 'LIMIT' });
+    try {
+      const parentPid = await readPid(parentFile);
+      const childPid = await readPid(childFile);
+      // Confirm the parent really exited before the timeout, while its child is still alive.
+      let parentAlive = true;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        try { process.kill(parentPid, 0); } catch { parentAlive = false; break; }
+        await delay(10);
+      }
+      expect(parentAlive).toBe(false);
+      expect(() => process.kill(childPid, 0)).not.toThrow();
+      await result;
+      expect(() => process.kill(childPid, 0)).not.toThrow();
+      await expect(readFile(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      controller.abort();
+      await promise.catch(() => {});
+      for (const file of [childFile, parentFile]) {
+        const pid = Number(await readFile(file, 'utf8').catch(() => '0'));
+        if (pid) { try { process.kill(pid, 'SIGKILL'); } catch { /* already stopped */ } }
+      }
+    }
   });
 
   it('handles a CLI that exits before reading a large stdin without unhandled EPIPE', async () => {

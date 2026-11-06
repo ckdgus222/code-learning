@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import path from 'node:path';
 import { AppError } from '../../shared/errors';
 
@@ -50,6 +50,7 @@ export async function runProcess(request: ProcessRequest): Promise<{ stdout: str
     let settled = false;
     let failure: AppError | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let treeKill: Promise<void> | undefined;
     const timeout = setTimeout(() => stop(new AppError('LIMIT', 'AI 응답 대기 시간이 초과되었습니다. 다시 시도해 주세요.')), timeoutMs);
 
     function cleanup() {
@@ -74,15 +75,50 @@ export async function runProcess(request: ProcessRequest): Promise<{ stdout: str
     function kill(signal: NodeJS.Signals) {
       if (!child.pid) return;
       try {
-        if (process.platform === 'win32') child.kill(signal);
-        else process.kill(-child.pid, signal);
+        process.kill(-child.pid, signal);
       } catch { /* Already exited, or spawn failed. Never expose native error text. */ }
+    }
+    function killTree(): Promise<void> {
+      if (treeKill) return treeKill;
+      treeKill = (async () => {
+        // Windows can reuse an exited parent's PID for an unrelated process.
+        if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const taskkill = path.win32.resolve(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe');
+            execFile(taskkill, ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 2000 }, error => {
+              if (error) return reject(error);
+              resolve();
+            });
+          });
+        } catch {
+          if (child.exitCode === null && child.signalCode === null) {
+            try { child.kill(); } catch { /* Already exited. */ }
+          }
+        }
+        // A Windows termination request can return before the process has actually exited.
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        await new Promise<void>(resolve => {
+          const onExit = () => {
+            clearTimeout(exitTimer);
+            child.removeListener('exit', onExit);
+            resolve();
+          };
+          const exitTimer = setTimeout(onExit, 2000);
+          child.once('exit', onExit);
+        });
+      })();
+      return treeKill;
     }
     function stop(error: AppError) {
       if (settled || failure) return;
       failure = error;
       clearTimeout(timeout);
       if (!child.pid) { finish(error); return; }
+      if (process.platform === 'win32') {
+        void killTree().then(() => finish(error));
+        return;
+      }
       kill('SIGTERM');
       // Keep this deadline even if close arrives: descendants may ignore SIGTERM.
       killTimer = setTimeout(() => {
@@ -109,9 +145,9 @@ export async function runProcess(request: ProcessRequest): Promise<{ stdout: str
     child.stderr.on('data', onStderr);
     child.on('close', onClose);
     child.on('error', () => stop(unavailable()));
-    // Some CLIs exit without consuming stdin. EPIPE must never escape as an unhandled error.
+    // Some CLIs exit without consuming stdin. Windows reports a broken pipe as EOF.
     child.stdin.on('error', (error: NodeJS.ErrnoException) => {
-      if (error.code !== 'EPIPE' && error.code !== 'ERR_STREAM_DESTROYED') stop(unavailable());
+      if (error.code !== 'EPIPE' && error.code !== 'ERR_STREAM_DESTROYED' && error.code !== 'EOF') stop(unavailable());
     });
     child.stdout.on('error', () => stop(unavailable()));
     child.stderr.on('error', () => stop(unavailable()));
