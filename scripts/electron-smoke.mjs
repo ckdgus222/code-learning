@@ -5272,7 +5272,8 @@ try {
     const id = await buttons.first().getAttribute('data-symbol-id');
     await buttons.first().click();
     await until(async () => await page.locator('.symbols__item[aria-pressed="true"]').innerText() === 'Auth.login');
-    assert.equal(await guide.evaluate(element => element.open), true);
+    // The guide opens only after the function is selected, one render later.
+    await until(() => guide.evaluate(element => element.open));
     await until(async () => await page.locator('.cm-selected-function.cm-function-band').count() === 1);
     assert.equal(await page.locator('.cm-selected-function').evaluate(element => getComputedStyle(element).boxShadow !== 'none'), true);
     await until(() => visibleCard(id));
