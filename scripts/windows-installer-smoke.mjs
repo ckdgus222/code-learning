@@ -1,6 +1,6 @@
 import { _electron as electron } from 'playwright';
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
@@ -17,6 +17,7 @@ let updater;
 let executable;
 let startMenu;
 let desktopShortcut;
+let diagnostics;
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true, timeout: 120_000, ...options });
@@ -43,6 +44,20 @@ function startMenuShortcuts() {
   return readdirSync(startMenu, { recursive: true, withFileTypes: true })
     .filter(entry => entry.isFile() && entry.name === 'Code Learning.lnk')
     .map(entry => path.join(entry.parentPath, entry.name));
+}
+
+// What is left when removal fails: the files, any Code Learning process still running, and the end of Squirrel's logs.
+function uninstallDiagnostics() {
+  const installRoot = path.dirname(updater);
+  const tail = file => { try { return readFileSync(file, 'utf8').slice(-4000); } catch (error) { return String(error); } };
+  const logs = [installRoot, path.join(process.env.LOCALAPPDATA, 'SquirrelTemp')].flatMap(folder => existsSync(folder)
+    ? readdirSync(folder).filter(name => name.endsWith('.log')).map(name => ({ file: path.join(folder, name), tail: tail(path.join(folder, name)) }))
+    : []);
+  let processes;
+  try {
+    processes = powershell("@(Get-CimInstance Win32_Process -Filter \"Name='Code Learning.exe'\" | Select-Object ProcessId, ParentProcessId, CommandLine) | ConvertTo-Json -Compress");
+  } catch (error) { processes = String(error); }
+  return { files: existsSync(installRoot) ? readdirSync(installRoot, { recursive: true }) : [], processes, logs };
 }
 
 async function until(check) {
@@ -121,10 +136,12 @@ try {
       '$shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($env:CODE_LEARNING_SHORTCUT); ' +
       '@{ TargetPath = $shortcut.TargetPath; Arguments = $shortcut.Arguments } | ConvertTo-Json -Compress',
       { ...process.env, CODE_LEARNING_SHORTCUT: shortcut }));
-    assert.equal(path.resolve(target.TargetPath).toLowerCase(), path.resolve(updater).toLowerCase(), 'Shortcut must target the installed Update.exe');
-    assert.match(target.Arguments, /(?:^|\s)--processStart\s+"Code Learning\.exe"(?:\s|$)/, 'Shortcut must launch Code Learning.exe');
+    // Squirrel 2 points shortcuts at its launcher stub beside Update.exe, which starts the newest app-<version>.
+    const launcher = path.join(path.dirname(updater), 'Code Learning.exe');
+    assert.equal(path.resolve(target.TargetPath).toLowerCase(), path.resolve(launcher).toLowerCase(), 'Shortcut must target the installed launcher');
+    assert.equal(target.Arguments, '', 'Shortcut must not pass arguments');
   }
-  passed.push('Start Menu shortcuts launch Code Learning.exe through the installed Update.exe');
+  passed.push('Start Menu shortcuts start the installed launcher');
 } catch (error) {
   console.error(error);
   errors.push(String(error));
@@ -144,9 +161,14 @@ try {
         assert.ok(!existsSync(executable), 'Code Learning.exe remains after uninstall');
       });
       passed.push('Uninstall removed both shortcuts, registration, and the installed app');
-    } catch (error) { console.error(error); errors.push(String(error)); }
+    } catch (error) {
+      console.error(error);
+      errors.push(String(error));
+      diagnostics = uninstallDiagnostics();
+      console.error(JSON.stringify(diagnostics, null, 2));
+    }
   }
   await mkdir(artifacts, { recursive: true });
-  await writeFile(path.join(artifacts, 'windows-installer.json'), JSON.stringify({ passed, errors }, null, 2));
+  await writeFile(path.join(artifacts, 'windows-installer.json'), JSON.stringify({ passed, errors, diagnostics }, null, 2));
   if (errors.length > 0) process.exitCode = 1;
 }
