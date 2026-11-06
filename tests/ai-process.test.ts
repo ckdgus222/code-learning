@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { copyFile, mkdir, mkdtemp, realpath, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { localProcessEnv, runProcess } from '../src/core/ai/process';
 
@@ -32,11 +33,19 @@ async function fakeTaskkill(behavior: string): Promise<string> {
   await mkdir(path.join(windowsRoot, 'System32'), { recursive: true });
   await copyFile(process.execPath, path.join(windowsRoot, 'System32', 'taskkill.exe'));
   const marker = path.join(root, 'taskkill-called');
-  const script = path.join(root, 'taskkill behavior.cjs');
+  // No spaces and no quotes: NODE_OPTIONS splits on spaces and treats backslashes inside quotes as escapes.
+  const script = path.join(root, 'taskkill-behavior.cjs');
   await writeFile(script, `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'called\\n');\n${behavior}\n`);
   vi.stubEnv('SystemRoot', windowsRoot);
-  vi.stubEnv('NODE_OPTIONS', `--require ${JSON.stringify(script)}`);
+  vi.stubEnv('NODE_OPTIONS', `--require=${script}`);
   return marker;
+}
+
+/** Why the fake taskkill wrote no mark: its exit status and error output when started directly. */
+function fakeTaskkillReport(): string {
+  const fake = path.win32.resolve(process.env.SystemRoot ?? '', 'System32', 'taskkill.exe');
+  const result = spawnSync(fake, ['/PID', '0'], { env: process.env, timeout: 3000, encoding: 'utf8', windowsHide: true });
+  return JSON.stringify({ fake, status: result.status, error: result.error?.message, stderr: result.stderr?.slice(0, 1000) });
 }
 
 describe('local AI process boundary', () => {
@@ -164,7 +173,10 @@ describe('local AI process boundary', () => {
         expect(() => process.kill(parentPid, 0)).toThrow();
         expect(elapsed).toBeLessThan(6000);
         if (failure === 'hanging') expect(elapsed).toBeGreaterThanOrEqual(1900);
-        if (marker) expect(await readFile(marker, 'utf8')).toBe('called\n');
+        if (marker) {
+          const called = await readFile(marker, 'utf8').catch(() => null);
+          expect(called, called === null ? fakeTaskkillReport() : undefined).toBe('called\n');
+        }
       } finally {
         controller.abort();
         await promise.catch(() => {});
