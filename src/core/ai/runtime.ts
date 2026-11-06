@@ -100,6 +100,9 @@ async function privateFolder(home: string, parts: string[]): Promise<string> {
 
 /** Writes a file without following a link at its name, and makes an existing one private too. */
 async function writePrivateFile(file: string, text: string): Promise<void> {
+  // Windows has no O_NOFOLLOW; reject a link before opening its target.
+  const existing = await lstat(file).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; });
+  if (existing?.isSymbolicLink()) throw new Error('not a private file');
   const handle = await open(file, NO_FOLLOW_WRITE, 0o600);
   try {
     // O_NOFOLLOW opens a hard link, which shares its contents with another name such as the
@@ -124,6 +127,7 @@ export async function restrictAgy(home: string): Promise<void> {
   const settingsFile = path.join(await privateFolder(home, ['.gemini', 'antigravity-cli']), 'settings.json');
   let settings: Record<string, unknown> = {};
   try {
+    if ((await lstat(settingsFile)).isSymbolicLink()) throw new Error('not a private file');
     settings = JSON.parse(await readFile(settingsFile, { encoding: 'utf8', flag: constants.O_RDONLY | constants.O_NOFOLLOW }));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
