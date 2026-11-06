@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -99,6 +99,41 @@ describe('git launch (M2-2c)', () => {
     expect(await history(root, project)).toEqual({
       projectId: project.id, available: false, reason: 'Windows에서는 아직 변경 보기를 쓸 수 없어요.', commits: [],
     });
+  });
+});
+
+describe.runIf(process.platform === 'darwin')('cancelling a running git', () => {
+  it('rejects promptly with CANCELLED after the running process has ended', async () => {
+    const folder = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-git-cancel-')));
+    temp.push(folder);
+    const exe = path.join(folder, 'git.sh');
+    const pidFile = path.join(folder, 'git.pid');
+    writeFileSync(exe, `#!/bin/sh\necho $$ > '${pidFile.replaceAll("'", "'\\''")}'\nexec /bin/sleep 30\n`);
+    chmodSync(exe, 0o755);
+    const profile = '(version 1)\n(allow default)\n';
+    const stop = () => existsSync(pidFile);
+
+    try {
+      const started = performance.now();
+      await expect(repositoryOf({ exe, profile }, root, stop)).rejects.toMatchObject({
+        code: 'CANCELLED', message: '작업을 취소했습니다.',
+      });
+      expect(performance.now() - started).toBeLessThan(2000);
+      const pid = Number(readFileSync(pidFile, 'utf8').trim());
+      expect(Number.isInteger(pid) && pid > 0).toBe(true);
+      // execFile reports the abort as soon as SIGKILL is sent (8 of 8 local runs still saw the pid then); it is gone a moment later.
+      const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      const deadline = performance.now() + 1000;
+      while (alive() && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+      expect(alive()).toBe(false);
+    } finally {
+      try {
+        const pid = Number(readFileSync(pidFile, 'utf8').trim());
+        if (Number.isInteger(pid) && pid > 0) process.kill(pid, 'SIGKILL');
+      } catch (error) {
+        if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      }
+    }
   });
 });
 
