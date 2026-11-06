@@ -7212,7 +7212,8 @@ try {
     ended = ending();
     void page.evaluate(input => window.learning.valueShapes(input).catch(() => null), { projectId: big.value.id, fileId: file.id,
       fileHash: read.value.hash, startUtf16: fn.startUtf16, endUtf16: fn.endUtf16, names: [] }).catch(() => {});
-    await until(() => checkerProcesses() > 0);
+    // A slow Windows CI machine once took longer than 8 s to start it, and each Windows count runs PowerShell.
+    await until(() => checkerProcesses() > 0, 30_000);
     await app.evaluate(({ app: electronApp }) => electronApp.quit());
     assert.deepEqual(await endsWithin(ended, '(d) quit while the value-shape checker runs'), { code: 0, signal: null });
     assert.equal(checkerProcesses(), 0);
