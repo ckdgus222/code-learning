@@ -510,8 +510,8 @@ async function openTreeFile(relativePath) {
   }
   await file.click();
 }
-async function until(callback) {
-  const deadline = Date.now() + 8000;
+async function until(callback, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs;
   while (!await callback()) {
     if (Date.now() > deadline) throw new Error('Timed out waiting for an observed condition');
     await new Promise(resolve => setTimeout(resolve, 40));
@@ -5841,7 +5841,8 @@ try {
     assert.equal(await list.getByRole('button', { name: 'AI로 기능 정리하기', exact: true }).isDisabled(), true);
     const beforeChangedGuideRoutes = await app.evaluate(() => globalThis.testGuideRoutes.routesId);
     await page.getByRole('button', { name: '다시 찾기', exact: true }).click();
-    await until(() => app.evaluate((_electron, previous) => globalThis.testGuideRoutes.routesId !== previous, beforeChangedGuideRoutes));
+    // A full route analysis again: well over 8 seconds on a slow CI machine.
+    await until(() => app.evaluate((_electron, previous) => globalThis.testGuideRoutes.routesId !== previous, beforeChangedGuideRoutes), 30_000);
     await openServerFeatures();
     await list.getByText('다시 확인 필요: 기능 정리를 만든 뒤 서버 주소나 그 코드가 바뀌었어요. 다시 정리해 주세요.', { exact: true }).waitFor();
     assert.equal(await list.getByRole('heading', { name: '반려견 관리', exact: true }).count(), 0);
