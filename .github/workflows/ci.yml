@@ -70,3 +70,26 @@ jobs:
           name: electron-results-${{ matrix.os }}
           path: test-results/
           retention-days: 7
+
+  windows-installer:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Make Windows installer
+        run: npm run make:win
+      - name: Windows installer tests
+        run: node scripts/windows-installer-smoke.mjs
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-setup
+          path: out/make/squirrel.windows/x64/Code-Learning-win-x64-Setup.exe
+          retention-days: 7
