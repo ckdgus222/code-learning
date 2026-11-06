@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { copyFile, mkdir, mkdtemp, realpath, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, readFile, rm } from 'node:fs/promises';
+import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { type ChildProcess, type execFile } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
-import { localProcessEnv, runProcess } from '../src/core/ai/process';
+import { killWindowsTree, localProcessEnv, runProcess } from '../src/core/ai/process';
 
 let root: string;
 beforeEach(async () => { root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-ai-process-'))); });
 afterEach(async () => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   await rm(root, { recursive: true, force: true });
 });
@@ -28,25 +30,111 @@ async function readPid(file: string): Promise<number> {
   throw new Error('CLI did not write its PID');
 }
 
-async function fakeTaskkill(behavior: string): Promise<string> {
-  const windowsRoot = path.join(root, 'fake Windows');
-  await mkdir(path.join(windowsRoot, 'System32'), { recursive: true });
-  await copyFile(process.execPath, path.join(windowsRoot, 'System32', 'taskkill.exe'));
-  const marker = path.join(root, 'taskkill-called');
-  // No spaces and no quotes: NODE_OPTIONS splits on spaces and treats backslashes inside quotes as escapes.
-  const script = path.join(root, 'taskkill-behavior.cjs');
-  await writeFile(script, `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'called\\n');\n${behavior}\n`);
-  vi.stubEnv('SystemRoot', windowsRoot);
-  vi.stubEnv('NODE_OPTIONS', `--require=${script}`);
-  return marker;
+async function stopProcess(pid: number): Promise<void> {
+  if (!pid) return;
+  try { process.kill(pid, 'SIGKILL'); } catch { return; }
+  if (process.platform !== 'win32') return;
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    try { process.kill(pid, 0); } catch { return; }
+    await delay(10);
+  }
+  throw new Error(`Process ${pid} did not exit within 5 seconds`);
 }
 
-/** Why the fake taskkill wrote no mark: its exit status and error output when started directly. */
-function fakeTaskkillReport(): string {
-  const fake = path.win32.resolve(process.env.SystemRoot ?? '', 'System32', 'taskkill.exe');
-  const result = spawnSync(fake, ['/PID', '0'], { env: process.env, timeout: 3000, encoding: 'utf8', windowsHide: true });
-  return JSON.stringify({ fake, status: result.status, error: result.error?.message, stderr: result.stderr?.slice(0, 1000) });
-}
+describe('Windows process tree termination', () => {
+  let child: EventEmitter & Pick<ChildProcess, 'once' | 'removeListener'> & {
+    pid: number | undefined;
+    exitCode: number | null;
+    signalCode: NodeJS.Signals | null;
+    kill: ReturnType<typeof vi.fn<ChildProcess['kill']>>;
+  };
+  let runTaskkill: ReturnType<typeof vi.fn<typeof execFile>> & typeof execFile;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    child = Object.assign(new EventEmitter(), {
+      pid: 123, exitCode: null, signalCode: null, kill: vi.fn<ChildProcess['kill']>(() => true),
+    }) as unknown as typeof child;
+    runTaskkill = vi.fn<typeof execFile>() as typeof runTaskkill;
+  });
+
+  it.each([
+    { pid: undefined, exitCode: null, signalCode: null },
+    { pid: 123, exitCode: 0, signalCode: null },
+    { pid: 123, exitCode: null, signalCode: 'SIGTERM' as const },
+  ])('does not taskkill a missing or exited parent: %j', async state => {
+    Object.assign(child, state);
+    await killWindowsTree(child, runTaskkill);
+    expect(runTaskkill).not.toHaveBeenCalled();
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['', 'D:\\Windows folder'])('uses the absolute taskkill path and waits for exit on success: %s', async systemRoot => {
+    const finished = vi.fn();
+    const promise = killWindowsTree(child, runTaskkill, systemRoot).then(finished);
+    expect(runTaskkill).toHaveBeenCalledExactlyOnceWith(
+      `${systemRoot || 'C:\\Windows'}\\System32\\taskkill.exe`, ['/PID', '123', '/T', '/F'],
+      { windowsHide: true, timeout: 2000 }, expect.any(Function),
+    );
+    runTaskkill.mock.calls[0][3]!(null, '', '');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(finished).not.toHaveBeenCalled();
+    child.exitCode = 0;
+    child.emit('exit', 0, null);
+    await promise;
+    expect(finished).toHaveBeenCalledOnce();
+    expect(child.listenerCount('exit')).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    Object.assign(new Error('missing taskkill'), { cmd: 'taskkill.exe', code: 'ENOENT' }),
+    Object.assign(new Error('nonzero exit'), { cmd: 'taskkill.exe', code: 7 }),
+    Object.assign(new Error('taskkill timeout'), { cmd: 'taskkill.exe', killed: true, signal: 'SIGTERM' as const }),
+  ])('kills a live parent after taskkill fails and waits for exit: %s', async error => {
+    const finished = vi.fn();
+    const promise = killWindowsTree(child, runTaskkill).then(finished);
+    runTaskkill.mock.calls[0][3]!(error, '', '');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(child.kill).toHaveBeenCalledExactlyOnceWith();
+    expect(finished).not.toHaveBeenCalled();
+    child.signalCode = 'SIGTERM';
+    child.emit('exit', null, 'SIGTERM');
+    await promise;
+    expect(finished).toHaveBeenCalledOnce();
+    expect(child.listenerCount('exit')).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['exitCode', 'signalCode'] as const)('does not fall back to kill if the parent exits during taskkill: %s', async exitState => {
+    const promise = killWindowsTree(child, runTaskkill);
+    if (exitState === 'exitCode') child.exitCode = 0;
+    if (exitState === 'signalCode') child.signalCode = 'SIGTERM';
+    runTaskkill.mock.calls[0][3]!(Object.assign(new Error('parent already exited'), { cmd: 'taskkill.exe' }), '', '');
+    await promise;
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(child.listenerCount('exit')).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([null, Object.assign(new Error('taskkill failed'), { cmd: 'taskkill.exe' })])('stops waiting after 2 seconds if exit never arrives: %s', async error => {
+    const finished = vi.fn();
+    const promise = killWindowsTree(child, runTaskkill).then(finished);
+    runTaskkill.mock.calls[0][3]!(error, '', '');
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(finished).not.toHaveBeenCalled();
+    expect(child.listenerCount('exit')).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await promise;
+    expect(finished).toHaveBeenCalledOnce();
+    expect(child.kill).toHaveBeenCalledTimes(error ? 1 : 0);
+    expect(child.listenerCount('exit')).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
 
 describe('local AI process boundary', () => {
   it('passes shell syntax literally and closes stdin after the request', async () => {
@@ -106,7 +194,7 @@ describe('local AI process boundary', () => {
       expect(alive).toBe(false);
     } finally {
       controller.abort();
-      if (childPid) { try { process.kill(childPid, 'SIGKILL'); } catch { /* already stopped */ } }
+      await stopProcess(childPid);
     }
   });
 
@@ -120,7 +208,7 @@ describe('local AI process boundary', () => {
       { timeoutMs: 200 })).rejects.toMatchObject({ code: 'LIMIT' });
     } finally {
       const childPid = Number(await readFile(pidFile, 'utf8').catch(() => '0'));
-      if (childPid) { try { process.kill(childPid, 'SIGKILL'); } catch { /* already stopped */ } }
+      await stopProcess(childPid);
     }
   });
 
@@ -147,82 +235,32 @@ describe('local AI process boundary', () => {
       await promise.catch(() => {});
       for (const file of [childFile, parentFile]) {
         const pid = Number(await readFile(file, 'utf8').catch(() => '0'));
-        if (pid) { try { process.kill(pid, 'SIGKILL'); } catch { /* already stopped */ } }
+        await stopProcess(pid);
       }
     }
   }, 10_000);
 
-  it.skipIf(process.platform !== 'win32').each(['missing', 'nonzero', 'hanging'] as const)(
-    'waits for the Windows parent to exit when taskkill is %s', async failure => {
-      const controller = new AbortController();
-      const pidFile = path.join(root, 'parent.pid');
-      const promise = run(`require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>{},1000);`,
-        { signal: controller.signal, timeoutMs: 10_000 });
-      const result = expect(promise).rejects.toMatchObject({ code: 'CANCELLED' });
-      try {
-        const parentPid = await readPid(pidFile);
-        let marker: string | undefined;
-        if (failure === 'missing') vi.stubEnv('SystemRoot', path.join(root, 'missing Windows'));
-        if (failure !== 'missing') marker = await fakeTaskkill(failure === 'nonzero'
-          ? 'process.exit(7);'
-          : 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);');
-        const started = Date.now();
-        controller.abort();
-        await result;
-        const elapsed = Date.now() - started;
-        expect(() => process.kill(parentPid, 0)).toThrow();
-        expect(elapsed).toBeLessThan(6000);
-        if (failure === 'hanging') expect(elapsed).toBeGreaterThanOrEqual(1900);
-        if (marker) {
-          const called = await readFile(marker, 'utf8').catch(() => null);
-          expect(called, called === null ? fakeTaskkillReport() : undefined).toBe('called\n');
-        }
-      } finally {
-        controller.abort();
-        await promise.catch(() => {});
-        const pid = Number(await readFile(pidFile, 'utf8').catch(() => '0'));
-        if (pid) { try { process.kill(pid, 'SIGKILL'); } catch { /* already stopped */ } }
-      }
-    }, 10_000,
-  );
-
-  it.skipIf(process.platform !== 'win32')('does not taskkill an exited Windows parent whose detached child holds stdout', async () => {
-    // The CLI itself keeps the real SystemRoot: Windows programs need it to start; only the app's taskkill sees the fake.
-    const env = { ...localProcessEnv(), SYSTEMROOT: process.env.SystemRoot };
-    const marker = await fakeTaskkill('process.exit(7);');
-    const parentFile = path.join(root, 'parent.pid');
-    const childFile = path.join(root, 'child.pid');
+  it.skipIf(process.platform !== 'win32')('waits for the Windows parent to exit when taskkill cannot start', async () => {
     const controller = new AbortController();
-    const promise = run(`const child=require('node:child_process').spawn(process.execPath,
-      ['-e','setInterval(()=>{},1000)'],{detached:true,stdio:['ignore',1,2]});
-      const fs=require('node:fs');
-      fs.writeFileSync(${JSON.stringify(parentFile)},String(process.pid));
-      fs.writeFileSync(${JSON.stringify(childFile)},String(child.pid));process.exit(0);`,
-    { signal: controller.signal, timeoutMs: 1500, env });
-    const result = expect(promise).rejects.toMatchObject({ code: 'LIMIT' });
+    const pidFile = path.join(root, 'parent.pid');
+    const promise = run(`require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>{},1000);`,
+      { signal: controller.signal, timeoutMs: 10_000 });
+    const result = expect(promise).rejects.toMatchObject({ code: 'CANCELLED' });
     try {
-      const parentPid = await readPid(parentFile);
-      const childPid = await readPid(childFile);
-      // Confirm the parent really exited before the timeout, while its child is still alive.
-      let parentAlive = true;
-      for (let attempt = 0; attempt < 100; attempt++) {
-        try { process.kill(parentPid, 0); } catch { parentAlive = false; break; }
-        await delay(10);
-      }
-      expect(parentAlive).toBe(false);
-      expect(() => process.kill(childPid, 0)).not.toThrow();
+      const parentPid = await readPid(pidFile);
+      vi.stubEnv('SystemRoot', path.join(root, 'missing Windows'));
+      const started = Date.now();
+      controller.abort();
       await result;
-      expect(() => process.kill(childPid, 0)).not.toThrow();
-      await expect(readFile(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(() => process.kill(parentPid, 0)).toThrow();
+      expect(Date.now() - started).toBeLessThan(6000);
     } finally {
       controller.abort();
       await promise.catch(() => {});
-      for (const file of [childFile, parentFile]) {
-        const pid = Number(await readFile(file, 'utf8').catch(() => '0'));
-        if (pid) { try { process.kill(pid, 'SIGKILL'); } catch { /* already stopped */ } }
-      }
+      const pid = Number(await readFile(pidFile, 'utf8').catch(() => '0'));
+      await stopProcess(pid);
     }
-  });
+  }, 10_000);
 
   it('handles a CLI that exits before reading a large stdin without unhandled EPIPE', async () => {
     expect((await run('process.exit(0)', { stdin: 'x'.repeat(4 * 1024 * 1024) })).exitCode).toBe(0);
