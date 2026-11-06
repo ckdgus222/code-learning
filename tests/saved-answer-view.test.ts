@@ -42,7 +42,7 @@ it('starts history folded and explains storage and conversation boundaries', () 
   }));
   expect(html).toContain('<details class="saved-answers"><summary>지난 질문과 답 · 0개</summary>');
   expect(html).toContain('지난 답의 대화는 이어지지 않아요.');
-  expect(html).toContain('질문과 답은 최근 50개까지 이 Mac에 저장해요. 이어 묻기는 앱을 켜 둔 동안만 돼요.');
+  expect(html).toContain('질문과 답은 최근 50개까지 이 컴퓨터에 저장해요. 이어 묻기는 앱을 켜 둔 동안만 돼요.');
 });
 
 it('preserves the month and day display used by earlier saved results', () => {

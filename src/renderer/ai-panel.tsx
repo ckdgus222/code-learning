@@ -336,7 +336,7 @@ export function AiPanel({ open, onClose, projectId, openedAt = 0, onSavedEvidenc
             {modes.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
           </select>
         </label>
-        <p className="hint">Mac에 설치된 공식 프로그램을 실행합니다. 답변 생성은 각 AI 제공자 서버에서 이뤄집니다.</p>
+        <p className="hint">이 컴퓨터에 설치된 공식 프로그램을 실행합니다. 답변 생성은 각 AI 제공자 서버에서 이뤄집니다.</p>
         <p className="hint">{mode === 'local-worker' && '선택한 프로젝트에서 관련 파일을 찾아 읽습니다. '}원본 파일은 수정·생성·삭제하지 않습니다. 민감 파일·제외 파일·폴더 밖 파일은 읽기 대상에서 제외합니다.</p>
         <button className="btn" disabled={checking || running || otherRunning} onClick={inspect}>{checking ? '설치 확인 중…' : '로컬 AI 설치 확인'}</button>
         {connections && <ul aria-label="로컬 AI 설치 상태">
@@ -375,7 +375,7 @@ export function AiPanel({ open, onClose, projectId, openedAt = 0, onSavedEvidenc
             disabled={running || blockedReason !== null}>질문 보내기</button>
           {blockedReason && <p className="hint" id={sendBlockedId} data-testid="send-blocked">{blockedReason}</p>}
         </div>
-        <p className="hint">질문과 답은 최근 50개까지 이 Mac에 저장해요. 이어 묻기는 앱을 켜 둔 동안만 돼요. 코드 범위를 바꾸면 새 대화로 시작합니다.</p>
+        <p className="hint">질문과 답은 최근 50개까지 이 컴퓨터에 저장해요. 이어 묻기는 앱을 켜 둔 동안만 돼요. 코드 범위를 바꾸면 새 대화로 시작합니다.</p>
       </div>
       {answers.map(answer => <AnswerView key={answer.jobId} answer={answer} topic={answerTopics[answer.jobId]} stale={stale} onEvidence={onEvidence} />)}
       {historyError && <p role="alert" className="notice">{historyError}</p>}
