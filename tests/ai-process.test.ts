@@ -12,7 +12,8 @@ beforeEach(async () => { root = await realpath(await mkdtemp(path.join(os.tmpdir
 afterEach(async () => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
-  await rm(root, { recursive: true, force: true });
+  // Test CLIs run in this folder; on Windows a just-killed one can keep it busy (EBUSY) for a moment.
+  await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 function run(source: string, options: Partial<Parameters<typeof runProcess>[0]> = {}) {
