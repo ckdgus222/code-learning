@@ -345,7 +345,7 @@ export function AiPanel({ open, onClose, projectId, openedAt = 0, onSavedEvidenc
             <p>{item.message}</p>
           </li>)}
         </ul>}
-        {connections && !connections.providers.some(item => item.provider === 'claude-code') &&
+        {connections && !connections.providers.some(item => item.provider === 'claude-code') && connections.providers.some(item => item.provider === 'antigravity') &&
           <p className="hint">자동 확인은 Codex·Antigravity만 해요. Claude Code까지 보려면 ‘로컬 AI 설치 확인’을 눌러요.</p>}
         <p className="hint" data-testid="ai-readiness">{ready?.reason ?? '먼저 설치 상태를 확인해 주세요. 설치 확인만으로 로그인이나 실제 AI 연결이 검증되는 것은 아닙니다.'}</p>
         <p className="hint">{mode === 'local-worker' ? `Codex 정리 → Gemini 3.8 Flash · High (${GEMINI_MODEL}) 설명 → Codex 대조`
@@ -361,6 +361,7 @@ export function AiPanel({ open, onClose, projectId, openedAt = 0, onSavedEvidenc
           <textarea aria-label="선택한 코드에 질문" maxLength={2000} value={question} disabled={running}
             placeholder="이 부분은 어떤 일을 하나요?" onChange={event => setQuestion(event.target.value)} />
         </label>
+        {ready?.warning && <p className="notice" data-testid="ai-warning">{ready.warning}</p>}
         <label className="ai-consent"><input type="checkbox" checked={consent} disabled={running || !ready?.ready}
           aria-describedby={consentDescriptionId} onChange={event => setConsent(event.target.checked)} />보낼 자료에 동의</label>
         <details className="consent-details">

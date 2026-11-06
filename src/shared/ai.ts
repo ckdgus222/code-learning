@@ -164,7 +164,7 @@ export interface ProviderConnection {
 export interface ConnectionReport {
   checkedAt: string;
   providers: ProviderConnection[];
-  modes: { mode: LearningMode; ready: boolean; reason: string }[];
+  modes: { mode: LearningMode; ready: boolean; reason: string; warning?: string }[];
 }
 export type LearningPhase = 'collecting' | 'organizing' | 'reading-related' | 'explaining' | 'reviewing' | 'validating';
 export interface ModelRun {
