@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
-import { lstat, readlink } from 'node:fs/promises';
+import { lstat, readlink, stat } from 'node:fs/promises';
 import path from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
 import type { ProjectRoutes, FeatureFlow, Evidence, FileDiff, FunctionCalls, GitHistory, ProjectChanges, ProjectEvent, ProjectMap, ProjectView, Result, ShapeQuery, SourceView,
@@ -85,6 +85,8 @@ export class ProjectSession {
 
   /** Tests only: holds a new type watch back after it is ready and checked, just before it would be adopted. */
   holdTypeWatch?: (watcher: FSWatcher) => Promise<void>;
+  /** Tests only: holds project watching after recording file states, just before checking for closure. */
+  holdProjectWatch?: () => Promise<void>;
   /** Tests only: delays a periodic link read to exercise events, replacement and closing during the read. */
   readTypeLink?: (filename: string) => Promise<string>;
 
@@ -128,12 +130,31 @@ export class ProjectSession {
       while (dir !== '.') { paths.add(`${dir}/.gitignore`); dir = path.posix.dirname(dir); }
     }
     // Watch only approved files and their ignore rules. Newly added files appear on reopening.
-    this.watcher = chokidar.watch([...paths].map(relative => path.join(this.root, relative)), {
+    const watchPaths = [...paths].map(relative => path.join(this.root, relative));
+    const initialStates = new Map<string, { mtimeMs: number; ctimeMs: number; size: number; ino: number }>();
+    await Promise.all(watchPaths.map(async filename => {
+      try {
+        const { mtimeMs, ctimeMs, size, ino } = await stat(filename);
+        initialStates.set(filename, { mtimeMs, ctimeMs, size, ino });
+      } catch { /* Missing or unreadable files have no baseline: count every event. */ }
+    }));
+    await this.holdProjectWatch?.();
+    if (this.closed) throw new AppError('CANCELLED', '취소한 결과는 표시하지 않습니다.');
+    this.watcher = chokidar.watch(watchPaths, {
       persistent: true, ignoreInitial: true, followSymlinks: false, depth: 0,
       ignored: (_filename, stats) => !!stats?.isSymbolicLink(),
     });
-    this.watcher.on('all', () => {
-      if (!this.closed) { this.observedChanges++; this.notify({ projectId: this.id, kind: 'changed' }); }
+    this.watcher.on('all', (event, filename, stats) => {
+      if (this.closed) return;
+      const initial = initialStates.get(filename);
+      // On macOS the folder watch chokidar adds for a missing .gitignore reports a write made just before
+      // watching started (30 of 30 local tries), with the state recorded above. Any real write changes ctime.
+      // HFS+/FAT timestamps can have only second precision: same-size edits within that second may be missed.
+      if (event === 'change' && stats && initial && stats.mtimeMs === initial.mtimeMs &&
+        stats.ctimeMs === initial.ctimeMs && stats.size === initial.size && stats.ino === initial.ino) return;
+      initialStates.delete(filename);
+      this.observedChanges++;
+      this.notify({ projectId: this.id, kind: 'changed' });
     });
     this.watcher.on('error', () => {
       if (!this.closed) { this.observedChanges++; this.notify({ projectId: this.id, kind: 'watch-error' }); }
