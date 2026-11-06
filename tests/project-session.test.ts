@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { lstat, mkdir, mkdtemp, realpath, readdir, readFile, readlink, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, realpath, readdir, readFile, readlink, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -153,6 +153,99 @@ const busyRead = async (on: ProjectSession) => {
   await new Promise(resolve => setTimeout(resolve, 50));
   return reading;
 };
+
+describe('project watching ignores delayed notifications of pre-watch writes', () => {
+  const notify = vi.fn();
+  beforeEach(async () => {
+    await session.close();
+    notify.mockClear();
+    session = new ProjectSession(randomUUID(), root, workerPath, notify);
+  });
+
+  it('ignores repeated changes with identical stats, including while a map runs', async () => {
+    await session.open();
+    const filename = path.join(root, 'a.ts');
+    const stats = await stat(filename);
+    const watcher = session['watcher']!;
+    watcher.emit('all', 'change', filename, stats);
+    watcher.emit('all', 'change', filename, stats);
+    expect(notify).not.toHaveBeenCalled();
+    process.env.MAP_DELAY = '10';
+    const map = session.map();
+    watcher.emit('all', 'change', filename, stats);
+    await expect(map).resolves.toMatchObject({ edges: [], limited: false });
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it.each(['mtimeMs', 'ctimeMs', 'size', 'ino', 'missing stats'] as const)(
+    'counts a change with different %s and all later events for that file', async field => {
+      await session.open();
+      const filename = path.join(root, 'a.ts');
+      const stats = await stat(filename);
+      const changedStats = field === 'missing stats' ? undefined : { ...stats, [field]: stats[field] + 1 };
+      const watcher = session['watcher']!;
+      process.env.MAP_DELAY = '10';
+      const map = session.map();
+      watcher.emit('all', 'change', filename, changedStats);
+      await expect(map).rejects.toMatchObject({ code: 'CHANGED' });
+      expect(notify).toHaveBeenCalledExactlyOnceWith({ projectId: session.id, kind: 'changed' });
+      notify.mockClear();
+      watcher.emit('all', 'change', filename, stats);
+      expect(notify).toHaveBeenCalledExactlyOnceWith({ projectId: session.id, kind: 'changed' });
+    },
+  );
+
+  it.each(['add', 'unlink'] as const)('counts %s even with identical stats and discards the baseline', async event => {
+    await session.open();
+    const filename = path.join(root, 'a.ts');
+    const stats = await stat(filename);
+    const watcher = session['watcher']!;
+    watcher.emit('all', event, filename, stats);
+    expect(notify).toHaveBeenCalledExactlyOnceWith({ projectId: session.id, kind: 'changed' });
+    watcher.emit('all', 'change', filename, stats);
+    expect(notify).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['missing file', 'different path'] as const)('counts changes without a baseline: %s', async reason => {
+    await session.open();
+    const stats = await stat(path.join(root, 'a.ts'));
+    const filename = reason === 'missing file' ? path.join(root, '.gitignore') : 'a.ts';
+    session['watcher']!.emit('all', 'change', filename, stats);
+    expect(notify).toHaveBeenCalledExactlyOnceWith({ projectId: session.id, kind: 'changed' });
+  });
+
+  it('does not create a watcher if closed while recording the initial file states', async () => {
+    let release = () => {};
+    const held = new Promise<void>(resolve => {
+      session.holdProjectWatch = () => {
+        resolve();
+        return new Promise<void>(done => { release = done; });
+      };
+    });
+    const opening = session.open().then(() => null, (error: unknown) => error);
+    try {
+      await held;
+      await session.close();
+      release();
+      expect(await opening).toMatchObject({ code: 'CANCELLED', message: '취소한 결과는 표시하지 않습니다.' });
+      expect(session['watcher']).toBeUndefined();
+    } finally {
+      release();
+      await opening;
+      await session['watcher']?.close();
+    }
+  });
+
+  it.skipIf(process.platform !== 'darwin')('reports a real edit after opening on macOS', async () => {
+    await session.open();
+    await new Promise(resolve => setTimeout(resolve, 300));
+    notify.mockClear();
+    await writeFile(path.join(root, 'a.ts'), 'export const a = 2;\n');
+    await vi.waitFor(() => {
+      expect(notify).toHaveBeenCalledWith({ projectId: session.id, kind: 'changed' });
+    }, { timeout: 3000 });
+  });
+});
 
 describe('closing never ends a worker in the middle of its work', () => {
   it('answers at once, and ends the worker only after it has replied', async () => {
