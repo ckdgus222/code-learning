@@ -21,12 +21,21 @@ export const SINGLE_NEEDS = {
   antigravity: 'Gemini 단독에는 Antigravity가 필요해요. 먼저 로컬 AI 설치 상태를 확인해 주세요.',
 };
 export const CLAUDE_CODE_CLOSED = 'Claude Code 단독은 아직 준비 중이에요.';
+export const WINDOWS_CODEX_WARNING = 'Windows 실험 기능이에요: 실제 Windows PC에서 확인하지 못했고, macOS의 울타리 없이 실행해요. 도구 차단이 새면 Codex가 이 PC의 파일을 읽거나 바꿀 수 있어요. 자세한 내용은 README의 ‘알려진 한계’에 있어요.';
+export const WINDOWS_CODEX_READY = `질문을 보낼 수 있어요. 한 AI가 바로 설명하고 다른 AI의 대조는 없어요. ${WINDOWS_CODEX_WARNING}`;
+export const WINDOWS_LOCAL_WORKER_CLOSED = 'Windows에서는 아직 로컬 워커(Codex와 Gemini 대조)를 쓸 수 없어요. Antigravity의 도구 차단을 Windows에서 확인하지 못했어요. 질문·파일 설명·기능 정리·기획 대조는 Codex 단독으로 할 수 있어요.';
+export const WINDOWS_GEMINI_CLOSED = 'Windows에서는 아직 Gemini 단독을 쓸 수 없어요. Antigravity의 도구 차단을 Windows에서 확인하지 못했어요.';
 const providers: { provider: ProviderId; binary: string }[] = [
   { provider: 'codex', binary: 'codex' }, { provider: 'antigravity', binary: 'agy' }, { provider: 'claude-code', binary: 'claude' },
 ];
 
 // Fixed installation locations, not a shell/PATH search in the selected project.
-export function executableCandidates(binary: string, home = os.homedir()): string[] {
+export function executableCandidates(binary: string, home = os.homedir(), platform: NodeJS.Platform = process.platform, env = process.env): string[] {
+  if (platform === 'win32') {
+    if (binary === 'codex' && env.APPDATA) return [path.win32.join(env.APPDATA, 'npm', 'node_modules', '@openai', 'codex', 'bin', 'codex.js')];
+    if (binary === 'node' && env.ProgramFiles) return [path.win32.join(env.ProgramFiles, 'nodejs', 'node.exe')];
+    return [];
+  }
   return [path.join(home, '.local/bin', binary), path.join(home, '.npm-global/bin', binary),
     path.join('/opt/homebrew/bin', binary), path.join('/usr/local/bin', binary)];
 }
@@ -48,7 +57,7 @@ async function usableFile(candidate: string): Promise<string | undefined> {
  * PATH=/usr/bin:/bin:/usr/sbin:/sbin, where `env node` fails, so a Node script is started with a
  * node from the same fixed install locations instead. Anything else is started as it is.
  */
-export async function resolveLaunch(target: string, home = os.homedir()): Promise<Launch | undefined> {
+export async function resolveLaunch(target: string, home = os.homedir(), platform: NodeJS.Platform = process.platform): Promise<Launch | undefined> {
   const handle = await open(target, 'r');
   let head: string;
   try {
@@ -56,7 +65,7 @@ export async function resolveLaunch(target: string, home = os.homedir()): Promis
     head = buffer.subarray(0, bytesRead).toString('utf8');
   } finally { await handle.close(); }
   if (!head.startsWith('#!') || !/\bnode\b/.test(head.split('\n')[0])) return { executable: target, prefix: [] };
-  for (const candidate of executableCandidates('node', home)) {
+  for (const candidate of executableCandidates('node', home, platform)) {
     const node = await usableFile(candidate);
     if (node) return { executable: node, prefix: [target] };
   }
@@ -221,7 +230,21 @@ export class LocalAiRuntime {
    * MCP, plugins and hooks live under `~/.gemini`), so it is started with this folder as HOME.
    * That is not an official agy feature and is checked by `npm run test:agy-live`.
    */
-  constructor(private readonly codexHome: string, private readonly antigravityHome: string) {}
+  constructor(private readonly codexHome: string, private readonly antigravityHome: string,
+    private readonly platform: NodeJS.Platform = process.platform) {}
+
+  /**
+   * How a CLI is started: inside the macOS fence, or on Windows, which has no such sandbox, Codex as
+   * it is. That unfenced Codex is the unverified experimental mode the user chose on 2026-11-06; agy
+   * stays closed there because its no-tools hook and app-only HOME were never checked on Windows.
+   */
+  private async launchFor(provider: ProviderId, launch: Launch, directory: string): Promise<Launch> {
+    if (this.platform !== 'win32') {
+      return fencedLaunch(launch, { appHome: provider === 'codex' ? this.codexHome : this.antigravityHome, runDirectory: directory });
+    }
+    if (provider !== 'codex') throw new AppError('AI_UNAVAILABLE', 'Windows에서는 Codex 단독만 실행할 수 있어요.');
+    return launch;
+  }
 
   private async environment(provider: ProviderId): Promise<NodeJS.ProcessEnv | undefined> {
     const home = provider === 'codex' ? this.codexHome : provider === 'antigravity' ? this.antigravityHome : undefined;
@@ -255,11 +278,12 @@ export class LocalAiRuntime {
     this.agySupportsDisableSlashCommands = false;
     try {
       for (const { provider, binary } of providers) {
+        if (this.platform === 'win32' && provider !== 'codex') continue;
         if (automatic && provider === 'claude-code') continue;
         if (signal.aborted) throw new AppError('CANCELLED', '연결 확인을 취소했습니다.');
         let executable: string | undefined;
         // Try the official/common installation locations in order.
-        for (const candidate of executableCandidates(binary)) {
+        for (const candidate of executableCandidates(binary, os.homedir(), this.platform)) {
           executable = await usableFile(candidate);
           if (executable) break;
         }
@@ -268,7 +292,7 @@ export class LocalAiRuntime {
           connections.push({ ...base, installation: 'missing', message: '기본 설치 위치에서 찾지 못했습니다. 공식 프로그램을 설치해 주세요.' });
           continue;
         }
-        const launch = await resolveLaunch(executable).catch(() => undefined);
+        const launch = await resolveLaunch(executable, os.homedir(), this.platform).catch(() => undefined);
         if (!launch) {
           connections.push({ ...base, installation: 'unusable', message: '실행에 필요한 Node를 기본 위치에서 찾지 못했습니다.' });
           continue;
@@ -278,18 +302,18 @@ export class LocalAiRuntime {
           connections.push({ ...base, installation: 'unusable', message: (error as AppError).message });
           continue;
         }
-        // The two CLIs with an app-only home check their version inside the same fence as a question
-        // (agy otherwise tries to update itself here). Claude Code has none and is not used to send.
+        // Version checks use the same launch protection as questions (agy can update itself here).
+        // Claude Code has no app-only home and is not used to send.
         let start = launch;
         if (env) {
-          try { start = await fencedLaunch(launch, { appHome: provider === 'codex' ? this.codexHome : this.antigravityHome, runDirectory: directory }); } catch (error) {
+          try { start = await this.launchFor(provider, launch, directory); } catch (error) {
             connections.push({ ...base, installation: 'unusable', message: (error as AppError).message });
             continue;
           }
         }
         try {
           const output = await runProcess({ executable: start.executable, args: [...start.prefix, '--version'], cwd: directory, signal,
-            timeoutMs: 8000, maxOutputBytes: 16 * 1024, env: env && { ...env, TMPDIR: directory } });
+            timeoutMs: 8000, maxOutputBytes: 16 * 1024, env: env && { ...env, TMPDIR: directory, TEMP: directory, TMP: directory } });
           const version = output.stdout.match(/(?:^|\s)(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)(?:\s|$)/)?.[1] ?? null;
           if (output.exitCode !== 0 || !version) throw new Error('unusable');
           this.launches.set(provider, launch);
@@ -297,8 +321,14 @@ export class LocalAiRuntime {
             const [major, minor, patch] = version.split('.').map(part => Number.parseInt(part, 10));
             this.agySupportsDisableSlashCommands = major > 1 || (major === 1 && (minor > 4 || (minor === 4 && patch >= 12)));
           }
-          connections.push({ ...base, installation: 'found', version, message: '설치를 확인했습니다. 로그인·실제 응답·접근 제한은 아직 미검증입니다.'
-            + (provider === 'codex' ? ` 앱은 개인 Codex 설정과 분리된 앱 전용 위치를 쓰므로, 처음 한 번 터미널에서 로그인이 필요할 수 있어요: CODEX_HOME="${this.codexHome}" codex login` : '') });
+          let message = '설치를 확인했습니다. 로그인·실제 응답·접근 제한은 아직 미검증입니다.';
+          if (provider === 'codex') {
+            const login = this.platform === 'win32'
+              ? `PowerShell에서 로그인이 필요할 수 있어요: $env:CODEX_HOME="${this.codexHome}"; codex login`
+              : `터미널에서 로그인이 필요할 수 있어요: CODEX_HOME="${this.codexHome}" codex login`;
+            message += ` 앱은 개인 Codex 설정과 분리된 앱 전용 위치를 쓰므로, 처음 한 번 ${login}`;
+          }
+          connections.push({ ...base, installation: 'found', version, message });
         } catch (error) {
           if (signal.aborted) throw new AppError('CANCELLED', '연결 확인을 취소했습니다.');
           connections.push({ ...base, installation: 'unusable', message: '실행 파일은 있지만 버전을 확인하지 못했습니다.' });
@@ -307,6 +337,9 @@ export class LocalAiRuntime {
       return { checkedAt: new Date().toISOString(), providers: connections,
         modes: (['local-worker', ...providers.map(({ provider }) => provider)] as const).map(mode => {
           const blocker = this.blocker(mode);
+          if (this.platform === 'win32' && mode === 'codex' && !blocker) {
+            return { mode, ready: true, reason: WINDOWS_CODEX_READY, warning: WINDOWS_CODEX_WARNING };
+          }
           return { mode, ready: !blocker, reason: blocker ?? (mode === 'local-worker' ? LOCAL_WORKER_READY : SINGLE_READY) };
         }) };
     } finally { await rm(directory, { recursive: true, force: true }); }
@@ -315,6 +348,8 @@ export class LocalAiRuntime {
   /** Why a mode cannot send now, or null. Only this run's installation check counts (`launches` is cleared when one starts). */
   private blocker(mode: LearningMode): string | null {
     if (mode === 'claude-code') return CLAUDE_CODE_CLOSED;
+    if (this.platform === 'win32' && mode === 'local-worker') return WINDOWS_LOCAL_WORKER_CLOSED;
+    if (this.platform === 'win32' && mode === 'antigravity') return WINDOWS_GEMINI_CLOSED;
     if (mode === 'local-worker') return this.launches.has('codex') && this.launches.has('antigravity') ? null : LOCAL_WORKER_NEEDS_BOTH;
     return this.launches.has(mode) ? null : SINGLE_NEEDS[mode];
   }
@@ -373,10 +408,11 @@ export class LocalAiRuntime {
         content: `${request.prompt}\n\n응답은 아래 JSON schema를 따르는 JSON 하나만 출력한다. 코드 울타리나 다른 글을 붙이지 않는다.\n${JSON.stringify(request.schema)}`,
       } })}\n`;
       const env = await this.environment(request.provider);
-      const fenced = await fencedLaunch(launch, { appHome: request.provider === 'codex' ? this.codexHome : this.antigravityHome, runDirectory: directory });
-      // TMPDIR points into this run's folder, the only temporary place the fence lets the CLI write.
-      const output = await runProcess({ executable: fenced.executable, args: [...fenced.prefix, ...args], stdin, cwd: directory,
-        signal: request.signal, timeoutMs, env: { ...env, TMPDIR: directory } });
+      const start = await this.launchFor(request.provider, launch, directory);
+      // TMPDIR (macOS) and TEMP/TMP (Windows) point into this run's folder: the only temporary place the
+      // fence lets the CLI write, and removed after the run.
+      const output = await runProcess({ executable: start.executable, args: [...start.prefix, ...args], stdin, cwd: directory,
+        signal: request.signal, timeoutMs, env: { ...env, TMPDIR: directory, TEMP: directory, TMP: directory } });
       // Stderr can contain provider/native paths; never return it to the renderer.
       if (/denied|permission|not allowed|unauthorized|authentication required|rate.limit|quota/i.test(output.stderr)) {
         throw new AppError('AI_UNAVAILABLE', 'AI 실행 중 인증·권한·이용 한도 오류가 발생했습니다.');

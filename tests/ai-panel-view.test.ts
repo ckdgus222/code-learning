@@ -72,10 +72,12 @@ describe('compact AI panel', () => {
   it('explains the automatic subset only when a report omits Claude Code', () => {
     const automatic: ConnectionReport = { checkedAt: '2026-10-30T00:00:00.000Z', modes: [], providers: [
       { provider: 'codex', installation: 'missing', version: null, authentication: 'unchecked', isolation: 'unverified', message: 'test' },
+      { provider: 'antigravity', installation: 'missing', version: null, authentication: 'unchecked', isolation: 'unverified', message: 'test' },
     ] };
     const manual: ConnectionReport = { ...automatic, providers: [...automatic.providers,
       { ...automatic.providers[0], provider: 'claude-code' }] };
-    for (const connections of [null, automatic, manual]) {
+    const windows: ConnectionReport = { ...automatic, providers: [automatic.providers[0]] };
+    for (const connections of [null, automatic, manual, windows]) {
       const html = renderToStaticMarkup(React.createElement(AiPanel, {
         open: true, onClose() {},
         projectId: 'project', evidence: null, relativePath: '', stale: false, draft: null,
@@ -84,6 +86,25 @@ describe('compact AI panel', () => {
       }));
       expect(html.includes('자동 확인은 Codex·Antigravity만 해요. Claude Code까지 보려면 ‘로컬 AI 설치 확인’을 눌러요.')).toBe(connections === automatic);
     }
+  });
+
+  it.each([undefined, 'Windows 실험 기능 경고'])('shows the optional warning outside folded settings immediately before consent: %s', warning => {
+    const html = renderToStaticMarkup(React.createElement(AiPanel, {
+      open: true, onClose() {},
+      projectId: 'project', evidence: null, relativePath: '', stale: false, draft: null,
+      connections: { checkedAt: '2026-11-06T00:00:00.000Z', providers: [],
+        modes: [{ mode: 'codex', ready: true, reason: 'ready', ...(warning ? { warning } : {}) }] },
+      checking: false, otherRunning: false, mode: 'codex',
+      onMode() {}, onRunning() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onEvidence() {},
+    }));
+    expect(html).toMatch(/<button[^>]*aria-expanded="false">설정<\/button>/);
+    expect(html).toContain('<div class="ai-settings" hidden="">');
+    if (!warning) {
+      expect(html).not.toContain('data-testid="ai-warning"');
+      return;
+    }
+    expect(html).toContain(`</textarea></label><p class="notice" data-testid="ai-warning">${warning}</p><label class="ai-consent">`);
+    expect(html.indexOf('data-testid="ai-warning"')).toBeGreaterThan(html.indexOf('<div class="ai-question">'));
   });
 });
 

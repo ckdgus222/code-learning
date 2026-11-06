@@ -3860,14 +3860,15 @@ try {
     await openAiSection('설정');
     await page.locator('.ai-panel').getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
     const installs = page.getByRole('list', { name: '로컬 AI 설치 상태' });
-    await installs.getByText(/^Claude Code ·/).waitFor({ timeout: 35_000 });
+    await installs.getByText(process.platform === 'win32' ? /^Codex ·/ : /^Claude Code ·/).waitFor({ timeout: 35_000 });
     await until(async () => await page.locator('.ai-panel').getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).isEnabled());
     // With both workers installed (as on the development Mac) the local worker is ready and states its
     // known limits; otherwise it says both are needed. Sending still waits for consent.
     const listed = await installs.innerText();
     const ready = /Codex · 설치 확인/.test(listed) && /Antigravity · 설치 확인/.test(listed);
-    assert.match(await page.getByTestId('ai-readiness').innerText(), ready ? /질문을 보낼 수 있어요\. 알려진 한계/ : /Codex와 Antigravity가 둘 다 필요해요/);
-    assert.equal(await page.getByRole('checkbox').isEnabled(), ready);
+    assert.match(await page.getByTestId('ai-readiness').innerText(), process.platform === 'win32' ? /Windows에서는 아직 로컬 워커/
+      : ready ? /질문을 보낼 수 있어요\. 알려진 한계/ : /Codex와 Antigravity가 둘 다 필요해요/);
+    assert.equal(await page.getByRole('checkbox').isEnabled(), process.platform !== 'win32' && ready);
     assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
     // The consent names what capture sends: the selection's whole file too, and related files only here.
     await checkConsentDisclosure(page.locator('.ai-panel'), '선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·관련 파일(추가 최대 4개)·질문·최근 답변을 Codex와 Gemini에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.');
@@ -3875,8 +3876,10 @@ try {
     for (const [mode, binary, recipient] of [['codex', 'Codex', 'Codex'], ['antigravity', 'Antigravity', 'Gemini(Antigravity)']]) {
       await selector.selectOption(mode);
       const found = new RegExp(`${binary} · 설치 확인`).test(listed);
-      assert.match(await page.getByTestId('ai-readiness').innerText(), found ? /한 AI가 바로 설명하고 다른 AI의 대조는 없어요/ : /단독에는 .+ 필요해요/);
-      assert.equal(await page.getByRole('checkbox').isEnabled(), found);
+      const closed = process.platform === 'win32' && mode === 'antigravity';
+      assert.match(await page.getByTestId('ai-readiness').innerText(), closed ? /Windows에서는 아직 Gemini 단독/
+        : found ? /한 AI가 바로 설명하고 다른 AI의 대조는 없어요/ : /단독에는 .+ 필요해요/);
+      assert.equal(await page.getByRole('checkbox').isEnabled(), !closed && found);
       await checkConsentDisclosure(page.locator('.ai-panel'), `선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·질문·최근 답변을 ${recipient}에 보내는 데 동의합니다. 다른 파일은 더 읽지 않습니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.`);
       assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
     }

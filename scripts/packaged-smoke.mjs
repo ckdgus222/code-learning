@@ -164,20 +164,22 @@ try {
   await page.getByRole('button', { name: '설정', exact: true }).click();
   assert.equal(await page.getByRole('combobox', { name: 'AI 사용 방식' }).inputValue(), 'local-worker');
   await page.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
-  await page.getByRole('list', { name: '로컬 AI 설치 상태' }).getByText(/^Claude Code ·/).waitFor({ timeout: 35_000 });
+  await page.getByRole('list', { name: '로컬 AI 설치 상태' }).getByText(process.platform === 'win32' ? /^Codex ·/ : /^Claude Code ·/).waitFor({ timeout: 35_000 });
   // The version check runs inside the fence: a CLI installed in a fixed location must still show its version.
   const statuses = await page.getByRole('list', { name: '로컬 AI 설치 상태' }).innerText();
   const installed = binary => [path.join(os.homedir(), '.local/bin'), path.join(os.homedir(), '.npm-global/bin'), '/opt/homebrew/bin', '/usr/local/bin']
     .some(folder => existsSync(path.join(folder, binary)));
   for (const [binary, name] of [['codex', 'Codex'], ['agy', 'Antigravity']]) {
-    if (installed(binary)) assert.match(statuses, new RegExp(`${name} · 설치 확인 \\(\\d+\\.\\d+\\.\\d+`), `${name} version inside the fence`);
+    if (onMac && installed(binary)) assert.match(statuses, new RegExp(`${name} · 설치 확인 \\(\\d+\\.\\d+\\.\\d+`), `${name} version inside the fence`);
   }
   // Both workers found: the local worker is ready and states its known limits. Nothing is sent here:
   // the send button waits for consent, which this test never gives.
   const ready = /Codex · 설치 확인/.test(statuses) && /Antigravity · 설치 확인/.test(statuses);
-  assert.match(await page.getByTestId('ai-readiness').innerText(), ready ? /질문을 보낼 수 있어요\. 알려진 한계/ : /Codex와 Antigravity가 둘 다 필요해요/);
+  assert.match(await page.getByTestId('ai-readiness').innerText(), process.platform === 'win32' ? /Windows에서는 아직 로컬 워커/
+    : ready ? /질문을 보낼 수 있어요\. 알려진 한계/ : /Codex와 Antigravity가 둘 다 필요해요/);
   assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
   const consent = page.locator('.ai-panel').getByRole('checkbox', { name: '보낼 자료에 동의', exact: true });
+  assert.equal(await consent.isEnabled(), process.platform !== 'win32' && ready);
   const disclosure = page.locator('.ai-panel .consent-details');
   const description = disclosure.locator('p');
   assert.equal(await disclosure.evaluate(element => element.open), false);
@@ -190,6 +192,19 @@ try {
   await disclosure.locator('summary').click();
   assert.equal(await description.isVisible(), false);
   assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
+  if (process.platform === 'win32') {
+    const selector = page.getByRole('combobox', { name: 'AI 사용 방식' });
+    await selector.selectOption('antigravity');
+    assert.match(await page.getByTestId('ai-readiness').innerText(), /Windows에서는 아직 Gemini 단독/);
+    assert.equal(await consent.isEnabled(), false);
+    await selector.selectOption('codex');
+    const found = /Codex · 설치 확인/.test(statuses);
+    assert.match(await page.getByTestId('ai-readiness').innerText(), found
+      ? /한 AI가 바로 설명하고 다른 AI의 대조는 없어요/ : /단독에는 .+ 필요해요/);
+    assert.equal(await consent.isEnabled(), found);
+    assert.equal(await consent.isChecked(), false);
+    await selector.selectOption('local-worker');
+  }
   await page.screenshot({ path: path.join(root, 'test-results/packaged-local-ai.png') });
   await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
   const cancellation = page.getByRole('status').filter({ hasText: '프로젝트를 닫았어요.' });

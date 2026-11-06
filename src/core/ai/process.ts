@@ -71,7 +71,7 @@ export async function runProcess(request: ProcessRequest): Promise<{ stdout: str
     try {
       child = spawn(request.executable, request.args, {
         cwd: request.cwd, env: request.env ?? localProcessEnv(),
-        shell: false, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
+        shell: false, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch {
       reject(unavailable());
