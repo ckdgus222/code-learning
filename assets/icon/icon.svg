@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Code Learning — 길눈</title>
+  <desc id="desc">파란 둥근 사각형 위의 옅은 파랑 물방울 캐릭터. 노란 지느러미와 호기심 많은 큰 눈 하나로 낯선 코드 속을 함께 살피는 안내자를 표현한다.</desc>
+  <defs>
+    <linearGradient id="body" x1="236" y1="100" x2="790" y2="924" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3977C9"/>
+      <stop offset=".6" stop-color="#285EAC"/>
+      <stop offset="1" stop-color="#214E91"/>
+    </linearGradient>
+    <linearGradient id="creature" x1="449" y1="317" x2="606" y2="750" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7FAFD"/>
+      <stop offset="1" stop-color="#E3EDFA"/>
+    </linearGradient>
+    <linearGradient id="fin" x1="274" y1="326" x2="399" y2="487" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F8D777"/>
+      <stop offset="1" stop-color="#F2C14E"/>
+    </linearGradient>
+    <filter id="shadow" x="32" y="32" width="960" height="976" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="14" stdDeviation="15" flood-color="#102944" flood-opacity=".19"/>
+    </filter>
+    <filter id="relief" x="190" y="248" width="648" height="582" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="13" stdDeviation="9" flood-color="#153B6A" flood-opacity=".2"/>
+    </filter>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="184" fill="url(#body)" filter="url(#shadow)"/>
+  <rect x="102" y="102" width="820" height="820" rx="182" stroke="#F7FAFD" stroke-opacity=".2" stroke-width="4"/>
+  <g filter="url(#relief)">
+    <path d="M351 484C270 458 243 400 261 326C344 329 397 363 420 423Z" fill="url(#fin)"/>
+    <path d="M299 625C285 516 318 424 405 361C481 305 587 293 668 329C751 366 790 446 775 531C761 615 694 665 615 689C536 713 485 719 423 730L303 760C278 766 278 747 285 729C300 687 304 659 299 625Z" fill="url(#creature)"/>
+  </g>
+  <ellipse cx="620" cy="459" rx="76" ry="86" transform="rotate(18 620 459)" fill="#183B63"/>
+  <ellipse cx="641" cy="433" rx="22" ry="25" transform="rotate(18 641 433)" fill="#F7FAFD"/>
+</svg>

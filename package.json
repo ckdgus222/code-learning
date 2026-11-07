@@ -8,6 +8,7 @@
   "main": ".vite/build/main.cjs",
   "scripts": {
     "start": "electron-forge start",
+    "icons": "node scripts/make-icons.mjs",
     "package": "electron-forge package",
     "make": "electron-forge package --platform=darwin --arch=arm64 && node scripts/make-dmg.mjs",
     "make:win": "electron-forge make --platform=win32 --arch=x64",

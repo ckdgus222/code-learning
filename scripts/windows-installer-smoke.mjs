@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -18,6 +19,7 @@ let executable;
 let startMenu;
 let desktopShortcut;
 let diagnostics;
+let iconDiagnostics;
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true, timeout: 120_000, ...options });
@@ -119,6 +121,22 @@ try {
     assert.equal(registered(), true, 'Uninstall registration is missing');
   });
   passed.push('Installed executables, Start Menu and desktop shortcuts, and uninstall registration exist');
+  iconDiagnostics = { displayIcon: null, file: null, size: null, hash: null };
+  const displayIcon = JSON.parse(powershell(
+    "(Get-ItemProperty -LiteralPath ('Registry::HKEY_CURRENT_USER' + $env:CODE_LEARNING_REGISTRY_KEY.Substring(4)) -Name DisplayIcon).DisplayIcon | ConvertTo-Json -Compress",
+    { ...process.env, CODE_LEARNING_REGISTRY_KEY: registryKey }));
+  iconDiagnostics.displayIcon = displayIcon;
+  assert.equal(typeof displayIcon, 'string', 'DisplayIcon must be a file path');
+  // Strip an optional resource index, then quotes around paths containing spaces.
+  const iconFile = displayIcon.trim().replace(/,\s*-?\d+\s*$/, '').trim().replace(/^"(.*)"$/, '$1');
+  iconDiagnostics.file = iconFile;
+  assert.ok(iconFile && existsSync(iconFile), `DisplayIcon file is missing: ${displayIcon}`);
+  const installedIcon = await readFile(iconFile);
+  iconDiagnostics.size = installedIcon.length;
+  iconDiagnostics.hash = createHash('sha256').update(installedIcon).digest('hex');
+  const expectedIconHash = createHash('sha256').update(await readFile(path.join(root, 'assets/icon/icon.ico'))).digest('hex');
+  assert.equal(iconDiagnostics.hash, expectedIconHash, 'DisplayIcon differs from assets/icon/icon.ico');
+  passed.push('Uninstall DisplayIcon matches assets/icon/icon.ico');
   assert.ok(!existsSync(database), 'Installation started the app and created learning.sqlite');
   passed.push('Installation did not create learning.sqlite');
 
@@ -144,6 +162,7 @@ try {
   passed.push('Start Menu shortcuts start the installed launcher');
 } catch (error) {
   console.error(error);
+  if (iconDiagnostics) console.error(JSON.stringify(iconDiagnostics, null, 2));
   errors.push(String(error));
 } finally {
   // Attempt removal even after an earlier check fails, and report cleanup failures as test failures.
@@ -169,6 +188,6 @@ try {
     }
   }
   await mkdir(artifacts, { recursive: true });
-  await writeFile(path.join(artifacts, 'windows-installer.json'), JSON.stringify({ passed, errors, diagnostics }, null, 2));
+  await writeFile(path.join(artifacts, 'windows-installer.json'), JSON.stringify({ passed, errors, diagnostics, iconDiagnostics }, null, 2));
   if (errors.length > 0) process.exitCode = 1;
 }
