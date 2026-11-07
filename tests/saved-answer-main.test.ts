@@ -21,6 +21,7 @@ vi.mock('electron', () => ({
   dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: [host.folder] }), showErrorBox: vi.fn() },
   ipcMain: { handle: (channel: string, handler: (event: unknown, input: unknown) => Promise<Result<unknown>>) => host.handlers.set(channel, handler) },
   powerMonitor: { on: () => {} },
+  nativeTheme: { themeSource: 'system' },
 }));
 vi.mock('../src/core/ai/runtime', () => ({ LocalAiRuntime: class { async close() {} } }));
 vi.mock('../src/core/ai/workflow', () => ({ LocalWorkerWorkflow: class { async close() {} } }));

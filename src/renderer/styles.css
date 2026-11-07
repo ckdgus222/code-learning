@@ -26,17 +26,30 @@
   --radius-sm: 3px;
   --sans: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, monospace;
-  --syntax-keyword: #7440A0;
-  --syntax-function: #285EAC;
-  --syntax-type: #8A5A00;
-  --syntax-string: #80521D;
-  --syntax-number: #A3401A;
+  --code-ink: #24292F;
+  --syntax-keyword: #C2185B;
+  --syntax-function: #1F5FBF;
+  --syntax-property: #6A3FB5;
+  --syntax-type: #0B6378;
+  --syntax-string: #186A2C;
+  --syntax-number: #B5420E;
+  --syntax-comment: #5C6B7D;
   --band-server: #285EAC;
   --band-jsx: #80521D;
   --band-hook: #7440A0;
   color: var(--ink);
   background: var(--bg);
   font: 16px/1.6 var(--sans);
+}
+:root[data-code-colors="contrast"] {
+  --code-ink: #0B0F14;
+  --syntax-keyword: #A1004A;
+  --syntax-function: #0040A8;
+  --syntax-property: #4B1FA0;
+  --syntax-type: #005F6B;
+  --syntax-string: #0B5D1E;
+  --syntax-number: #8A2C00;
+  --syntax-comment: #3F4B5A;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -63,14 +76,27 @@
     --danger-soft: #3B1D1C;
     --sans: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", system-ui, sans-serif;
     --mono: ui-monospace, "SF Mono", Menlo, monospace;
-    --syntax-keyword: #C9A2F2;
-    --syntax-function: #8FC0FB;
-    --syntax-type: #F0C674;
-    --syntax-string: #E9BB7E;
-    --syntax-number: #F2A36B;
+    --code-ink: #D4DCE8;
+    --syntax-keyword: #FF7AB2;
+    --syntax-function: #7CB7FF;
+    --syntax-property: #C3A6FF;
+    --syntax-type: #5FD4D0;
+    --syntax-string: #9BE07A;
+    --syntax-number: #FFB86B;
+    --syntax-comment: #8D9DB1;
     --band-server: #8FC0FB;
     --band-jsx: #E9BB7E;
     --band-hook: #C9A2F2;
+  }
+  :root[data-code-colors="contrast"] {
+    --code-ink: #FFFFFF;
+    --syntax-keyword: #FF9ACB;
+    --syntax-function: #A6CFFF;
+    --syntax-property: #DCCBFF;
+    --syntax-type: #86F0EA;
+    --syntax-string: #B9F59E;
+    --syntax-number: #FFCF99;
+    --syntax-comment: #B4C0CF;
   }
 }
 * { box-sizing: border-box; }
@@ -793,3 +819,12 @@ section[aria-label="기능 목록"] > h3 { scroll-margin-top: 16px; }
   .plan-item { grid-template-columns: minmax(0, 1fr); }
   .plan-item__evidence { text-align: left; }
 }
+
+/* View settings are available before and after opening a project. */
+.view-settings { position: relative; }
+.view-settings__popup { position: absolute; top: calc(100% + 8px); right: 0; z-index: 30; width: 250px; max-width: calc(100vw - 32px); padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: 0 4px 16px rgb(0 0 0 / .08); white-space: normal; }
+.view-settings__popup fieldset { display: grid; gap: 6px; margin: 0 0 10px; padding: 0; border: 0; }
+.view-settings__popup legend { margin-bottom: 6px; font-weight: 600; }
+.view-settings__popup label { display: flex; align-items: center; gap: 8px; }
+.view-settings__popup input { accent-color: var(--accent); }
+.view-settings__popup [role="alert"] { color: var(--danger); font-size: 14px; }

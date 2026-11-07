@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { checkPlanCompare } from './plan-compare-smoke.mjs';
+import { checkViewSettings, checkCodeColors } from './view-settings-smoke.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const packagedApp = {
@@ -73,8 +74,16 @@ try {
   const state = await app.evaluate(({ app }) => ({ packaged: app.isPackaged, appPath: app.getAppPath(), userData: app.getPath('userData'), versions: process.versions }));
   assert.equal(state.packaged, true);
   assert.equal(state.userData, profile, 'Packaged test must use isolated userData');
-  const page = await app.firstWindow();
+  let page = await app.firstWindow();
   await page.getByRole('heading', { name: 'Code Learning', exact: true }).waitFor();
+  ({ app, page } = await checkViewSettings(app, page, async () => {
+    await app.close();
+    app = await electron.launch({ executablePath: path.join(root, packagedApp),
+      args: [`--user-data-dir=${profile}`], chromiumSandbox: true, timeout: 30_000, colorScheme: null });
+    page = await app.firstWindow();
+    await page.getByRole('heading', { name: 'Code Learning', exact: true }).waitFor();
+    return { app, page };
+  }));
   try {
     for (const mode of ['light', 'dark']) {
       await app.evaluate(({ nativeTheme }, mode) => { nativeTheme.themeSource = mode; }, mode);
@@ -115,6 +124,7 @@ try {
   assert.equal(await page.locator('.statusbar').count(), 0);
   assert.equal(await page.locator('.views__item').count(), 5);
   // The packaged reader colours syntax and takes keyboard focus, as in development.
+  await checkCodeColors(page);
   const reader = await page.evaluate(() => {
     const keyword = [...document.querySelectorAll('.cm-content span')].find(span => span.textContent === 'return');
     return { tabindex: document.querySelector('.cm-content')?.getAttribute('tabindex'),

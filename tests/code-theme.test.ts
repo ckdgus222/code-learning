@@ -1,10 +1,16 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { tags, highlightTree } from '@lezer/highlight';
+import { javascriptLanguage } from '@codemirror/lang-javascript';
 import { codeHighlightStyle } from '../src/renderer/code-theme';
 
 const css = readFileSync(new URL('../src/renderer/styles.css', import.meta.url), 'utf8');
 const lightBlock = css.match(/:root\s*\{([^}]+)\}/)![1];
 const darkBlock = css.match(/@media\s*\(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{([^}]+)\}/)![1];
+const contrastBlocks = [...css.matchAll(/:root\[data-code-colors="contrast"\]\s*\{([^}]+)\}/g)].map(match => match[1]);
+const contrastOverrides = contrastBlocks.map(block =>
+  Object.fromEntries([...block.matchAll(/--([\w-]+):\s*([^;]+);/g)].map(match => [match[1], match[2]])));
+const codeTokens = ['code-ink', 'syntax-keyword', 'syntax-function', 'syntax-property', 'syntax-type', 'syntax-string', 'syntax-number', 'syntax-comment'];
 const overrides = [lightBlock, darkBlock].map(block =>
   Object.fromEntries([...block.matchAll(/--([\w-]+):\s*([^;]+);/g)].map(match => [match[1], match[2]])));
 const light = overrides[0];
@@ -40,7 +46,7 @@ describe.each(['light', 'dark'])('%s workspace contrast', mode => {
 
   it('keeps every syntax colour readable on code, evidence and changed lines', () => {
     for (const style of codeHighlightStyle.specs) {
-      expect(style.color).toMatch(/^var\(--(?:syntax-[\w-]+|muted)\)$/);
+      expect(style.color).toMatch(/^var\(--(?:syntax-[\w-]+|code-ink)\)$/);
       const colour = tokens[style.color!.slice(6, -1)];
       for (const background of ['surface', 'mark', 'ok-soft', 'danger-soft']) {
         expect(contrast(colour, tokens[background]), `${colour} on ${background}`).toBeGreaterThanOrEqual(4.5);
@@ -77,10 +83,68 @@ describe('system theme tokens', () => {
     for (const file of files) {
       let source = readFileSync(new URL(file, renderer), 'utf8');
       if (file === 'styles.css') {
-        for (const block of [lightBlock, darkBlock]) source = source.replace(block, block.replace(/--[\w-]+:\s*[^;]+;/g, ''));
+        for (const block of [lightBlock, darkBlock, ...contrastBlocks]) source = source.replace(block, block.replace(/--[\w-]+:\s*[^;]+;/g, ''));
       }
       for (const colour of allowedColours) source = source.replaceAll(colour, '');
       expect(source.match(/#[\da-f]{3,8}\b|(?:rgb|hsl)a?\([^)]*\)/gi), file).toBeNull();
     }
   });
+});
+
+
+describe.each([
+  ['light default', light, false], ['dark default', dark, false],
+  ['light contrast', { ...light, ...contrastOverrides[0] }, true],
+  ['dark contrast', { ...dark, ...contrastOverrides[1] }, true],
+] as const)('%s code colours', (_name, tokens, highContrast) => {
+  it('defines all eight code tokens and meets contrast on every code background', () => {
+    for (const token of codeTokens) {
+      expect(tokens[token], token).toMatch(/^#[\da-f]{6}$/i);
+      for (const background of ['surface', 'mark', 'ok-soft', 'danger-soft']) {
+        expect(contrast(tokens[token], tokens[background]), `${token} on ${background}`).toBeGreaterThanOrEqual(4.5);
+      }
+      if (highContrast) expect(contrast(tokens[token], tokens.surface), token).toBeGreaterThanOrEqual(7);
+    }
+  });
+});
+
+it('defines complete, unique high contrast overrides in both media modes', () => {
+  expect(contrastBlocks).toHaveLength(2);
+  for (const block of contrastBlocks) {
+    expect([...block.matchAll(/--([\w-]+):/g)].map(match => match[1]).sort()).toEqual([...codeTokens].sort());
+  }
+  for (const tokens of overrides) expect(codeTokens.every(token => token in tokens)).toBe(true);
+  expect(css).toMatch(/@media\s*\(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{[^}]+\}\s*:root\[data-code-colors="contrast"\]/);
+});
+
+it('maps declarations, properties, functions and literals to their intended colours', () => {
+  const cases = [
+    [tags.keyword, 'syntax-keyword'],
+    [tags.function(tags.variableName), 'syntax-function'], [tags.function(tags.propertyName), 'syntax-function'],
+    [tags.propertyName, 'syntax-property'], [tags.definition(tags.propertyName), 'syntax-property'],
+    [tags.definition(tags.variableName), 'code-ink'],
+    [tags.typeName, 'syntax-type'], [tags.className, 'syntax-type'],
+    [tags.string, 'syntax-string'], [tags.regexp, 'syntax-string'],
+    [tags.number, 'syntax-number'], [tags.bool, 'syntax-number'], [tags.null, 'syntax-number'], [tags.atom, 'syntax-number'],
+    [tags.comment, 'syntax-comment'],
+  ] as const;
+  for (const [tag, token] of cases) {
+    const style = codeHighlightStyle.specs.find(spec => (Array.isArray(spec.tag) ? spec.tag : [spec.tag]).includes(tag));
+    expect(style?.color).toBe(`var(--${token})`);
+    if (tag === tags.comment) expect(style?.fontStyle).toBe('italic');
+  }
+});
+
+it('keeps property and variable declarations distinct from functions in parsed code', () => {
+  const source = 'const item = {slug: "a", type: true, empty: null}; function run() { return item.slug; } run();';
+  const spans: { text: string; classes: string }[] = [];
+  highlightTree(javascriptLanguage.parser.parse(source), codeHighlightStyle, (from, to, classes) => {
+    spans.push({ text: source.slice(from, to), classes });
+  });
+  for (const [word, tag] of [
+    ['item', tags.definition(tags.variableName)], ['slug', tags.propertyName], ['type', tags.propertyName],
+    ['run', tags.function(tags.variableName)], ['true', tags.bool], ['null', tags.null],
+  ] as const) {
+    expect(spans.find(span => span.text === word)?.classes, word).toBe(codeHighlightStyle.style([tag]));
+  }
 });

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, powerMonitor, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, powerMonitor, type IpcMainInvokeEvent } from 'electron';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
@@ -19,12 +19,14 @@ import { planSections } from '../core/analysis/plan-sections';
 import { checkPlanCompare, planPartFor, planCompareResultSchema, savePlanCompareSchema, planCompareCheckSchema, planCompareRequestSchema, planSelection, type PlanCompareResult, type PlanDocument } from '../shared/plan-compare';
 import { capturePlanCompare, checkPlanCompareBasis, restorePlanCompare, revalidatePlanCompare } from '../core/ai/plan-compare';
 import { handleSquirrelEvent } from './squirrel-startup';
+import { ViewSettingsStore } from './view-settings';
 
 const installing = handleSquirrelEvent();
 
 let window: BrowserWindow | null = null;
 let session: ProjectSession | undefined;
 let storage: ProjectStorage;
+let viewSettings: ViewSettingsStore;
 let generation = 0;
 let opening = false;
 let quitting = false;
@@ -269,7 +271,8 @@ async function openFolder(selectRoot: (requestedAt: number) => Promise<string | 
 function createWindow() {
   window = new BrowserWindow({ width: 1280, height: 800, minWidth: 760, minHeight: 560,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true,
-      nodeIntegration: false, webSecurity: true, webviewTag: false },
+      nodeIntegration: false, webSecurity: true, webviewTag: false,
+      additionalArguments: [`--code-colors=${viewSettings.get().codeColors}`] },
   });
   const contents = window.webContents;
   contents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -286,6 +289,13 @@ function createWindow() {
 app.whenReady().then(async () => {
   if (installing) return;
   await mkdir(app.getPath('userData'), { recursive: true });
+  viewSettings = new ViewSettingsStore(path.join(app.getPath('userData'), 'view-settings.json'), nativeTheme);
+  await viewSettings.load();
+  handle(channels.getViewSettings, async argument => {
+    z.undefined().parse(argument);
+    return viewSettings.get();
+  });
+  handle(channels.setViewSettings, argument => viewSettings.set(argument));
   storage = new ProjectStorage(path.join(app.getPath('userData'), 'learning.sqlite'));
   // The watcher may miss changes made while the Mac slept (plan 15.6), so waking up asks for a re-check.
   // Returning to the window does not: the watcher keeps running in the background, and evidence and
