@@ -82,8 +82,8 @@ function fake(snapshot: ContextSnapshot, answer: (snapshot: ContextSnapshot) => 
   const events: LearningEvent[] = [];
   const revalidate = vi.fn(async (_snapshot: ContextSnapshot, _signal: AbortSignal) => {});
   const expand = vi.fn(async (_snapshot: ContextSnapshot, _ids: string[], _signal: AbortSignal) => {});
-  const run = vi.fn(async ({ stage }: StageRequest): Promise<StageResponse> => ({
-    reportedModel: stage === 'explaining' ? GEMINI_MODEL : null,
+  const run = vi.fn(async ({ stage, provider }: StageRequest): Promise<StageResponse> => ({
+    reportedModel: provider === 'antigravity' ? GEMINI_MODEL : null,
     value: stage === 'organizing' ? { focus: '기능 확인', requestedFileIds: requested }
       : stage === 'explaining' ? answer(snapshot) : { accepted: true, issues: [], overview: answer(snapshot) },
   }));
@@ -137,9 +137,29 @@ describe('overview workflow with fake stages', () => {
     for (const [input] of f.run.mock.calls.filter(([input]) => input.provider === 'codex')) expect(JSON.stringify(input.schema)).not.toContain('"oneOf"');
   });
 
-  it('writes nothing and claims no check when no file was read', async () => {
+  it.each(['codex', 'antigravity'] as const)('uses only %s to pick files and write, without review', async mode => {
+    const snapshot = material(files);
+    const requested = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+    const f = fake(snapshot, written, requested);
+    const result = await f.finish({ ...f.request, mode });
+    if (result.kind !== 'overview-completed') throw new Error(`expected an overview, got ${result.kind}`);
+    expect(f.assertReady).toHaveBeenCalledWith(mode);
+    expect(f.run.mock.calls.map(([input]) => [input.stage, input.provider])).toEqual([
+      ['organizing', mode], ['explaining', mode]]);
+    expect(f.events.filter(event => event.kind === 'progress').map(event => event.phase)).toEqual([
+      'collecting', 'organizing', 'reading-related', 'explaining', 'validating']);
+    expect(f.expand).toHaveBeenCalledWith(snapshot, requested, expect.any(AbortSignal));
+    expect(f.revalidate).toHaveBeenCalledTimes(3);
+    expect(result.result).toMatchObject({ review: 'AI 대조 없음', overview: written(snapshot) });
+    expect(result.result.models.map(model => [model.stage, model.provider])).toEqual([
+      ['organizing', mode], ['explaining', mode]]);
+    expect(result.result.limitations).toEqual(['단독 방식: 다른 AI의 대조가 없습니다.']);
+    expect(result.result.sources.map(source => source.relativePath)).toEqual(['README.md', 'order.ts', 'stock.ts']);
+  });
+
+  it.each(['local-worker', 'codex', 'antigravity'] as const)('writes nothing and claims no check when no file was read in %s', async mode => {
     const f = fake(material({}), () => { throw new Error('must not be asked'); });
-    const result = await f.finish();
+    const result = await f.finish({ ...f.request, mode });
     if (result.kind !== 'overview-completed') throw new Error(`expected an overview, got ${result.kind}`);
     expect(f.run.mock.calls.map(([input]) => input.stage)).toEqual(['organizing']);
     expect(result.result.review).toBe('개요 작성 안 함');
@@ -172,7 +192,7 @@ describe('overview workflow with fake stages', () => {
     expect(await f.finish()).toMatchObject({ kind: 'failed', error: { code: 'AI_RESPONSE' } });
   });
 
-  it('drops function names not written as a whole name in the file they were given for, and says so', async () => {
+  it.each(['local-worker', 'codex', 'antigravity'] as const)('drops unwritten function names and says so in %s', async mode => {
     const snapshot = material(files);
     const f = fake(snapshot, current => {
       const answer = written(current);
@@ -180,7 +200,7 @@ describe('overview workflow with fake stages', () => {
       answer.roles[0].functions.push({ name: 'placeOrder', evidenceId: idOf(current, 'stock.ts') }, { name: 'stock()', evidenceId: idOf(current, 'stock.ts') });
       return answer;
     });
-    const result = await f.finish();
+    const result = await f.finish({ ...f.request, mode });
     if (result.kind !== 'overview-completed') throw new Error(`expected an overview, got ${result.kind}`);
     expect(result.result.overview.features.map(feature => feature.start.functionName)).toEqual(['placeOrder', null]);
     expect(result.result.overview.roles[0].functions.map(item => item.name)).toEqual(['stock', '$reserve']);
@@ -202,13 +222,61 @@ describe('overview workflow with fake stages', () => {
     expect(result.result.limitations.some(item => item.startsWith('config.ts: 비밀값처럼 보이는'))).toBe(true);
   });
 
-  it.each([{ mode: 'codex' }, { consent: false }, { startFileId: '../outside.ts' }, { path: '/etc/passwd' }, { prompt: 'bypass' }])(
+  it.each([{ mode: 'unknown' }, { consent: false }, { startFileId: '../outside.ts' }, { path: '/etc/passwd' }, { prompt: 'bypass' }])(
     'refuses renderer input %j before anything runs', extra => {
       const f = fake(material(files), written);
       expect(() => f.workflow.startOverview({ ...f.request, ...extra } as OverviewRequest)).toThrow();
       expect(f.assertReady).not.toHaveBeenCalled();
       expect(f.captureOverview).not.toHaveBeenCalled();
     });
+
+  it('refuses Claude Code before capturing material or running a stage', () => {
+    const f = fake(material(files), written);
+    expect(() => f.workflow.startOverview({ ...f.request, mode: 'claude-code' })).toThrow(expect.objectContaining({ code: 'AI_UNAVAILABLE' }));
+    expect(f.assertReady).toHaveBeenCalledWith('claude-code');
+    expect(f.captureOverview).not.toHaveBeenCalled();
+    expect(f.run).not.toHaveBeenCalled();
+  });
+
+  it.each(['codex', 'antigravity'] as const)('stops before capture when %s is unavailable', mode => {
+    const f = fake(material(files), written);
+    f.assertReady.mockImplementation(() => { throw new AppError('AI_UNAVAILABLE', '시험용 준비 차단'); });
+    expect(() => f.workflow.startOverview({ ...f.request, mode })).toThrow(expect.objectContaining({ code: 'AI_UNAVAILABLE' }));
+    expect(f.assertReady).toHaveBeenCalledWith(mode);
+    expect(f.captureOverview).not.toHaveBeenCalled();
+    expect(f.run).not.toHaveBeenCalled();
+  });
+
+  describe.each(['codex', 'antigravity'] as const)('%s single overview guards', mode => {
+    it.each(['intro', 'feature start', 'role function'])('refuses evidence not provided in the %s', async where => {
+      const f = fake(material(files), snapshot => {
+        const answer = written(snapshot);
+        if (where === 'intro') answer.intro!.evidenceIds = [randomUUID()];
+        if (where === 'feature start') answer.features[0].start.evidenceId = randomUUID();
+        if (where === 'role function') answer.roles[0].functions[0].evidenceId = randomUUID();
+        return answer;
+      });
+      expect(await f.finish({ ...f.request, mode })).toMatchObject({ kind: 'failed', error: { code: 'AI_RESPONSE' } });
+      expect(f.run.mock.calls.map(([input]) => input.provider)).toEqual([mode, mode]);
+    });
+
+    it('rejects selecting more than four related files before reading them', async () => {
+      const f = fake(material(files), written, Array.from({ length: 5 }, () => randomUUID()));
+      expect(await f.finish({ ...f.request, mode })).toMatchObject({ kind: 'failed', error: { code: 'AI_RESPONSE' } });
+      expect(f.expand).not.toHaveBeenCalled();
+      expect(f.run).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([2, 3])('refuses changed material at validation %s', async validation => {
+      const f = fake(material(files), written);
+      let calls = 0;
+      f.revalidate.mockImplementation(async () => {
+        if (++calls === validation) throw new AppError('CHANGED', '시험용 파일 변경');
+      });
+      expect(await f.finish({ ...f.request, mode })).toMatchObject({ kind: 'failed', error: { code: 'CHANGED' } });
+      expect(f.run).toHaveBeenCalledTimes(validation - 1);
+    });
+  });
 
   it('shares the one active AI job with questions and can be cancelled', async () => {
     const f = fake(material(files), written);
@@ -229,7 +297,7 @@ describe('overview workflow with fake stages', () => {
 });
 
 describe('overview with the real app reads and fake stages', () => {
-  it('reads the files Codex picks, once, and keeps only names written in them', async () => {
+  it.each(['local-worker', 'codex', 'antigravity'] as const)('reads the files picked in %s once and keeps only written names', async mode => {
     const f = await project(files);
     const events: LearningEvent[] = [];
     const run = async (request: StageRequest): Promise<StageResponse> => {
@@ -250,7 +318,7 @@ describe('overview with the real app reads and fake stages', () => {
       captureFile: (request, signal) => f.context.captureFile(request, 1, signal),
       expand: (snapshot, ids, signal) => f.context.expand(snapshot, ids, signal),
       revalidate: (snapshot, signal) => f.context.revalidate(snapshot, signal) });
-    const { jobId } = workflow.startOverview({ projectId: f.project.id, startFileId: f.id('README.md'), mode: 'local-worker', consent: true });
+    const { jobId } = workflow.startOverview({ projectId: f.project.id, startFileId: f.id('README.md'), mode, consent: true });
     await vi.waitFor(() => expect(events.some(event => event.jobId === jobId && event.kind !== 'progress')).toBe(true));
     const result = events.find(event => event.jobId === jobId && event.kind !== 'progress')!;
     if (result.kind !== 'overview-completed') throw new Error(`expected an overview, got ${JSON.stringify(result)}`);

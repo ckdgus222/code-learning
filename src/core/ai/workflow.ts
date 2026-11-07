@@ -151,6 +151,7 @@ export class LocalWorkerWorkflow {
     const request = overviewRequestSchema.parse(raw);
     if (this.active) throw new AppError('INVALID_REQUEST', '이미 AI 작업이 진행 중입니다.');
     this.deps.assertReady(request.mode);
+    if (request.mode === 'claude-code') throw new AppError('AI_UNAVAILABLE', 'Claude Code 단독 연결은 아직 준비 중입니다.');
     return this.launch(request.projectId, job => this.executeOverview(job, request));
   }
 
@@ -477,10 +478,11 @@ export class LocalWorkerWorkflow {
   }
 
   /**
-   * Codex picks up to four files to read, Gemini writes the overview, Codex checks it against the same files. With
-   * nothing read there is nothing to write from, so no model writes one and no check is claimed.
+   * The selected AI picks up to four files and writes the overview. The local worker uses Codex to pick,
+   * Gemini to write and Codex to check. With nothing read, no model writes an overview and no check is claimed.
    */
   private async executeOverview(job: Job, request: OverviewRequest) {
+    const single = request.mode !== 'local-worker';
     this.progress(job, 'collecting');
     const snapshot = await this.deps.captureOverview(request, job.controller.signal);
     this.ensureActive(job);
@@ -496,7 +498,7 @@ export class LocalWorkerWorkflow {
     const models: ModelRun[] = [];
     const run = <T>(stage: ModelRun['stage'], provider: ModelRun['provider'], schema: z.ZodType<T>, directive: string) =>
       this.stage(job, models, this.filesStillCurrent(job, [snapshot]), stage, provider, schema, () => OVERVIEW_INSTRUCTIONS + context() + '\n과제:\n' + directive);
-    const organization = await run('organizing', 'codex', overviewOrganizationSchema, OVERVIEW_ORGANIZING);
+    const organization = await run('organizing', request.mode === 'antigravity' ? 'antigravity' : 'codex', overviewOrganizationSchema, OVERVIEW_ORGANIZING);
     this.progress(job, 'reading-related');
     await this.deps.expand(snapshot, organization.requestedFileIds, job.controller.signal);
     this.ensureActive(job);
@@ -506,15 +508,20 @@ export class LocalWorkerWorkflow {
     if (!snapshot.files.length) {
       notes.push('개요를 만들 코드·문서를 하나도 읽지 못해 개요를 쓰지 않았어요. 다른 시작 파일을 골라 다시 만들어 주세요.');
     } else {
-      const draft = await run('explaining', 'antigravity', overviewSchema, OVERVIEW_WRITING);
-      checkOverviewReferences(draft, snapshot);
-      const checked = await run('reviewing', 'codex', overviewReviewSchema, '같은 자료와 다음 개요를 대조하라. 잘못된 내용을 바로잡은 overview를 반환하라. '
-        + 'issues에는 바로잡지 못하고 남은 문제만 적는다. 바로잡은 내용은 overview에만 반영하고 issues에 적지 않는다. '
-        + '근거가 부족해 받아들일 수 없으면 accepted=false로 표시하라.\n' + JSON.stringify(draft));
-      if (!checked.accepted || checked.issues.length) throw new AppError('AI_RESPONSE', 'AI 대조에서 해결하지 못한 문제가 있어 개요를 표시하지 않았습니다.');
-      checkOverviewReferences(checked.overview, snapshot);
-      overview = keepWrittenNames(checked.overview, snapshot, notes);
-      review = 'AI 검토됨';
+      overview = await run('explaining', request.mode === 'codex' ? 'codex' : 'antigravity', overviewSchema, OVERVIEW_WRITING);
+      checkOverviewReferences(overview, snapshot);
+      review = 'AI 대조 없음';
+      if (!single) {
+        const checked = await run('reviewing', 'codex', overviewReviewSchema, '같은 자료와 다음 개요를 대조하라. 잘못된 내용을 바로잡은 overview를 반환하라. '
+          + 'issues에는 바로잡지 못하고 남은 문제만 적는다. 바로잡은 내용은 overview에만 반영하고 issues에 적지 않는다. '
+          + '근거가 부족해 받아들일 수 없으면 accepted=false로 표시하라.\n' + JSON.stringify(overview));
+        if (!checked.accepted || checked.issues.length) throw new AppError('AI_RESPONSE', 'AI 대조에서 해결하지 못한 문제가 있어 개요를 표시하지 않았습니다.');
+        checkOverviewReferences(checked.overview, snapshot);
+        overview = checked.overview;
+        review = 'AI 검토됨';
+      }
+      overview = keepWrittenNames(overview, snapshot, notes);
+      if (single) notes.push('단독 방식: 다른 AI의 대조가 없습니다.');
     }
     this.progress(job, 'validating');
     await this.deps.revalidate(snapshot, job.controller.signal);

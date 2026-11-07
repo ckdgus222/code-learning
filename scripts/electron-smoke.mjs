@@ -4413,7 +4413,7 @@ try {
         }
         const at = name => evidence[name].id;
         const feature = (name, file, functionName) => ({ name, summary: `${name} 설명`, evidenceIds: [at(file)], start: { evidenceId: at(file), functionName } });
-        const result = { jobId, projectId: request.projectId, review: 'AI 검토됨', models: [],
+        const result = { jobId, projectId: request.projectId, review: request.mode === 'local-worker' ? 'AI 검토됨' : 'AI 대조 없음', models: [],
           sources: ['README.md', 'banner.ts', 'dup.ts'].map(name => ({ evidence: evidence[name], relativePath: name })),
           limitations: ['관련 파일 탐색은 한 번, 최대 4개입니다. 제공되지 않은 파일의 동작은 확인하지 않았습니다.'],
           overview: {
@@ -4501,6 +4501,46 @@ try {
     await topicBar.getByRole('button', { name: '한눈에 보기로', exact: true }).focus();
     await page.keyboard.press('Enter');
     await until(() => page.evaluate(() => document.activeElement?.getAttribute('data-anchor') === 'feature:0'));
+  });
+  await check('Overview (fake AI): selected readiness, recipients, consent reset and single-mode requests', async () => {
+    await app.evaluate(({ ipcMain }) => {
+      ipcMain.removeHandler('learning:connections');
+      ipcMain.handle('learning:connections', () => ({ ok: true, value: {
+        checkedAt: new Date().toISOString(), providers: [],
+        modes: ['local-worker', 'codex', 'antigravity', 'claude-code'].map(mode => ({ mode, ready: mode !== 'claude-code', reason: `테스트 전용 ${mode}` })),
+      } }));
+    });
+    await openAiSection('설정');
+    const panel = page.locator('.ai-panel');
+    await panel.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
+    const selector = panel.getByRole('combobox', { name: 'AI 사용 방식' });
+    const card = page.getByRole('region', { name: '기능과 구성 (AI 개요)' });
+    const consent = card.getByRole('checkbox');
+    await until(async () => await page.getByTestId('overview-readiness').innerText() === '테스트 전용 local-worker');
+    for (const [mode, recipient] of [['codex', 'Codex'], ['antigravity', 'Gemini(Antigravity)']]) {
+      await consent.check();
+      await selector.selectOption(mode);
+      await until(async () => await page.getByTestId('overview-readiness').innerText() === `테스트 전용 ${mode}`);
+      await until(async () => !(await consent.isChecked()));
+      await checkConsentDisclosure(card, `프로젝트 파일 목록, 고른 시작 파일, ${recipient}가 고른 관련 파일(최대 4개)을 ${recipient}에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.`);
+      await consent.check();
+      await app.evaluate(() => { globalThis.testOverviewHold = true; globalThis.testOverviewLate = null; });
+      await card.getByRole('button', { name: '개요 다시 만들기', exact: true }).click();
+      await until(() => app.evaluate(() => typeof globalThis.testOverviewLate === 'function'));
+      assert.equal(await selector.isDisabled(), true);
+      assert.equal(await app.evaluate(() => globalThis.testOverviewCalls.at(-1).mode), mode);
+      await app.evaluate(() => { globalThis.testOverviewHold = false; globalThis.testOverviewLate(); });
+      await card.getByText('AI 대조 없음 · 개요의 정확성을 보장하지 않습니다.', { exact: true }).waitFor();
+      await until(async () => !(await consent.isChecked()));
+    }
+    await consent.check();
+    await selector.selectOption('claude-code');
+    await until(async () => await page.getByTestId('overview-readiness').innerText() === '테스트 전용 claude-code');
+    await until(async () => !(await consent.isChecked()));
+    assert.equal(await consent.isDisabled(), true);
+    assert.equal(await card.getByRole('button', { name: '개요 다시 만들기', exact: true }).isDisabled(), true);
+    await selector.selectOption('local-worker');
+    await page.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
   });
   await check('Topic (fake AI): the feature question keeps its topic, asks consent again, starts a new conversation and keeps answers while moving', async () => {
     const card = page.getByRole('region', { name: '기능과 구성 (AI 개요)' });

@@ -705,9 +705,9 @@ function App() {
               {learning.marks?.projectId === project.id && <LearningMarksCard marks={learning.marks.list} files={project.files} locked={busy}
                 onOpen={mark => void openMark(mark)} />}
               {view === 'overview' && <React.Fragment key={ai.overviewCard}>
-                <OverviewAi project={project} state={ai.overview} locked={busy || planCompare.running || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning}
+                <OverviewAi project={project} mode={ai.mode} state={ai.overview} locked={busy || planCompare.running || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning}
                   stale={ai.overview?.status === 'done' && (ai.overview.revision !== revision.current || ai.overview.changed)}
-                  readiness={ai.connections?.modes.find(item => item.mode === 'local-worker') ?? null} checking={ai.checking}
+                  readiness={ai.connections?.modes.find(item => item.mode === ai.mode) ?? null} checking={ai.checking}
                   revealAnchor={learning.topic?.anchor ?? null} topicName={learning.topic ? learning.topic.name.trim() || learning.topic.original : null} onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
                   onStart={startFileId => void ai.startOverview(startFileId)} onCancel={() => void ai.cancelOverview()} onDelete={() => void ai.deleteOverview()}
                   onEvidence={next => { setView('code'); void showEvidence(next, null, 'overview'); }}

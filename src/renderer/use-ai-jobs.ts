@@ -218,7 +218,7 @@ export function useAiJobs({ project, source, symbol, revision, setError, setNoti
     const token = ++overviewRequest.current;
     overviewJob.current = { id: null, starting: true, queued: [] };
     setOverviewAi({ status: 'running', phase: null, revision: revision.current });
-    const result = await window.learning.startOverview({ projectId: project.id, startFileId, mode: 'local-worker', consent: true });
+    const result = await window.learning.startOverview({ projectId: project.id, startFileId, mode, consent: true });
     if (token !== overviewRequest.current) {
       if (result.ok) void window.learning.cancelExplanation({ jobId: result.value.jobId });
       return;

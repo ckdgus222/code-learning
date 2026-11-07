@@ -123,11 +123,11 @@ export const reviewSchema = z.object({
 }).strict();
 
 /**
- * Plan G1: an overview of the whole folder, asked by the local worker only (user decision 2026-10-20). It starts from
- * at most one file the user chose, or none, and reads at most four more that Codex picks from the list.
+ * An overview starts from at most one file the user chose, or none, and reads at most four more
+ * that the AI picks from the list.
  */
 export const overviewRequestSchema = z.object({
-  projectId: idSchema, startFileId: idSchema.nullable(), mode: z.literal('local-worker'), consent: z.literal(true),
+  projectId: idSchema, startFileId: idSchema.nullable(), mode: learningModeSchema, consent: z.literal(true),
 }).strict();
 export type OverviewRequest = z.infer<typeof overviewRequestSchema>;
 const itemName = z.string().trim().min(1).max(80);
@@ -205,8 +205,8 @@ export const overviewResultSchema = z.object({
     evidence: fileRangeSchema.safeExtend({ id: idSchema, projectId: idSchema }),
     relativePath: z.string().min(1).max(1024),
   }).strict()).max(5),
-  // List + exploration notices, five skipped/masked files, eight starts and 8 × 5 role names.
-  limitations: z.array(description).max(55), review: z.enum(['AI 검토됨', '개요 작성 안 함']),
+  // List + exploration notices, five skipped/masked files, eight starts, 8 × 5 role names and a single-mode notice.
+  limitations: z.array(description).max(56), review: z.enum(['AI 검토됨', 'AI 대조 없음', '개요 작성 안 함']),
   models: z.array(modelRunSchema).max(3),
 }).strict();
 export type OverviewResult = z.infer<typeof overviewResultSchema>;
