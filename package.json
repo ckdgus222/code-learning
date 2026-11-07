@@ -1,9 +1,9 @@
 {
   "name": "universal-code-learning",
   "productName": "Code Learning",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
-  "description": "Local, read-only code learning prototype",
+  "description": "Read-only app for exploring unfamiliar TypeScript and JavaScript projects",
   "license": "MIT",
   "main": ".vite/build/main.cjs",
   "scripts": {

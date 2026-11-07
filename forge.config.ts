@@ -14,7 +14,7 @@ export default {
   makers: [new MakerSquirrel({
     name: 'code_learning',
     authors: 'ckdgus222',
-    description: 'Local, read-only code learning prototype',
+    description: 'Read-only app for exploring unfamiliar TypeScript and JavaScript projects',
     setupExe: 'Code-Learning-win-x64-Setup.exe',
     setupIcon: 'assets/icon/icon.ico',
     iconUrl: 'https://raw.githubusercontent.com/ckdgus222/code-learning/main/assets/icon/icon.ico',
