@@ -35,7 +35,7 @@ afterAll(async () => {
 });
 
 describe('Plan comparison through the app runtime (real account, non-secret fixture)', { concurrent: false, shuffle: false }, () => {
-  it.each(['local-worker', 'codex', 'antigravity'] as const)('%s: checks plan B expectations', async mode => {
+  it.each(['codex', 'antigravity'] as const)('%s: checks plan B expectations', async mode => {
     const started = performance.now();
     const record = records[mode] = { stages: [] } as typeof records[string];
     const base = await realpath(await mkdtemp(path.join(os.tmpdir(), 'plan-compare-live-')));
@@ -130,7 +130,7 @@ describe('Plan comparison through the app runtime (real account, non-secret fixt
         `[${mode}] plan line 6 must flag the screen.ts → store.ts connection`).toEqual(expect.arrayContaining([
         expect.objectContaining({ edge: expect.objectContaining({ from: 'screen.ts', to: 'store.ts', line: 1 }) }),
       ]));
-      if (mode !== 'local-worker') expect.soft(result.review, `[${mode}] expected no independent review`).toBe('AI 대조 없음');
+      expect.soft(result.review, `[${mode}] expected no independent review`).toBe('AI 대조 없음');
       expect.soft(result.structureOnly, `[${mode}] expected code comparison`).toBe(false);
       expect.soft(unrequested, `[${mode}] expected extra.ts in unrequested`).toEqual(expect.arrayContaining([
         expect.objectContaining({ files: expect.arrayContaining(['extra.ts']) }),

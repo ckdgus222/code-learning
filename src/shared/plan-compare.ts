@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { idSchema, type MapImport } from './contracts';
-import { learningModeSchema, modelRunSchema, type LearningMode, type ModelRun } from './ai';
+import { learningModeSchema, resultModeSchema, modelRunSchema, type ResultMode, type ModelRun } from './ai';
 import { AppError } from './errors';
 
 export const PLAN_SEND_LIMIT = 48 * 1024;
@@ -94,7 +94,7 @@ export const planCompareReviewSchema = z.object({ accepted: z.boolean(), issues:
 export const planCompareOrganizationSchema = z.object({ focus: text, requestedFileIds: z.array(idSchema).max(8) }).strict();
 export type PlanCompareAnswer = z.infer<typeof planCompareSchema>;
 export interface PlanCompareResult {
-  jobId: string; projectId: string; mode: LearningMode; review: 'AI 검토됨' | 'AI 대조 없음'; models: ModelRun[];
+  jobId: string; projectId: string; mode: ResultMode; review: 'AI 검토됨' | 'AI 대조 없음'; models: ModelRun[];
   structureOnly: boolean; // Keep true for previously saved structure comparisons; new results are always false.
   document: Pick<PlanDocument, 'documentId' | 'name'>;
   sent: PlanRange[]; excluded: PlanRange[];
@@ -116,7 +116,7 @@ const mapImportSchema = z.object({
   text: z.string(), specifier: z.string().nullable(),
 }).strict();
 export const planCompareResultSchema = z.object({
-  jobId: idSchema, projectId: idSchema, mode: learningModeSchema,
+  jobId: idSchema, projectId: idSchema, mode: resultModeSchema,
   review: z.enum(['AI 검토됨', 'AI 대조 없음']), models: z.array(modelRunSchema),
   structureOnly: z.boolean(), // Accept previously saved structure comparisons (true); new results are always false.
   document: z.object({ documentId: z.string(), name: z.string() }).strict(),

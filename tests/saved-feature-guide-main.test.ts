@@ -105,7 +105,10 @@ afterAll(async () => {
   await rm(temporary, { recursive: true, force: true });
 });
 
-it('restores the current routes ID across reopen, stores only a hash of material, and deletes', async () => {
+it.each(['codex', 'local-worker'] as const)('restores the current routes ID across reopen, stores only a hash of material, and deletes (%s)', async mode => {
+  result.mode = mode;
+  result.review = mode === 'local-worker' ? 'AI 검토됨' : 'AI 대조 없음';
+  result.models = [{ stage: mode === 'local-worker' ? 'reviewing' : 'explaining', provider: 'codex', requestedModel: null, reportedModel: null }];
   expect(await invoke(channels.saveFeatureGuide, { projectId: project.id, result }))
     .toMatchObject({ ok: true, value: { savedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) } });
   const oldFileId = project.files[0].id;

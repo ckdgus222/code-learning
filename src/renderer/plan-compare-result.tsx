@@ -1,11 +1,11 @@
 import React, { useEffect, useRef } from 'react';
 import type { MapImport } from '../shared/contracts';
-import type { LearningMode } from '../shared/ai';
+import type { ResultMode } from '../shared/ai';
 import { planPartFor, type PlanCompareResult, type PlanRange } from '../shared/plan-compare';
 import type { PlanCompareFreshness } from './use-plan-compare';
 
 export const PLAN_COMPARE_CHECK_MS = 10_000;
-export const modes: Record<LearningMode, string> = { 'local-worker': '로컬 워커 · Codex → Gemini → Codex', codex: 'Codex 단독', antigravity: 'Antigravity 단독', 'claude-code': 'Claude Code 단독 · 준비 중' };
+export const modes: Record<ResultMode, string> = { 'local-worker': '로컬 워커(이전 방식)', codex: 'Codex 단독', antigravity: 'Antigravity 단독', 'claude-code': 'Claude Code 단독 · 준비 중' };
 const stages = { organizing: '파일 고르기', explaining: '대조', reviewing: '검토' };
 const rangeLabel = (range: PlanRange) => range.startLine === range.endLine ? `${range.startLine}줄` : `${range.startLine}–${range.endLine}줄`;
 

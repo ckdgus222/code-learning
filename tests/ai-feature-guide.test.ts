@@ -30,7 +30,7 @@ function workflowFixture(count = 3) {
   const f = fixture(count);
   const built = featureGuideMaterial(f.project, f.routes);
   const snapshot: FeatureGuideSnapshot = { projectId: f.project.id, routesId: f.routes.routesId, revision: 1, ...built };
-  const request: FeatureGuideRequest = { projectId: f.project.id, routesId: f.routes.routesId, mode: 'local-worker', consent: true };
+  const request: FeatureGuideRequest = { projectId: f.project.id, routesId: f.routes.routesId, mode: 'codex', consent: true };
   const events: LearningEvent[] = [];
   const captureFeatureGuide = vi.fn(async () => snapshot);
   const revalidate = vi.fn(async () => {});
@@ -86,14 +86,14 @@ describe('feature guide material', () => {
 });
 
 describe('feature guide workflow', () => {
-  it('runs Gemini then Codex with identical metadata and validates before each stage and display', async () => {
+  it('sends only metadata in single mode and validates before execution and display', async () => {
     const f = workflowFixture();
-    expect(await f.finish()).toMatchObject({ kind: 'feature-guide-completed', result: { routesId: f.request.routesId, mode: 'local-worker', review: 'AI 검토됨',
-      models: [{ requestedModel: GEMINI_MODEL, reportedModel: GEMINI_MODEL }, { reportedModel: 'test-codex' }] } });
-    expect(f.run.mock.calls.map(([input]) => [input.stage, input.provider])).toEqual([['explaining', 'antigravity'], ['reviewing', 'codex']]);
+    expect(await f.finish()).toMatchObject({ kind: 'feature-guide-completed', result: { routesId: f.request.routesId, mode: 'codex', review: 'AI 대조 없음',
+      models: [{ requestedModel: null, reportedModel: 'test-codex' }] } });
+    expect(f.run.mock.calls.map(([input]) => [input.stage, input.provider])).toEqual([['explaining', 'codex']]);
     const sent = f.run.mock.calls.map(([input]) => JSON.parse(input.prompt.split('자료:\n')[1].split('\n과제:\n')[0]));
-    expect(sent[0]).toEqual(sent[1]); expect(JSON.stringify(sent)).not.toContain('NEVER_SEND');
-    expect(f.revalidate).toHaveBeenCalledTimes(3);
+    expect(JSON.stringify(sent)).not.toContain('NEVER_SEND');
+    expect(f.revalidate).toHaveBeenCalledTimes(2);
   });
   it.each(['codex', 'antigravity'] as const)('%s runs once without review', async mode => {
     const f = workflowFixture();
@@ -105,35 +105,30 @@ describe('feature guide workflow', () => {
     expect(() => f.workflow.startFeatureGuide({ ...f.request, ...extra } as FeatureGuideRequest)).toThrow();
     expect(f.captureFeatureGuide).not.toHaveBeenCalled(); expect(f.run).not.toHaveBeenCalled();
   });
-  it.each(['draft', 'review'] as const)('rejects invalid %s route references including numbers cut from the payload', async stage => {
+  it('rejects invalid route references including numbers cut from the payload', async () => {
     for (const invalid of [[-1], [0.5], [9999], [0, 0], [], [499], [1]]) {
       const f = workflowFixture(500);
-      const normal = f.run.getMockImplementation()!;
       f.run.mockImplementation(async input => {
-        if ((input.stage === 'reviewing') !== (stage === 'review')) return normal(input);
         const guide = answer();
         guide.groups[0].features[0].routes = invalid;
         // [1] is duplicated across features rather than within the same feature.
         if (invalid.length === 1 && invalid[0] === 1) guide.groups[0].features.push({ name: '다른 기능', about: '중복', routes: [1] });
-        return { reportedModel: null, value: stage === 'draft' ? guide : { accepted: true, issues: [], guide } };
+        return { reportedModel: null, value: guide };
       });
       expect(f.snapshot.material.routes.some(route => route.index === 499)).toBe(false);
       expect(await f.finish()).toMatchObject({ kind: 'failed', error: { code: 'AI_RESPONSE' } });
-      expect(f.run).toHaveBeenCalledTimes(stage === 'draft' ? 1 : 2);
+      expect(f.run).toHaveBeenCalledTimes(1);
     }
   });
-  it.each([0, 1, 2])('rejects a change at validation %s without sending the next stage or displaying a result', async index => {
+  it.each([0, 1])('rejects a change at validation %s without sending the next stage or displaying a result', async index => {
     const f = workflowFixture();
     f.revalidate.mockImplementation(async () => { if (f.revalidate.mock.calls.length === index + 1) throw new AppError('CHANGED', 'changed'); });
     expect(await f.finish()).toMatchObject({ kind: 'failed', error: { code: 'CHANGED' } });
     expect(f.run).toHaveBeenCalledTimes(index);
   });
-  it('rejects a different captured routes ID and unresolved review issues', async () => {
+  it('rejects a different captured routes ID', async () => {
     const changed = workflowFixture(); changed.snapshot.routesId = randomUUID();
     expect(await changed.finish()).toMatchObject({ kind: 'failed', error: { code: 'CHANGED' } }); expect(changed.run).not.toHaveBeenCalled();
-    const rejected = workflowFixture(); rejected.run.mockResolvedValueOnce({ value: answer(), reportedModel: null })
-      .mockResolvedValueOnce({ value: { accepted: true, issues: ['모순'], guide: answer() }, reportedModel: null });
-    expect(await rejected.finish()).toMatchObject({ kind: 'failed', error: { code: 'AI_RESPONSE' } });
   });
   it.each(['cancel', 'new-routes', 'close'] as const)('discards late success after %s and prevents overlapping AI jobs', async reason => {
     const f = workflowFixture();
@@ -141,7 +136,7 @@ describe('feature guide workflow', () => {
     f.run.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
     const { jobId } = f.workflow.startFeatureGuide(f.request);
     await vi.waitFor(() => expect(f.run).toHaveBeenCalledOnce());
-    expect(() => f.workflow.startOverview({ projectId: f.project.id, startFileId: null, mode: 'local-worker', consent: true })).toThrow('이미 AI 작업');
+    expect(() => f.workflow.startOverview({ projectId: f.project.id, startFileId: null, mode: 'codex', consent: true })).toThrow('이미 AI 작업');
     const cancelled = reason === 'cancel' ? f.workflow.cancel(jobId) : reason === 'close' ? f.workflow.close() : f.workflow.cancelFeatureGuide(f.project.id);
     expect(f.run.mock.calls[0][0].signal.aborted).toBe(true);
     release({ value: answer(), reportedModel: null }); await cancelled;

@@ -2,9 +2,11 @@ import { z } from 'zod';
 import { MAX_FILE_BYTES, idSchema, type Evidence } from './contracts';
 
 export const GEMINI_MODEL = 'gemini-3.8-flash-high';
-export const learningModeSchema = z.enum(['local-worker', 'codex', 'claude-code', 'antigravity']);
+export const learningModeSchema = z.enum(['codex', 'claude-code', 'antigravity']);
 export type LearningMode = z.infer<typeof learningModeSchema>;
-export type ProviderId = Exclude<LearningMode, 'local-worker'>;
+export const resultModeSchema = z.enum(['local-worker', 'codex', 'claude-code', 'antigravity']);
+export type ResultMode = z.infer<typeof resultModeSchema>;
+export type ProviderId = LearningMode;
 export const checkConnectionsSchema = z.object({ automatic: z.literal(true) }).strict().optional();
 export type CheckConnectionsRequest = z.infer<typeof checkConnectionsSchema>;
 export const explainRequestSchema = z.object({
@@ -41,9 +43,6 @@ export const featureGuideSchema = z.object({
   unknowns: z.array(z.string().trim().min(1).max(2000)).max(10),
 }).strict();
 export type FeatureGuide = z.infer<typeof featureGuideSchema>;
-export const featureGuideReviewSchema = z.object({
-  accepted: z.boolean(), issues: z.array(z.string().trim().min(1).max(2000)).max(16), guide: featureGuideSchema,
-}).strict();
 
 const description = z.string().trim().min(1).max(2000);
 export const fileExplanationSchema = z.object({
@@ -52,9 +51,6 @@ export const fileExplanationSchema = z.object({
   unknowns: z.array(description).max(16),
 }).strict();
 export type FileExplanation = z.infer<typeof fileExplanationSchema>;
-export const fileExplanationReviewSchema = z.object({
-  accepted: z.boolean(), issues: z.array(description).max(16), explanation: fileExplanationSchema,
-}).strict();
 /** Stored with the explanation, independent of the AI and analysis workers' evidence caches. */
 export type FileExplanationRange = Pick<Evidence, 'fileId' | 'fileHash' | 'startUtf16' | 'endUtf16' | 'startLine' | 'endLine'>;
 // File explanations read at most 32 KiB; offsets, lines and analyzer names fit within that source.
@@ -71,7 +67,7 @@ export const modelRunSchema = z.object({
 export const featureGuideResultSchema = z.object({
   jobId: idSchema, projectId: idSchema, routesId: idSchema, guide: featureGuideSchema,
   // Metadata-only notice, byte limit, analysis limit and masked-value notice; two workflow stages.
-  limitations: z.array(description).max(4), mode: learningModeSchema, review: z.enum(['AI 검토됨', 'AI 대조 없음']),
+  limitations: z.array(description).max(4), mode: resultModeSchema, review: z.enum(['AI 검토됨', 'AI 대조 없음']),
   models: z.array(modelRunSchema).max(2),
 }).strict();
 export type FeatureGuideResult = z.infer<typeof featureGuideResultSchema>;
@@ -87,7 +83,7 @@ export const fileExplanationResultSchema = z.object({
   }).strict()).max(80),
   explanation: fileExplanationSchema,
   // Two chunking warnings and one masked-source notice; at most two workflow stages.
-  limitations: z.array(description).max(3), mode: learningModeSchema, review: z.enum(['AI 검토됨', 'AI 대조 없음']),
+  limitations: z.array(description).max(3), mode: resultModeSchema, review: z.enum(['AI 검토됨', 'AI 대조 없음']),
   models: z.array(modelRunSchema).max(2),
 }).strict();
 export type FileExplanationResult = z.infer<typeof fileExplanationResultSchema>;
@@ -118,9 +114,6 @@ export const organizationSchema = z.object({
   focus: description, questions: z.array(description).max(8), evidenceIds: references,
   requestedFileIds: z.array(idSchema).max(4),
 }).strict();
-export const reviewSchema = z.object({
-  accepted: z.boolean(), issues: z.array(description).max(16), explanation: explanationSchema,
-}).strict();
 
 /**
  * An overview starts from at most one file the user chose, or none, and reads at most four more
@@ -149,9 +142,6 @@ export type ProjectOverviewAnswer = z.infer<typeof overviewSchema>;
 export type OverviewFeature = ProjectOverviewAnswer['features'][number];
 export type OverviewRole = ProjectOverviewAnswer['roles'][number];
 export const overviewOrganizationSchema = z.object({ focus: description, requestedFileIds: z.array(idSchema).max(4) }).strict();
-export const overviewReviewSchema = z.object({
-  accepted: z.boolean(), issues: z.array(description).max(16), overview: overviewSchema,
-}).strict();
 
 export interface ProviderConnection {
   provider: ProviderId;
@@ -166,7 +156,7 @@ export interface ConnectionReport {
   providers: ProviderConnection[];
   modes: { mode: LearningMode; ready: boolean; reason: string; warning?: string }[];
 }
-export type LearningPhase = 'collecting' | 'organizing' | 'reading-related' | 'explaining' | 'reviewing' | 'validating';
+export type LearningPhase = 'collecting' | 'organizing' | 'reading-related' | 'explaining' | 'validating';
 export interface ModelRun {
   stage: 'organizing' | 'explaining' | 'reviewing';
   provider: 'codex' | 'antigravity';

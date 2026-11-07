@@ -634,7 +634,7 @@ const chooserProps: Parameters<typeof FeatureChooser>[0] = {
     groupingProps: { flows: null, grouping: false, groupError: '', onRegroup() {}, onCancelGrouping() {} },
     setSearch() {}, setGuideResult() {}, find() {}, cancelFind() {},
   } as unknown as Parameters<typeof FeatureChooser>[0]['state'],
-  revision: 0, locked: false, mode: 'local-worker', running: false, checking: false, connections: null,
+  revision: 0, locked: false, mode: 'codex', running: false, checking: false, connections: null,
   onFollow() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onRunning() {},
 };
 it.each([

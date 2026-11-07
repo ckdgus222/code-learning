@@ -176,7 +176,7 @@ try {
   if (await question.getAttribute('aria-pressed') === 'false') await question.click();
   await page.getByRole('textbox', { name: '선택한 코드에 질문', exact: true }).waitFor();
   await page.getByRole('button', { name: '설정', exact: true }).click();
-  assert.equal(await page.getByRole('combobox', { name: 'AI 사용 방식' }).inputValue(), 'local-worker');
+  assert.equal(await page.getByRole('combobox', { name: 'AI 사용 방식' }).inputValue(), 'codex');
   await page.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
   await page.getByRole('list', { name: '로컬 AI 설치 상태' }).getByText(process.platform === 'win32' ? /^Codex ·/ : /^Claude Code ·/).waitFor({ timeout: 35_000 });
   // The version check runs inside the fence: a CLI installed in a fixed location must still show its version.
@@ -186,14 +186,13 @@ try {
   for (const [binary, name] of [['codex', 'Codex'], ['agy', 'Antigravity']]) {
     if (onMac && installed(binary)) assert.match(statuses, new RegExp(`${name} · 설치 확인 \\(\\d+\\.\\d+\\.\\d+`), `${name} version inside the fence`);
   }
-  // Both workers found: the local worker is ready and states its known limits. Nothing is sent here:
+  // Codex found: single mode is ready and states its known limits. Nothing is sent here:
   // the send button waits for consent, which this test never gives.
-  const ready = /Codex · 설치 확인/.test(statuses) && /Antigravity · 설치 확인/.test(statuses);
-  assert.match(await page.getByTestId('ai-readiness').innerText(), process.platform === 'win32' ? /Windows에서는 아직 로컬 워커/
-    : ready ? /질문을 보낼 수 있어요\. 알려진 한계/ : /Codex와 Antigravity가 둘 다 필요해요/);
+  const ready = /Codex · 설치 확인/.test(statuses);
+  assert.match(await page.getByTestId('ai-readiness').innerText(), ready ? /한 AI가 바로 설명하고 다른 AI의 대조는 없어요/ : /단독에는 .+ 필요해요/);
   assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
   const consent = page.locator('.ai-panel').getByRole('checkbox', { name: '보낼 자료에 동의', exact: true });
-  assert.equal(await consent.isEnabled(), process.platform !== 'win32' && ready);
+  assert.equal(await consent.isEnabled(), ready);
   const disclosure = page.locator('.ai-panel .consent-details');
   const description = disclosure.locator('p');
   assert.equal(await disclosure.evaluate(element => element.open), false);
@@ -202,7 +201,7 @@ try {
   assert.equal(await consent.getAttribute('aria-describedby'), await description.getAttribute('id'));
   await disclosure.locator('summary').click();
   assert.equal(await description.isVisible(), true);
-  assert.equal(await description.innerText(), '선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·관련 파일(추가 최대 4개)·질문·최근 답변을 Codex와 Gemini에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.');
+  assert.equal(await description.innerText(), '선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·질문·최근 답변을 Codex에 보내는 데 동의합니다. 다른 파일은 더 읽지 않습니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.');
   await disclosure.locator('summary').click();
   assert.equal(await description.isVisible(), false);
   assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
@@ -217,7 +216,7 @@ try {
       ? /한 AI가 바로 설명하고 다른 AI의 대조는 없어요/ : /단독에는 .+ 필요해요/);
     assert.equal(await consent.isEnabled(), found);
     assert.equal(await consent.isChecked(), false);
-    await selector.selectOption('local-worker');
+    await selector.selectOption('codex');
   }
   await page.screenshot({ path: path.join(root, 'test-results/packaged-local-ai.png') });
   await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();

@@ -9,7 +9,7 @@ import { readAllowed, scanProject } from '../src/core/project/files';
 import { GEMINI_MODEL, type ExplainRequest, type Explanation, type LearningEvent } from '../src/shared/ai';
 import type { Evidence, SourceView } from '../src/shared/contracts';
 
-// A01: follow-up questions with the real ProjectAiContext, so a related file gets a new evidence ID on
+// A01: follow-up questions with the real ProjectAiContext, so the selected whole file gets a new evidence ID on
 // every read, as in the app. The fake model sees only its prompt and uses only IDs it finds there;
 // nothing here maps an old ID to a new one. No CLI, account or network is used.
 const roots: string[] = [];
@@ -37,18 +37,12 @@ async function setup(habit: Habit) {
     prompts.push(request);
     const material = JSON.parse(request.prompt.split('자료:\n')[1].split('\n과제:\n')[0]);
     const followUp = material.history.length > 0;
-    const related = material.files.find((item: { relativePath: string }) => item.relativePath === 'b.ts');
-    if (request.stage === 'organizing') {
-      // A model that re-reads asks for b.ts on every question; one that reuses old IDs does not on a follow-up.
-      const bId = material.availableFiles.find((item: { relativePath: string }) => item.relativePath === 'b.ts').id;
-      const requested = habit === 'reread' || !followUp ? [bId] : [];
-      return { reportedModel: null, value: { focus: 'helper 설명', questions: [], evidenceIds: [material.evidence.id], requestedFileIds: requested } };
-    }
+    const wholeFile = material.files.find((item: { relativePath: string }) => item.relativePath === 'a.ts');
     if (request.stage === 'explaining') {
       const oldId = material.history.at(-1)?.explanation.claims.find((claim: { kind: string }) => claim.kind === 'code')?.evidenceIds[0];
       const cited = habit === 'cite-selection' ? material.evidence.id
-        : !followUp || habit === 'reread' ? related.evidence.id : habit === 'reuse-old' ? oldId : randomUUID();
-      draft = { summary: 'helper 값을 씁니다.', steps: [], claims: [{ kind: 'code', text: 'b.ts의 helper가 42를 돌려줍니다.', evidenceIds: [cited] }], terms: [], examples: [], unknowns: [] };
+        : !followUp || habit === 'reread' ? wholeFile.evidence.id : habit === 'reuse-old' ? oldId : randomUUID();
+      draft = { summary: 'helper 값을 씁니다.', steps: [], claims: [{ kind: 'code', text: 'a.ts에서 helper를 호출합니다.', evidenceIds: [cited] }], terms: [], examples: [], unknowns: [] };
       return { reportedModel: GEMINI_MODEL, value: draft };
     }
     return { reportedModel: null, value: { accepted: true, issues: [], explanation: draft } };
@@ -63,7 +57,7 @@ async function setup(habit: Habit) {
   });
   const ask = async (conversationId?: string) => {
     const request: ExplainRequest = { projectId: project.id, evidenceId: evidence.id, expectedFileHash: hash,
-      question: conversationId ? 'b.ts는 무엇을 돌려주나요?' : 'answer는 어떻게 정해지나요?', mode: 'local-worker', consent: true, conversationId };
+      question: conversationId ? 'b.ts는 무엇을 돌려주나요?' : 'answer는 어떻게 정해지나요?', mode: 'codex', consent: true, conversationId };
     const { jobId } = workflow.start(request);
     await new Promise<void>(resolve => { const timer = setInterval(() => {
       if (events.some(event => event.jobId === jobId && event.kind !== 'progress')) { clearInterval(timer); resolve(); }
@@ -73,32 +67,32 @@ async function setup(habit: Habit) {
   };
   return { root, context, evidence, prompts, ask };
 }
-const citedB = (event: LearningEvent) => {
+const citedSource = (event: LearningEvent) => {
   if (event.kind !== 'completed') throw new Error(`expected completion, got ${event.kind}`);
   const id = event.result.explanation.claims.find(claim => claim.kind === 'code')!.evidenceIds[0];
   return { id, source: event.result.sources.find(source => source.evidence.id === id) };
 };
 
-describe('A01: follow-up questions over a related file, with real evidence IDs', () => {
-  it('works when the model reads the related file again: a new ID, a source that resolves, the same question basis', async () => {
+describe('A01: follow-up questions over the selected whole file, with real evidence IDs', () => {
+  it('works when the model receives the selected whole file again: a new ID, a source that resolves, the same question basis', async () => {
     const f = await setup('reread');
     const first = await f.ask();
-    const before = citedB(first);
-    expect(before.source?.relativePath).toBe('b.ts');
+    const before = citedSource(first);
+    expect(before.source?.relativePath).toBe('a.ts');
     if (first.kind !== 'completed') throw new Error('expected completion');
     const next = await f.ask(first.result.conversationId);
-    const after = citedB(next);
-    // b.ts was read again and got a new ID; the answer cites the new one and it resolves to b.ts.
+    const after = citedSource(next);
+    // a.ts was read again and got a new ID; the answer cites the new one and it resolves to a.ts.
     expect(after.id).not.toBe(before.id);
-    expect(after.source?.relativePath).toBe('b.ts');
+    expect(after.source?.relativePath).toBe('a.ts');
     expect(f.context.lookup(after.id)?.fileId).toBe(before.source?.evidence.fileId);
     // The follow-up still starts from the original selection.
     expect(next.kind === 'completed' && next.result.evidence.id).toBe(f.evidence.id);
     // The history the model saw still holds the old ID as it was: nothing rewrote it.
-    const material = JSON.parse(f.prompts.at(-3)!.prompt.split('자료:\n')[1].split('\n과제:\n')[0]);
+    const material = JSON.parse(f.prompts.at(-1)!.prompt.split('자료:\n')[1].split('\n과제:\n')[0]);
     expect(material.history[0].explanation.claims[0].evidenceIds).toEqual([before.id]);
-    // The model is told those old IDs cannot be cited and how to get the file again.
-    expect(f.prompts.at(-3)!.prompt).toContain('history 속 근거 ID 중 지금의 evidence.id나 files의 evidence.id에 없는 것은 이전 답변 때 것이라 이번 답변에 쓸 수 없다');
+    // The model is told those old IDs cannot be cited and that no extra files can be requested.
+    expect(f.prompts.at(-1)!.prompt).toContain('history 속 근거 ID 중 지금의 evidence.id나 files의 evidence.id에 없는 것은 이전 답변 때 것이라 이번 답변에 쓸 수 없다');
   });
 
   it('keeps the selection\'s ID valid in a follow-up, though the earlier answer cited it too', async () => {
@@ -107,7 +101,7 @@ describe('A01: follow-up questions over a related file, with real evidence IDs',
     if (first.kind !== 'completed') throw new Error('expected completion');
     const next = await f.ask(first.result.conversationId);
     // The same ID is in the history and in the current material, and the answer citing it is accepted.
-    const material = JSON.parse(f.prompts.at(-3)!.prompt.split('자료:\n')[1].split('\n과제:\n')[0]);
+    const material = JSON.parse(f.prompts.at(-1)!.prompt.split('자료:\n')[1].split('\n과제:\n')[0]);
     expect(material.history[0].explanation.claims[0].evidenceIds).toEqual([f.evidence.id]);
     expect(material.evidence.id).toBe(f.evidence.id);
     expect(next).toMatchObject({ kind: 'completed', result: { evidence: { id: f.evidence.id } } });
@@ -127,11 +121,11 @@ describe('A01: follow-up questions over a related file, with real evidence IDs',
     expect(await f.ask(first.result.conversationId)).toMatchObject({ kind: 'failed', error: { code: 'AI_RESPONSE' } });
   });
 
-  it('refuses the follow-up once the related file changed after the first answer', async () => {
+  it('refuses the follow-up once the selected file changed after the first answer', async () => {
     const f = await setup('reread');
     const first = await f.ask();
     if (first.kind !== 'completed') throw new Error('expected completion');
-    await writeFile(path.join(f.root, 'b.ts'), 'export const helper = () => 7;\n');
+    await writeFile(path.join(f.root, 'a.ts'), 'export const helper = () => 7;\n');
     expect(await f.ask(first.result.conversationId)).toMatchObject({ kind: 'failed', error: { code: 'CHANGED' } });
   });
 });

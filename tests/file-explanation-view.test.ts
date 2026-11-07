@@ -81,3 +81,16 @@ it.each([null, '2026-10-30T00:00:00.000Z'])('offers deletion with a saved date o
     status: 'running', fileId: source.fileId, revision: 1, phase: null, mode: 'codex',
   } }))).not.toContain('>지우기</button>');
 });
+
+it('labels an old local-worker file explanation and retains its reviewed status', () => {
+  const saved = entry(1);
+  saved.result.mode = 'local-worker';
+  saved.result.review = 'AI 검토됨';
+  const source: SourceView = { projectId: saved.result.projectId, fileId: saved.result.range.fileId, hash: saved.result.range.fileHash,
+    relativePath: 'file.ts', text: 'const value = 1;', guide: null, analysis: { language: 'typescript', symbols: [], imports: [], warnings: [] } };
+  const html = renderToStaticMarkup(React.createElement(FileExplanationCard, { source, entry: saved, state: null,
+    stale: false, mode: 'codex', locked: false, running: false, checking: false, connections: null,
+    onInspect() {}, onEnsure() {}, onStart() {}, onCancel() {}, onDelete() {}, onShow() {} }));
+  expect(html).toContain('로컬 워커(이전 방식)');
+  expect(html).toContain('AI 검토됨');
+});

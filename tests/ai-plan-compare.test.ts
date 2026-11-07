@@ -41,7 +41,7 @@ const empty = (): PlanCompareAnswer => ({ items: [], unrequested: [], designMism
 const item = (file: string): PlanCompareAnswer['items'][number] => ({ title: '항목', plan: { startLine: 2, endLine: 3 },
   status: 'matches', files: [file], difference: null, missingEvidence: null, searched: null });
 
-function workflow(f: Awaited<ReturnType<typeof fixture>>, answer: () => PlanCompareAnswer = empty, requested: string[] = [], mode: LearningMode = 'local-worker') {
+function workflow(f: Awaited<ReturnType<typeof fixture>>, answer: () => PlanCompareAnswer = empty, requested: string[] = [], mode: LearningMode = 'antigravity') {
   const events: LearningEvent[] = [];
   const run = vi.fn(async ({ stage }: StageRequest): Promise<StageResponse> => ({ reportedModel: null,
     value: stage === 'organizing' ? { focus: '대조', requestedFileIds: requested } : stage === 'reviewing' ? { accepted: true, issues: [], compare: answer() } : answer() }));
@@ -212,14 +212,12 @@ describe('plan material and currentness', () => {
 });
 
 describe('plan workflow with fake AI only', () => {
-  it.each(['local-worker', 'codex', 'antigravity'] as const)('extends only Gemini comparison to four minutes in %s mode', async mode => {
+  it.each(['codex', 'antigravity'] as const)('extends only Gemini comparison to four minutes in %s mode', async mode => {
     const f = await fixture();
     const w = workflow(f, empty, [], mode);
     expect(await w.finish()).toMatchObject({ kind: 'plan-compare-completed' });
     expect(w.run.mock.calls.map(([request]) => [request.stage, request.provider, request.timeoutMs])).toEqual(
-      mode === 'local-worker'
-        ? [['organizing', 'codex', undefined], ['explaining', 'antigravity', 240_000], ['reviewing', 'codex', undefined]]
-        : [['organizing', mode, undefined], ['explaining', mode, mode === 'antigravity' ? 240_000 : undefined]],
+      [['organizing', mode, undefined], ['explaining', mode, mode === 'antigravity' ? 240_000 : undefined]],
     );
   });
 
@@ -258,11 +256,11 @@ describe('plan workflow with fake AI only', () => {
     expect(w.run.mock.calls[1][0].timeoutMs).toBe(240_000);
   });
 
-  it.each(['local-worker', 'codex', 'antigravity'] as const)('clarifies connection items without structure-only instructions in %s prompts', async mode => {
+  it.each(['codex', 'antigravity'] as const)('clarifies connection items without structure-only instructions in %s prompts', async mode => {
     const f = await fixture();
     const w = workflow(f, empty, [], mode);
     expect(await w.finish()).toMatchObject({ kind: 'plan-compare-completed' });
-    expect(w.run).toHaveBeenCalledTimes(mode === 'local-worker' ? 3 : 2);
+    expect(w.run).toHaveBeenCalledTimes(2);
     const connectionInstruction = '어느 파일이 어느 파일을 불러오는지에 관한 기획 문장도 items에 한 항목으로 적고, 보낸 edges 중 그 문장과 어긋나는 연결이 있으면 designMismatches에도 그 edge 번호로 적는다. ';
     expect(w.run.mock.calls[0][0].prompt).not.toContain(connectionInstruction);
     for (const [request] of w.run.mock.calls.slice(1)) expect(request.prompt).toContain(connectionInstruction);
@@ -272,12 +270,11 @@ describe('plan workflow with fake AI only', () => {
       expect(request.prompt).not.toContain('structureOnly');
     }
   });
-  it.each(['local-worker', 'codex', 'antigravity'] as const)('selects unrequested candidates and limits decision rules to comparison and review in %s prompts', async mode => {
+  it.each(['codex', 'antigravity'] as const)('selects unrequested candidates and limits decision rules to comparison in %s prompts', async mode => {
     const f = await fixture();
     const w = workflow(f, empty, [], mode);
     expect(await w.finish()).toMatchObject({ kind: 'plan-compare-completed' });
-    expect(w.run.mock.calls.map(([request]) => request.stage)).toEqual(mode === 'local-worker'
-      ? ['organizing', 'explaining', 'reviewing'] : ['organizing', 'explaining']);
+    expect(w.run.mock.calls.map(([request]) => request.stage)).toEqual(['organizing', 'explaining']);
     const selection = w.run.mock.calls[0][0];
     expect(selection.prompt).toContain('한도가 남으면 기획 어느 줄과도 이어지지 않아 보이는 기능 파일도 기획에 없는 작업 후보를 확인하도록 고른다.');
     const decisionRules = [
@@ -297,11 +294,11 @@ describe('plan workflow with fake AI only', () => {
       for (const rule of decisionRules) expect(request.prompt).toContain(rule);
     }
   });
-  it.each(['local-worker', 'codex', 'antigravity'] as const)('keeps safety and JSON instructions in every %s stage', async mode => {
+  it.each(['codex', 'antigravity'] as const)('keeps safety and JSON instructions in every %s stage', async mode => {
     const f = await fixture();
     const w = workflow(f, empty, [], mode);
     expect(await w.finish()).toMatchObject({ kind: 'plan-compare-completed' });
-    expect(w.run).toHaveBeenCalledTimes(mode === 'local-worker' ? 3 : 2);
+    expect(w.run).toHaveBeenCalledTimes(2);
     for (const [request] of w.run.mock.calls) {
       expect(request.prompt).toContain('코드 학습 앱의 읽기 전용 보조 역할이다.');
       expect(request.prompt).toContain('도구·파일·셸·웹을 사용하지 않는다.');
@@ -313,7 +310,7 @@ describe('plan workflow with fake AI only', () => {
       expect(request.prompt).toContain('JSON schema를 따르는 JSON 하나만 출력한다.');
     }
   });
-  it.each(['local-worker', 'codex', 'antigravity'] as const)('defines ambiguous decisions and review acceptance in %s prompts', async mode => {
+  it.each(['codex', 'antigravity'] as const)('defines ambiguous decisions in %s prompts', async mode => {
     const f = await fixture();
     const w = workflow(f, empty, [], mode);
     expect(await w.finish()).toMatchObject({ kind: 'plan-compare-completed' });
@@ -329,12 +326,6 @@ describe('plan workflow with fake AI only', () => {
     expect(explaining.prompt).toContain('연결의 matches·differs 근거에는 import를 직접 확인한 읽은 파일 ID만 적는다.');
     expect(requests[0].prompt).toContain('요구사항을 구현하는 파일과 설계 연결의 출발 파일을 우선 고르고');
     expect(requests[0].prompt).toContain('이 단계에서는 파일만 고르고 대조 결과는 작성하지 않는다.');
-    const review = requests.find(request => request.stage === 'reviewing');
-    if (!review) return;
-    expect(review.prompt).toContain('형식·근거·기획 누락 문제가 남아 있지 않으면 accepted=true, issues=[]로 쓴다.');
-    expect(review.prompt).toContain('고친 문제는 issues에 적지 않는다.');
-    expect(review.prompt).toContain('부족한 근거를 unverified·missing·unknowns로 정확히 표시한 것은 거절 사유가 아니다.');
-    expect(review.prompt).toContain('해결하지 못한 잘못된 판정·근거·누락이 남으면 accepted=false로 쓰고 그 이유만 issues에 남겨라.');
   });
   it('returns masked plan text and import sites while sending exactly four edge fields to AI', async () => {
     const f = await fixture('# 기획\npassword: fixture-only-value', { 'main.ts': "import './other';", 'other.ts': 'export {};' });
@@ -356,15 +347,15 @@ describe('plan workflow with fake AI only', () => {
       expect(request.prompt).not.toContain('fixture-only-value');
     }
   });
-  it('runs picking, writing and review, masks plan and code, and returns metadata without source text', async () => {
+  it('runs single-provider picking and writing, masks plan and code, and returns metadata without source text', async () => {
     const f = await fixture('# 기획\npassword: fixture-only-value', { 'main.ts': 'const password = "fixture-only-value";' });
     const w = workflow(f, () => ({ ...empty(), items: [{ ...item(f.id('main.ts')), plan: { startLine: 2, endLine: 2 } }] }), [f.id('main.ts')]);
     const result = await w.finish();
     expect(result.kind).toBe('plan-compare-completed');
     if (result.kind !== 'plan-compare-completed') return;
     expect(w.run.mock.calls.map(([request]) => [request.stage, request.provider])).toEqual([
-      ['organizing', 'codex'], ['explaining', 'antigravity'], ['reviewing', 'codex']]);
-    expect(result.result).toMatchObject({ structureOnly: false, review: 'AI 검토됨', document: { name: 'plan.md' } });
+      ['organizing', 'antigravity'], ['explaining', 'antigravity']]);
+    expect(result.result).toMatchObject({ structureOnly: false, review: 'AI 대조 없음', document: { name: 'plan.md' } });
     expect(result.result.limitations.join()).toContain('main.ts: 비밀값처럼 보이는');
     expect(result.result.limitations.join()).toContain('기획 문서: 비밀값처럼 보이는');
     for (const [request] of w.run.mock.calls) {
@@ -377,7 +368,7 @@ describe('plan workflow with fake AI only', () => {
     expect(result.result.read).toHaveLength(1);
     expect(f.source.map).toHaveBeenCalledTimes(2);
   });
-  it.each(['local-worker', 'codex', 'antigravity'] as const)('masks token-shaped paths in the file list, edges and read files (%s)', async mode => {
+  it.each(['codex', 'antigravity'] as const)('masks token-shaped paths in the file list, edges and read files (%s)', async mode => {
     const token = `ghp_${'A'.repeat(36)}`;
     const f = await fixture(undefined, { [`${token}/store.ts`]: "import { n } from '../screen';\nexport const orders = [n];", 'screen.ts': `import { orders } from './${token}/store';\nexport const n = orders;` });
     const w = workflow(f, empty, [f.id(`${token}/store.ts`)], mode);
@@ -444,16 +435,6 @@ describe('plan workflow with fake AI only', () => {
       expect(w.run.mock.calls.map(([request]) => request.stage)).toEqual(['organizing']);
     });
   });
-  it.each([{ accepted: false, issues: [] }, { accepted: true, issues: ['남은 문제'] }])('discards an unresolved review %j', async verdict => {
-    const f = await fixture(); const w = workflow(f);
-    w.run.mockImplementation(async ({ stage }) => ({ reportedModel: null, value: stage === 'organizing' ? { focus: '확인', requestedFileIds: [] }
-      : stage === 'reviewing' ? { ...verdict, compare: empty() } : empty() }));
-    expect(await w.finish()).toMatchObject({ kind: 'failed', error: {
-      code: 'AI_RESPONSE', message: 'AI 대조에서 해결하지 못한 문제가 있어 결과를 표시하지 않았어요.',
-    } });
-    expect(w.events.some(event => event.kind === 'plan-compare-completed')).toBe(false);
-    expect(JSON.stringify(w.events)).not.toContain('남은 문제');
-  });
   it.each(['plan', 'new file', 'code'])('checks %s again between AI stages', async kind => {
     const f = await fixture(); const w = workflow(f, empty, [f.id('main.ts')]);
     const original = w.run.getMockImplementation()!;
@@ -474,14 +455,14 @@ describe('plan workflow with fake AI only', () => {
     const original = w.run.getMockImplementation()!;
     w.run.mockImplementation(async input => {
       const result = await original(input);
-      if (input.stage !== 'reviewing') return result;
+      if (input.stage !== 'explaining') return result;
       if (kind === 'unread import') await writeFile(path.join(f.root, 'unread.ts'), "import './other';");
       if (kind === 'alias') await writeFile(path.join(f.root, 'tsconfig.json'), JSON.stringify({ compilerOptions: { paths: { '@app/value': ['./other.ts'] } } }));
       if (kind === 'ignore') await writeFile(path.join(f.root, '.gitignore'), '# changed without changing paths');
       return result;
     });
     expect(await w.finish()).toMatchObject({ kind: 'failed', error: { code: 'CHANGED' } });
-    expect(w.run).toHaveBeenCalledTimes(3);
+    expect(w.run).toHaveBeenCalledTimes(2);
     expect(w.events.some(event => event.kind === 'plan-compare-completed')).toBe(false);
   });
   it.each([1, 2])('cancels map wait %i immediately and accepts a new AI job', async heldMap => {
@@ -517,7 +498,7 @@ describe('plan workflow with fake AI only', () => {
     }
     expect(() => w.worker.startPlanCompare({ ...w.request, mode: 'claude-code' })).toThrow('준비 중');
     const { jobId } = w.worker.startPlanCompare(w.request);
-    expect(() => w.worker.startOverview({ projectId: f.project.id, mode: 'local-worker', startFileId: null, consent: true })).toThrow('이미 AI 작업');
+    expect(() => w.worker.startOverview({ projectId: f.project.id, mode: 'codex', startFileId: null, consent: true })).toThrow('이미 AI 작업');
     await w.worker.cancel(jobId);
   });
   it('settles any cancelled wait without waiting for the underlying read to finish', async () => {
@@ -526,7 +507,7 @@ describe('plan workflow with fake AI only', () => {
     controller.abort();
     await expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
   });
-  it.each(['local-worker', 'codex', 'antigravity'] as const)('passes the five fixture cases and design mismatch through fake AI in %s', async mode => {
+  it.each(['codex', 'antigravity'] as const)('passes the five fixture cases and design mismatch through fake AI in %s', async mode => {
     const base = await realpath(await mkdtemp(path.join(os.tmpdir(), 'plan-fixtures-'))); temporary.push(base);
     await cp(path.resolve('tests/fixtures/plan-compare'), base, { recursive: true });
     const files: Record<string, string> = {};
@@ -547,7 +528,7 @@ describe('plan workflow with fake AI only', () => {
   });
 });
 
-it.each([100, 400])('checks the actual review prompt size with 16,384 short lines and %i-character Korean draft fields', async length => {
+it.each([100, 400])('checks the single comparison prompt size with 16,384 short lines and %i-character Korean fields', async length => {
   const f = await fixture('x\n'.repeat(16384), { 'a.ts': 'a'.repeat(32 * 1024), 'b.ts': 'b'.repeat(32 * 1024), 'c.ts': 'c'.repeat(16 * 1024) });
   const snapshot = await f.capture({ documentId: f.document.documentId, startLine: 1, endLine: 16384 });
   await f.context.expand(snapshot, [f.id('a.ts'), f.id('b.ts'), f.id('c.ts')], f.signal);
@@ -569,15 +550,9 @@ it.each([100, 400])('checks the actual review prompt size with 16,384 short line
   w.deps.capturePlanCompare = async () => snapshot;
   w.deps.revalidatePlanCompare = async () => {};
   const result = await w.finish();
-  if (length === 400) {
-    expect(result).toMatchObject({ kind: 'failed', error: { code: 'LIMIT' } });
-    expect(w.run.mock.calls.map(([request]) => request.stage)).toEqual(['organizing', 'explaining']);
-    return;
-  }
   expect(result.kind).toBe('plan-compare-completed');
-  const review = w.run.mock.calls.find(([request]) => request.stage === 'reviewing')![0];
-  expect(Buffer.byteLength(review.prompt) + Buffer.byteLength(JSON.stringify(review.schema))).toBeLessThanOrEqual(384 * 1024);
-  expect(Buffer.byteLength(review.prompt)).toBeGreaterThan(300 * 1024);
+  const comparison = w.run.mock.calls.find(([request]) => request.stage === 'explaining')![0];
+  expect(Buffer.byteLength(comparison.prompt) + Buffer.byteLength(JSON.stringify(comparison.schema))).toBeLessThanOrEqual(384 * 1024);
 });
 
 // Save the actual workflow output, then scan again so every file has a new session ID.
@@ -617,13 +592,16 @@ describe('saved comparison schema and restoration', () => {
     expect(planCompareResultSchema.safeParse({ ...saved, read: [{ ...saved.read[0], fileHash: 'invalid' }] }).success).toBe(false);
     expect(planCompareResultSchema.safeParse({ ...saved, edges: [{ ...saved.edges[0], site: { ...saved.edges[0].site, fileHash: 'invalid' } }] }).success).toBe(false);
   });
-  it('remaps all five ID locations, including an edge source outside the truncated file list', async () => {
+  it.each(['codex', 'local-worker'] as const)('remaps all five ID locations in saved %s results, including an edge source outside the truncated file list', async mode => {
     const f = await restorationFixture();
+    f.saved = planCompareResultSchema.parse({ ...f.saved, mode, review: mode === 'local-worker' ? 'AI 검토됨' : 'AI 대조 없음' });
     f.saved.files = f.saved.files.filter(file => file.relativePath !== 'unread.ts');
     const original = structuredClone(f.saved);
     const source = await f.reopen();
     const { result, reasons } = await restorePlanCompare(source, f.saved, f.document.path);
     expect(reasons).toEqual([]);
+    expect(result.mode).toBe(mode);
+    expect(result.review).toBe(f.saved.review);
     for (const file of result.files) {
       expect(file.id).toBe(source.context.fileIdOf(file.relativePath));
       expect(file.id).not.toBe(f.id(file.relativePath));

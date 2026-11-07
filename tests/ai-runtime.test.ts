@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CLAUDE_CODE_CLOSED, LOCAL_WORKER_NEEDS_BOTH, LOCAL_WORKER_READY, SINGLE_NEEDS, SINGLE_READY, LocalAiRuntime, executableCandidates, parseStageOutput,
-  resolveLaunch, WINDOWS_CODEX_READY, WINDOWS_CODEX_WARNING, WINDOWS_GEMINI_CLOSED, WINDOWS_LOCAL_WORKER_CLOSED, type Launch } from '../src/core/ai/runtime';
+import { CLAUDE_CODE_CLOSED, SINGLE_NEEDS, SINGLE_READY, LocalAiRuntime, executableCandidates, parseStageOutput,
+  resolveLaunch, WINDOWS_CODEX_READY, WINDOWS_CODEX_WARNING, WINDOWS_GEMINI_CLOSED, type Launch } from '../src/core/ai/runtime';
 import { GEMINI_MODEL } from '../src/shared/ai';
 import { runProcess, type ProcessRequest } from '../src/core/ai/process';
 import { access, chmod, lstat, mkdir, open, realpath, rm } from 'node:fs/promises';
@@ -88,9 +88,8 @@ describe('local connection readiness', () => {
     const report = await new LocalAiRuntime(appCodexHome, appAgyHome).checkConnections();
     expect(report.providers).toHaveLength(3);
     expect(report.providers.every(item => item.installation === 'found' && item.authentication === 'unchecked' && item.isolation === 'unverified')).toBe(true);
-    // Finding both workers opens the local worker and the Codex and Gemini single modes; Claude Code stays closed.
-    expect(report.modes.map(mode => [mode.mode, mode.ready, mode.reason])).toEqual([['local-worker', true, LOCAL_WORKER_READY],
-      ['codex', true, SINGLE_READY], ['antigravity', true, SINGLE_READY], ['claude-code', false, CLAUDE_CODE_CLOSED]]);
+    // Finding each CLI opens its single mode; Claude Code stays closed.
+    expect(report.modes.map(mode => [mode.mode, mode.ready, mode.reason])).toEqual([['codex', true, SINGLE_READY], ['antigravity', true, SINGLE_READY], ['claude-code', false, CLAUDE_CODE_CLOSED]]);
     expect(report.modes.every(mode => !('warning' in mode))).toBe(true);
     expect(runProcess).toHaveBeenCalledTimes(3);
     for (const [request] of vi.mocked(runProcess).mock.calls) {
@@ -208,10 +207,10 @@ describe('local connection readiness', () => {
     await expect(runtime.run(privateStage())).rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: SINGLE_NEEDS.antigravity });
     expect(runProcess).not.toHaveBeenCalled();
     await runtime.checkConnections();
-    for (const mode of ['local-worker', 'codex', 'antigravity'] as const) expect(() => runtime.assertReady(mode)).not.toThrow();
+    for (const mode of ['codex', 'antigravity'] as const) expect(() => runtime.assertReady(mode)).not.toThrow();
     expect(() => runtime.assertReady('claude-code')).toThrow(CLAUDE_CODE_CLOSED);
   });
-  it.runIf(onMac)('keeps the local worker and Gemini single closed when Antigravity is missing; Codex single still opens', async () => {
+  it.runIf(onMac)('keeps Gemini single closed when Antigravity is missing; Codex single still opens', async () => {
     vi.mocked(realpath).mockImplementation(async (name: unknown) => {
       if (String(name).endsWith('/agy')) throw new Error('missing');
       return String(name);
@@ -219,22 +218,19 @@ describe('local connection readiness', () => {
     const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
     const report = await runtime.checkConnections();
     expect(report.providers.find(item => item.provider === 'antigravity')?.installation).toBe('missing');
-    expect(report.modes.map(mode => [mode.mode, mode.ready, mode.reason]).slice(0, 3)).toEqual([['local-worker', false, LOCAL_WORKER_NEEDS_BOTH],
-      ['codex', true, SINGLE_READY], ['antigravity', false, SINGLE_NEEDS.antigravity]]);
+    expect(report.modes.map(mode => [mode.mode, mode.ready, mode.reason]).slice(0, 2)).toEqual([['codex', true, SINGLE_READY], ['antigravity', false, SINGLE_NEEDS.antigravity]]);
     vi.mocked(runProcess).mockClear();
     await expect(runtime.run(privateStage())).rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: SINGLE_NEEDS.antigravity });
     expect(runProcess).not.toHaveBeenCalled();
   });
-  it.runIf(onMac)('opens Gemini single without Codex, and runs its stage; the local worker and Codex single stay closed', async () => {
+  it.runIf(onMac)('opens Gemini single without Codex, and runs its stage; Codex single stays closed', async () => {
     vi.mocked(realpath).mockImplementation(async (name: unknown) => {
       if (String(name).endsWith('/codex')) throw new Error('missing');
       return String(name);
     });
     const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
     const report = await runtime.checkConnections();
-    expect(report.modes.map(mode => [mode.mode, mode.ready, mode.reason]).slice(0, 3)).toEqual([['local-worker', false, LOCAL_WORKER_NEEDS_BOTH],
-      ['codex', false, SINGLE_NEEDS.codex], ['antigravity', true, SINGLE_READY]]);
-    expect(() => runtime.assertReady('local-worker')).toThrow(LOCAL_WORKER_NEEDS_BOTH);
+    expect(report.modes.map(mode => [mode.mode, mode.ready, mode.reason]).slice(0, 2)).toEqual([['codex', false, SINGLE_NEEDS.codex], ['antigravity', true, SINGLE_READY]]);
     expect(() => runtime.assertReady('codex')).toThrow(SINGLE_NEEDS.codex);
     vi.mocked(runProcess).mockClear();
     await expect(runtime.run({ ...privateStage(), provider: 'codex' })).rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: SINGLE_NEEDS.codex });
@@ -266,13 +262,11 @@ describe('Windows Codex runtime (mock files and processes on either OS)', () => 
       message: expect.stringContaining(`PowerShell에서 로그인이 필요할 수 있어요: $env:CODEX_HOME="${appCodexHome}"; codex login`),
     }]);
     expect(report.modes).toEqual([
-      { mode: 'local-worker', ready: false, reason: WINDOWS_LOCAL_WORKER_CLOSED },
       { mode: 'codex', ready: true, reason: WINDOWS_CODEX_READY, warning: WINDOWS_CODEX_WARNING },
       { mode: 'antigravity', ready: false, reason: WINDOWS_GEMINI_CLOSED },
       { mode: 'claude-code', ready: false, reason: CLAUDE_CODE_CLOSED },
     ]);
     expect(() => runtime.assertReady('codex')).not.toThrow();
-    expect(() => runtime.assertReady('local-worker')).toThrow(WINDOWS_LOCAL_WORKER_CLOSED);
     expect(() => runtime.assertReady('antigravity')).toThrow(WINDOWS_GEMINI_CLOSED);
     expect(() => runtime.assertReady('claude-code')).toThrow(CLAUDE_CODE_CLOSED);
     expect(runProcess).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({

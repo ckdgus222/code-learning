@@ -2,7 +2,7 @@ import React, { useEffect, useId, useState } from 'react';
 import { savedDate } from './overview';
 import type { SourceView } from '../shared/contracts';
 import { GEMINI_MODEL, type ConnectionReport, type FileExplanationRange, type FileExplanationResult,
-  type LearningMode, type LearningPhase } from '../shared/ai';
+  type ResultMode, type LearningMode, type LearningPhase } from '../shared/ai';
 
 export interface FileExplanationEntry { result: FileExplanationResult; revision: number; savedAt: string | null }
 export type FileExplanationState =
@@ -14,13 +14,13 @@ export function rememberFileExplanation(previous: FileExplanationEntry[], entry:
   return [...previous.filter(item => item.result.range.fileId !== entry.result.range.fileId).slice(-19), entry];
 }
 
-const modes: Record<LearningMode, string> = {
-  'local-worker': '로컬 워커 · Gemini 설명 → Codex 대조', codex: 'Codex 단독 · 대조 없음',
+const modes: Record<ResultMode, string> = {
+  'local-worker': '로컬 워커(이전 방식)', codex: 'Codex 단독 · 대조 없음',
   antigravity: 'Gemini 단독 (Antigravity) · 대조 없음', 'claude-code': 'Claude Code 단독 · 준비 중',
 };
 const phases: Record<LearningPhase, string> = {
   collecting: '설명할 파일 확인 중', organizing: '작업 정리 중', 'reading-related': '자료 확인 중',
-  explaining: '설명 요청 중', reviewing: 'Codex가 원본 코드와 대조 중', validating: '파일 변경 여부 확인 중',
+  explaining: '설명 요청 중', validating: '파일 변경 여부 확인 중',
 };
 
 export function FileExplanationCard({ source, entry, state, stale, mode, locked, running, checking, connections, onInspect, onEnsure, onStart, onCancel, onDelete, onShow }: {
@@ -56,7 +56,7 @@ export function FileExplanationCard({ source, entry, state, stale, mode, locked,
       <details className="consent-details">
         <summary>무엇을 보내나요?</summary>
         <p id={consentDescriptionId}>이 파일의 경로와 원문(비밀값처럼 보이는 형태는 가림)·덩어리 목록(ID·종류·이름·행 범위)을
-          {mode === 'local-worker' ? ' Gemini와 Codex' : mode === 'codex' ? ' Codex' : mode === 'antigravity' ? ' Gemini(Antigravity)' : ' Claude Code'}에 보내는 데 동의합니다.
+          {mode === 'codex' ? ' Codex' : mode === 'antigravity' ? ' Gemini(Antigravity)' : ' Claude Code'}에 보내는 데 동의합니다.
           다른 파일은 보내지 않습니다. 모든 비밀값을 찾는다고 보장하지는 않습니다.</p>
       </details>
       <button className="btn btn--primary" disabled={!consent || !ready?.ready || locked || running || checking || tooLarge}

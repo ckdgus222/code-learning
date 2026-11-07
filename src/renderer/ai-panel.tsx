@@ -5,20 +5,19 @@ import type { Evidence, SourceView } from '../shared/contracts';
 import { GEMINI_MODEL, type ConnectionReport, type LearningEvent, type LearningMode, type LearningPhase, type LearningResult } from '../shared/ai';
 
 const modes: { id: LearningMode; label: string }[] = [
-  { id: 'local-worker', label: '로컬 워커 · Codex → Gemini → Codex' },
   { id: 'codex', label: 'Codex 단독 · 대조 없음' },
-  { id: 'claude-code', label: 'Claude Code 단독 · 준비 중' },
   { id: 'antigravity', label: 'Gemini 단독 (Antigravity) · 대조 없음' },
+  { id: 'claude-code', label: 'Claude Code 단독 · 준비 중' },
 ];
-const shortModes: Record<LearningMode, string> = { 'local-worker': '로컬 워커', codex: 'Codex 단독', antigravity: 'Gemini 단독', 'claude-code': 'Claude Code(준비 중)' };
+const shortModes: Record<LearningMode, string> = { codex: 'Codex 단독', antigravity: 'Gemini 단독', 'claude-code': 'Claude Code(준비 중)' };
 const names = { codex: 'Codex', 'claude-code': 'Claude Code', antigravity: 'Antigravity' };
 // Who receives the code in each mode; the consent text names them.
-export const recipients: Record<LearningMode, string> = { 'local-worker': 'Codex와 Gemini', codex: 'Codex', antigravity: 'Gemini(Antigravity)', 'claude-code': 'Claude Code' };
+export const recipients: Record<LearningMode, string> = { codex: 'Codex', antigravity: 'Gemini(Antigravity)', 'claude-code': 'Claude Code' };
 const phases: Record<LearningPhase, string> = {
-  collecting: '질문할 코드 확인 중', organizing: 'Codex가 작업 정리 중',
+  collecting: '질문할 코드 확인 중', organizing: '읽을 파일을 고르는 중',
   'reading-related': '프로젝트의 관련 파일을 읽는 중',
   explaining: `Gemini 3.8 Flash · High (${GEMINI_MODEL})에 설명 요청 중`,
-  reviewing: 'Codex가 원본 코드와 대조 중', validating: '근거와 코드 변경 여부 확인 중',
+  validating: '근거와 코드 변경 여부 확인 중',
 };
 
 const documentFile = /\.(?:md|txt)$/i;
@@ -337,7 +336,7 @@ export function AiPanel({ open, onClose, projectId, openedAt = 0, onSavedEvidenc
           </select>
         </label>
         <p className="hint">이 컴퓨터에 설치된 공식 프로그램을 실행합니다. 답변 생성은 각 AI 제공자 서버에서 이뤄집니다.</p>
-        <p className="hint">{mode === 'local-worker' && '선택한 프로젝트에서 관련 파일을 찾아 읽습니다. '}원본 파일은 수정·생성·삭제하지 않습니다. 민감 파일·제외 파일·폴더 밖 파일은 읽기 대상에서 제외합니다.</p>
+        <p className="hint">원본 파일은 수정·생성·삭제하지 않습니다. 민감 파일·제외 파일·폴더 밖 파일은 읽기 대상에서 제외합니다.</p>
         <button className="btn" disabled={checking || running || otherRunning} onClick={inspect}>{checking ? '설치 확인 중…' : '로컬 AI 설치 확인'}</button>
         {connections && <ul aria-label="로컬 AI 설치 상태">
           {connections.providers.map(item => <li key={item.provider} className="fact fact--muted">
@@ -348,8 +347,7 @@ export function AiPanel({ open, onClose, projectId, openedAt = 0, onSavedEvidenc
         {connections && !connections.providers.some(item => item.provider === 'claude-code') && connections.providers.some(item => item.provider === 'antigravity') &&
           <p className="hint">자동 확인은 Codex·Antigravity만 해요. Claude Code까지 보려면 ‘로컬 AI 설치 확인’을 눌러요.</p>}
         <p className="hint" data-testid="ai-readiness">{ready?.reason ?? '먼저 설치 상태를 확인해 주세요. 설치 확인만으로 로그인이나 실제 AI 연결이 검증되는 것은 아닙니다.'}</p>
-        <p className="hint">{mode === 'local-worker' ? `Codex 정리 → Gemini 3.8 Flash · High (${GEMINI_MODEL}) 설명 → Codex 대조`
-          : mode === 'claude-code' ? '단독 실행은 후속 단계에서 연결합니다.'
+        <p className="hint">{mode === 'claude-code' ? '단독 실행은 후속 단계에서 연결합니다.'
             : '한 AI가 바로 설명합니다. 관련 파일을 더 읽지 않고 다른 AI의 대조가 없습니다.'}</p>
       </div>
       <div className="ai-question">
@@ -366,8 +364,8 @@ export function AiPanel({ open, onClose, projectId, openedAt = 0, onSavedEvidenc
           aria-describedby={consentDescriptionId} onChange={event => setConsent(event.target.checked)} />보낼 자료에 동의</label>
         <details className="consent-details">
           <summary>무엇을 보내나요?</summary>
-          <p id={consentDescriptionId}>선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·{mode === 'local-worker' && '관련 파일(추가 최대 4개)·'}질문·최근 답변을 {recipients[mode]}에 보내는 데 동의합니다.
-            {mode !== 'local-worker' && ' 다른 파일은 더 읽지 않습니다.'} 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.</p>
+          <p id={consentDescriptionId}>선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·질문·최근 답변을 {recipients[mode]}에 보내는 데 동의합니다.
+            다른 파일은 더 읽지 않습니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.</p>
         </details>
         <div className="ai-actions">
           <button className="btn btn--primary" onClick={ask} aria-describedby={blockedReason ? sendBlockedId : undefined}
@@ -405,6 +403,7 @@ export function AnswerView({ answer, topic, stale, onEvidence }: {
     <b>{answer.question}</b>
     <h4>쉽게</h4><p>{answer.explanation.summary}</p>
     <span className="tag tag--unknown">{answer.review}</span>
+    {answer.models.some(model => model.stage === 'reviewing') && <span className="tag tag--unknown">로컬 워커(이전 방식)</span>}
     {answer.explanation.terms.length > 0 && <section aria-label="낱말 풀이">
       <h4>낱말 풀이</h4>
       <dl>{answer.explanation.terms.map((term, index) => <React.Fragment key={index}><dt>{term.term}</dt><dd>{term.meaning}</dd></React.Fragment>)}</dl>
