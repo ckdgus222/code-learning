@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm, realpath } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { checkPlanCompare } from './plan-compare-smoke.mjs';
@@ -15,6 +16,19 @@ const packagedApp = {
 if (!packagedApp) throw new Error(`Packaged smoke tests support only macOS and Windows; got ${process.platform}`);
 // Windows has no changes view in v1.0 (no git there) and Ctrl for the reader keys.
 const onMac = process.platform === 'darwin';
+if (onMac) {
+  const contents = path.resolve(root, path.dirname(packagedApp), '..');
+  const iconFile = execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIconFile', path.join(contents, 'Info.plist')],
+    { encoding: 'utf8' }).trim();
+  assert.ok(iconFile, 'CFBundleIconFile is missing');
+  assert.equal(path.basename(iconFile), iconFile, 'CFBundleIconFile must name a Resources file');
+  const packagedIcon = path.join(contents, 'Resources', iconFile.endsWith('.icns') ? iconFile : `${iconFile}.icns`);
+  assert.ok(existsSync(packagedIcon), `Packaged icon is missing: ${packagedIcon}`);
+  const actualHash = createHash('sha256').update(await readFile(packagedIcon)).digest('hex');
+  const expectedHash = createHash('sha256').update(await readFile(path.join(root, 'assets/icon/icon.icns'))).digest('hex');
+  assert.equal(actualHash, expectedHash, 'Packaged icon differs from assets/icon/icon.icns');
+  console.log('Packaged macOS icon matches assets/icon/icon.icns');
+}
 const readerKeys = { find: onMac ? 'Meta+f' : 'Control+f' };
 const temp = await realpath(await mkdtemp(path.join(os.tmpdir(), 'code-learning-package-')));
 const profile = path.join(temp, 'profile');

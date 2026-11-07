@@ -8,6 +8,7 @@ export default {
     asar: { unpack: '{**/*.node,**/*.dylib,**/node_modules/@typescript/typescript-*/lib/**}' },
     appBundleId: 'local.codelearning.app',
     executableName: 'Code Learning',
+    icon: 'assets/icon/icon',
     ignore: (file: string) => !!file && !/^\/(?:\.vite|node_modules)(?:\/|$)/.test(file),
   },
   makers: [new MakerSquirrel({
@@ -15,6 +16,8 @@ export default {
     authors: 'ckdgus222',
     description: 'Local, read-only code learning prototype',
     setupExe: 'Code-Learning-win-x64-Setup.exe',
+    setupIcon: 'assets/icon/icon.ico',
+    iconUrl: 'https://raw.githubusercontent.com/ckdgus222/code-learning/main/assets/icon/icon.ico',
     noMsi: true,
   }, ['win32'])],
   // Keep inside-out signing and verification together in this hook instead of osxSign.
