@@ -2,7 +2,23 @@ import { contextBridge, ipcRenderer } from 'electron';
 import { channels, type LearningApi, type ProjectEvent } from '../shared/contracts';
 import type { LearningEvent } from '../shared/ai';
 
+const codeColorsArgument = process.argv.find(argument => argument.startsWith('--code-colors='));
+const codeColors = codeColorsArgument === '--code-colors=contrast' ? 'contrast' : 'default';
+if (document.documentElement) {
+  document.documentElement.dataset.codeColors = codeColors;
+} else {
+  // Preload can run before <html> exists. Observe its insertion before the first paint.
+  const observer = new MutationObserver(() => {
+    if (!document.documentElement) return;
+    document.documentElement.dataset.codeColors = codeColors;
+    observer.disconnect();
+  });
+  observer.observe(document, { childList: true });
+}
+
 const api: LearningApi = {
+  getViewSettings: () => ipcRenderer.invoke(channels.getViewSettings),
+  setViewSettings: input => ipcRenderer.invoke(channels.setViewSettings, input),
   savedPlanCompare: input => ipcRenderer.invoke(channels.savedPlanCompare, input),
   savePlanCompare: input => ipcRenderer.invoke(channels.savePlanCompare, input),
   deletePlanCompare: input => ipcRenderer.invoke(channels.deletePlanCompare, input),

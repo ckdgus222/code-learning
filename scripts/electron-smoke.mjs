@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { checkPlanCompare, checkSavedPlanCompare } from './plan-compare-smoke.mjs';
 import { resizeWindow } from './smoke-window.mjs';
+import { checkViewSettings, checkCodeColors } from './view-settings-smoke.mjs';
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, '..');
@@ -797,6 +798,13 @@ try {
   await writeFile(path.join(longWelcomeFolder, 'index.ts'), 'export const welcome = 1;\n');
   await writeFile(welcomeBootstrap, bootstrapFor(welcomeProfile));
   await launch(welcomeBootstrap);
+  await check('View settings: welcome controls, keyboard, persistence and system reset', async () => {
+    await checkViewSettings(app, page, async () => {
+      await app.close();
+      await launch(welcomeBootstrap);
+      return { app, page };
+    });
+  });
   await check('Welcome: one folder button, full-height grid and responsive steps in both themes', async () => {
     if (onMac) assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible()), false);
     assert.deepEqual(await page.evaluate(() => window.learning.recentProjects()), { ok: true, value: [] });
@@ -1180,6 +1188,7 @@ try {
     assert.match(await page.getByTestId('evidence-range').innerText(), /order.ts · 2–4줄/);
   });
   await check('Code reader colours syntax, takes keyboard focus, reads with keys and stays read-only', async () => {
+    await checkCodeColors(page);
     const evidence = await page.getByTestId('evidence-range').innerText();
     const lines = () => page.locator('.cm-line').allTextContents().then(all => all.join('\n'));
     const before = await lines();

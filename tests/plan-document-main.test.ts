@@ -26,6 +26,7 @@ vi.mock('electron', () => ({
   dialog: { showOpenDialog: host.picker, showErrorBox: vi.fn() },
   ipcMain: { handle: (channel: string, handler: (event: unknown, input: unknown) => Promise<Result<unknown>>) => host.handlers.set(channel, handler) },
   powerMonitor: { on() {} },
+  nativeTheme: { themeSource: 'system' },
 }));
 vi.mock('../src/core/ai/runtime', () => ({ LocalAiRuntime: class { assertReady() {} run = host.run; async close() {} } }));
 vi.mock('../src/core/storage/projects', async importOriginal => {

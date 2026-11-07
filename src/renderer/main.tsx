@@ -16,6 +16,7 @@ import { FileExplanationCard } from './file-explanation';
 import { Flow } from './flow';
 import { markKeysOf, sameMarkKey } from './marks';
 import { LearningMarksCard } from './learning-marks';
+import { ViewSettingsButton } from './view-settings';
 import { ProjectMapView } from './project-map';
 import { FeatureChooser, FeatureList, FlowLimits, FlowPicture, FlowWalk, hasFlowCode, RoutesStatus, siteOf, useFeatureFlows, type FlowStart } from './feature-flow';
 import { codeNameOf, routeLabel } from '../core/analysis/flow-story';
@@ -620,6 +621,7 @@ function App() {
           onClick={() => setPanelOpen(open => !open)}><Icon name="question" />질문
           {!panelOpen && ai.questionRunning && <span className="topbar__question-progress" aria-hidden="true" />}
         </button>
+        <ViewSettingsButton />
         {project && <button className="btn btn--icon" aria-label="프로젝트 폴더 열기" title="프로젝트 폴더 열기"
           onClick={() => void openProject()} disabled={busy}><Icon name="folder" /></button>}
         <button className="btn btn--ghost btn--icon" aria-label="프로젝트 닫기" title="프로젝트 닫기"

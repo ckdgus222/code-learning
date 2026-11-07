@@ -3,6 +3,12 @@ import type { PlanCompareCheck, PlanCompareRequest, PlanCompareResult, SavePlanC
 import type { CheckConnectionsRequest, ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest, FeatureGuideRequest, FeatureGuideResult, FileChunk, FileExplanationRange, FileExplanationResult, OverviewResult, LearningResult } from './ai';
 
 export const MAX_FILE_BYTES = 256 * 1024;
+export const viewSettingsSchema = z.object({
+  screen: z.enum(['system', 'light', 'dark']),
+  codeColors: z.enum(['default', 'contrast']),
+}).strict();
+export type ViewSettings = z.infer<typeof viewSettingsSchema>;
+export const defaultViewSettings: ViewSettings = { screen: 'system', codeColors: 'default' };
 export const idSchema = z.string().uuid();
 export const sourceRequestSchema = z.object({ projectId: idSchema, fileId: idSchema }).strict();
 export const evidenceRequestSchema = z.object({ projectId: idSchema, evidenceId: idSchema }).strict();
@@ -497,6 +503,8 @@ export type Result<T> = { ok: true; value: T } | { ok: false; code: AppErrorCode
 export type ProjectEvent = { projectId: string; kind: 'changed' | 'watch-error' };
 
 export interface LearningApi {
+  getViewSettings(): Promise<Result<ViewSettings>>;
+  setViewSettings(input: ViewSettings): Promise<Result<ViewSettings>>;
   savedPlanCompare(input: z.infer<typeof projectRequestSchema>): Promise<Result<{ result: PlanCompareResult; savedAt: string; reasons: string[] } | null>>;
   savePlanCompare(input: SavePlanCompare): Promise<Result<{ savedAt: string }>>;
   deletePlanCompare(input: z.infer<typeof projectRequestSchema>): Promise<Result<null>>;
@@ -554,6 +562,7 @@ export interface LearningApi {
 }
 
 export const channels = {
+  getViewSettings: 'learning:get-view-settings', setViewSettings: 'learning:set-view-settings',
   savedPlanCompare: 'learning:saved-plan-compare', savePlanCompare: 'learning:save-plan-compare', deletePlanCompare: 'learning:delete-plan-compare',
   planCompare: 'learning:plan-compare',
   planCompareCheck: 'learning:plan-compare-check',
