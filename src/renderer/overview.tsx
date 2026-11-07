@@ -1,7 +1,7 @@
-import React, { useId, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import type { Evidence, LearningSpot, ProjectFile, ProjectView, SavedSpot } from '../shared/contracts';
-import type { LearningPhase, OverviewFeature, OverviewResult } from '../shared/ai';
-import { SourceButtons } from './ai-panel';
+import type { LearningMode, LearningPhase, OverviewFeature, OverviewResult } from '../shared/ai';
+import { SourceButtons, recipients } from './ai-panel';
 import type { MapEntry } from './project-map';
 
 export function OverviewReview({ entry, stale, mapping, onBuild, onOpen }: {
@@ -131,16 +131,12 @@ export function recordPlace(history: Place[], place: Place): Place[] {
 const origins: Record<Topic['origin'], string> = {
   ai: 'AI가 제안한 기능 후보', start: '코드 구조로 고른 시작점 후보', function: '지금 고른 함수',
 };
-const phases: Record<LearningPhase, string> = {
-  collecting: '개요 자료를 모으는 중', organizing: 'Codex가 읽을 파일을 고르는 중', 'reading-related': '고른 파일을 읽는 중',
-  explaining: 'Gemini가 개요를 쓰는 중', reviewing: 'Codex가 코드와 대조하는 중', validating: '근거와 코드 변경 여부 확인 중',
-};
 const SHOWN = 6;
 const documentFile = /\.(?:md|txt)$/i;
 
-export function OverviewAi({ project, state, stale, locked, readiness, checking, revealAnchor, topicName, onInspect, onStart, onCancel, onDelete,
+export function OverviewAi({ project, mode, state, stale, locked, readiness, checking, revealAnchor, topicName, onInspect, onStart, onCancel, onDelete,
   onEvidence, onFollow, onFunction }: {
-  project: ProjectView; state: OverviewState | null; stale: boolean; locked: boolean;
+  project: ProjectView; mode: LearningMode; state: OverviewState | null; stale: boolean; locked: boolean;
   /** The topic's name, searched with the overview's items. */
   topicName: string | null;
   readiness: { ready: boolean; reason: string } | null; checking: boolean;
@@ -155,13 +151,22 @@ export function OverviewAi({ project, state, stale, locked, readiness, checking,
   // App remounts this card for every opened folder, so a choice or a consent never carries over to another one.
   const [startFileId, setStartFileId] = useState(intro?.fileId ?? '');
   const [consent, setConsent] = useState(false);
+  useEffect(() => { setConsent(false); }, [mode]);
+  const localWorker = mode === 'local-worker';
+  const picker = localWorker ? 'Codex' : recipients[mode];
+  const phases: Record<LearningPhase, string> = {
+    collecting: '개요 자료를 모으는 중', organizing: `${picker}가 읽을 파일을 고르는 중`, 'reading-related': '고른 파일을 읽는 중',
+    explaining: `${localWorker ? 'Gemini' : recipients[mode]}가 개요를 쓰는 중`, reviewing: 'Codex가 코드와 대조하는 중', validating: '근거와 코드 변경 여부 확인 중',
+  };
   const consentDescriptionId = useId();
   const running = state?.status === 'running';
   const candidates = [...new Map(project.overview.candidates.filter(item => item.fileId !== intro?.fileId)
     .map(item => [item.fileId, item.relativePath])).entries()];
   return <section className="card card--wide overview-ai" aria-labelledby="overview-ai">
     <h3 id="overview-ai">기능과 구성 (AI 개요)</h3>
-    <p className="hint">로컬 워커(Codex → Gemini → Codex)가 시작 파일 하나와 Codex가 고른 파일 최대 4개만 읽고 써요. 조사한 범위의 개요이고, 정확성을 보장하지 않아요.</p>
+    <p className="hint">{localWorker
+      ? '로컬 워커(Codex → Gemini → Codex)가 시작 파일 하나와 Codex가 고른 파일 최대 4개만 읽고 써요.'
+      : `고른 AI(${recipients[mode]})가 시작 파일 하나와 스스로 고른 파일 최대 4개만 읽고 써요. 다른 AI의 대조는 없어요.`} 조사한 범위의 개요이고, 정확성을 보장하지 않아요.</p>
     <div className="overview-form">
       <label>개요 시작 파일
         <select aria-label="개요 시작 파일" value={startFileId} disabled={running} onChange={event => setStartFileId(event.target.value)}>
@@ -181,7 +186,7 @@ export function OverviewAi({ project, state, stale, locked, readiness, checking,
         aria-describedby={consentDescriptionId} onChange={event => setConsent(event.target.checked)} />보낼 자료에 동의</label>
       <details className="consent-details">
         <summary>무엇을 보내나요?</summary>
-        <p id={consentDescriptionId}>프로젝트 파일 목록, 고른 시작 파일, Codex가 고른 관련 파일(최대 4개)을 Codex와 Gemini에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.</p>
+        <p id={consentDescriptionId}>프로젝트 파일 목록, 고른 시작 파일, {picker}가 고른 관련 파일(최대 4개)을 {recipients[mode]}에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.</p>
       </details>
       <div className="ai-actions">
         <button className="btn btn--primary" disabled={!readiness?.ready || !consent || running || locked}
@@ -226,7 +231,7 @@ function OverviewAnswer({ result, stale, locked, revealAnchor, topicName, onEvid
   const fromDocuments = overview.intro?.evidenceIds.every(id => documentFile.test(sourceOf(id).relativePath));
   return <div className="overview-answer">
     {stale && <p className="notice notice--warn"><b>다시 확인 필요:</b> 개요를 만든 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 이전 코드 기준이라 근거 보기와 따라가기를 막았어요. 개요를 다시 만들어 주세요.</p>}
-    <p className="hint">{result.review === 'AI 검토됨' ? 'AI 검토됨 · 개요의 정확성을 보장하지 않습니다.' : '읽은 자료가 없어 개요를 쓰지 않았어요.'}</p>
+    <p className="hint">{result.review === '개요 작성 안 함' ? '읽은 자료가 없어 개요를 쓰지 않았어요.' : `${result.review} · 개요의 정확성을 보장하지 않습니다.`}</p>
     <section aria-label="이 프로젝트가 하는 일 (AI 개요)">
       <h4>이 프로젝트가 하는 일</h4>
       {overview.intro ? <>

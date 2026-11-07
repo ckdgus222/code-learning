@@ -40,7 +40,7 @@ describe('folded AI consent disclosures', () => {
     const project: ProjectView = { id: 'project', name: 'test', files: [], excluded: {}, warnings: [],
       overview: { entryFileIds: [], intro: null, candidates: [], checkedFiles: 0, limited: false, notes: [] } };
     const html = renderToStaticMarkup(React.createElement(OverviewAi, {
-      project, state: null, stale: false, locked: false, readiness: { ready, reason: 'test' }, checking: false,
+      project, mode: 'local-worker', state: null, stale: false, locked: false, readiness: { ready, reason: 'test' }, checking: false,
       revealAnchor: null, topicName: null,
       onInspect() {}, onStart() {}, onCancel() {}, onDelete() {}, onEvidence() {}, onFollow() {}, onFunction() {},
     }));

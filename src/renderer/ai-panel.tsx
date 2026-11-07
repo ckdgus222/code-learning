@@ -13,7 +13,7 @@ const modes: { id: LearningMode; label: string }[] = [
 const shortModes: Record<LearningMode, string> = { 'local-worker': '로컬 워커', codex: 'Codex 단독', antigravity: 'Gemini 단독', 'claude-code': 'Claude Code(준비 중)' };
 const names = { codex: 'Codex', 'claude-code': 'Claude Code', antigravity: 'Antigravity' };
 // Who receives the code in each mode; the consent text names them.
-const recipients: Record<LearningMode, string> = { 'local-worker': 'Codex와 Gemini', codex: 'Codex', antigravity: 'Gemini(Antigravity)', 'claude-code': 'Claude Code' };
+export const recipients: Record<LearningMode, string> = { 'local-worker': 'Codex와 Gemini', codex: 'Codex', antigravity: 'Gemini(Antigravity)', 'claude-code': 'Claude Code' };
 const phases: Record<LearningPhase, string> = {
   collecting: '질문할 코드 확인 중', organizing: 'Codex가 작업 정리 중',
   'reading-related': '프로젝트의 관련 파일을 읽는 중',
