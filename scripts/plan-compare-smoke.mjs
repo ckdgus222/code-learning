@@ -169,7 +169,7 @@ async function checkPlanCompareRequests(app, page, card, pick, temporary, showCa
     ipcMain._invokeHandlers.set('learning:plan-compare-check', async () => ({ ok: true, value: { reasons: [] } }));
     ipcMain._invokeHandlers.set('learning:connections', async () => ({ ok: true, value: {
       checkedAt: new Date().toISOString(), providers: [],
-      modes: ['local-worker', 'codex', 'antigravity'].map(mode => ({ mode, ready: true, reason: '가짜 AI 시험 준비됨' })),
+      modes: ['codex', 'antigravity'].map(mode => ({ mode, ready: true, reason: '가짜 AI 시험 준비됨' })),
     } }));
     ipcMain._invokeHandlers.set('learning:plan-compare', async (_event, input) => {
       const index = globalThis.compareTestRequests.length + 1;
@@ -191,14 +191,13 @@ async function checkPlanCompareRequests(app, page, card, pick, temporary, showCa
   const send = async (job, kind, layout = false) => app.evaluate(({ BrowserWindow }, { job, kind, layout }) => {
     const { jobId, input } = job;
     const event = { kind, jobId, projectId: input.projectId };
-    if (kind === 'progress') event.phase = 'reviewing';
+    if (kind === 'progress') event.phase = 'explaining';
     if (kind === 'plan-compare-completed') {
-      const single = input.mode !== 'local-worker';
       const range = 'startLine' in input.selection ? { startLine: input.selection.startLine, endLine: input.selection.endLine }
         : { startLine: 3, endLine: 4 };
       const fileId = '00000000-0000-4000-8000-000000000099';
       event.result = { jobId, projectId: input.projectId, mode: input.mode, structureOnly: false, models: [],
-        review: single ? 'AI 대조 없음' : 'AI 검토됨', document: { documentId: input.selection.documentId, name: 'fixture.md' },
+        review: 'AI 대조 없음', document: { documentId: input.selection.documentId, name: 'fixture.md' },
         sent: [range], excluded: [], plan: [{ startLine: range.startLine, text: '시험\n'.repeat(range.endLine - range.startLine + 1) }], files: [{ id: fileId, relativePath: 'main.ts' }], edges: [], read: [],
         compare: { items: [{ title: '시험', plan: range, status: 'matches', files: [fileId],
           difference: null, missingEvidence: null, searched: null }],
@@ -234,9 +233,9 @@ async function checkPlanCompareRequests(app, page, card, pick, temporary, showCa
     assert.equal(await card.getByRole('checkbox', { name: '보낼 자료에 동의', exact: true }).isChecked(), false);
     await send(first, 'progress');
     await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
-    await page.locator('.plan-entry__status').filter({ hasText: /^대조 중 · Codex가 대조 검토 중$/ }).waitFor();
+    await page.locator('.plan-entry__status').filter({ hasText: /^대조 중 · 기획 대조 작성 중$/ }).waitFor();
     await showCard();
-    await card.getByRole('status').filter({ hasText: 'Codex가 대조 검토 중' }).waitFor();
+    await card.getByRole('status').filter({ hasText: '기획 대조 작성 중' }).waitFor();
     await send(first, 'plan-compare-completed');
     await card.getByRole('status').filter({ hasText: '대조 결과 · 기획대로 1 · 다름 0' }).waitFor();
     await card.getByText('새 파일과 기획 문서 변경은 10초마다 확인해요', { exact: true }).waitFor();
@@ -287,7 +286,7 @@ async function checkPlanCompareRequests(app, page, card, pick, temporary, showCa
     await card.getByRole('status').filter({ hasText: '대조 결과 · 기획대로 1 · 다름 0 · 확인 못 함 0' }).waitFor();
     assert.doesNotMatch(await card.locator('.plan-compare-result').innerText(), /코드를 읽지 않은 구조 비교/);
     await card.locator('.plan-compare-result').getByText('AI 대조 · 정확성을 보장하지 않아요 · Codex 단독 · AI 대조 없음', { exact: true }).waitFor();
-    await panel.getByLabel('AI 사용 방식', { exact: true }).selectOption('local-worker');
+    await panel.getByLabel('AI 사용 방식', { exact: true }).selectOption('codex');
     // A separate fake result stresses layout without altering the evidence/freshness fixtures below.
     const windowSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
     const panelWasOpen = await question.getAttribute('aria-pressed') === 'true';
@@ -391,7 +390,7 @@ async function checkPlanCompareResults(app, page, card, pick, temporary, showCar
     const range = { startLine: 1, endLine: 2 };
     const item = { title: '대조 항목', plan: range, files: [from.id], difference: null, missingEvidence: null, searched: null };
     const result = {
-      jobId: job.jobId, projectId: job.input.projectId, mode: 'local-worker', structureOnly: false, models: [], review: 'AI 검토됨',
+      jobId: job.jobId, projectId: job.input.projectId, mode: job.input.mode, structureOnly: false, models: [], review: 'AI 대조 없음',
       document: { documentId: job.input.selection.documentId, name: 'small.md' }, plan: [{ startLine: 1, text }],
       sent: [{ startLine: 1, endLine: text.split('\n').length }], excluded: [],
       files: [{ id: from.id, relativePath: from.relativePath }, { id: to.id, relativePath: to.relativePath }],
@@ -654,7 +653,7 @@ export async function checkSavedPlanCompare(app, page, temporary, restart) {
     };
     await app.evaluate(({ ipcMain, app }, { fixture, planPath, failSave }) => {
       ipcMain._invokeHandlers.set('learning:connections', async () => ({ ok: true, value: { checkedAt: new Date().toISOString(), providers: [],
-        modes: [{ mode: 'local-worker', ready: true, reason: '저장 시험용 가짜 AI' }] } }));
+        modes: [{ mode: 'codex', ready: true, reason: '저장 시험용 가짜 AI' }] } }));
       ipcMain._invokeHandlers.set('learning:plan-compare', async (event, input) => {
         const jobId = process.getBuiltinModule('node:crypto').randomUUID();
         const result = { ...fixture, jobId, document: { ...fixture.document, documentId: input.selection.documentId } };

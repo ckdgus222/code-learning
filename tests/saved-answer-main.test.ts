@@ -104,14 +104,17 @@ const list = () => invoke(channels.savedAnswers, { projectId: project.id });
 const read = () => invoke(channels.savedAnswer, { projectId: project.id, jobId: result.jobId });
 const openEvidence = () => invoke(channels.openSavedEvidence, { projectId: project.id, jobId: result.jobId, evidenceId: result.evidence.id });
 
-it('restores new file IDs without registering evidence and reads code directly, then deletes', async () => {
+it('restores new file IDs without registering evidence and reads code directly, then deletes (legacy result without mode)', async () => {
+  result.models = [{ stage: 'organizing', provider: 'codex', requestedModel: null, reportedModel: null },
+    { stage: 'reviewing', provider: 'codex', requestedModel: null, reportedModel: null }];
+  expect(result).not.toHaveProperty('mode');
   expect(await save()).toMatchObject({ ok: true, value: { savedAt: expect.any(String) } });
   expect(await list()).toMatchObject({ ok: true, value: [{ jobId: result.jobId, question: result.question, savedAt: expect.any(String) }] });
   const opened = await invoke<ProjectView>(channels.open);
   if (!opened.ok) throw new Error(opened.message);
   const fileId = opened.value.files[0].id;
   expect(fileId).not.toBe(result.evidence.fileId);
-  expect(await read()).toMatchObject({ ok: true, value: { changed: false, result: { evidence: { fileId } } } });
+  expect(await read()).toMatchObject({ ok: true, value: { changed: false, result: { review: 'AI 검토됨', models: result.models, evidence: { fileId } } } });
   expect(await invoke(channels.evidence, { projectId: project.id, evidenceId: result.evidence.id })).toMatchObject({ ok: false, code: 'NOT_ALLOWED' });
   expect(await openEvidence()).toMatchObject({ ok: true, value: { source: { text: code, fileId }, evidence: { fileId } } });
   expect(await invoke(channels.evidence, { projectId: project.id, evidenceId: result.evidence.id })).toMatchObject({ ok: false, code: 'NOT_ALLOWED' });

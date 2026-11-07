@@ -37,7 +37,7 @@ it('starts history folded and explains storage and conversation boundaries', () 
   const html = renderToStaticMarkup(React.createElement(AiPanel, {
     open: true, onClose() {},
     projectId: 'project', openedAt: 1, evidence: null, relativePath: '', stale: false, draft: null,
-    connections: null, checking: false, otherRunning: false, mode: 'local-worker',
+    connections: null, checking: false, otherRunning: false, mode: 'codex',
     onMode() {}, onRunning() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onEvidence() {}, onSavedEvidence() {},
   }));
   expect(html).toContain('<details class="saved-answers"><summary>지난 질문과 답 · 0개</summary>');
@@ -47,4 +47,12 @@ it('starts history folded and explains storage and conversation boundaries', () 
 
 it('preserves the month and day display used by earlier saved results', () => {
   expect(savedDate('2026-10-30T12:00:00.000Z')).toBe('10월 30일');
+});
+
+it('labels the legacy answer without a mode field from its saved reviewing stage', () => {
+  const legacy = { ...answer, models: [{ stage: 'reviewing' as const, provider: 'codex' as const, requestedModel: null, reportedModel: null }] };
+  expect(legacy).not.toHaveProperty('mode');
+  const html = renderToStaticMarkup(React.createElement(AnswerView, { answer: legacy, stale: false, onEvidence() {} }));
+  expect(html).toContain('로컬 워커(이전 방식)');
+  expect(html).toContain('AI 검토됨');
 });

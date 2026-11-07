@@ -6,7 +6,7 @@ import type { ConnectionReport, LearningMode } from '../src/shared/ai';
 
 describe('compact AI panel', () => {
   const modes: [LearningMode, string][] = [
-    ['local-worker', '로컬 워커'], ['codex', 'Codex 단독'],
+    ['codex', 'Codex 단독'],
     ['antigravity', 'Gemini 단독'], ['claude-code', 'Claude Code(준비 중)'],
   ];
 
@@ -42,7 +42,7 @@ describe('compact AI panel', () => {
       projectId: 'project', relativePath: 'web/lib/auth.ts', stale: false, draft: null,
       evidence: { id: 'selection', projectId: 'project', fileId: 'file', fileHash: 'a'.repeat(64),
         startUtf16: 20, endUtf16: 100, startLine: 3, endLine: 12 },
-      connections: null, checking: false, otherRunning: false, mode: 'local-worker',
+      connections: null, checking: false, otherRunning: false, mode: 'codex',
       onMode() {}, onRunning() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onEvidence() {},
     }));
     expect(html).toContain('<div class="ai-question"><div class="question-target"><span class="eyebrow">질문 대상</span><p class="question-target__code" data-testid="question-scope">web/lib/auth.ts · 3–12행</p></div><label>선택한 코드에 질문');
@@ -55,7 +55,7 @@ describe('compact AI panel', () => {
     const html = renderToStaticMarkup(React.createElement(AiPanel, {
       open: true, onClose() {},
       projectId: 'project', evidence: null, relativePath: '', stale: false, draft: null,
-      connections: null, checking: true, otherRunning: false, mode: 'local-worker',
+      connections: null, checking: true, otherRunning: false, mode: 'codex',
       onMode() {}, onRunning() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onEvidence() {},
     }));
     const actions = html.match(/<div class="ai-actions">(.*?)<\/div>/)?.[1];
@@ -81,7 +81,7 @@ describe('compact AI panel', () => {
       const html = renderToStaticMarkup(React.createElement(AiPanel, {
         open: true, onClose() {},
         projectId: 'project', evidence: null, relativePath: '', stale: false, draft: null,
-        connections, checking: false, otherRunning: false, mode: 'local-worker',
+        connections, checking: false, otherRunning: false, mode: 'codex',
         onMode() {}, onRunning() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onEvidence() {},
       }));
       expect(html.includes('자동 확인은 Codex·Antigravity만 해요. Claude Code까지 보려면 ‘로컬 AI 설치 확인’을 눌러요.')).toBe(connections === automatic);

@@ -78,7 +78,10 @@ afterAll(async () => {
   await rm(temporary, { recursive: true, force: true });
 });
 
-it('saves an accepted result, rebinds all ranges after reopen, preserves hashes and deletes by current ID', async () => {
+it.each(['codex', 'local-worker'] as const)('saves an accepted result, rebinds all ranges after reopen, preserves hashes and deletes by current ID (%s)', async mode => {
+  result.mode = mode;
+  result.review = mode === 'local-worker' ? 'AI 검토됨' : 'AI 대조 없음';
+  result.models = [{ stage: mode === 'local-worker' ? 'reviewing' : 'explaining', provider: 'codex', requestedModel: null, reportedModel: null }];
   const saved = await invoke<{ savedAt: string }>(channels.saveFileExplanation, { projectId: project.id, result });
   expect(saved).toMatchObject({ ok: true, value: { savedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) } });
   const reopened = await invoke<ProjectView>(channels.open);

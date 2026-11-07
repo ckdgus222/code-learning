@@ -297,8 +297,6 @@ describe('Codex connection through the app runtime (real account, non-secret fix
       await rm(root, { recursive: true, force: true });
     }
   }
-  it('W1: one question goes through the whole local worker and its answer cites evidence the app can find', () =>
-    askOnce('local-worker', 'W1_worker', [['organizing', 'codex'], ['explaining', 'antigravity'], ['reviewing', 'codex']]), 300_000);
   it('W2: one question in the Codex single mode is answered by Codex alone with evidence the app can find', () =>
     askOnce('codex', 'W2_codex', [['explaining', 'codex']]), 300_000);
   it('W3: one question in the Gemini single mode is answered by Gemini alone with evidence the app can find', () =>

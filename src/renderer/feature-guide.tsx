@@ -1,14 +1,14 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { savedDate } from './overview';
-import { GEMINI_MODEL, type ConnectionReport, type FeatureGuideResult, type LearningEvent, type LearningMode, type LearningPhase } from '../shared/ai';
+import { GEMINI_MODEL, type ConnectionReport, type FeatureGuideResult, type LearningEvent, type ResultMode, type LearningMode, type LearningPhase } from '../shared/ai';
 
-const modes: Record<LearningMode, string> = {
-  'local-worker': '로컬 워커 · Gemini 정리 → Codex 대조', codex: 'Codex 단독 · 대조 없음',
+const modes: Record<ResultMode, string> = {
+  'local-worker': '로컬 워커(이전 방식)', codex: 'Codex 단독 · 대조 없음',
   antigravity: 'Gemini 단독 (Antigravity) · 대조 없음', 'claude-code': 'Claude Code 단독 · 준비 중',
 };
 const phases: Record<LearningPhase, string> = {
   collecting: '기능 목록 확인 중', organizing: '작업 정리 중', 'reading-related': '자료 확인 중',
-  explaining: '기능 정리 요청 중', reviewing: 'Codex가 주소·함수 이름과 대조 중', validating: '기능 목록 변경 여부 확인 중',
+  explaining: '기능 정리 요청 중', validating: '기능 목록 변경 여부 확인 중',
 };
 
 export type SavedFeatureGuide = FeatureGuideResult & { savedAt: string | null; changed: boolean };
@@ -89,7 +89,7 @@ export function FeatureGuideCard({ projectId, routesId, result, mode, locked, ru
         aria-describedby={descriptionId} onChange={event => setConsent(event.target.checked)} />보낼 자료에 동의</label>
       <details className="consent-details"><summary>무엇을 보내나요?</summary>
         <p id={descriptionId}>프로젝트 이름, 앱이 찾은 서버 주소·요청·화면 목록(파일 경로와 함수 이름 포함)을
-          {mode === 'local-worker' ? ' Gemini와 Codex' : mode === 'codex' ? ' Codex' : mode === 'antigravity' ? ' Gemini(Antigravity)' : ' Claude Code'}에 보내는 데 동의합니다.
+          {mode === 'codex' ? ' Codex' : mode === 'antigravity' ? ' Gemini(Antigravity)' : ' Claude Code'}에 보내는 데 동의합니다.
           코드 원문은 보내지 않습니다. 비밀값처럼 보이는 부분은 가리지만 모두 찾는다고 보장하지 않습니다.</p>
       </details>
       <button className="btn btn--primary" disabled={!consent || !ready?.ready || locked || running || deleting || checking} onClick={() => void start()}>동의하고 정리하기</button>

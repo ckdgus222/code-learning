@@ -22,7 +22,7 @@ async function fixture(text = 'export function run() { return 1; }\n', relativeP
   const file = project.files.find(file => file.relativePath === relativePath)!;
   const { hash } = await readAllowed(root, relativePath);
   const context = new ProjectAiContext(root, project);
-  const request: FileExplanationRequest = { projectId: project.id, fileId: file.id, expectedFileHash: hash, mode: 'local-worker', consent: true };
+  const request: FileExplanationRequest = { projectId: project.id, fileId: file.id, expectedFileHash: hash, mode: 'codex', consent: true };
   const events: LearningEvent[] = [];
   const assertReady = vi.fn();
   const captureFile = vi.fn((request: FileExplanationRequest, signal: AbortSignal) => context.captureFile(request, 1, signal));
@@ -101,15 +101,13 @@ describe('file explanation workflow', () => {
     expect(f.expand).not.toHaveBeenCalled();
   });
 
-  it('runs Gemini explanation then Codex review with the same single masked file and no other file data', async () => {
+  it('sends only the masked selected file in single mode', async () => {
     const f = await fixture('const password = "test-only-secret-value";\nexport function run() { return password; }');
     const result = await f.finish();
-    expect(result).toMatchObject({ kind: 'file-explanation-completed', result: { review: 'AI 검토됨', mode: 'local-worker',
-      models: [{ provider: 'antigravity', requestedModel: GEMINI_MODEL, reportedModel: GEMINI_MODEL },
-        { provider: 'codex', reportedModel: 'test-codex' }] } });
-    expect(f.run.mock.calls.map(([input]) => [input.stage, input.provider])).toEqual([['explaining', 'antigravity'], ['reviewing', 'codex']]);
+    expect(result).toMatchObject({ kind: 'file-explanation-completed', result: { review: 'AI 대조 없음', mode: 'codex',
+      models: [{ provider: 'codex', requestedModel: null, reportedModel: 'test-codex' }] } });
+    expect(f.run.mock.calls.map(([input]) => [input.stage, input.provider])).toEqual([['explaining', 'codex']]);
     const sent = f.run.mock.calls.map(([input]) => material(input));
-    expect(sent[0]).toEqual(sent[1]);
     expect(Object.keys(sent[0]).sort()).toEqual(['chunks', 'code', 'relativePath']);
     expect(sent[0].code).toContain(SECRET_MASK);
     for (const [input] of f.run.mock.calls) {
@@ -117,14 +115,14 @@ describe('file explanation workflow', () => {
       expect(input.prompt).not.toContain('NEVER_SEND_OTHER_FILE');
       expect(input.prompt).not.toContain('other.ts');
     }
-    expect(f.revalidate).toHaveBeenCalledTimes(3);
+    expect(f.revalidate).toHaveBeenCalledTimes(2);
     expect(f.expand).not.toHaveBeenCalled();
     if (result.kind !== 'file-explanation-completed') throw new Error('expected completion');
     expect(result.result.limitations.join(' ')).toContain('비밀값');
     expect(result.result.range).toMatchObject({ fileId: f.file.id, fileHash: f.request.expectedFileHash, startUtf16: 0, endUtf16: f.text.length });
   });
 
-  it.each(['before-stage', 'between-stages', 'before-display'] as const)('discards a file changed %s', async when => {
+  it.each(['before-stage', 'before-display'] as const)('discards a file changed %s', async when => {
     const f = await fixture();
     const normal = f.run.getMockImplementation()!;
     if (when === 'before-stage') f.captureFile.mockImplementationOnce(async (request, signal) => {
@@ -134,26 +132,23 @@ describe('file explanation workflow', () => {
     });
     else f.run.mockImplementation(async input => {
       const result = await normal(input);
-      if (input.stage === (when === 'between-stages' ? 'explaining' : 'reviewing')) await writeFile(path.join(f.root, 'app.ts'), 'const changed = 1;');
+      if (input.stage === 'explaining') await writeFile(path.join(f.root, 'app.ts'), 'const changed = 1;');
       return result;
     });
     expect(await f.finish()).toMatchObject({ kind: 'failed', error: { code: 'CHANGED', message: '파일이 바뀌어 다시 만들어 주세요' } });
-    expect(f.run).toHaveBeenCalledTimes(when === 'before-stage' ? 0 : when === 'between-stages' ? 1 : 2);
+    expect(f.run).toHaveBeenCalledTimes(when === 'before-stage' ? 0 : 1);
     expect(f.events.some(event => event.kind === 'file-explanation-completed')).toBe(false);
   });
 
-  it.each(['unknown', 'duplicate', 'review-unknown', 'review-duplicate', 'format', 'review-rejected'] as const)('rejects %s responses', async kind => {
+  it.each(['unknown', 'duplicate', 'format'] as const)('rejects %s responses', async kind => {
     const f = await fixture();
     const normal = f.run.getMockImplementation()!;
     f.run.mockImplementation(async input => {
       const response = await normal(input);
-      const reviewing = input.stage === 'reviewing';
-      if (reviewing !== kind.startsWith('review-')) return response;
-      const answer = reviewing ? (response.value as { explanation: FileExplanation }).explanation : response.value as FileExplanation;
+      const answer = response.value as FileExplanation;
       if (kind.endsWith('unknown')) answer.chunks[0].chunkId = randomUUID();
       else if (kind.endsWith('duplicate')) answer.chunks.push(answer.chunks[0]);
       else if (kind === 'format') return { ...response, value: { ...answer, invented: true } };
-      else if (kind === 'review-rejected') return { ...response, value: { accepted: false, issues: ['근거 부족'], explanation: answer } };
       return response;
     });
     expect(await f.finish()).toMatchObject({ kind: 'failed', error: { code: 'AI_RESPONSE' } });
@@ -181,7 +176,7 @@ describe('file explanation workflow', () => {
   it('shares the active job slot with questions and overviews in both directions', async () => {
     const f = await fixture();
     const question = { projectId: f.project.id, evidenceId: randomUUID(), expectedFileHash: f.request.expectedFileHash, question: '설명', mode: 'codex' as const, consent: true as const };
-    const overview = { projectId: f.project.id, startFileId: null, mode: 'local-worker' as const, consent: true as const };
+    const overview = { projectId: f.project.id, startFileId: null, mode: 'codex' as const, consent: true as const };
     const fileJob = f.workflow.startFileExplanation(f.request);
     expect(() => f.workflow.start(question)).toThrow('이미 AI 작업');
     expect(() => f.workflow.startOverview(overview)).toThrow('이미 AI 작업');

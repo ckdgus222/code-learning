@@ -152,11 +152,10 @@ export function OverviewAi({ project, mode, state, stale, locked, readiness, che
   const [startFileId, setStartFileId] = useState(intro?.fileId ?? '');
   const [consent, setConsent] = useState(false);
   useEffect(() => { setConsent(false); }, [mode]);
-  const localWorker = mode === 'local-worker';
-  const picker = localWorker ? 'Codex' : recipients[mode];
+  const picker = recipients[mode];
   const phases: Record<LearningPhase, string> = {
     collecting: '개요 자료를 모으는 중', organizing: `${picker}가 읽을 파일을 고르는 중`, 'reading-related': '고른 파일을 읽는 중',
-    explaining: `${localWorker ? 'Gemini' : recipients[mode]}가 개요를 쓰는 중`, reviewing: 'Codex가 코드와 대조하는 중', validating: '근거와 코드 변경 여부 확인 중',
+    explaining: `${recipients[mode]}가 개요를 쓰는 중`, validating: '근거와 코드 변경 여부 확인 중',
   };
   const consentDescriptionId = useId();
   const running = state?.status === 'running';
@@ -164,9 +163,7 @@ export function OverviewAi({ project, mode, state, stale, locked, readiness, che
     .map(item => [item.fileId, item.relativePath])).entries()];
   return <section className="card card--wide overview-ai" aria-labelledby="overview-ai">
     <h3 id="overview-ai">기능과 구성 (AI 개요)</h3>
-    <p className="hint">{localWorker
-      ? '로컬 워커(Codex → Gemini → Codex)가 시작 파일 하나와 Codex가 고른 파일 최대 4개만 읽고 써요.'
-      : `고른 AI(${recipients[mode]})가 시작 파일 하나와 스스로 고른 파일 최대 4개만 읽고 써요. 다른 AI의 대조는 없어요.`} 조사한 범위의 개요이고, 정확성을 보장하지 않아요.</p>
+    <p className="hint">{`고른 AI(${recipients[mode]})가 시작 파일 하나와 스스로 고른 파일 최대 4개만 읽고 써요. 다른 AI의 대조는 없어요.`} 조사한 범위의 개요이고, 정확성을 보장하지 않아요.</p>
     <div className="overview-form">
       <label>개요 시작 파일
         <select aria-label="개요 시작 파일" value={startFileId} disabled={running} onChange={event => setStartFileId(event.target.value)}>
@@ -231,6 +228,7 @@ function OverviewAnswer({ result, stale, locked, revealAnchor, topicName, onEvid
   const fromDocuments = overview.intro?.evidenceIds.every(id => documentFile.test(sourceOf(id).relativePath));
   return <div className="overview-answer">
     {stale && <p className="notice notice--warn"><b>다시 확인 필요:</b> 개요를 만든 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 이전 코드 기준이라 근거 보기와 따라가기를 막았어요. 개요를 다시 만들어 주세요.</p>}
+    {result.models.some(model => model.stage === 'reviewing') && <span className="tag tag--unknown">로컬 워커(이전 방식)</span>}
     <p className="hint">{result.review === '개요 작성 안 함' ? '읽은 자료가 없어 개요를 쓰지 않았어요.' : `${result.review} · 개요의 정확성을 보장하지 않습니다.`}</p>
     <section aria-label="이 프로젝트가 하는 일 (AI 개요)">
       <h4>이 프로젝트가 하는 일</h4>

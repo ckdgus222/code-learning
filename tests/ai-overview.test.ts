@@ -91,7 +91,7 @@ function fake(snapshot: ContextSnapshot, answer: (snapshot: ContextSnapshot) => 
   const capture = vi.fn(async () => { throw new Error('not a question test'); });
   const captureOverview = vi.fn(async () => snapshot);
   const workflow = new LocalWorkerWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); }, assertReady, capture, captureOverview, captureFile: async () => { throw new Error('not a file explanation test'); }, expand, revalidate, run, emit: event => events.push(event) });
-  const request: OverviewRequest = { projectId: snapshot.projectId, startFileId: null, mode: 'local-worker', consent: true };
+  const request: OverviewRequest = { projectId: snapshot.projectId, startFileId: null, mode: 'codex', consent: true };
   const finish = async (input = request) => {
     const { jobId } = workflow.startOverview(input);
     await vi.waitFor(() => expect(events.some(event => event.jobId === jobId && event.kind !== 'progress')).toBe(true));
@@ -117,19 +117,19 @@ const written = (snapshot: ContextSnapshot): ProjectOverviewAnswer => ({
 });
 
 describe('overview workflow with fake stages', () => {
-  it('runs Codex picking, Gemini writing and Codex checking, rechecking the files before each stage', async () => {
+  it('runs Codex picking and writing, rechecking the files before each stage', async () => {
     const snapshot = material(files);
     const f = fake(snapshot, written);
     const result = await f.finish();
     if (result.kind !== 'overview-completed') throw new Error(`expected an overview, got ${result.kind}`);
     expect(f.run.mock.calls.map(([input]) => [input.stage, input.provider])).toEqual([
-      ['organizing', 'codex'], ['explaining', 'antigravity'], ['reviewing', 'codex']]);
+      ['organizing', 'codex'], ['explaining', 'codex']]);
     expect(f.events.filter(event => event.kind === 'progress').map(event => event.phase)).toEqual([
-      'collecting', 'organizing', 'reading-related', 'explaining', 'reviewing', 'validating']);
-    // Before each of the three stages and once more before the result.
-    expect(f.revalidate).toHaveBeenCalledTimes(4);
-    expect(f.assertReady).toHaveBeenCalledWith('local-worker');
-    expect(result.result).toMatchObject({ review: 'AI 검토됨', overview: written(snapshot) });
+      'collecting', 'organizing', 'reading-related', 'explaining', 'validating']);
+    // Before each of the two stages and once more before the result.
+    expect(f.revalidate).toHaveBeenCalledTimes(3);
+    expect(f.assertReady).toHaveBeenCalledWith('codex');
+    expect(result.result).toMatchObject({ review: 'AI 대조 없음', overview: written(snapshot) });
     expect(result.result.sources.map(source => source.relativePath)).toEqual(['README.md', 'order.ts', 'stock.ts']);
     const sent = JSON.parse(f.run.mock.calls[0][0].prompt.split('자료:\n')[1].split('\n과제:\n')[0]);
     expect(sent.purpose).toBe('프로젝트 개요');
@@ -157,7 +157,7 @@ describe('overview workflow with fake stages', () => {
     expect(result.result.sources.map(source => source.relativePath)).toEqual(['README.md', 'order.ts', 'stock.ts']);
   });
 
-  it.each(['local-worker', 'codex', 'antigravity'] as const)('writes nothing and claims no check when no file was read in %s', async mode => {
+  it.each(['codex', 'antigravity'] as const)('writes nothing and claims no check when no file was read in %s', async mode => {
     const f = fake(material({}), () => { throw new Error('must not be asked'); });
     const result = await f.finish({ ...f.request, mode });
     if (result.kind !== 'overview-completed') throw new Error(`expected an overview, got ${result.kind}`);
@@ -184,15 +184,7 @@ describe('overview workflow with fake stages', () => {
     expect(f.run.mock.calls.map(([input]) => input.stage)).toEqual(['organizing', 'explaining']);
   });
 
-  it.each([{ accepted: false, issues: [] }, { accepted: true, issues: ['남은 문제'] }])('shows nothing when the check leaves a problem %j', async verdict => {
-    const snapshot = material(files);
-    const f = fake(snapshot, written);
-    f.run.mockImplementation(async ({ stage }) => ({ reportedModel: null, value: stage === 'organizing' ? { focus: 'x', requestedFileIds: [] }
-      : stage === 'explaining' ? written(snapshot) : { ...verdict, overview: written(snapshot) } }));
-    expect(await f.finish()).toMatchObject({ kind: 'failed', error: { code: 'AI_RESPONSE' } });
-  });
-
-  it.each(['local-worker', 'codex', 'antigravity'] as const)('drops unwritten function names and says so in %s', async mode => {
+  it.each(['codex', 'antigravity'] as const)('drops unwritten function names and says so in %s', async mode => {
     const snapshot = material(files);
     const f = fake(snapshot, current => {
       const answer = written(current);
@@ -288,7 +280,7 @@ describe('overview workflow with fake stages', () => {
     const { jobId } = f.workflow.startOverview(f.request);
     expect(() => f.workflow.startOverview(f.request)).toThrow('이미 AI 작업이 진행 중입니다.');
     expect(() => f.workflow.start({ projectId: f.request.projectId, evidenceId: randomUUID(), expectedFileHash: 'a'.repeat(64),
-      question: '질문', mode: 'local-worker', consent: true })).toThrow('이미 AI 작업이 진행 중입니다.');
+      question: '질문', mode: 'codex', consent: true })).toThrow('이미 AI 작업이 진행 중입니다.');
     await vi.waitFor(() => expect(f.run).toHaveBeenCalledTimes(1));
     await f.workflow.cancel(jobId);
     expect(f.events.find(event => event.jobId === jobId && event.kind === 'failed')).toMatchObject({ error: { code: 'CANCELLED' } });
@@ -297,7 +289,7 @@ describe('overview workflow with fake stages', () => {
 });
 
 describe('overview with the real app reads and fake stages', () => {
-  it.each(['local-worker', 'codex', 'antigravity'] as const)('reads the files picked in %s once and keeps only written names', async mode => {
+  it.each(['codex', 'antigravity'] as const)('reads the files picked in %s once and keeps only written names', async mode => {
     const f = await project(files);
     const events: LearningEvent[] = [];
     const run = async (request: StageRequest): Promise<StageResponse> => {

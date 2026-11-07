@@ -19,7 +19,7 @@ function checkDisclosure(html: string, expectedText: string, ready: boolean) {
 
 describe('folded AI consent disclosures', () => {
   const recipients: [LearningMode, string][] = [
-    ['local-worker', 'Codex와 Gemini'], ['codex', 'Codex'],
+    ['codex', 'Codex'],
     ['antigravity', 'Gemini(Antigravity)'], ['claude-code', 'Claude Code'],
   ];
   it.each(recipients)('keeps the full question disclosure and recipient for %s', (mode, recipient) => {
@@ -31,7 +31,7 @@ describe('folded AI consent disclosures', () => {
         checking: false, otherRunning: false, mode,
         onMode() {}, onRunning() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onEvidence() {},
       }));
-      checkDisclosure(html, `선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·${mode === 'local-worker' ? '관련 파일(추가 최대 4개)·' : ''}질문·최근 답변을 ${recipient}에 보내는 데 동의합니다.${mode !== 'local-worker' ? ' 다른 파일은 더 읽지 않습니다.' : ''} 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.`, ready);
+      checkDisclosure(html, `선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·질문·최근 답변을 ${recipient}에 보내는 데 동의합니다. 다른 파일은 더 읽지 않습니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.`, ready);
       expect(html).toMatch(/<button[^>]*disabled="">질문 보내기<\/button>/);
     }
   });
@@ -40,11 +40,11 @@ describe('folded AI consent disclosures', () => {
     const project: ProjectView = { id: 'project', name: 'test', files: [], excluded: {}, warnings: [],
       overview: { entryFileIds: [], intro: null, candidates: [], checkedFiles: 0, limited: false, notes: [] } };
     const html = renderToStaticMarkup(React.createElement(OverviewAi, {
-      project, mode: 'local-worker', state: null, stale: false, locked: false, readiness: { ready, reason: 'test' }, checking: false,
+      project, mode: 'codex', state: null, stale: false, locked: false, readiness: { ready, reason: 'test' }, checking: false,
       revealAnchor: null, topicName: null,
       onInspect() {}, onStart() {}, onCancel() {}, onDelete() {}, onEvidence() {}, onFollow() {}, onFunction() {},
     }));
-    checkDisclosure(html, '프로젝트 파일 목록, 고른 시작 파일, Codex가 고른 관련 파일(최대 4개)을 Codex와 Gemini에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.', ready);
+    checkDisclosure(html, '프로젝트 파일 목록, 고른 시작 파일, Codex가 고른 관련 파일(최대 4개)을 Codex에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.', ready);
     expect(html).toMatch(/<button[^>]*disabled="">개요 만들기<\/button>/);
   });
 });

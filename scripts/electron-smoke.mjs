@@ -608,8 +608,8 @@ await writeFile(inspectionBootstrap, bootstrapFor(inspectionProfile));
 try {
   await launch(inspectionBootstrap);
   await check('Fresh app: real IPC rejects AI requests before any installation check', async () => {
-    // Real IPC gates, before any installation check in this app run. The local worker opens only once a
-    // check has found both Codex and Antigravity, so a valid request here must be refused. Never send a
+    // Real IPC gates, before any installation check in this app run. Each single mode opens only once a
+    // check has found its CLI, so a valid request here must be refused. Never send a
     // valid one after the check: it would start the real AI CLIs (this test profile's app homes have no
     // login, so they would fail at sign-in, but they would run).
     await dialogTo(fixture);
@@ -622,13 +622,13 @@ try {
       if (!source.ok) throw new Error('fixture source failed');
       const evidence = source.value.analysis.symbols[0].evidence;
       const request = { projectId: evidence.projectId, evidenceId: evidence.id, expectedFileHash: evidence.fileHash,
-        question: '값을 설명해 주세요', mode: 'local-worker', consent: true };
+        question: '값을 설명해 주세요', mode: 'codex', consent: true };
       const ready = await window.learning.startExplanation(request);
       if (ready.ok) {
         await window.learning.cancelExplanation({ jobId: ready.value.jobId });
         throw new Error('Unexpected AI readiness before installation inspection; stopping the test');
       }
-      const single = await window.learning.startExplanation({ ...request, mode: 'codex' });
+      const single = await window.learning.startExplanation({ ...request, mode: 'antigravity' });
       if (single.ok) {
         await window.learning.cancelExplanation({ jobId: single.value.jobId });
         throw new Error('Unexpected single-provider readiness before installation inspection; stopping the test');
@@ -675,7 +675,7 @@ try {
             providers: (request?.automatic ? ['codex', 'antigravity'] : ['codex', 'antigravity', 'claude-code']).map(provider => ({
               provider, installation, version: ready ? '1.2.3' : null, authentication: 'unchecked', isolation: 'unverified', message: '시험용 설치 상태',
             })),
-            modes: ['local-worker', 'codex', 'antigravity', 'claude-code'].map(mode => ({
+            modes: ['codex', 'antigravity', 'claude-code'].map(mode => ({
               mode, ready: ready && mode !== 'claude-code', reason: '시험용 설치 상태',
             })),
           } };
@@ -758,7 +758,7 @@ try {
         await until(async () => (await calls()).length === expected);
         await until(async () => !await panel.getByRole('button', { name: '설치 확인 중…', includeHidden: true }).count());
         assert.deepEqual(await calls(), Array.from({ length: expected }, () => ({ automatic: true })));
-        if (entry !== 'missing') await panel.getByText('AI · 로컬 워커 · 준비됨', { exact: true }).waitFor();
+        if (entry !== 'missing') await panel.getByText('AI · Codex 단독 · 준비됨', { exact: true }).waitFor();
         if (entry === 'ipc-failure' || entry === 'ipc-rejection') assert.equal(await panel.getByRole('alert').count(), 0);
       }
       if (entry === 'question') {
@@ -2374,10 +2374,10 @@ try {
         window.learning.featureFlow({ projectId, routesId: routes.value.routesId, routeIndex: -1 }),
         window.learning.featureFlow({ projectId, routesId: routes.value.routesId, routeIndex: 999 }),
         window.learning.featureFlow({ projectId, routesId: routes.value.routesId, routeIndex: 0, path: '/etc/passwd' }),
-        window.learning.startFeatureGuide({ projectId, routesId: routes.value.routesId, mode: 'local-worker', consent: false }),
-        window.learning.startFeatureGuide({ projectId, routesId: routes.value.routesId, mode: 'local-worker' }),
-        window.learning.startFeatureGuide({ projectId, routesId: routes.value.routesId, mode: 'local-worker', consent: true, routes: [] }),
-        window.learning.startFeatureGuide({ projectId, routesId: '00000000-0000-4000-8000-000000000000', mode: 'local-worker', consent: true }),
+        window.learning.startFeatureGuide({ projectId, routesId: routes.value.routesId, mode: 'codex', consent: false }),
+        window.learning.startFeatureGuide({ projectId, routesId: routes.value.routesId, mode: 'codex' }),
+        window.learning.startFeatureGuide({ projectId, routesId: routes.value.routesId, mode: 'codex', consent: true, routes: [] }),
+        window.learning.startFeatureGuide({ projectId, routesId: '00000000-0000-4000-8000-000000000000', mode: 'codex', consent: true }),
       ]);
     });
     assert.deepEqual(invalid.map(result => result.code), ['INVALID_REQUEST', 'INVALID_REQUEST', 'CHANGED', 'INVALID_REQUEST',
@@ -3848,12 +3848,12 @@ try {
     assert.equal(await blocked.isVisible(), true);
     assert.equal(await page.getByRole('button', { name: '설정', exact: true }).getAttribute('aria-expanded'), 'false');
     assert.equal(await page.getByRole('combobox', { name: 'AI 사용 방식' }).isVisible(), false);
-    await until(async () => /AI · 로컬 워커 · (준비됨|사용할 수 없음)/.test(await page.getByRole('group', { name: 'AI 연결', exact: true }).innerText()));
+    await until(async () => /AI · Codex 단독 · (준비됨|사용할 수 없음)/.test(await page.getByRole('group', { name: 'AI 연결', exact: true }).innerText()));
     await openAiSection('설정');
     const selector = page.getByRole('combobox', { name: 'AI 사용 방식' });
-    assert.equal(await selector.inputValue(), 'local-worker');
+    assert.equal(await selector.inputValue(), 'codex');
     assert.deepEqual(await selector.locator('option').evaluateAll(options => options.map(option => option.value)),
-      ['local-worker', 'codex', 'claude-code', 'antigravity']);
+      ['codex', 'antigravity', 'claude-code']);
     await page.getByRole('textbox', { name: '선택한 코드에 질문' }).fill('설정 보존 확인');
     // Original production handler: fixed installation candidates and --version only.
     // No authentication or AI request is performed by this button.
@@ -3862,16 +3862,14 @@ try {
     const installs = page.getByRole('list', { name: '로컬 AI 설치 상태' });
     await installs.getByText(process.platform === 'win32' ? /^Codex ·/ : /^Claude Code ·/).waitFor({ timeout: 35_000 });
     await until(async () => await page.locator('.ai-panel').getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).isEnabled());
-    // With both workers installed (as on the development Mac) the local worker is ready and states its
-    // known limits; otherwise it says both are needed. Sending still waits for consent.
+    // Codex readiness depends only on its own installation. Sending still waits for consent.
     const listed = await installs.innerText();
-    const ready = /Codex · 설치 확인/.test(listed) && /Antigravity · 설치 확인/.test(listed);
-    assert.match(await page.getByTestId('ai-readiness').innerText(), process.platform === 'win32' ? /Windows에서는 아직 로컬 워커/
-      : ready ? /질문을 보낼 수 있어요\. 알려진 한계/ : /Codex와 Antigravity가 둘 다 필요해요/);
-    assert.equal(await page.getByRole('checkbox').isEnabled(), process.platform !== 'win32' && ready);
+    const ready = /Codex · 설치 확인/.test(listed);
+    assert.match(await page.getByTestId('ai-readiness').innerText(), ready ? /한 AI가 바로 설명하고 다른 AI의 대조는 없어요/ : /단독에는 .+ 필요해요/);
+    assert.equal(await page.getByRole('checkbox').isEnabled(), ready);
     assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
-    // The consent names what capture sends: the selection's whole file too, and related files only here.
-    await checkConsentDisclosure(page.locator('.ai-panel'), '선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·관련 파일(추가 최대 4개)·질문·최근 답변을 Codex와 Gemini에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.');
+    // The consent names the selection and its whole file; no extra files are read.
+    await checkConsentDisclosure(page.locator('.ai-panel'), '선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·질문·최근 답변을 Codex에 보내는 데 동의합니다. 다른 파일은 더 읽지 않습니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.');
     // Each single mode opens with its own CLI, names it, and reads no other file.
     for (const [mode, binary, recipient] of [['codex', 'Codex', 'Codex'], ['antigravity', 'Antigravity', 'Gemini(Antigravity)']]) {
       await selector.selectOption(mode);
@@ -3887,10 +3885,10 @@ try {
     assert.equal(await page.getByTestId('ai-readiness').innerText(), 'Claude Code 단독은 아직 준비 중이에요.');
     assert.equal(await page.getByRole('checkbox').isEnabled(), false);
     await checkConsentDisclosure(page.locator('.ai-panel'), '선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·질문·최근 답변을 Claude Code에 보내는 데 동의합니다. 다른 파일은 더 읽지 않습니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.');
-    await selector.selectOption('local-worker');
+    await selector.selectOption('codex');
     await page.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
     await page.getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
-    assert.equal(await selector.inputValue(), 'local-worker');
+    assert.equal(await selector.inputValue(), 'codex');
     assert.equal(await page.getByRole('textbox', { name: '선택한 코드에 질문' }).inputValue(), '설정 보존 확인');
   });
   await check('FAKE AI IPC: completion before start response is retained across drawer closing and reopening', async () => {
@@ -3909,7 +3907,7 @@ try {
       });
       ipcMain.handle('learning:connections', () => ({ ok: true, value: {
         checkedAt: new Date().toISOString(), providers: [],
-        modes: [{ mode: 'local-worker', ready: true, reason: '테스트 전용 가짜 실행기 · 실제 AI 호출 없음' }],
+        modes: [{ mode: 'codex', ready: true, reason: '테스트 전용 가짜 실행기 · 실제 AI 호출 없음' }],
       } }));
       ipcMain.handle('learning:cancel-explanation', (_event, { jobId }) => {
         globalThis.testFakeAiCancelled.push(jobId);
@@ -3944,8 +3942,8 @@ try {
               { given: '주문 8개, 재고 5개일 때', result: '재고가 부족합니다에서 멈춰요.', evidenceIds: [request.evidenceId] },
             ] : [],
             unknowns: globalThis.testFakeAiFlow ? ['실제 서버 응답은 확인하지 못했어요.'] : [] },
-          review: 'AI 검토됨', models: [{ stage: 'explaining', provider: 'antigravity',
-            requestedModel: 'gemini-3.8-flash-high', reportedModel: null }],
+          review: 'AI 대조 없음', models: [{ stage: 'explaining', provider: 'codex',
+            requestedModel: null, reportedModel: null }],
         };
         const completed = { kind: 'completed', jobId, projectId: request.projectId, result };
         globalThis.testFakeAiCalls.push({ jobId, request });
@@ -4007,8 +4005,8 @@ try {
     assert.equal(await send.getAttribute('aria-describedby'), null);
     await page.getByRole('button', { name: '질문 보내기', exact: true }).click();
     await page.getByText('가짜 설명: 빠른 응답', { exact: true }).waitFor();
-    await page.getByText('AI · 로컬 워커 · 준비됨', { exact: true }).waitFor();
-    await page.getByText('Antigravity · 호출 모델 gemini-3.8-flash-high · 응답 모델 미보고', { exact: true }).waitFor();
+    await page.getByText('AI · Codex 단독 · 준비됨', { exact: true }).waitFor();
+    await page.getByText('Codex · CLI 기본 모델 요청 · 응답 모델 미보고', { exact: true }).waitFor();
     await page.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
     await openAiPanel();
     assert.equal(await page.getByRole('textbox', { name: '선택한 코드에 질문' }).isVisible(), true);
@@ -4413,7 +4411,7 @@ try {
         }
         const at = name => evidence[name].id;
         const feature = (name, file, functionName) => ({ name, summary: `${name} 설명`, evidenceIds: [at(file)], start: { evidenceId: at(file), functionName } });
-        const result = { jobId, projectId: request.projectId, review: request.mode === 'local-worker' ? 'AI 검토됨' : 'AI 대조 없음', models: [],
+        const result = { jobId, projectId: request.projectId, review: 'AI 대조 없음', models: [],
           sources: ['README.md', 'banner.ts', 'dup.ts'].map(name => ({ evidence: evidence[name], relativePath: name })),
           limitations: ['관련 파일 탐색은 한 번, 최대 4개입니다. 제공되지 않은 파일의 동작은 확인하지 않았습니다.'],
           overview: {
@@ -4448,7 +4446,7 @@ try {
     await startFile.selectOption({ label: 'settings.ts' });
     const create = card.getByRole('button', { name: '개요 만들기', exact: true });
     assert.equal(await create.isDisabled(), true);
-    await checkConsentDisclosure(card, '프로젝트 파일 목록, 고른 시작 파일, Codex가 고른 관련 파일(최대 4개)을 Codex와 Gemini에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.');
+    await checkConsentDisclosure(card, '프로젝트 파일 목록, 고른 시작 파일, Codex가 고른 관련 파일(최대 4개)을 Codex에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.');
     assert.equal(await create.isDisabled(), true);
     await card.getByRole('checkbox').check();
     // While the overview runs, the shared installation check is closed in the question panel too.
@@ -4467,10 +4465,10 @@ try {
     const opened = await app.evaluate(() => ({ id: globalThis.testOpenedProject.id,
       files: Object.fromEntries(globalThis.testOpenedProject.files.map(file => [file.relativePath, file.id])) }));
     assert.deepEqual(await app.evaluate(() => globalThis.testOverviewCalls), [
-      { projectId: opened.id, startFileId: opened.files['settings.ts'], mode: 'local-worker', consent: true }]);
+      { projectId: opened.id, startFileId: opened.files['settings.ts'], mode: 'codex', consent: true }]);
     assert.equal(await card.getByRole('checkbox').isChecked(), false);
     await card.getByText('문서에서 읽은 소개(AI 요약)', { exact: true }).waitFor();
-    await card.getByText('AI 검토됨 · 개요의 정확성을 보장하지 않습니다.', { exact: true }).waitFor();
+    await card.getByText('AI 대조 없음 · 개요의 정확성을 보장하지 않습니다.', { exact: true }).waitFor();
     const features = card.getByRole('region', { name: '주요 기능 후보' });
     assert.equal(await features.locator('.overview-items > li').count(), 6);
     await features.getByRole('button', { name: '1개 더 보기', exact: true }).click();
@@ -4507,7 +4505,7 @@ try {
       ipcMain.removeHandler('learning:connections');
       ipcMain.handle('learning:connections', () => ({ ok: true, value: {
         checkedAt: new Date().toISOString(), providers: [],
-        modes: ['local-worker', 'codex', 'antigravity', 'claude-code'].map(mode => ({ mode, ready: mode !== 'claude-code', reason: `테스트 전용 ${mode}` })),
+        modes: ['codex', 'antigravity', 'claude-code'].map(mode => ({ mode, ready: mode !== 'claude-code', reason: `테스트 전용 ${mode}` })),
       } }));
     });
     await openAiSection('설정');
@@ -4516,8 +4514,8 @@ try {
     const selector = panel.getByRole('combobox', { name: 'AI 사용 방식' });
     const card = page.getByRole('region', { name: '기능과 구성 (AI 개요)' });
     const consent = card.getByRole('checkbox');
-    await until(async () => await page.getByTestId('overview-readiness').innerText() === '테스트 전용 local-worker');
-    for (const [mode, recipient] of [['codex', 'Codex'], ['antigravity', 'Gemini(Antigravity)']]) {
+    await until(async () => await page.getByTestId('overview-readiness').innerText() === '테스트 전용 codex');
+    for (const [mode, recipient] of [['antigravity', 'Gemini(Antigravity)'], ['codex', 'Codex']]) {
       await consent.check();
       await selector.selectOption(mode);
       await until(async () => await page.getByTestId('overview-readiness').innerText() === `테스트 전용 ${mode}`);
@@ -4539,7 +4537,7 @@ try {
     await until(async () => !(await consent.isChecked()));
     assert.equal(await consent.isDisabled(), true);
     assert.equal(await card.getByRole('button', { name: '개요 다시 만들기', exact: true }).isDisabled(), true);
-    await selector.selectOption('local-worker');
+    await selector.selectOption('codex');
     await page.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
   });
   await check('Topic (fake AI): the feature question keeps its topic, asks consent again, starts a new conversation and keeps answers while moving', async () => {
@@ -5477,7 +5475,7 @@ try {
     await app.evaluate(({ ipcMain }) => {
       ipcMain.removeHandler('learning:connections');
       ipcMain.handle('learning:connections', () => ({ ok: true, value: { checkedAt: new Date().toISOString(), providers: [],
-        modes: ['codex', 'antigravity', 'local-worker'].map(mode => ({ mode, ready: true, reason: '테스트 전용 가짜 실행기' })) } }));
+        modes: ['codex', 'antigravity'].map(mode => ({ mode, ready: true, reason: '테스트 전용 가짜 실행기' })) } }));
       ipcMain.removeHandler('learning:file-explanation');
       globalThis.testFileExplanationCalls = [];
       ipcMain.handle('learning:file-explanation', async (event, request) => {
@@ -5499,7 +5497,7 @@ try {
         const result = { jobId, projectId: request.projectId, relativePath: source.relativePath, mode: request.mode,
           range: { fileId: source.fileId, fileHash: source.hash, startUtf16: 0, endUtf16: source.text.length, startLine: 1, endLine: chunks.length }, chunks,
           explanation: { summary: `${source.relativePath} 파일 설명`, chunks: chunks.filter((_, index) => index !== 2).map(chunk => ({ chunkId: chunk.id, summary: `${chunk.name} 덩어리 설명` })), unknowns: ['실행 결과는 확인하지 않았어요.'] },
-          limitations: [], review: request.mode === 'local-worker' ? 'AI 검토됨' : 'AI 대조 없음',
+          limitations: [], review: 'AI 대조 없음',
           models: [{ stage: 'explaining', provider: request.mode === 'codex' ? 'codex' : 'antigravity', requestedModel: null, reportedModel: 'test-model' }] };
         globalThis.testFileExplanationCalls.push(request);
         const send = () => event.sender.send('learning:ai-event', { kind: 'file-explanation-completed', jobId, projectId: request.projectId, result });
@@ -5525,7 +5523,7 @@ try {
     await openAiPanel();
     const panel = page.locator('.ai-panel');
     await openAiSection('설정');
-    for (const [mode, recipient] of [['local-worker', 'Gemini와 Codex'], ['antigravity', 'Gemini(Antigravity)'], ['claude-code', 'Claude Code']]) {
+    for (const [mode, recipient] of [['codex', 'Codex'], ['antigravity', 'Gemini(Antigravity)'], ['claude-code', 'Claude Code']]) {
       await panel.getByRole('combobox', { name: 'AI 사용 방식' }).selectOption(mode);
       await card.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
       await card.getByText('방식은 ‘질문’ 칸의 ‘설정’에서 고를 수 있어요.', { exact: false }).waitFor();
@@ -5761,7 +5759,7 @@ try {
         const result = { jobId, projectId: request.projectId, routesId: request.routesId, mode: request.mode,
           guide: { summary: '반려견의 정보를 관리하는 프로젝트예요.', groups: [{ name: '반려견 관리', about: '반려견을 살펴보고 지워요.',
             features: [{ name: '반려견 살펴보기와 삭제', about: '반려견 정보를 조회하거나 삭제해요.', routes: indices }] }], unknowns: ['실제 실행은 확인하지 않았어요.'] },
-          limitations: [], review: 'AI 검토됨', models: [{ stage: 'explaining', provider: 'antigravity', requestedModel: 'gemini-3.8-flash-high', reportedModel: 'test-model' }] };
+          limitations: [], review: 'AI 대조 없음', models: [{ stage: 'explaining', provider: 'codex', requestedModel: null, reportedModel: 'test-model' }] };
         globalThis.testGuideCalls.push(request);
         const send = () => event.sender.send('learning:ai-event', { kind: 'feature-guide-completed', jobId, projectId: request.projectId, result });
         if (globalThis.testGuideHold) globalThis.testGuideLate = send;
@@ -5783,7 +5781,7 @@ try {
     assert.equal(await list.getByText('오른쪽 AI 칸', { exact: false }).count(), 0);
     await list.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
     await until(async () => await list.getByRole('checkbox').isEnabled());
-    await checkConsentDisclosure(list, '프로젝트 이름, 앱이 찾은 서버 주소·요청·화면 목록(파일 경로와 함수 이름 포함)을 Gemini와 Codex에 보내는 데 동의합니다. 코드 원문은 보내지 않습니다. 비밀값처럼 보이는 부분은 가리지만 모두 찾는다고 보장하지 않습니다.');
+    await checkConsentDisclosure(list, '프로젝트 이름, 앱이 찾은 서버 주소·요청·화면 목록(파일 경로와 함수 이름 포함)을 Codex에 보내는 데 동의합니다. 코드 원문은 보내지 않습니다. 비밀값처럼 보이는 부분은 가리지만 모두 찾는다고 보장하지 않습니다.');
     const send = list.getByRole('button', { name: '동의하고 정리하기', exact: true });
     assert.equal(await send.isDisabled(), true);
     assert.equal(await app.evaluate(() => globalThis.testGuideCalls.length), 0);
@@ -5939,7 +5937,7 @@ try {
         globalThis.savedGuideCalls = 0;
         ipcMain.removeHandler('learning:connections');
         ipcMain.handle('learning:connections', () => ({ ok: true, value: { checkedAt: new Date().toISOString(), providers: [],
-          modes: [{ mode: 'local-worker', ready: true, reason: '저장 시험용 가짜 AI' }] } }));
+          modes: [{ mode: 'codex', ready: true, reason: '저장 시험용 가짜 AI' }] } }));
         ipcMain.removeHandler('learning:feature-guide');
         ipcMain.handle('learning:feature-guide', (event, request) => {
           const { randomUUID } = process.getBuiltinModule('node:crypto');
@@ -5948,7 +5946,7 @@ try {
           const result = { jobId, projectId: request.projectId, routesId: request.routesId, mode: request.mode,
             guide: { summary: `저장 시험 기능 요약 ${number}`, groups: [{ name: `저장 시험 묶음 ${number}`, about: '저장한 묶음 설명',
               features: [{ name: `저장 시험 기능 ${number}`, about: '저장한 기능 설명', routes: [0] }] }], unknowns: ['실행은 확인하지 않았어요.'] },
-            limitations: [], review: 'AI 검토됨', models: [] };
+            limitations: [], review: 'AI 검토됨', models: [{ stage: 'reviewing', provider: 'codex', requestedModel: null, reportedModel: null }] };
           event.sender.send('learning:ai-event', { kind: 'feature-guide-completed', jobId, projectId: request.projectId, result });
           return { ok: true, value: { jobId } };
         });
@@ -6112,7 +6110,7 @@ try {
         globalThis.savedExplanationCalls = 0;
         ipcMain.removeHandler('learning:connections');
         ipcMain.handle('learning:connections', () => ({ ok: true, value: { checkedAt: new Date().toISOString(), providers: [],
-          modes: [{ mode: 'local-worker', ready: true, reason: '저장 시험용 가짜 AI' }] } }));
+          modes: [{ mode: 'codex', ready: true, reason: '저장 시험용 가짜 AI' }] } }));
         ipcMain.removeHandler('learning:file-explanation');
         ipcMain.handle('learning:file-explanation', async (event, request) => {
           const read = await ipcMain._invokeHandlers.get('learning:read')(event, request && { projectId: request.projectId, fileId: request.fileId });
@@ -6125,7 +6123,7 @@ try {
           const result = { projectId: request.projectId, jobId, relativePath: source.relativePath, range,
             chunks: [{ id: chunkId, kind: 'function', name: 'saved', range, functionRange: null }],
             explanation: { summary: `저장 시험 설명 ${++globalThis.savedExplanationCalls}`, chunks: [{ chunkId, summary: '저장할 함수 설명' }], unknowns: [] },
-            limitations: [], mode: request.mode, review: 'AI 검토됨', models: [] };
+            limitations: [], mode: 'local-worker', review: 'AI 검토됨', models: [{ stage: 'reviewing', provider: 'codex', requestedModel: null, reportedModel: null }] };
           globalThis.savedExplanationResult = result;
           event.sender.send('learning:ai-event', { kind: 'file-explanation-completed', projectId: request.projectId, jobId, result });
           return { ok: true, value: { jobId } };
@@ -6343,7 +6341,7 @@ try {
         globalThis.savedOverviewCalls = 0;
         ipcMain.removeHandler('learning:connections');
         ipcMain.handle('learning:connections', () => ({ ok: true, value: { checkedAt: new Date().toISOString(), providers: [],
-          modes: [{ mode: 'local-worker', ready: true, reason: '저장 시험용 가짜 AI' }] } }));
+          modes: [{ mode: 'codex', ready: true, reason: '저장 시험용 가짜 AI' }] } }));
         ipcMain.removeHandler('learning:overview');
         ipcMain.handle('learning:overview', async (event, request) => {
           const read = await ipcMain._invokeHandlers.get('learning:read')(event, { projectId: request.projectId, fileId: request.startFileId });
@@ -6356,7 +6354,7 @@ try {
           const result = { projectId: request.projectId, jobId, sources: [{ evidence, relativePath: source.relativePath }],
             overview: { intro: { text: `저장 시험 개요 ${++globalThis.savedOverviewCalls}`, evidenceIds: [evidence.id] },
               features: [{ name: '저장 기능', summary: '저장된 코드로 이동해요.', evidenceIds: [evidence.id], start: { evidenceId: evidence.id, functionName: 'saved' } }],
-              roles: [], unknowns: [] }, limitations: [], review: 'AI 검토됨', models: [] };
+              roles: [], unknowns: [] }, limitations: [], review: 'AI 검토됨', models: [{ stage: 'reviewing', provider: 'codex', requestedModel: null, reportedModel: null }] };
           globalThis.savedOverviewResult = result;
           event.sender.send('learning:ai-event', { kind: 'overview-completed', projectId: request.projectId, jobId, result });
           return { ok: true, value: { jobId } };
@@ -6548,7 +6546,7 @@ try {
         globalThis.savedAnswerRequests = [];
         ipcMain.removeHandler('learning:connections');
         ipcMain.handle('learning:connections', () => ({ ok: true, value: { checkedAt: new Date().toISOString(), providers: [],
-          modes: [{ mode: 'local-worker', ready: true, reason: '시험용 가짜 AI' }] } }));
+          modes: [{ mode: 'codex', ready: true, reason: '시험용 가짜 AI' }] } }));
         ipcMain.removeHandler('learning:explain');
         ipcMain.handle('learning:explain', async (event, request) => {
           globalThis.savedAnswerRequests.push(request);

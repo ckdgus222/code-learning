@@ -21,7 +21,7 @@ export function useAiJobs({ project, source, symbol, revision, setError, setNoti
   const [connections, setConnections] = useState<ConnectionReport | null>(null);
   const [checking, setChecking] = useState(false);
   const inspectionPending = useRef(false);
-  const [mode, setMode] = useState<LearningMode>('local-worker');
+  const [mode, setMode] = useState<LearningMode>('codex');
   const [featureGuideRunning, setFeatureGuideRunning] = useState(false);
   const [questionRunning, setQuestionRunning] = useState(false);
   const [fileExplanations, setFileExplanations] = useState<FileExplanationEntry[]>([]);
@@ -206,7 +206,7 @@ export function useAiJobs({ project, source, symbol, revision, setError, setNoti
     savedExplanationRequest.current++;
     fileExplanationRequest.current++;
     fileExplanationJob.current = { id: null, starting: false, queued: [], revision: revision.current };
-    setFileExplanations([]); setFileExplanationState(null); setMode('local-worker');
+    setFileExplanations([]); setFileExplanationState(null); setMode('codex');
     overviewRequest.current++;
     overviewJob.current = { id: null, starting: false, queued: [] };
     setOverviewAi(null);

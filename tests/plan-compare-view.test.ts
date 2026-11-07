@@ -9,7 +9,7 @@ import type { PlanCompareResult, PlanSelection } from '../src/shared/plan-compar
 import type { LearningMode } from '../src/shared/ai';
 
 function render(text: string | null, selection: PlanSelection | null = null, saved: { result: PlanCompareResult; savedAt: string | null } | null = null,
-  mode: LearningMode = 'local-worker', phase: ReturnType<typeof usePlanCompare>['phase'] = null) {
+  mode: LearningMode = 'codex', phase: ReturnType<typeof usePlanCompare>['phase'] = null) {
   const state: ReturnType<typeof usePlanCompare> = {
     document: text === null ? null : { documentId: 'doc', name: 'plan.md', bytes: Buffer.byteLength(text), ...planSections(text) },
     freshness: { status: 'fresh', reasons: [] }, async recheck() {}, running: phase !== null, phase, result: saved?.result ?? null, savedAt: saved?.savedAt ?? null, async remove() {}, consent: false, setConsent() {}, async start() {}, cancel() {},
@@ -108,7 +108,7 @@ it('groups results in review order and opens populated groups except matches', (
   ]);
   expect(groups.map(match => !!match[1])).toEqual([true, true, true, true, true, false]);
   expect(html).toContain('대조 결과 · 기획대로 1 · 다름 1 · 확인 못 함 1 · 못 찾음 1');
-  expect(html).toContain('AI 대조 · 정확성을 보장하지 않아요 · 로컬 워커');
+  expect(html).toContain('AI 대조 · 정확성을 보장하지 않아요 · 로컬 워커(이전 방식) · AI 검토됨');
   expect(html).toContain('파일 고르기 · 요청 모델: requested · 응답 모델: reported');
   expect(html).toContain('대조 · 요청 모델: 실행기 기본값 · 응답 모델: 알려 주지 않음');
   expect(html).toContain('검토 · 요청 모델:');
@@ -248,7 +248,7 @@ it('shows an entry without a named region or an empty status line', () => {
 
 it.each([
   ['collecting', '대조 자료 모으는 중'], ['organizing', '파일 고르는 중'], ['reading-related', '고른 코드 읽는 중'],
-  ['explaining', '기획 대조 작성 중'], ['reviewing', 'Codex가 대조 검토 중'], ['validating', '자료가 바뀌었는지 확인 중'], [null, '대조 작업 시작 중'],
+  ['explaining', '기획 대조 작성 중'], ['validating', '자료가 바뀌었는지 확인 중'], [null, '대조 작업 시작 중'],
 ] as const)('prioritizes running entry status for phase %s and keeps opening enabled', (phase, label) => {
   const html = renderEntry({ running: true, phase, result: comparison(), savedAt: '2026-11-02T03:00:00.000Z' });
   expect(html).toContain(`<p class="plan-entry__status">대조 중 · ${label}</p>`);

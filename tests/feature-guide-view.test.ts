@@ -4,7 +4,7 @@ import { expect, it } from 'vitest';
 import { FeatureGuideCard, type SavedFeatureGuide } from '../src/renderer/feature-guide';
 import { GEMINI_MODEL } from '../src/shared/ai';
 
-const props = { projectId: 'p', routesId: 'r', result: null, mode: 'local-worker' as const,
+const props = { projectId: 'p', routesId: 'r', result: null, mode: 'codex' as const,
   locked: false, running: false, checking: false, connections: null,
   onInspect: async () => null, onEnsure: async () => null, onResult() {}, onRunning() {}, onDelete: async () => {} };
 it('starts with only a preparation button and locks it while stale or another AI is running', () => {
@@ -23,7 +23,7 @@ it('renders interpretation, mode, review and model metadata as escaped text with
       { stage: 'reviewing', provider: 'codex', requestedModel: null, reportedModel: 'test-model' }] };
   const html = renderToStaticMarkup(React.createElement(FeatureGuideCard, { ...props, result }));
   expect(html).toContain('AI 정리 · 정확성을 보장하지 않아요');
-  expect(html).toContain('Gemini 정리 → Codex 대조'); expect(html).toContain('AI 검토됨');
+  expect(html).toContain('로컬 워커(이전 방식)'); expect(html).toContain('AI 검토됨');
   expect(html).toContain('Gemini 3.8 Flash · High'); expect(html).toContain(GEMINI_MODEL);
   expect(html).toContain('응답 모델: 알려 주지 않음'); expect(html).toContain('응답 모델: test-model');
   expect(html).toContain('&lt;script&gt;'); expect(html).not.toContain('<script>');

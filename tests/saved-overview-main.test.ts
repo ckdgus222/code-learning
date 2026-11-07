@@ -89,7 +89,10 @@ afterAll(async () => {
 });
 
 
-it('restores current file IDs and registers evidence after reopening, then deletes the overview', async () => {
+it('restores current file IDs and registers evidence after reopening, then deletes the overview (legacy result without mode)', async () => {
+  result.models = [{ stage: 'organizing', provider: 'codex', requestedModel: null, reportedModel: null },
+    { stage: 'reviewing', provider: 'codex', requestedModel: null, reportedModel: null }];
+  expect(result).not.toHaveProperty('mode');
   const saved = await invoke(channels.saveOverview, { projectId: project.id, result });
   expect(saved).toMatchObject({ ok: true, value: { savedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) } });
   const reopened = await invoke<ProjectView>(channels.open);

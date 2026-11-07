@@ -13,9 +13,7 @@ import type { StageRequest, StageResponse } from './workflow';
 // Claude Code stays closed: it has no stage runner and no isolation checks.
 const KNOWN_LIMITS = '알려진 한계: 도구 차단은 Codex 0.163.0·Antigravity 1.4.3에서 시험한 범위만 확인했어요. '
   + '울타리는 홈 폴더 읽기와 허용 폴더 밖 쓰기를 막지만 네트워크는 막지 않아요. 자세한 내용은 README의 ‘알려진 한계’에 있어요.';
-export const LOCAL_WORKER_READY = `질문을 보낼 수 있어요. ${KNOWN_LIMITS}`;
 export const SINGLE_READY = `질문을 보낼 수 있어요. 한 AI가 바로 설명하고 다른 AI의 대조는 없어요. ${KNOWN_LIMITS}`;
-export const LOCAL_WORKER_NEEDS_BOTH = '로컬 워커에는 Codex와 Antigravity가 둘 다 필요해요. 먼저 로컬 AI 설치 상태를 확인해 주세요.';
 export const SINGLE_NEEDS = {
   codex: 'Codex 단독에는 Codex가 필요해요. 먼저 로컬 AI 설치 상태를 확인해 주세요.',
   antigravity: 'Gemini 단독에는 Antigravity가 필요해요. 먼저 로컬 AI 설치 상태를 확인해 주세요.',
@@ -23,7 +21,6 @@ export const SINGLE_NEEDS = {
 export const CLAUDE_CODE_CLOSED = 'Claude Code 단독은 아직 준비 중이에요.';
 export const WINDOWS_CODEX_WARNING = 'Windows 실험 기능이에요: 실제 Windows PC에서 확인하지 못했고, macOS의 울타리 없이 실행해요. 도구 차단이 새면 Codex가 이 PC의 파일을 읽거나 바꿀 수 있어요. 자세한 내용은 README의 ‘알려진 한계’에 있어요.';
 export const WINDOWS_CODEX_READY = `질문을 보낼 수 있어요. 한 AI가 바로 설명하고 다른 AI의 대조는 없어요. ${WINDOWS_CODEX_WARNING}`;
-export const WINDOWS_LOCAL_WORKER_CLOSED = 'Windows에서는 아직 로컬 워커(Codex와 Gemini 대조)를 쓸 수 없어요. Antigravity의 도구 차단을 Windows에서 확인하지 못했어요. 질문·파일 설명·기능 정리·기획 대조는 Codex 단독으로 할 수 있어요.';
 export const WINDOWS_GEMINI_CLOSED = 'Windows에서는 아직 Gemini 단독을 쓸 수 없어요. Antigravity의 도구 차단을 Windows에서 확인하지 못했어요.';
 const providers: { provider: ProviderId; binary: string }[] = [
   { provider: 'codex', binary: 'codex' }, { provider: 'antigravity', binary: 'agy' }, { provider: 'claude-code', binary: 'claude' },
@@ -335,12 +332,12 @@ export class LocalAiRuntime {
         }
       }
       return { checkedAt: new Date().toISOString(), providers: connections,
-        modes: (['local-worker', ...providers.map(({ provider }) => provider)] as const).map(mode => {
+        modes: (['codex', 'antigravity', 'claude-code'] as const).map(mode => {
           const blocker = this.blocker(mode);
           if (this.platform === 'win32' && mode === 'codex' && !blocker) {
             return { mode, ready: true, reason: WINDOWS_CODEX_READY, warning: WINDOWS_CODEX_WARNING };
           }
-          return { mode, ready: !blocker, reason: blocker ?? (mode === 'local-worker' ? LOCAL_WORKER_READY : SINGLE_READY) };
+          return { mode, ready: !blocker, reason: blocker ?? SINGLE_READY };
         }) };
     } finally { await rm(directory, { recursive: true, force: true }); }
   }
@@ -348,15 +345,13 @@ export class LocalAiRuntime {
   /** Why a mode cannot send now, or null. Only this run's installation check counts (`launches` is cleared when one starts). */
   private blocker(mode: LearningMode): string | null {
     if (mode === 'claude-code') return CLAUDE_CODE_CLOSED;
-    if (this.platform === 'win32' && mode === 'local-worker') return WINDOWS_LOCAL_WORKER_CLOSED;
     if (this.platform === 'win32' && mode === 'antigravity') return WINDOWS_GEMINI_CLOSED;
-    if (mode === 'local-worker') return this.launches.has('codex') && this.launches.has('antigravity') ? null : LOCAL_WORKER_NEEDS_BOTH;
     return this.launches.has(mode) ? null : SINGLE_NEEDS[mode];
   }
 
   assertReady(mode: LearningMode): void {
     // Deliberately no environment/UI override. Login is not checked here: a missing one fails at the
-    // first stage that calls that provider (with only Antigravity missing, after Codex has run).
+    // first stage that calls that provider.
     const blocker = this.blocker(mode);
     if (blocker) throw new AppError('AI_UNAVAILABLE', blocker);
   }
