@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-const read = (name: string) => readFileSync(new URL(`../${name}`, import.meta.url), 'utf8');
+// Windows checkouts convert line endings to CRLF; the checks below match LF text.
+const read = (name: string) => readFileSync(new URL(`../${name}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const workflow = read('.github/workflows/release.yml');
 const script = read('scripts/release-draft.mjs');
 const jobs = Object.fromEntries([...workflow.matchAll(/^  (version|mac|windows|draft):\n([\s\S]*?)(?=^  \w+:\n|$(?![\s\S]))/gm)]
