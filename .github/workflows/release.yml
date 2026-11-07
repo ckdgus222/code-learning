@@ -1,0 +1,112 @@
+name: Draft release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version matching package.json (for example, 1.0.0)'
+        required: true
+        type: string
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  # Normalize manual versions to the tag name so both triggers share one group.
+  group: release-${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+          cache: npm
+      - name: Validate version
+        id: version
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: node scripts/release-draft.mjs version
+
+  mac:
+    needs: version
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Make macOS installer
+        run: npm run make
+      - name: Packaged tests
+        run: npm run test:packaged
+      - name: Upload macOS installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-mac
+          path: out/make/Code-Learning-mac-arm64.dmg
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Make Windows installer
+        run: npm run make:win
+      - name: Windows installer tests
+        run: node scripts/windows-installer-smoke.mjs
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-windows
+          path: out/make/squirrel.windows/x64/Code-Learning-win-x64-Setup.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  draft:
+    needs: [version, mac, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+          cache: npm
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-mac
+          path: artifacts
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-windows
+          path: artifacts
+      - name: Update draft and checksums
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: node scripts/release-draft.mjs draft
