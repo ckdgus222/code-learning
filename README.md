@@ -80,11 +80,18 @@ M1 이후 Apple silicon Mac용으로 준비하고 있습니다. Intel Mac은 지
 <details>
 <summary>배포 후 첫 실행 허용 방법 (준비 중)</summary>
 
-Apple Developer ID 서명과 공증을 받지 않아 첫 실행 때 macOS가 차단할 수 있습니다. 다음 순서로 한 번 허용해 주세요.
+개인이 만든 오픈소스 앱으로, Apple 유료 개발자 프로그램의 서명·공증을 받지 않았습니다. 그래서 첫 실행 때 macOS가 아래 경고를 보여 줍니다.
+
+> Apple은 ‘Code Learning’에 사용자의 Mac에 손상을 입히거나 사용자의 개인정보에 침입할 수 있는 악성 코드가 없음을 확인할 수 없습니다.
+
+이 경고는 Apple이 이 앱을 검사하지 않았다는 뜻이며, 악성 코드를 찾았다는 뜻은 아닙니다. 다음 순서로 한 번 허용해 주세요.
 
 1. 내려받은 `.dmg`를 열고 **Code Learning**을 **Applications**로 끌어 놓습니다.
-2. Applications에서 앱을 엽니다. “확인할 수 없음” 경고가 나오면 **완료**로 닫습니다.
+2. Applications에서 앱을 엽니다. 위 경고가 나오면 **완료**로 닫습니다. **휴지통으로 이동은 누르지 마세요(앱이 지워집니다).**
 3. **시스템 설정 → 개인정보 보호 및 보안**의 아래쪽에서 Code Learning 차단 안내 옆 **그래도 열기**를 누릅니다.
+
+   차단 안내와 **그래도 열기** 버튼은 앱을 열려고 한 뒤 약 1시간 동안만 보입니다. 안 보이면 앱을 한 번 더 열어 경고를 띄운 뒤 다시 확인합니다.
+
 4. Mac 로그인 암호를 입력하고 **열기**를 누릅니다. 다음부터는 앱을 바로 열 수 있습니다.
 
 macOS 버전에 따라 버튼 문구가 다를 수 있습니다. [Apple의 실행 허용 안내](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac)도 참고하세요.
@@ -102,11 +109,38 @@ xattr -dr com.apple.quarantine "/Applications/Code Learning.app"
 <details>
 <summary>Windows 첫 실행 허용 방법 (준비 중)</summary>
 
-서명하지 않은 설치 파일(`Code-Learning-win-x64-Setup.exe`)이라 처음 실행할 때 “Windows의 PC 보호” 화면이 나올 수 있습니다. **추가 정보 → 실행**을 눌러 주세요.
+서명하지 않은 설치 파일(`Code-Learning-win-x64-Setup.exe`)이라 처음 실행할 때 “Windows의 PC 보호” 화면이 나올 수 있습니다. 코드 서명 인증서로 서명하지 않아 Windows가 만든 사람을 확인하지 못하기 때문입니다. **추가 정보 → 실행**을 눌러 주세요.
 
 설치는 관리자 권한 없이 내 계정에 됩니다. 시작 메뉴와 바탕화면에 **Code Learning** 바로가기가 생깁니다.
 
 제거하려면 **설정 → 앱**에서 **Code Learning**을 골라 **제거**를 누릅니다.
+
+</details>
+
+<details>
+<summary>설치 파일을 직접 확인하고 싶다면</summary>
+
+소스 코드 전체가 이 저장소에 있습니다. 설치 파일은 GitHub Actions의 [릴리스 작업](.github/workflows/release.yml)이 이 저장소의 코드로 만듭니다.
+
+릴리스에 함께 올리는 `SHA256SUMS.txt`로 내려받은 파일이 바뀌지 않았는지 확인할 수 있습니다. 설치 파일과 `SHA256SUMS.txt`를 같은 폴더에 놓고, 그 폴더에서 실행합니다.
+
+macOS 터미널:
+
+```sh
+grep Code-Learning-mac-arm64.dmg SHA256SUMS.txt | shasum -a 256 -c
+```
+
+`OK`가 나오면 파일이 같습니다.
+
+Windows PowerShell:
+
+```powershell
+(Get-FileHash .\Code-Learning-win-x64-Setup.exe -Algorithm SHA256).Hash -eq (Select-String -Path SHA256SUMS.txt -Pattern 'Code-Learning-win-x64-Setup.exe' -SimpleMatch).Line.Split(' ')[0]
+```
+
+`True`가 나오면 파일이 같습니다.
+
+직접 빌드하려면 아래 [개발](#-개발) 섹션을 참고하세요.
 
 </details>
 
