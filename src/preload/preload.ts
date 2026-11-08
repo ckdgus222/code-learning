@@ -17,6 +17,8 @@ if (document.documentElement) {
 }
 
 const api: LearningApi = {
+  checkForUpdate: () => ipcRenderer.invoke(channels.checkForUpdate),
+  openReleasePage: () => ipcRenderer.invoke(channels.openReleasePage),
   getViewSettings: () => ipcRenderer.invoke(channels.getViewSettings),
   setViewSettings: input => ipcRenderer.invoke(channels.setViewSettings, input),
   savedPlanCompare: input => ipcRenderer.invoke(channels.savedPlanCompare, input),

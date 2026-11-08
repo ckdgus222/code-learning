@@ -33,6 +33,8 @@
 - 프로젝트 전환·취소 시 분석 worker와 감시 정리
 - SQLite에 연 프로젝트 식별 정보, 학습 위치·기록, AI 파일 설명·개요·기능 정리·기획 대조·질문과 답 저장(프로젝트마다 최근 50개 답, 답마다 삭제 가능)
 - 질문 패널의 설정에서 Codex 단독(기본값)·Gemini 단독(Antigravity)·Claude Code 단독(준비 중) 선택, 설치 위치·버전 확인
+- 앱 설정(톱니)의 **새 버전 확인**을 누를 때만 `src/main/update-check.ts`가 `net.fetch`로 고정 주소 `https://api.github.com/repos/ckdgus222/code-learning/releases/latest`에 요청합니다. 앱 시작이나 설정 열기에는 요청하지 않습니다. 시스템 프록시를 따르며 `credentials: 'omit'`으로 쿠키·인증 정보를 제외하고, 프로젝트·이메일·기기 정보도 보내지 않습니다. 앱 버전은 User-Agent에 포함합니다. 진행 중 요청은 하나를 공유하고, 시간은 10초(`AbortSignal.timeout`), 본문은 최대 1 MB(1,048,576바이트, 선언된 길이와 실제 읽은 길이 모두 검사)로 제한합니다. `tag_name`의 세 숫자 버전만 비교하며, 404는 공개 버전 없음으로 표시합니다. 결과는 화면 상태에만 둡니다. **내려받기 페이지 열기**는 `https://github.com/ckdgus222/code-learning/releases/latest`만 열고 응답의 `html_url`은 사용하지 않습니다. 자동 내려받기·설치는 없습니다.
+- 버전 확인 시험은 실제 인터넷을 쓰지 않습니다. `tests/update-check.test.ts`는 가짜 fetcher를 전달하고, `tests/view-settings-main.test.ts`는 main을 가져오기 전에 Electron `net.fetch`·`shell.openExternal`과 전역 `fetch`를 가짜로 등록해 창 생성까지 호출이 없는지 확인합니다. `scripts/view-settings-smoke.mjs`의 공용 Electron 검사는 `app.evaluate`에서 `net.fetch`·`shell.openExternal`을 기록하는 가짜로 바꿉니다. 이 검사의 보장 범위는 교체 이후이며, 설정을 열기만 하면 0회, 확인 버튼을 누르면 API 요청 1회, 내려받기 버튼을 누르면 고정 페이지 열기 1회인지 확인합니다. 이를 위해 구현은 호출할 때마다 `net.fetch`를 조회합니다.
 
 프로젝트 목적·기능·구성은 사용자가 동의해 만든 AI 개요(조사한 범위)와 AI 기능 정리(주소·이름 목록)로 설명하고, 실제 실행 흐름은 자동으로 설명하지 않습니다. 구문 목록을 실행 순서나 AI 설명으로 표시하지 않습니다. **macOS에서는 Codex 단독·Gemini 단독 질문을 쓸 수 있고, Windows에서는 Codex 단독만 실험 기능으로 열려 있습니다. Claude Code 단독은 잠겨 있습니다. 질문 패널에서 동의한 질문만 보냅니다. 보내기 전에 아래 ‘알려진 한계’를 읽어 주세요.**
 

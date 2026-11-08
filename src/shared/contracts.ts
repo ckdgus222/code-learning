@@ -8,6 +8,7 @@ export const viewSettingsSchema = z.object({
   codeColors: z.enum(['default', 'contrast']),
 }).strict();
 export type ViewSettings = z.infer<typeof viewSettingsSchema>;
+export type UpdateCheck = { current: string; latest: string | null; status: 'newer' | 'latest' | 'none' };
 export const defaultViewSettings: ViewSettings = { screen: 'system', codeColors: 'default' };
 export const idSchema = z.string().uuid();
 export const sourceRequestSchema = z.object({ projectId: idSchema, fileId: idSchema }).strict();
@@ -503,6 +504,8 @@ export type Result<T> = { ok: true; value: T } | { ok: false; code: AppErrorCode
 export type ProjectEvent = { projectId: string; kind: 'changed' | 'watch-error' };
 
 export interface LearningApi {
+  checkForUpdate(): Promise<Result<UpdateCheck>>;
+  openReleasePage(): Promise<Result<null>>;
   getViewSettings(): Promise<Result<ViewSettings>>;
   setViewSettings(input: ViewSettings): Promise<Result<ViewSettings>>;
   savedPlanCompare(input: z.infer<typeof projectRequestSchema>): Promise<Result<{ result: PlanCompareResult; savedAt: string; reasons: string[] } | null>>;
@@ -562,6 +565,7 @@ export interface LearningApi {
 }
 
 export const channels = {
+  checkForUpdate: 'learning:check-for-update', openReleasePage: 'learning:open-release-page',
   getViewSettings: 'learning:get-view-settings', setViewSettings: 'learning:set-view-settings',
   savedPlanCompare: 'learning:saved-plan-compare', savePlanCompare: 'learning:save-plan-compare', deletePlanCompare: 'learning:delete-plan-compare',
   planCompare: 'learning:plan-compare',

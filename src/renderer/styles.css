@@ -825,6 +825,9 @@ section[aria-label="기능 목록"] > h3 { scroll-margin-top: 16px; }
 .view-settings__popup { position: absolute; top: calc(100% + 8px); right: 0; z-index: 30; width: 250px; max-width: calc(100vw - 32px); padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: 0 4px 16px rgb(0 0 0 / .08); white-space: normal; }
 .view-settings__popup fieldset { display: grid; gap: 6px; margin: 0 0 10px; padding: 0; border: 0; }
 .view-settings__popup legend { margin-bottom: 6px; font-weight: 600; }
+.view-settings__popup section { display: grid; gap: 6px; justify-items: start; }
+.view-settings__popup h3 { margin: 0; font-size: inherit; font-weight: 600; }
+.view-settings__popup section p { margin: 0; }
 .view-settings__popup label { display: flex; align-items: center; gap: 8px; }
 .view-settings__popup input { accent-color: var(--accent); }
 .view-settings__popup [role="alert"] { color: var(--danger); font-size: 14px; }

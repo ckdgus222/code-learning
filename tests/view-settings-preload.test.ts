@@ -31,6 +31,17 @@ it.each([
   expect(bridge.invoke.mock.calls).toEqual([[channels.getViewSettings], [channels.setViewSettings, settings]]);
 });
 
+it('exposes update actions without invoking them or passing arguments', async () => {
+  vi.resetModules();
+  vi.stubGlobal('document', { documentElement: { dataset: {} } });
+  await import('../src/preload/preload');
+  const api = bridge.expose.mock.calls[0][1] as LearningApi;
+  expect(bridge.invoke).not.toHaveBeenCalled();
+  await api.checkForUpdate();
+  await api.openReleasePage();
+  expect(bridge.invoke.mock.calls).toEqual([[channels.checkForUpdate], [channels.openReleasePage]]);
+});
+
 it('sets the attribute as soon as the HTML root is inserted, without waiting for DOMContentLoaded', async () => {
   vi.resetModules();
   process.argv = ['electron', '--code-colors=contrast'];

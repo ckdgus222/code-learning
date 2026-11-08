@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, powerMonitor, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, powerMonitor, shell, type IpcMainInvokeEvent } from 'electron';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
@@ -20,6 +20,7 @@ import { checkPlanCompare, planPartFor, planCompareResultSchema, savePlanCompare
 import { capturePlanCompare, checkPlanCompareBasis, restorePlanCompare, revalidatePlanCompare } from '../core/ai/plan-compare';
 import { handleSquirrelEvent } from './squirrel-startup';
 import { ViewSettingsStore } from './view-settings';
+import { checkForUpdate, RELEASES_PAGE } from './update-check';
 
 const installing = handleSquirrelEvent();
 
@@ -296,6 +297,15 @@ app.whenReady().then(async () => {
     return viewSettings.get();
   });
   handle(channels.setViewSettings, argument => viewSettings.set(argument));
+  handle(channels.checkForUpdate, async argument => {
+    z.undefined().parse(argument);
+    return checkForUpdate(app.getVersion());
+  });
+  handle(channels.openReleasePage, async argument => {
+    z.undefined().parse(argument);
+    await shell.openExternal(RELEASES_PAGE);
+    return null;
+  });
   storage = new ProjectStorage(path.join(app.getPath('userData'), 'learning.sqlite'));
   // The watcher may miss changes made while the Mac slept (plan 15.6), so waking up asks for a re-check.
   // Returning to the window does not: the watcher keeps running in the background, and evidence and
