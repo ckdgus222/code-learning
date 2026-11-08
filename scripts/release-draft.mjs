@@ -31,8 +31,9 @@ export async function updateDraft({ version, sha, files, gh }) {
 
   const refs = JSON.parse(await gh(['api', `repos/{owner}/{repo}/git/matching-refs/tags/${tag}`]));
   if (refs.some(ref => ref.ref === `refs/tags/${tag}`)) {
-    // Resolve annotated tags to their commit as well as lightweight tags.
-    const tagSha = (await gh(['api', `repos/{owner}/{repo}/commits/tags/${tag}`, '--jq', '.sha'])).trim();
+    // refs/tags/… resolves annotated tags to their commit as well as lightweight tags;
+    // GitHub answers 'tags/…' with 422 for an annotated tag.
+    const tagSha = (await gh(['api', `repos/{owner}/{repo}/commits/refs/tags/${tag}`, '--jq', '.sha'])).trim();
     if (tagSha !== sha) throw new Error('Existing tag does not match the build commit.');
   }
 

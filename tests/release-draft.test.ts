@@ -78,7 +78,7 @@ describe('updateDraft with fake gh', () => {
   it.each(['commit', 'tag'])('resolves an existing %s reference to its build commit', async type => {
     const gh = fakeGh({ refs: [{ ref: 'refs/tags/v1.0.0', object: { type, sha: 'c'.repeat(40) } }] });
     await updateDraft({ version, sha, files, gh });
-    expect(gh).toHaveBeenCalledWith(['api', 'repos/{owner}/{repo}/commits/tags/v1.0.0', '--jq', '.sha']);
+    expect(gh).toHaveBeenCalledWith(['api', 'repos/{owner}/{repo}/commits/refs/tags/v1.0.0', '--jq', '.sha']);
     expect(gh.mock.calls.at(-1)?.[0].slice(0, 3)).toEqual(['release', 'create', 'v1.0.0']);
   });
 
