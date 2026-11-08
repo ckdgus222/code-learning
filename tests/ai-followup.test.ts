@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ProjectAiContext } from '../src/core/ai/context';
-import { LocalWorkerWorkflow, type StageRequest, type StageResponse } from '../src/core/ai/workflow';
+import { LearningWorkflow, type StageRequest, type StageResponse } from '../src/core/ai/workflow';
 import { readAllowed, scanProject } from '../src/core/project/files';
 import { GEMINI_MODEL, type ExplainRequest, type Explanation, type LearningEvent } from '../src/shared/ai';
 import type { Evidence, SourceView } from '../src/shared/contracts';
@@ -47,7 +47,7 @@ async function setup(habit: Habit) {
     }
     return { reportedModel: null, value: { accepted: true, issues: [], explanation: draft } };
   };
-  const workflow = new LocalWorkerWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); },
+  const workflow = new LearningWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); },
     assertReady: () => {}, run, emit: event => events.push(event),
     capture: (_request, signal) => context.capture(source, evidence, 1, signal),
     captureOverview: (request, signal) => context.captureOverview(request.startFileId, 1, signal),

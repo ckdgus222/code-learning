@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProjectAiContext, MAX_CONTEXT_FILE_BYTES } from '../src/core/ai/context';
-import { LocalWorkerWorkflow, type StageRequest, type StageResponse } from '../src/core/ai/workflow';
+import { LearningWorkflow, type StageRequest, type StageResponse } from '../src/core/ai/workflow';
 import { scanProject, readAllowed } from '../src/core/project/files';
 import { SECRET_MASK } from '../src/core/ai/secrets';
 import { GEMINI_MODEL, fileExplanationSchema, fileExplanationResultSchema, type FileExplanation, type FileExplanationRequest, type LearningEvent } from '../src/shared/ai';
@@ -35,7 +35,7 @@ async function fixture(text = 'export function run() { return 1; }\n', relativeP
     return { reportedModel: input.provider === 'antigravity' ? GEMINI_MODEL : 'test-codex',
       value: input.stage === 'explaining' ? explanation : { accepted: true, issues: [], explanation } };
   });
-  const workflow = new LocalWorkerWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); }, assertReady, captureFile, revalidate, expand, run, emit: event => events.push(event),
+  const workflow = new LearningWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); }, assertReady, captureFile, revalidate, expand, run, emit: event => events.push(event),
     capture: async () => { throw new Error('not a question'); },
     captureOverview: async () => { throw new Error('not an overview'); } });
   const finish = async (input = request) => {

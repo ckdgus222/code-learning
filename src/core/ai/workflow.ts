@@ -132,7 +132,7 @@ const OVERVIEW_WRITING = '프로젝트 개요를 작성하라. intro는 이 프�
 
 // main owns the scope, history and lifecycle. The renderer cannot provide prompts,
 // executables, source text or a flag that bypasses the execution readiness check.
-export class LocalWorkerWorkflow {
+export class LearningWorkflow {
   private active?: Job;
   private chats = new Map<string, Chat>();
   constructor(private readonly deps: WorkflowDependencies) {}

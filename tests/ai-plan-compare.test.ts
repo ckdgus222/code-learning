@@ -8,7 +8,7 @@ import { planSections } from '../src/core/analysis/plan-sections';
 import { buildProjectMap } from '../src/core/analysis/project-map';
 import { ProjectAiContext } from '../src/core/ai/context';
 import { capturePlanCompare, checkPlanCompareBasis, planMapHash, restorePlanCompare, revalidatePlanCompare, waitForPlan, type PickedPlan } from '../src/core/ai/plan-compare';
-import { LocalWorkerWorkflow, type StageRequest, type StageResponse, type WorkflowDependencies } from '../src/core/ai/workflow';
+import { LearningWorkflow, type StageRequest, type StageResponse, type WorkflowDependencies } from '../src/core/ai/workflow';
 import { readStable, scanProject } from '../src/core/project/files';
 import { AppError } from '../src/shared/errors';
 import type { LearningEvent, LearningMode } from '../src/shared/ai';
@@ -57,7 +57,7 @@ function workflow(f: Awaited<ReturnType<typeof fixture>>, answer: () => PlanComp
     expand: (snapshot, ids, signal) => f.context.expand(snapshot, ids, signal),
     revalidate: (snapshot, signal) => f.context.revalidate(snapshot, signal), run, emit: event => events.push(event),
   };
-  const worker = new LocalWorkerWorkflow(deps);
+  const worker = new LearningWorkflow(deps);
   const request: PlanCompareRequest = { projectId: f.project.id, selection: f.selection, mode, consent: true };
   const terminal = async (jobId: string) => {
     await vi.waitFor(() => expect(events.some(event => event.jobId === jobId && event.kind !== 'progress')).toBe(true));

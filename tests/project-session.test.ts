@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import type { FSWatcher } from 'chokidar';
-import { LocalWorkerWorkflow } from '../src/core/ai/workflow';
+import { LearningWorkflow } from '../src/core/ai/workflow';
 import type { LearningEvent } from '../src/shared/ai';
 import { ProjectSession, workersStopped } from '../src/main/project-session';
 
@@ -809,7 +809,7 @@ describe('feature guide session freshness', () => {
     }
     const events: LearningEvent[] = [];
     const run = vi.fn();
-    const workflow = new LocalWorkerWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, assertReady() {}, run, emit: event => events.push(event),
+    const workflow = new LearningWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, assertReady() {}, run, emit: event => events.push(event),
       captureFeatureGuide: async request => session.captureFeatureGuide(request.routesId, reason === 'wake' ? 4 : 3),
       capture: vi.fn(), captureOverview: vi.fn(), captureFile: vi.fn(), expand: vi.fn(), revalidate: vi.fn(), revalidateFeatureGuide: vi.fn() });
     workflow.startFeatureGuide({ projectId: session.id, routesId: reason === 'different-id' ? randomUUID() : routes.routesId, mode: 'codex', consent: true });
@@ -826,7 +826,7 @@ describe('feature guide session freshness', () => {
       await new Promise<void>(resolve => { release = resolve; });
       return { reportedModel: null, value: { summary: '요약', groups: [], unknowns: [] } };
     });
-    const workflow = new LocalWorkerWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, assertReady() {}, run, emit: event => events.push(event),
+    const workflow = new LearningWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, assertReady() {}, run, emit: event => events.push(event),
       captureFeatureGuide: async request => session.captureFeatureGuide(request.routesId, 3),
       capture: vi.fn(), captureOverview: vi.fn(), captureFile: vi.fn(), expand: vi.fn(),
       revalidate: vi.fn(), revalidateFeatureGuide: async snapshot => session.validateFeatureGuide(snapshot.routesId, 3) });

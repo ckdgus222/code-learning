@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { LocalWorkerWorkflow, type EvidenceSnapshot, type StageRequest, type StageResponse } from '../src/core/ai/workflow';
+import { LearningWorkflow, type EvidenceSnapshot, type StageRequest, type StageResponse } from '../src/core/ai/workflow';
 import { GEMINI_MODEL, explanationSchema, type ExplainRequest, type Explanation, type LearningEvent } from '../src/shared/ai';
 import { AppError } from '../src/shared/errors';
 import { SECRET_MASK } from '../src/core/ai/secrets';
@@ -27,7 +27,7 @@ function fixture() {
     value: structuredClone(explanation),
   }));
   const captureOverview = vi.fn(async () => { throw new Error('not an overview test'); });
-  const workflow = new LocalWorkerWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); }, assertReady, capture, captureOverview, captureFile: async () => { throw new Error('not a file explanation test'); }, expand, revalidate, run, emit: event => events.push(event) });
+  const workflow = new LearningWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); }, assertReady, capture, captureOverview, captureFile: async () => { throw new Error('not a file explanation test'); }, expand, revalidate, run, emit: event => events.push(event) });
   const finish = async (input = request) => {
     const { jobId } = workflow.start(input);
     await vi.waitFor(() => expect(events.some(event => event.jobId === jobId && event.kind !== 'progress')).toBe(true));

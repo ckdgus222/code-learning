@@ -24,7 +24,7 @@ vi.mock('electron', () => ({
   nativeTheme: { themeSource: 'system' },
 }));
 vi.mock('../src/core/ai/runtime', () => ({ LocalAiRuntime: class { async close() {} } }));
-vi.mock('../src/core/ai/workflow', () => ({ LocalWorkerWorkflow: class { async close() {} } }));
+vi.mock('../src/core/ai/workflow', () => ({ LearningWorkflow: class { async close() {} } }));
 vi.mock('../src/core/ai/context', async importOriginal => {
   const { ProjectAiContext } = await importOriginal<typeof import('../src/core/ai/context')>();
   return { ProjectAiContext: class extends ProjectAiContext {

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { featureGuideMaterial, MAX_FEATURE_GUIDE_BYTES, type FeatureGuideSnapshot } from '../src/core/ai/feature-guide';
-import { LocalWorkerWorkflow, type StageRequest, type StageResponse } from '../src/core/ai/workflow';
+import { LearningWorkflow, type StageRequest, type StageResponse } from '../src/core/ai/workflow';
 import { SECRET_MASK } from '../src/core/ai/secrets';
 import { GEMINI_MODEL, featureGuideSchema, type FeatureGuide, type FeatureGuideRequest, type LearningEvent } from '../src/shared/ai';
 import type { ProjectRoutes, ProjectView } from '../src/shared/contracts';
@@ -37,7 +37,7 @@ function workflowFixture(count = 3) {
   const assertReady = vi.fn();
   const run = vi.fn(async (input: StageRequest): Promise<StageResponse> => ({ reportedModel: input.provider === 'antigravity' ? GEMINI_MODEL : 'test-codex',
     value: input.stage === 'explaining' ? answer() : { accepted: true, issues: [], guide: answer() } }));
-  const workflow = new LocalWorkerWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, assertReady, captureFeatureGuide, revalidateFeatureGuide: revalidate, revalidate: vi.fn(async () => {}), run, emit: event => events.push(event),
+  const workflow = new LearningWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, assertReady, captureFeatureGuide, revalidateFeatureGuide: revalidate, revalidate: vi.fn(async () => {}), run, emit: event => events.push(event),
     capture: async () => { throw new Error('not a question'); }, captureOverview: async () => { throw new Error('not an overview'); },
     captureFile: async () => { throw new Error('not a file explanation'); }, expand: async () => { throw new Error('no source reads'); } });
   async function finish(input = request) {

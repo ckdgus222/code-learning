@@ -12,7 +12,7 @@ import { learningResultSchema, saveAnswerSchema, savedAnswerRequestSchema, openS
 import { LocalAiRuntime } from '../core/ai/runtime';
 import { checkFeatureGuideRoutes } from '../core/ai/feature-guide';
 import { maskSecrets } from '../core/ai/secrets';
-import { LocalWorkerWorkflow } from '../core/ai/workflow';
+import { LearningWorkflow } from '../core/ai/workflow';
 import { ProjectAiContext } from '../core/ai/context';
 import { MAX_FILE_BYTES, readStable } from '../core/project/files';
 import { planSections } from '../core/analysis/plan-sections';
@@ -41,7 +41,7 @@ let finishedPlanCompare: { result: PlanCompareResult; planPath: string } | null 
 let pickingPlan = false;
 // App-only Codex and Antigravity folders keep the user's own AI settings out of app runs.
 const aiRuntime = new LocalAiRuntime(path.join(app.getPath('userData'), 'codex-home'), path.join(app.getPath('userData'), 'agy-home'));
-const learning = new LocalWorkerWorkflow({
+const learning = new LearningWorkflow({
   assertReady: mode => aiRuntime.assertReady(mode),
   capture: async (request, signal) => {
     const revision = projectRevision;

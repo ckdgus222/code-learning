@@ -26,7 +26,7 @@ vi.mock('electron', () => ({
   dialog: { showErrorBox: vi.fn() }, powerMonitor: { on() {} },
 }));
 vi.mock('../src/core/ai/runtime', () => ({ LocalAiRuntime: class {} }));
-vi.mock('../src/core/ai/workflow', () => ({ LocalWorkerWorkflow: class {} }));
+vi.mock('../src/core/ai/workflow', () => ({ LearningWorkflow: class {} }));
 vi.mock('../src/core/storage/projects', () => ({ ProjectStorage: class {} }));
 
 beforeAll(async () => {

@@ -10,7 +10,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { LocalAiRuntime } from '../../src/core/ai/runtime';
 import { runProcess, type ProcessRequest } from '../../src/core/ai/process';
-import { LocalWorkerWorkflow, type StageRequest, type StageResponse } from '../../src/core/ai/workflow';
+import { LearningWorkflow, type StageRequest, type StageResponse } from '../../src/core/ai/workflow';
 import { ProjectAiContext } from '../../src/core/ai/context';
 import { readAllowed, scanProject } from '../../src/core/project/files';
 import { organizationSchema, type Explanation, type LearningEvent, type LearningMode, type ModelRun } from '../../src/shared/ai';
@@ -233,7 +233,7 @@ describe('Codex connection through the app runtime (real account, non-secret fix
     stderrTail = '';
     stdoutText = '';
     const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'worker-live-')));
-    let workflow: LocalWorkerWorkflow | undefined;
+    let workflow: LearningWorkflow | undefined;
     try {
       await writeFile(path.join(root, 'order.ts'), 'import { limit } from "./limit";\n\nexport function order(count: number) {\n'
         + '  if (count > limit) return "too many";\n  return "ok";\n}\n');
@@ -250,7 +250,7 @@ describe('Codex connection through the app runtime (real account, non-secret fix
       const citedIds = (explanation: Explanation) => [...explanation.steps.flatMap(step => step.evidenceIds),
         ...explanation.claims.flatMap(claim => claim.kind === 'code' ? claim.evidenceIds : [])];
       const events: LearningEvent[] = [];
-      workflow = new LocalWorkerWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); },
+      workflow = new LearningWorkflow({ capturePlanCompare: async () => { throw new Error('not a plan compare test'); }, revalidatePlanCompare: async () => { throw new Error('not a plan compare test'); }, captureFeatureGuide: async () => { throw new Error('not a feature guide test'); }, revalidateFeatureGuide: async () => { throw new Error('not a feature guide test'); },
         assertReady: mode => runtime.assertReady(mode), run: request => runtime.run(request), emit: event => events.push(event),
         capture: (_request, signal) => context.capture(source, evidence, 1, signal),
         captureOverview: (request, signal) => context.captureOverview(request.startFileId, 1, signal),

@@ -10,7 +10,7 @@ import { planSections } from '../../src/core/analysis/plan-sections';
 import { ProjectAiContext } from '../../src/core/ai/context';
 import { capturePlanCompare, revalidatePlanCompare, type PickedPlan } from '../../src/core/ai/plan-compare';
 import { LocalAiRuntime } from '../../src/core/ai/runtime';
-import { LocalWorkerWorkflow } from '../../src/core/ai/workflow';
+import { LearningWorkflow } from '../../src/core/ai/workflow';
 import { readStable, scanProject } from '../../src/core/project/files';
 import type { LearningEvent } from '../../src/shared/ai';
 import type { ProjectMap } from '../../src/shared/contracts';
@@ -39,7 +39,7 @@ describe('Plan comparison through the app runtime (real account, non-secret fixt
     const started = performance.now();
     const record = records[mode] = { stages: [] } as typeof records[string];
     const base = await realpath(await mkdtemp(path.join(os.tmpdir(), 'plan-compare-live-')));
-    let workflow: LocalWorkerWorkflow | undefined;
+    let workflow: LearningWorkflow | undefined;
     try {
       const root = path.join(base, 'project');
       await cp(fixture, root, { recursive: true });
@@ -80,7 +80,7 @@ describe('Plan comparison through the app runtime (real account, non-secret fixt
       const connections = await runtime.checkConnections();
       console.log(`[${mode}] readiness:`, connections.modes.find(item => item.mode === mode));
       const events: LearningEvent[] = [];
-      workflow = new LocalWorkerWorkflow({
+      workflow = new LearningWorkflow({
         assertReady: selectedMode => runtime.assertReady(selectedMode),
         run: async request => {
           try { return await recordPlanCompareStage(request, stage => runtime.run(stage), record.stages); }

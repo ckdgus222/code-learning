@@ -23,7 +23,7 @@ vi.mock('electron', () => ({
   nativeTheme: { themeSource: 'system' },
 }));
 vi.mock('../src/core/ai/runtime', () => ({ LocalAiRuntime: class { async close() {} } }));
-vi.mock('../src/core/ai/workflow', () => ({ LocalWorkerWorkflow: class { async close() {} cancelFeatureGuide() {} } }));
+vi.mock('../src/core/ai/workflow', () => ({ LearningWorkflow: class { async close() {} cancelFeatureGuide() {} } }));
 vi.mock('../src/core/storage/projects', async importOriginal => {
   const { ProjectStorage } = await importOriginal<typeof import('../src/core/storage/projects')>();
   return { ProjectStorage: class extends ProjectStorage {
