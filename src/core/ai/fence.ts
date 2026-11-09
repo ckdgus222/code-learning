@@ -29,19 +29,32 @@ export interface FenceOptions {
 
 /**
  * The macOS sandbox an AI CLI runs in: the second wall after the tool limits. Even a tool the
- * limits miss cannot read the user's files or change anything outside its own app-only home and
- * this run's folder. Each CLI gets only its own home, so neither can read the other's login.
+ * limits miss cannot read home or temporary files outside its allowed paths, write outside its
+ * own folders, or reach other programs through local sockets, signals, app launching, Apple Events,
+ * clipboard access or the blocked system commands. Each CLI gets only its own home, so neither
+ * can read the other's login.
  * Later rules override earlier ones. Metadata (stat) stays readable for path resolution; file
- * contents and folder listings do not. The network stays open for the model API.
+ * contents and folder listings do not. The internet stays open for the model API, with the
+ * mDNSResponder socket allowed for DNS. Codex needs the keychain service, so it stays reachable;
+ * only the security command is blocked, not keychain access through other programs.
  */
 export function fenceProfile({ home, appHome, runDirectory, readable }: FenceOptions): string {
   const own = [appHome, runDirectory];
   return `(version 1)
 (allow default)
-(deny file-read-data ${subpaths([...new Set([home, '/Users', '/Volumes'])])})
+(deny file-read-data ${subpaths([...new Set([home, '/Users', '/Volumes', '/private/tmp', '/private/var/folders'])])})
 (allow file-read-data ${subpaths([...own, ...readable])})
 (deny file-write*)
 (allow file-write* ${subpaths(own)} (literal "/dev/null"))
+(deny network-outbound (remote unix-socket))
+(allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))
+(deny network-outbound (remote ip "localhost:*"))
+(deny signal)
+(allow signal (target same-sandbox))
+(deny lsopen)
+(deny appleevent-send)
+(deny process-exec (literal "/bin/launchctl") (literal "/usr/bin/crontab") (literal "/usr/bin/at") (literal "/usr/bin/batch") (literal "/usr/bin/security"))
+(deny mach-lookup (global-name "com.apple.pasteboard.1"))
 `;
 }
 

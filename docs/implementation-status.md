@@ -337,6 +337,15 @@ agy 1.3.5에는 설정 위치를 바꾸는 공식 옵션이 없다(공식 CLI re
 
 ### C04 실제 실행 울타리(sandbox-exec)
 
+**2026-11-09 울타리 강화:** `fenceProfile`에 다른 프로그램의 Unix 소켓·`localhost` 연결, 울타리 밖 프로세스로 신호 보내기, 앱 열기·Apple Events, `security`·`launchctl`·`crontab`·`at`·`batch` 실행, 클립보드 읽기 차단을 추가했다. `/private/tmp`·`/private/var/folders` 읽기도 막고 자기 홈·실행 폴더·프로그램 파일만 다시 허용한다. 모델 API의 인터넷 연결, DNS용 mDNSResponder 소켓과 같은 울타리 안 자식 프로세스 종료는 허용한다.
+
+- **사전 탐침(macOS 27, Codex 0.163.x, agy 1.4.x):** 모든 추가 규칙이 컴파일됐다. 외부 Unix 소켓·Docker 소켓·`127.0.0.1` 연결과 밖 프로세스로 `SIGCONT` 보내기는 `EPERM`, DNS 조회·TCP 443 연결과 자기 자식의 `SIGTERM` 종료는 허용됐다. `open`은 실패, Finder Apple Event는 커널 거부 기록, `security` 실행은 `EPERM`, `pbpaste`는 종료 1이었다. 실행 폴더로 복사한 `security`·`launchctl`도 OS가 종료했다(137). 기존 울타리에서도 `launchctl submit`은 종료 1이었다.
+- **Keychain 서비스는 유지:** `com.apple.SecurityServer`·`com.apple.securityd`·`com.apple.securityd.xpc` 조회까지 막은 사전 시험에서 실제 Codex가 `AI_UNAVAILABLE`로 실패했다. 그래서 `security` 명령 실행만 막고 서비스는 열어 둔다. `job-creation` 차단은 효과를 관찰하지 못해 추가하지 않았다.
+- **회귀 검사:** `tests/ai-fence.test.ts`에서 규칙 원문·순서, 외부 소켓·로컬 TCP·신호·명령·두 임시 경로 차단, DNS 소켓·자식 종료·실행 폴더 읽기 허용을 검사한다. 클립보드 내용은 수집하지 않으며 차단 규칙을 뺀 대조 실행도 실패하면 해당 검사만 이유를 표시하고 건너뛴다. 앱 실행·개인정보 확인 창을 피하기 위해 `open`·`osascript`는 자동 시험에서 실행하지 않는다. 소켓·`localhost`·신호·클립보드 규칙과 `/private/var/folders` 경로를 하나씩 빼면 각각 2~3개 검사가 실패하는 것을 확인했다.
+- **검증(2026-11-09, 이 Mac):** `tests/ai-fence.test.ts` 8개 통과(1개는 macOS 밖 전용이라 제외), `npm run test:ai-sandbox` 11항목 통과, `npm test` **94파일 3,281개** 통과. 실제 계정 `npm run test:codex-live`(Codex 0.166.0)는 13개 중 8개 통과: C02 정상 답변, C03 취소 등이 통과했다. 실패 5개는 이번 변경과 무관하다. C04·C06은 지금까지와 같은 ‘시도 없음’(의도된 실패), C07·C08은 0.163.0 전용 시험 자료라 0.166.0에서 멈췄고, C01(빈 홈의 로그인 오류 분류가 `other`)은 변경 전 울타리로 다시 돌려도 똑같이 실패했다. `npm run test:agy-live`(agy 1.4.12)는 9개 중 6개 통과: A2 정상 답변, A4 취소, A7 MCP 거절이 통과했다. A5·A6은 지금까지와 같은 판정 기준상 실패(시도 없음·일부 차단)다. A9는 앱 울타리 대신 시험용 규칙으로 실행되는 시험인데, agy 1.4.12에서 하위 에이전트·질문 강제 호출이 거절 대신 ‘단계 없음’으로 끝나 실패했다(실행 흔적 없음, 하위 에이전트 단계는 ERROR).
+
+아래는 2026-10-17 도입 당시의 기록이다.
+
 사용자가 2026-10-17 기획·구현·실제 계정 요청(최대 6건)을 승인했다. 구현 기획은 Codex plan 리뷰 2차에 통과했다. 지금까지는 도구를 빼앗는 것이 유일한 벽이었다. 이번에 **도구 제한이 뚫려도 홈·`/Users`·`/Volumes`의 파일 읽기와 허용한 폴더 밖 쓰기를 막는 두 번째 벽**을 더했다. 홈 밖 파일 읽기, 자기 앱 전용 홈의 읽기·쓰기, 네트워크, Keychain 서비스는 막지 않는다(아래 ‘남는 한계’). 보안 빈칸 조사 3번, 기획서 16.2절에 해당한다.
 
 - **AI 질문 단계는 `/usr/bin/sandbox-exec -p <규칙> <CLI> …`로 실행한다**(`src/core/ai/fence.ts`, `runtime.ts`의 `executeVerifiedStage`). 설치 확인(`--version`)은 질문·코드를 보내지 않으므로 울타리 없이 둔다(2026-10-18부터는 Codex·agy의 설치 확인도 울타리 안이다. 아래 ‘판정 규칙·설치 확인 울타리·agy MCP 설정’).
