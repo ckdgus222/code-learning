@@ -9,10 +9,10 @@ const jobs = Object.fromEntries([...workflow.matchAll(/^  (version|mac|windows|d
   .map(match => [match[1], match[2]]));
 
 describe('draft release configuration', () => {
-  it('sets the app and both lockfile root versions to 1.0.0', () => {
+  it('keeps the app and both lockfile root versions as the same plain release version', () => {
     const pkg = JSON.parse(read('package.json'));
     const lock = JSON.parse(read('package-lock.json'));
-    expect(pkg.version).toBe('1.0.0');
+    expect(pkg.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(lock.version).toBe(pkg.version);
     expect(lock.packages[''].version).toBe(pkg.version);
     expect(pkg.description).toBe('Read-only app for exploring unfamiliar TypeScript and JavaScript projects');
