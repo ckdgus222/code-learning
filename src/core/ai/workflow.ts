@@ -74,6 +74,9 @@ function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   return result.data;
 }
 
+/** A file entry as it is sent: its path masked too, since a folder or file name can hold a token. */
+const maskedPath = <T extends { relativePath: string }>(file: T): T => ({ ...file, relativePath: maskSecrets(file.relativePath).text });
+
 /** An overview's files as they are sent: secret-looking values masked, one note per file that had any. */
 function outgoingFiles(files: ContextFile[]) {
   const masked = files.map(file => ({ file, masked: maskSecrets(file.code) }));
@@ -376,8 +379,10 @@ export class LearningWorkflow {
       const sent = outgoing(snapshot);
       const value = JSON.stringify({ question: maskedQuestion.text,
         history: previous?.turns.slice(-2).map(turn => ({ question: maskSecrets(turn.question).text, explanation: turn.explanation })) ?? [],
-        evidence: snapshot.evidence, relativePath: snapshot.relativePath, code: sent.code,
-        files: sent.files, availableFiles: snapshot.availableFiles, limitations: [...snapshot.limitations, ...sent.notes, ...questionNotes] });
+        evidence: snapshot.evidence, relativePath: maskSecrets(snapshot.relativePath).text, code: sent.code,
+        files: sent.files.map(maskedPath),
+        availableFiles: snapshot.availableFiles.map(maskedPath),
+        limitations: [...snapshot.limitations, ...sent.notes, ...questionNotes].map(note => maskSecrets(note).text) });
       if (Buffer.byteLength(value, 'utf8') > 256 * 1024) throw new AppError('LIMIT', '질문 자료가 너무 큽니다. 더 작은 프로젝트나 새 질문으로 시작해 주세요.');
       return value;
     };
@@ -432,8 +437,10 @@ export class LearningWorkflow {
     const context = () => {
       // Files are added after organizing, so the outgoing copy is rebuilt for each stage.
       const sent = outgoingFiles(snapshot.files);
-      const value = JSON.stringify({ purpose: '프로젝트 개요', files: sent.files, availableFiles: snapshot.availableFiles,
-        limitations: [...snapshot.limitations, ...sent.notes] });
+      const value = JSON.stringify({ purpose: '프로젝트 개요',
+        files: sent.files.map(maskedPath),
+        availableFiles: snapshot.availableFiles.map(maskedPath),
+        limitations: [...snapshot.limitations, ...sent.notes].map(note => maskSecrets(note).text) });
       if (Buffer.byteLength(value, 'utf8') > 256 * 1024) throw new AppError('LIMIT', '개요 자료가 너무 큽니다. 더 작은 시작 파일을 골라 주세요.');
       return value;
     };

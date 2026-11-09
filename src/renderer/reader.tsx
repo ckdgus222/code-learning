@@ -1,13 +1,13 @@
 import React, { useEffect, useImperativeHandle, useRef, type Ref } from 'react';
 import { Compartment, EditorState, RangeSet } from '@codemirror/state';
-import { Decoration, EditorView, GutterMarker, WidgetType, gutter, lineNumbers, drawSelection, keymap, type KeyBinding } from '@codemirror/view';
+import { Decoration, EditorView, GutterMarker, WidgetType, gutter, lineNumbers, drawSelection, highlightSpecialChars, keymap, type KeyBinding } from '@codemirror/view';
 import { syntaxHighlighting } from '@codemirror/language';
 import {
   cursorCharLeft, cursorCharRight, cursorDocEnd, cursorDocStart, cursorLineBoundaryBackward, cursorLineBoundaryForward, cursorLineDown,
   cursorLineUp, cursorPageDown, cursorPageUp, selectAll, selectCharLeft, selectCharRight, selectDocEnd, selectDocStart,
   selectLineBoundaryBackward, selectLineBoundaryForward, selectLineDown, selectLineUp, selectPageDown, selectPageUp,
 } from '@codemirror/commands';
-import { codeTheme, codeHighlightStyle } from './code-theme';
+import { codeTheme, codeHighlightStyle, HIDDEN_CHARS } from './code-theme';
 import { javascript } from '@codemirror/lang-javascript';
 import { openSearchPanel, search, searchKeymap } from '@codemirror/search';
 import type { CodeStep, Evidence, SourceView } from '../shared/contracts';
@@ -103,6 +103,7 @@ export function Reader({ source, evidence, codeSize, wrap, symbolId, stepId, loc
       extensions: [
         // Keep CR and BOM characters rather than silently changing raw-source offsets.
         EditorState.lineSeparator.of('\n'), EditorState.readOnly.of(true), EditorView.editable.of(false),
+        highlightSpecialChars({ specialChars: HIDDEN_CHARS }),
         codeTheme, stepGutter.of([]), functionBandsCompartment.of([]), selectedFunction.of([]), lineNumbers(), drawSelection(), keymap.of([...readingKeys, ...searchKeymap]), search({ top: true }), searchPhrases,
         // A new editor is made for each file and starts with the current choices; later changes reconfigure it.
         wrapping.of(wrap ? EditorView.lineWrapping : []), sizing.of(sizeTheme(codeSize)),

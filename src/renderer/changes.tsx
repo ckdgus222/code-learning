@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { EditorState, type Extension } from '@codemirror/state';
-import { EditorView, lineNumbers } from '@codemirror/view';
+import { EditorView, highlightSpecialChars, lineNumbers } from '@codemirror/view';
 import { syntaxHighlighting } from '@codemirror/language';
-import { codeTheme, codeHighlightStyle } from './code-theme';
+import { codeTheme, codeHighlightStyle, HIDDEN_CHARS } from './code-theme';
 import { javascript } from '@codemirror/lang-javascript';
 import { MergeView } from '@codemirror/merge';
 import { changedLineCounts, codeLines } from './changed-line-counts';
@@ -162,6 +162,7 @@ function readOnly(file: string, label: string): Extension[] {
   const typescript = ['.ts', '.tsx', '.mts', '.cts'].includes(extension);
   const code = typescript || ['.js', '.jsx', '.mjs', '.cjs'].includes(extension);
   return [EditorState.lineSeparator.of('\n'), EditorState.readOnly.of(true), EditorView.editable.of(false), codeTheme, lineNumbers(),
+    highlightSpecialChars({ specialChars: HIDDEN_CHARS }),
     // The folded unchanged part is labelled by the merge view; the rest of the app speaks Korean.
     EditorState.phrases.of({ '$ unchanged lines': '바뀌지 않은 줄 $개' }),
     EditorView.contentAttributes.of({ 'aria-label': label, role: 'textbox', 'aria-readonly': 'true', tabindex: '0' }),

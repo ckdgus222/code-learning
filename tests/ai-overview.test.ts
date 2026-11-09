@@ -214,6 +214,44 @@ describe('overview workflow with fake stages', () => {
     expect(result.result.limitations.some(item => item.startsWith('config.ts: 비밀값처럼 보이는'))).toBe(true);
   });
 
+  it.each([false, true])('masks overview paths while expanding by ID and keeping screen paths (code secret: %s)', async codeSecret => {
+    // Made-up token-shaped folder name, not a real credential.
+    const token = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789AB';
+    const snapshot = material({ [`${token}/start.ts`]: codeSecret ? 'const password = "hunter22";' : 'export const start = 1;',
+      [`${token}/read.ts`]: 'export const related = 2;' });
+    const related = snapshot.files.pop()!;
+    snapshot.availableFiles = [{ id: related.evidence.fileId, relativePath: related.relativePath },
+      { id: randomUUID(), relativePath: 'src/normal.ts' }];
+    const limitation = `${token}/empty.ts: 비어 있거나 자료 크기 제한을 넘어 전체 파일을 포함하지 않았습니다.`;
+    snapshot.limitations = [limitation];
+    const f = fake(snapshot, () => ({ intro: { text: '관련 코드를 읽었어요.', evidenceIds: [related.evidence.id] },
+      features: [], roles: [], unknowns: [] }), [related.evidence.fileId]);
+    f.expand.mockImplementation(async (current, ids) => {
+      expect(ids).toEqual([related.evidence.fileId]);
+      current.files.push(related);
+    });
+    const result = await f.finish();
+    if (result.kind !== 'overview-completed') throw new Error(`expected an overview, got ${result.kind}`);
+    expect(f.run).toHaveBeenCalledTimes(2);
+    for (const [input] of f.run.mock.calls) {
+      expect(input.prompt).not.toContain(token);
+      const sent = JSON.parse(input.prompt.split('자료:\n')[1].split('\n과제:\n')[0]);
+      expect(sent.availableFiles).toEqual([{ id: related.evidence.fileId, relativePath: `${SECRET_MASK}/read.ts` }, snapshot.availableFiles[1]]);
+      expect(sent.files.map((file: { relativePath: string }) => file.relativePath)).toEqual(input.stage === 'organizing'
+        ? [`${SECRET_MASK}/start.ts`] : [`${SECRET_MASK}/start.ts`, `${SECRET_MASK}/read.ts`]);
+      expect(sent.limitations[0]).toBe(limitation.replace(token, SECRET_MASK));
+      expect(sent.limitations).toHaveLength(codeSecret ? 2 : 1);
+    }
+    expect(f.expand).toHaveBeenCalledWith(snapshot, [related.evidence.fileId], expect.any(AbortSignal));
+    expect(result.result.sources.map(file => file.relativePath)).toEqual([`${token}/start.ts`, related.relativePath]);
+    expect(result.result.overview.intro?.evidenceIds).toEqual([related.evidence.id]);
+    expect(result.result.limitations[0]).toBe(limitation);
+    expect(result.result.limitations).toHaveLength(codeSecret ? 3 : 2);
+    if (codeSecret) expect(result.result.limitations[1]).toContain(`${token}/start.ts: 비밀값처럼 보이는 1곳`);
+    expect(snapshot.files[0].relativePath).toBe(`${token}/start.ts`);
+    expect(snapshot.availableFiles[0].relativePath).toBe(related.relativePath);
+  });
+
   it.each([{ mode: 'unknown' }, { consent: false }, { startFileId: '../outside.ts' }, { path: '/etc/passwd' }, { prompt: 'bypass' }])(
     'refuses renderer input %j before anything runs', extra => {
       const f = fake(material(files), written);

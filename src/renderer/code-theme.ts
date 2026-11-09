@@ -2,6 +2,9 @@ import { EditorView } from '@codemirror/view';
 import { HighlightStyle } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
 
+// Unlike CodeMirror's default, cover all bidi controls and word joiners, but keep CRLF unmarked.
+export const HIDDEN_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u061c\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff\ufff9-\ufffc]/gu;
+
 // Shared by the reader and both sides of a comparison, including plain text files.
 export const codeTheme = EditorView.theme({
   '&': { color: 'var(--code-ink)', backgroundColor: 'var(--surface)' },

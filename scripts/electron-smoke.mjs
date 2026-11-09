@@ -24,6 +24,9 @@ const artifacts = path.join(root, 'test-results');
 await Promise.all([mkdir(fixture), mkdir(second), mkdir(profile), mkdir(artifacts, { recursive: true })]);
 const source = '\uFEFFexport function 주문(수량: number) {\r\n\tif (수량 < 1) {\r\n\t\treturn "실패 📦";\r\n\t}\r\n\treturn "성공 e\u0301";\r\n}\r\n';
 await writeFile(path.join(fixture, 'order.ts'), source);
+const hiddenCharacters = '\u202a\u202b\u202c\u202e\u2066\u2068\u2069\u200b';
+const hiddenSource = `// 숨은 문자 ${hiddenCharacters}\nexport const 숨은문자 = "${hiddenCharacters}";\n// 한글 e\u0301 👩\u200d💻 \u200c\n`;
+await writeFile(path.join(fixture, 'hidden.ts'), hiddenSource);
 // A loop whose last if has no known next step, a throw that a catch picks up, and a return under finally.
 const loopSource = 'export function 모두(목록: string[]) {\n  for (const 항목 of 목록) {\n    if (항목) {\n      보내기(항목);\n    }\n  }\n  try {\n    throw new Error("다시");\n  } catch {\n    return 0;\n  } finally {\n    정리();\n  }\n}\n';
 await writeFile(path.join(fixture, 'loop.ts'), loopSource);
@@ -227,7 +230,7 @@ const gitFixture = path.join(temporary, '변경 프로젝트');
 await mkdir(path.join(gitFixture, 'src'), { recursive: true });
 const gitHere = (...args) => execFileSync('git', args, { cwd: gitFixture, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
 if (onMac) gitHere('init', '-q');
-for (const [name, text] of [['edit.ts', 'export const edit = 1;\n'], ['deleted.ts', 'export const gone = 1;\n'], ['old-name.ts', 'export const moved = 1;\n'],
+for (const [name, text] of [['edit.ts', 'export const edit = 1;\n' + hiddenSource], ['deleted.ts', 'export const gone = 1;\n'], ['old-name.ts', 'export const moved = 1;\n'],
   ['func.ts', 'export function run(x: number) {\n  if (x > 1) return x;\n  return 0;\n}\n']]) {
   await writeFile(path.join(gitFixture, 'src', name), text);
 }
@@ -235,7 +238,7 @@ if (onMac) {
   gitHere('add', '-A');
   gitHere('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-verify', '-m', 'first version');
 }
-await writeFile(path.join(gitFixture, 'src/edit.ts'), 'export const edit = 2;\n');
+await writeFile(path.join(gitFixture, 'src/edit.ts'), 'export const edit = 2;\n' + hiddenSource);
 await rm(path.join(gitFixture, 'src/deleted.ts'));
 if (onMac) gitHere('mv', 'src/old-name.ts', 'src/new-name.ts');
 else await rename(path.join(gitFixture, 'src/old-name.ts'), path.join(gitFixture, 'src/new-name.ts'));
@@ -1083,6 +1086,16 @@ try {
     }
     await resizeWindow(app, page, 1280, 800);
   });
+  await check('Reader shows every hidden control without changing the original text', async () => {
+    await page.getByRole('button', { name: 'hidden.ts', exact: true }).click();
+    const editor = page.getByTestId('source-editor');
+    await until(async () => await editor.locator('.cm-specialChar').count() === hiddenCharacters.length * 2);
+    assert.equal(await editor.locator('.cm-content').evaluate(element => element.cmTile.root.view.state.doc.toString()), hiddenSource);
+    for (const index of [0, 1]) assert.equal(await editor.locator('.cm-line').nth(index).locator('.cm-specialChar').count(), hiddenCharacters.length);
+    assert.equal(await editor.locator('.cm-line').nth(2).textContent(), hiddenSource.split('\n')[2]);
+    await page.getByRole('button', { name: 'order.ts', exact: true }).click();
+    await page.getByRole('button', { name: '주문', exact: true }).waitFor();
+  });
   await check('Function → branch → exact original code range (CRLF/emoji/BOM)', async () => {
     await page.getByRole('button', { name: '주문', exact: true }).click();
     await page.getByRole('button', { name: '조건 확인', exact: true }).click();
@@ -1095,7 +1108,18 @@ try {
     assert.ok(offsets);
     const selected = source.slice(Number(offsets[1]), Number(offsets[2]));
     assert.equal(selected, 'if (수량 < 1) {\r\n\t\treturn "실패 📦";\r\n\t}');
-    assert.equal(await page.locator('.cm-line').allTextContents().then(lines => lines.join('\n')), source.slice(0, -2) + '\r\n');
+    assert.equal(await page.locator('.cm-content').evaluate(element => element.cmTile.root.view.state.doc.toString()), source);
+    assert.equal(await page.locator('.cm-specialChar').count(), 1);
+    assert.equal(await page.locator('.cm-line').first().evaluate(line => {
+      const beforeBOM = document.createRange();
+      beforeBOM.selectNodeContents(line);
+      beforeBOM.setEndBefore(line.querySelector('.cm-specialChar'));
+      return beforeBOM.toString();
+    }), '');
+    const renderedLines = await page.locator('.cm-line').allTextContents();
+    assert.equal(renderedLines[0].slice(1), source.split('\n')[0].slice(1));
+    assert.ok(renderedLines.slice(0, -1).every(line => line.endsWith('\r')));
+    assert.deepEqual(renderedLines.slice(1), source.split('\n').slice(1));
     await page.locator('.cm-selectionBackground').first().waitFor();
     await until(async () => await page.locator('.cm-selected-function').count() === 6);
     const chosen = page.locator('.symbols__row:has(> .symbols__item[aria-pressed="true"])');
@@ -5129,6 +5153,11 @@ try {
     await diff.getByText('왼쪽은 고른 커밋, 오른쪽은 지금 파일이에요. 바뀌지 않은 부분은 접어 두었어요.', { exact: true }).waitFor();
     await diff.getByRole('textbox', { name: '고른 커밋의 코드 (읽기 전용)' }).getByText('export const edit = 1;').waitFor();
     await diff.getByRole('textbox', { name: '지금 코드 (읽기 전용)' }).getByText('export const edit = 2;').waitFor();
+    for (const [label, value] of [['고른 커밋의 코드 (읽기 전용)', 1], ['지금 코드 (읽기 전용)', 2]]) {
+      const editor = diff.getByRole('textbox', { name: label });
+      assert.equal(await editor.locator('.cm-specialChar').count(), hiddenCharacters.length * 2);
+      assert.equal(await editor.evaluate(element => element.cmTile.root.view.state.doc.toString()), `export const edit = ${value};\n` + hiddenSource);
+    }
     assert.equal(await diff.locator('.diff-counts').innerText(), '+1 −1');
     const commit = await page.getByRole('combobox', { name: '기준 커밋' }).inputValue();
     assert.deepEqual(await diff.locator('.diff-columns span').allInnerTexts(), [`이전 코드 · ${commit.slice(0, 7)}`, '지금 코드']);

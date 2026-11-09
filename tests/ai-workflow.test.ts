@@ -289,6 +289,41 @@ describe('single AI workflow with fake adapters', () => {
     }
   });
 
+  it.each([false, true])('masks question paths and limitations without changing screen paths (code secret: %s)', async codeSecret => {
+    const f = fixture();
+    // Made-up token-shaped folder name, not a real credential.
+    const token = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789AB';
+    f.snapshot.relativePath = `${token}/selected.ts`;
+    f.snapshot.code = codeSecret ? 'const password = "hunter22";' : 'const answer = 42;';
+    const related = { evidence: { ...f.snapshot.evidence, id: randomUUID(), fileId: randomUUID() },
+      relativePath: `${token}/read.ts`, code: f.snapshot.code };
+    f.snapshot.files = [related];
+    f.snapshot.availableFiles = [{ id: randomUUID(), relativePath: `${token}/available.ts` },
+      { id: randomUUID(), relativePath: 'src/normal.ts' }];
+    const limitation = `${token}/empty.ts: 비어 있거나 자료 크기 제한을 넘어 전체 파일을 포함하지 않았습니다.`;
+    f.snapshot.limitations = [limitation];
+    const original = structuredClone(f.snapshot);
+    const event = await f.finish();
+    if (event.kind !== 'completed') throw new Error('expected completion');
+    expect(f.run).toHaveBeenCalledTimes(1);
+    const request = f.run.mock.calls[0][0];
+    expect(request.prompt).not.toContain(token);
+    expect(context(request)).toMatchObject({ relativePath: `${SECRET_MASK}/selected.ts`,
+      files: [{ relativePath: `${SECRET_MASK}/read.ts`, evidence: related.evidence }],
+      availableFiles: [{ id: original.availableFiles[0].id, relativePath: `${SECRET_MASK}/available.ts` }, original.availableFiles[1]] });
+    expect(context(request).limitations[0]).toBe(limitation.replace(token, SECRET_MASK));
+    expect(context(request).limitations).toHaveLength(codeSecret ? 3 : 1);
+    expect(event.result.sources.map(file => file.relativePath)).toEqual([original.relativePath, related.relativePath]);
+    expect(event.result.limitations).toHaveLength(codeSecret ? 4 : 2);
+    expect(event.result.limitations[0]).toBe(limitation);
+    if (codeSecret) {
+      expect(event.result.limitations[1]).toContain(`${original.relativePath}: 비밀값처럼 보이는 1곳`);
+      expect(event.result.limitations[2]).toContain(`${related.relativePath}: 비밀값처럼 보이는 1곳`);
+    }
+    expect(f.expand).not.toHaveBeenCalled();
+    for (const [snapshot] of f.revalidate.mock.calls) expect(snapshot).toEqual(original);
+  });
+
   it('masks a secret pasted into the question, both now and when the question is sent again as history', async () => {
     const f = fixture();
     // Made-up values in the shape of secrets; not real credentials.
