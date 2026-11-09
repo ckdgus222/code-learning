@@ -40,7 +40,7 @@
 
 ## 단독 AI 연결 구현
 
-기본 사용 방식은 **Codex 단독**이며, macOS에서는 Gemini 단독(Antigravity)도 고를 수 있습니다. Gemini 요청 모델은 `gemini-3.8-flash-high`로 고정하며 API 키·다른 모델로 자동 전환하지 않습니다. Claude Code 단독은 아직 준비 중입니다. **로컬 워커는 2026-11-07 사용자 결정으로 제거했습니다.** 예전에 저장한 결과는 계속 열 수 있으며 ‘로컬 워커(이전 방식)’으로 표시합니다.
+기본 사용 방식은 **Codex 단독**이며, macOS에서는 Gemini 단독(Antigravity)도 고를 수 있습니다. Gemini 요청 모델은 `gemini-3.8-flash-high`로 고정하고 다른 모델로 자동 전환하지 않으며, Google AI Studio API 키로만 연결합니다. Claude Code 단독은 아직 준비 중입니다. **로컬 워커는 2026-11-07 사용자 결정으로 제거했습니다.** 예전에 저장한 결과는 계속 열 수 있으며 ‘로컬 워커(이전 방식)’으로 표시합니다.
 
 프로젝트를 열고 상단 **질문 → 설정 → 로컬 AI 설치 확인**을 누르면 기본 설치 위치에서 공식 프로그램의 `--version`만 실행합니다. macOS에서는 Codex와 Antigravity의 설치 확인도 아래의 울타리 안에서 합니다. Windows Codex는 이 울타리 없이 확인합니다. 설치 여부·버전을 확인해도 로그인 성공이나 실제 AI 연결 성공으로 표시하지 않습니다. 기본 위치 밖의 사용자 지정 실행 파일 선택은 아직 제공하지 않습니다.
 
@@ -62,16 +62,16 @@ macOS의 AI 질문 단계와 Codex·Antigravity 설치 확인은 `sandbox-exec` 
 
 질문을 보내기 전에 알아 둘 것입니다. macOS의 Codex·Gemini 단독은 앱 전용 홈·울타리를 쓰지만 아래 한계가 있습니다. Windows Codex는 앱 전용 홈을 쓰지만 이 울타리는 없습니다. 시험 기록은 [구현 상태](implementation-status.md)에 있습니다.
 
-- **시험한 버전:** Codex 0.163.0, Antigravity(agy) 1.4.3. 앱은 설치된 버전을 보여 주기만 하고, 버전이 달라도 막지 않습니다. CLI가 업데이트되면 도구와 동작이 바뀔 수 있으니 연결 시험(`npm run test:codex-live`, `npm run test:agy-live`)을 다시 하는 것을 권합니다.
+- **시험한 버전:** Codex 0.163.0, Antigravity(agy) 1.4.3. Codex는 설치된 버전을 보여 주며 버전이 달라도 막지 않습니다. Gemini는 Antigravity(agy) 1.4.12 이상에서만 실행합니다. CLI가 업데이트되면 도구와 동작이 바뀔 수 있으니 연결 시험(`npm run test:codex-live`, `npm run test:agy-live`)을 다시 하는 것을 권합니다.
 - **도구 차단은 시험한 범위만 확인했습니다.**
   - Codex는 로그인 상태에서 제공 도구 목록을 알려 주지 않습니다. 대놓고 시켜도 도구를 시도하지 않아 차단을 직접 보지 못했습니다. 가짜 서버로 강제로 부른 시험에서는 파일·셸·웹·하위 에이전트 도구가 거절됐지만, MCP 자료 조회 도구 3개는 실행됐습니다(연결된 서버가 없어 빈 결과). Code Mode의 `exec` 도구는 남아 있습니다.
   - Antigravity는 제공 도구 60개 중 시도한 것(파일 읽기·쓰기, 셸, 웹 검색, MCP 호출)이 앱 훅이나 거부 규칙에 거절됐지만, 60개 전부를 시험하지는 않았습니다. 1.4.3 실계정 시험에서는 밖 파일 편집 1건이 거절이 아닌 원인 모를 오류로 끝났습니다(실제 변경 없음). 가짜 서버로 강제로 부른 시험(API 키 방식)에서는 모델에게 알리는 도구 12개를 모두 불렀고, 샌드박스 우회 요청을 포함해 모두 앱 훅에 거절됐습니다.
   - 앱은 도구나 다른 작업 단계를 보고한 답을 버리지만, 이미 일어난 일을 되돌리지는 못합니다.
 - **macOS 울타리가 막는 것과 막지 않는 것:** 홈·`/Users`·`/Volumes`·`/private/tmp`·사용자별 임시 폴더(`/private/var/folders`)의 파일 읽기와 허용 폴더 밖 쓰기를 막습니다. 다른 프로그램의 소켓·로컬 서비스(`localhost`) 연결, 밖 프로세스로 신호 보내기, 앱 열기·제어(`open`, Apple Events), `security`·`launchctl`·`crontab`·`at`·`batch` 실행, 클립보드 읽기도 막습니다. IPv6 연결도 막습니다(IPv6만 쓰는 네트워크에서는 AI가 연결되지 않을 수 있습니다). **IPv4 인터넷 전송, `/etc`·`/Library` 등 차단 경로 밖 파일 읽기, 다른 프로그램을 통한 Keychain 서비스 접근은 막지 않습니다.** DNS용 mDNSResponder 소켓은 허용하며, Keychain에서 해당 프로그램을 신뢰하지 않는 항목은 macOS가 사용자에게 확인합니다. Windows Codex에는 이 울타리가 없으며, 실제 PC에서의 접근 제한도 미검증입니다.
 - **보내는 자료:** AI 기능 정리는 프로젝트 이름과 앱이 찾은 서버 주소·요청·Next 화면 목록(파일 경로·함수 이름 포함)만 보냅니다. 코드 원문과 README 소개는 보내지 않습니다. 전체 목록이 32 KiB를 넘으면 순서대로 잘라 ‘일부만 보냄’을 표시합니다. 이 정리는 주소·이름만 보고 쓴 추정이며 실제 구현이나 정확성을 보장하지 않습니다. 파일 설명은 해당 파일의 경로·원문(최대 32 KiB)과 앱이 나눈 덩어리 목록(ID·종류·이름·행 범위)만 보냅니다. 다른 파일은 보내지 않습니다. 질문할 때는 선택한 코드와 그 파일 전체(크기 제한 안), 프로젝트 파일 목록, 질문, 최근 답변을 보냅니다. 질문에서는 다른 파일을 더 읽지 않습니다. AI 개요는 프로젝트 파일 목록, 고른 시작 파일(0~1개), AI가 고른 파일(최대 4개)을 설정에서 고른 AI 하나에 보냅니다. 기획 대조는 고른 기획 범위(최대 48 KiB), 파일 목록·지도 연결, AI가 고른 코드(최대 8개·파일당 32 KiB·합계 80 KiB)를 보냅니다. 기획 대조의 파일 목록은 96 KiB, 지도 연결은 64 KiB 한도이며, 넘으면 일부만 보냅니다. 비밀값처럼 보이는 형태만 가리며 모두 찾지는 못합니다(예: 이름에 비밀 단어가 없는 값, 알려진 접두어가 없는 `Authorization: Bearer` 값). AI 답변은 다시 가리지 않습니다.
-- **로그인:** 앱은 로그인 여부를 미리 확인하지 않습니다. 고른 AI의 앱 전용 홈에 로그인이 없으면 그 AI를 처음 부를 때 오류가 나며 결과를 만들지 못합니다.
+- **로그인과 키:** Codex의 로그인 여부는 미리 확인하지 않습니다. 앱 전용 홈에 로그인이 없으면 처음 부를 때 오류가 납니다. Gemini는 읽을 수 있는 API 키가 없으면 시작을 막지만, 키의 유효성과 이용 한도는 실제 요청 전에는 확인하지 않습니다.
 - **기록:** 두 CLI는 앱 전용 홈에 자체 기록(Codex의 logs·memories 등 SQLite, agy의 대화 DB·로그)을 남깁니다. 질문 내용이 담길 수 있으며, 보관·삭제 정책은 아직 확인하지 않았습니다.
-- **agy 앱 전용 홈은 실행 전에만 정리합니다.** 실행 전마다 훅·MCP 설정을 지우고 거부 규칙을 다시 씁니다. 도구 제한과 울타리를 모두 뚫은 실행이 그 홈에 훅이나 MCP 서버를 심으면, 다음 앱 실행 전에 README의 `HOME=… agy` 로그인 명령을 실행할 때 울타리 없이 실행될 수 있습니다. 실행 뒤 정리와 실패 시 폴더 옮기기는 취소·설치 확인과 겹칠 때 정상 로그인 폴더를 옮길 수 있어 넣지 않았습니다(2026-11-09 사용자 결정).
+- **agy 앱 전용 홈은 실행 전에만 정리합니다.** 실행 전마다 훅·MCP 설정을 지우고 거부 규칙을 다시 씁니다. 도구 제한과 울타리를 모두 뚫은 실행이 그 홈에 훅이나 MCP 서버를 심으면, 그 폴더로 CLI를 수동 실행하면 울타리 없이 실행될 수 있습니다. 앱은 Gemini의 수동 로그인 명령을 안내하거나 실행하지 않습니다. 실행 뒤 정리와 실패 시 폴더 옮기기는 취소·설치 확인과 겹칠 때 정상 로그인 폴더를 옮길 수 있어 넣지 않았습니다(2026-11-09 사용자 결정).
 - **agy 홈 바꾸기는 공식 기능이 아닙니다.** agy 업데이트로 동작이 바뀔 수 있습니다. agy는 작업 폴더의 `.agents/` 설정도 읽으므로 앱은 매번 빈 임시 폴더에서 실행합니다. `sandbox-exec`는 Apple이 사용 중단으로 표시한 도구이고, 사라지면 macOS에서는 AI를 실행하지 않습니다.
 - **단독 방식:** 다른 AI가 원본과 대조하지 않습니다. 앱은 응답 형식·근거·자료 변경 여부를 검사합니다. 코드 질문은 관련 파일을 더 읽지 않으므로 선택한 파일 밖의 동작은 확인하지 못합니다. AI 개요와 기획 대조는 고른 AI가 요청한 파일도 읽습니다.
 
@@ -97,7 +97,7 @@ npm run test:packaged
 
 macOS에서는 `npm run test:ai-sandbox`로 임시 파일의 쓰기 차단도 검사합니다. CI(`.github/workflows/ci.yml`)는 macOS·Windows에서 타입·단위·Electron·패키지 검사를 실행합니다. Windows에서는 설치 프로그램 생성과 설치·실행·제거 검사도 실행합니다.
 
-macOS에서는 Codex를 개인 설정(`~/.codex`)과 분리된 앱 전용 위치(`~/Library/Application Support/Code Learning/codex-home`)로 실행합니다. 처음 한 번 `CODEX_HOME="$HOME/Library/Application Support/Code Learning/codex-home" codex login`으로 로그인해야 합니다. Antigravity(agy)는 설정 위치 옵션이 없어 앱 전용 폴더를 `HOME`으로 주어 실행하며(공식 기능 아님), 처음 한 번 터미널에서 `HOME="$HOME/Library/Application Support/Code Learning/agy-home" ~/.local/bin/agy`로 로그인합니다. `npm run test:agy-live`는 agy 연결 시험입니다.
+macOS에서는 Codex를 개인 설정(`~/.codex`)과 분리된 앱 전용 위치(`~/Library/Application Support/Code Learning/codex-home`)로 실행합니다. 처음 한 번 `CODEX_HOME="$HOME/Library/Application Support/Code Learning/codex-home" codex login`으로 로그인해야 합니다. Antigravity(agy)는 앱 전용 폴더를 `HOME`으로 주어 실행하며(공식 기능 아님), 실행 전마다 `settings.json`의 `modelProvider`를 `gemini`로 고정합니다. Gemini는 Google AI Studio API 키로만 연결하고 기존 Google 로그인 토큰 파일은 읽거나 지우지 않습니다. 키는 Electron `safeStorage`로 암호화해 `<userData>/gemini-api-key.bin`에 권한 `0o600`으로 저장합니다. 암호화를 쓸 수 없으면 저장을 거부합니다. 저장·삭제는 순서대로 처리하며, UI는 변경과 설치 재확인이 끝날 때까지 AI 시작을 막습니다. 키는 agy 실행의 `GEMINI_API_KEY` 환경 변수로만 넘기고, Codex·설치 버전 확인에는 넘기지 않습니다. 키를 IPC 응답·로그·오류 메시지·평문 파일에 넣지 않습니다. `npm run test:agy-live -- -t 'A8 local|A9 local'`은 가짜 키로 로컬 서버만 시험합니다. 실제 계정 시험에는 `GEMINI_API_KEY`와 사용자 승인이 필요합니다.
 
 Windows의 Codex 앱 전용 홈은 `%APPDATA%\Code Learning\codex-home`입니다. 처음 한 번 PowerShell에서 다음 명령으로 로그인합니다.
 

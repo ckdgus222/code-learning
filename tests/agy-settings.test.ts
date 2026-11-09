@@ -16,7 +16,7 @@ afterEach(async () => { await rm(home, { recursive: true, force: true }); });
 describe('agy restrictions in the app-only HOME', () => {
   it('creates private settings with every deny rule and a hook that refuses every tool', async () => {
     await restrictAgy(home);
-    expect(await json(settingsFile())).toEqual({ permissions: { deny: AGY_DENY_RULES } });
+    expect(await json(settingsFile())).toEqual({ modelProvider: 'gemini', permissions: { deny: AGY_DENY_RULES } });
     expect(await json(hooksFile())).toEqual(AGY_NO_TOOLS_HOOK);
     expect(AGY_NO_TOOLS_HOOK['code-learning-no-tools'].PreToolUse[0].matcher).toBe('*');
     expect(await json(mcpFile())).toEqual({ mcpServers: {} });
@@ -45,7 +45,7 @@ describe('agy restrictions in the app-only HOME', () => {
     await mkdir(path.dirname(settingsFile()), { recursive: true });
     await mkdir(path.dirname(hooksFile()), { recursive: true });
     await writeFile(settingsFile(), JSON.stringify({
-      trustedWorkspaces: ['/fixture'], permissions: { allow: ['command(git)'], deny: ['command(rm)', 'mcp(*)'] },
+      modelProvider: 'google', trustedWorkspaces: ['/fixture'], permissions: { allow: ['command(git)'], deny: ['command(rm)', 'mcp(*)'] },
       hooks: { start: { SessionStart: [{ type: 'command', command: 'echo started' }] } },
     }));
     await writeFile(hooksFile(), JSON.stringify({ other: { PreToolUse: [{ matcher: '*', hooks: [{ command: 'echo other' }] }] } }));
@@ -54,6 +54,7 @@ describe('agy restrictions in the app-only HOME', () => {
     await restrictAgy(home);
     await restrictAgy(home);
     const settings = await json(settingsFile());
+    expect(settings.modelProvider).toBe('gemini');
     expect(settings.trustedWorkspaces).toEqual(['/fixture']);
     expect(settings.permissions.allow).toEqual(['command(git)']);
     expect(settings.permissions.deny).toEqual(['command(rm)', 'mcp(*)', ...AGY_DENY_RULES.filter(rule => rule !== 'mcp(*)')]);
@@ -110,4 +111,14 @@ describe('agy restrictions in the app-only HOME', () => {
     await expect(restrictAgy(home)).rejects.toThrow();
     expect(await readFile(settingsFile(), 'utf8')).toBe(content);
   });
+});
+
+it('forces API key mode while leaving an old Google login token untouched', async () => {
+  await mkdir(path.dirname(settingsFile()), { recursive: true });
+  const token = path.join(path.dirname(settingsFile()), 'antigravity-oauth-token');
+  await writeFile(token, 'fake-old-login-token');
+  await writeFile(settingsFile(), JSON.stringify({ modelProvider: 'google', trustedWorkspaces: ['/fixture'] }));
+  await restrictAgy(home);
+  expect(await readFile(token, 'utf8')).toBe('fake-old-login-token');
+  expect(await json(settingsFile())).toMatchObject({ modelProvider: 'gemini', trustedWorkspaces: ['/fixture'] });
 });

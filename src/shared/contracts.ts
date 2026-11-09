@@ -503,7 +503,13 @@ export type AppErrorCode = 'CANCELLED' | 'INVALID_REQUEST' | 'PROJECT_CLOSED' | 
 export type Result<T> = { ok: true; value: T } | { ok: false; code: AppErrorCode; message: string };
 export type ProjectEvent = { projectId: string; kind: 'changed' | 'watch-error' };
 
+export interface GeminiKeyStatus { saved: boolean; readable: boolean; canEncrypt: boolean }
+export const saveGeminiKeySchema = z.object({ key: z.string().min(1).max(512) }).strict();
+
 export interface LearningApi {
+  geminiKeyStatus(): Promise<Result<GeminiKeyStatus>>;
+  saveGeminiKey(input: z.infer<typeof saveGeminiKeySchema>): Promise<Result<GeminiKeyStatus>>;
+  clearGeminiKey(): Promise<Result<GeminiKeyStatus>>;
   checkForUpdate(): Promise<Result<UpdateCheck>>;
   openReleasePage(): Promise<Result<null>>;
   getViewSettings(): Promise<Result<ViewSettings>>;
@@ -565,6 +571,7 @@ export interface LearningApi {
 }
 
 export const channels = {
+  geminiKeyStatus: 'learning:gemini-key-status', saveGeminiKey: 'learning:save-gemini-key', clearGeminiKey: 'learning:clear-gemini-key',
   checkForUpdate: 'learning:check-for-update', openReleasePage: 'learning:open-release-page',
   getViewSettings: 'learning:get-view-settings', setViewSettings: 'learning:set-view-settings',
   savedPlanCompare: 'learning:saved-plan-compare', savePlanCompare: 'learning:save-plan-compare', deletePlanCompare: 'learning:delete-plan-compare',

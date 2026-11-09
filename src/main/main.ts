@@ -1,13 +1,14 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, powerMonitor, shell, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, nativeTheme, powerMonitor, shell, type IpcMainInvokeEvent } from 'electron';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { mkdir, realpath, stat } from 'node:fs/promises';
 import { z } from 'zod';
-import { channels, learningSpotSchema, saveLearningSpotSchema, saveLearningMarkSchema, storedLearningMarkSchema, featureFlowsRequestSchema, featureFlowRequestSchema, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, shapesRequestSchema, changesRequestSchema, diffRequestSchema, type Result, type Evidence } from '../shared/contracts';
+import { channels, learningSpotSchema, saveLearningSpotSchema, saveLearningMarkSchema, storedLearningMarkSchema, featureFlowsRequestSchema, featureFlowRequestSchema, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, shapesRequestSchema, changesRequestSchema, diffRequestSchema, saveGeminiKeySchema, type Result, type Evidence } from '../shared/contracts';
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { MAP_TIMEOUT_MS, ProjectSession, workersStopped } from './project-session';
+import { createGeminiKeyStore } from './gemini-key';
 import { learningResultSchema, saveAnswerSchema, savedAnswerRequestSchema, openSavedEvidenceSchema, explanationReferencesMatch, type LearningResult, featureGuideResultSchema, saveFeatureGuideSchema, overviewResultSchema, saveOverviewSchema, type OverviewResult, fileExplanationResultSchema, saveFileExplanationSchema, checkConnectionsSchema, explainRequestSchema, cancelExplanationSchema, overviewRequestSchema, fileExplanationRequestSchema, featureGuideRequestSchema } from '../shared/ai';
 import { LocalAiRuntime } from '../core/ai/runtime';
 import { checkFeatureGuideRoutes } from '../core/ai/feature-guide';
@@ -41,7 +42,8 @@ export let planDocument: (PlanDocument & { path: string; text: string; hash: str
 let finishedPlanCompare: { result: PlanCompareResult; planPath: string } | null = null;
 let pickingPlan = false;
 // App-only Codex and Antigravity folders keep the user's own AI settings out of app runs.
-const aiRuntime = new LocalAiRuntime(path.join(app.getPath('userData'), 'codex-home'), path.join(app.getPath('userData'), 'agy-home'));
+const geminiKey = createGeminiKeyStore(path.join(app.getPath('userData'), 'gemini-api-key.bin'), safeStorage);
+const aiRuntime = new LocalAiRuntime(path.join(app.getPath('userData'), 'codex-home'), path.join(app.getPath('userData'), 'agy-home'), process.platform, geminiKey.read);
 const learning = new LearningWorkflow({
   assertReady: mode => aiRuntime.assertReady(mode),
   capture: async (request, signal) => {
@@ -292,6 +294,21 @@ app.whenReady().then(async () => {
   await mkdir(app.getPath('userData'), { recursive: true });
   viewSettings = new ViewSettingsStore(path.join(app.getPath('userData'), 'view-settings.json'), nativeTheme);
   await viewSettings.load();
+  handle(channels.geminiKeyStatus, async argument => {
+    z.undefined().parse(argument);
+    return geminiKey.status();
+  });
+  handle(channels.saveGeminiKey, async argument => {
+    await geminiKey.save(saveGeminiKeySchema.parse(argument).key);
+    await aiRuntime.refreshGeminiKey();
+    return geminiKey.status();
+  });
+  handle(channels.clearGeminiKey, async argument => {
+    z.undefined().parse(argument);
+    await geminiKey.clear();
+    await aiRuntime.refreshGeminiKey();
+    return geminiKey.status();
+  });
   handle(channels.getViewSettings, async argument => {
     z.undefined().parse(argument);
     return viewSettings.get();

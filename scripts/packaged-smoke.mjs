@@ -216,7 +216,7 @@ try {
   assert.equal(await consent.getAttribute('aria-describedby'), await description.getAttribute('id'));
   await disclosure.locator('summary').click();
   assert.equal(await description.isVisible(), true);
-  assert.equal(await description.innerText(), '선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·질문·최근 답변을 Codex에 보내는 데 동의합니다. 다른 파일은 더 읽지 않습니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.');
+  assert.equal(await description.innerText(), '선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·질문·최근 답변을 Codex에 보내는 데 동의합니다. 다른 파일은 더 읽지 않습니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다. 보낸 자료는 그 회사의 약관과 계정 설정에 따라 처리돼요(학습에 쓰일 수 있어요).');
   await disclosure.locator('summary').click();
   assert.equal(await description.isVisible(), false);
   assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);

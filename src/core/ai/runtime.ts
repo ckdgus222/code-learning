@@ -22,6 +22,9 @@ export const CLAUDE_CODE_CLOSED = 'Claude Code 단독은 아직 준비 중이에
 export const WINDOWS_CODEX_WARNING = 'Windows 실험 기능이에요: 실제 Windows PC에서 확인하지 못했고, macOS의 울타리 없이 실행해요. 도구 차단이 새면 Codex가 이 PC의 파일을 읽거나 바꿀 수 있어요. 자세한 내용은 README의 ‘알려진 한계’에 있어요.';
 export const WINDOWS_CODEX_READY = `질문을 보낼 수 있어요. 한 AI가 바로 설명하고 다른 AI의 대조는 없어요. ${WINDOWS_CODEX_WARNING}`;
 export const WINDOWS_GEMINI_CLOSED = 'Windows에서는 아직 Gemini 단독을 쓸 수 없어요. Antigravity의 도구 차단을 Windows에서 확인하지 못했어요.';
+export const GEMINI_NEEDS_KEY = 'Gemini는 Google AI Studio API 키로만 연결해요. 설정에서 API 키를 넣어 주세요.';
+export const GEMINI_UPDATE_AGY = 'Gemini는 Antigravity CLI 1.4.12 이상에서만 돼요. agy를 업데이트해 주세요.';
+export const GEMINI_KEY_WARNING = 'Gemini는 API 키로만 연결해요. 개인 Google 계정 로그인으로 다른 앱에서 Antigravity를 쓰면 Google 약관상 계정이 정지될 수 있어서예요. 무료 등급 키로 보낸 코드와 질문은 Google이 제품 개선에 쓸 수 있어요.';
 const providers: { provider: ProviderId; binary: string }[] = [
   { provider: 'codex', binary: 'codex' }, { provider: 'antigravity', binary: 'agy' }, { provider: 'claude-code', binary: 'claude' },
 ];
@@ -145,7 +148,7 @@ export async function restrictAgy(home: string): Promise<void> {
   if (!isObject(permissions)) throw new Error('unexpected settings');
   const deny = permissions.deny ?? [];
   if (!Array.isArray(deny) || !deny.every(rule => typeof rule === 'string')) throw new Error('unexpected settings');
-  const updated: Record<string, unknown> = { ...settings, permissions: { ...permissions, deny: [...new Set([...deny, ...AGY_DENY_RULES])] } };
+  const updated: Record<string, unknown> = { ...settings, modelProvider: 'gemini', permissions: { ...permissions, deny: [...new Set([...deny, ...AGY_DENY_RULES])] } };
   delete updated.hooks;
   await writePrivateFile(settingsFile, `${JSON.stringify(updated, null, 2)}\n`);
   const configFolder = await privateFolder(home, ['.gemini', 'config']);
@@ -170,7 +173,9 @@ export const AGY_ANSWER_STEP_TYPES = ['user_input', 'agent_response'];
 // Parsing a successful envelope is separate from enforcing tool permissions.
 // Tool failures and partial output never become a successful explanation.
 export function parseStageOutput(provider: 'codex' | 'antigravity', stdout: string, exitCode: number): StageResponse {
-  if (exitCode !== 0) throw new AppError('AI_UNAVAILABLE', 'AI 실행에 실패했습니다. 공식 프로그램에서 로그인·이용 한도를 확인해 주세요.');
+  if (exitCode !== 0) throw new AppError('AI_UNAVAILABLE', provider === 'antigravity'
+    ? 'AI 실행에 실패했습니다. 설정의 Gemini API 키와 이용 한도를 확인해 주세요.'
+    : 'AI 실행에 실패했습니다. 공식 프로그램에서 로그인·이용 한도를 확인해 주세요.');
   if (provider === 'antigravity') {
     // agy stream-json: an `init` event, `step_update` events, then a final `result`. A body may sit
     // under a key named after the event (`{"event":"init","init":{…}}`), so both shapes are read.
@@ -219,6 +224,8 @@ export function parseStageOutput(provider: 'codex' | 'antigravity', stdout: stri
 export class LocalAiRuntime {
   private launches = new Map<ProviderId, Launch>();
   private agySupportsDisableSlashCommands = false;
+  private agySupported = false;
+  private geminiKeySaved = false;
   /**
    * App-only folders keep the user's own AI settings out of app runs.
    * `codexHome`: even with `--ignore-user-config`, codex-cli 0.162.1 read the user's global
@@ -228,7 +235,12 @@ export class LocalAiRuntime {
    * That is not an official agy feature and is checked by `npm run test:agy-live`.
    */
   constructor(private readonly codexHome: string, private readonly antigravityHome: string,
-    private readonly platform: NodeJS.Platform = process.platform) {}
+    private readonly platform: NodeJS.Platform = process.platform,
+    private readonly geminiKey: () => Promise<string | null> = async () => null) {}
+
+  async refreshGeminiKey(): Promise<void> {
+    this.geminiKeySaved = !!await this.geminiKey();
+  }
 
   /**
    * How a CLI is started: inside the macOS fence, or on Windows, which has no such sandbox, Codex as
@@ -243,7 +255,7 @@ export class LocalAiRuntime {
     return launch;
   }
 
-  private async environment(provider: ProviderId): Promise<NodeJS.ProcessEnv | undefined> {
+  private async environment(provider: ProviderId, running = false): Promise<NodeJS.ProcessEnv | undefined> {
     const home = provider === 'codex' ? this.codexHome : provider === 'antigravity' ? this.antigravityHome : undefined;
     if (!home) return undefined;
     try {
@@ -256,6 +268,12 @@ export class LocalAiRuntime {
       if (provider === 'antigravity') await restrictAgy(home);
     } catch {
       throw new AppError('AI_UNAVAILABLE', `앱 전용 ${provider === 'codex' ? 'Codex' : 'Antigravity'} 위치를 준비하지 못했습니다. 폴더 권한${provider === 'antigravity' ? '과 설정 파일(settings.json, hooks.json, mcp_config.json)' : ''}을 확인해 주세요.`);
+    }
+    if (provider === 'antigravity' && running) {
+      if (this.platform === 'win32') throw new AppError('AI_UNAVAILABLE', 'Windows에서는 Codex 단독만 실행할 수 있어요.');
+      const key = await this.geminiKey();
+      if (!key) throw new AppError('AI_UNAVAILABLE', GEMINI_NEEDS_KEY);
+      return { ...localProcessEnv(), HOME: home, GEMINI_API_KEY: key };
     }
     return provider === 'codex' ? { ...localProcessEnv(), CODEX_HOME: home } : { ...localProcessEnv(), HOME: home };
   }
@@ -273,7 +291,9 @@ export class LocalAiRuntime {
     const connections: ProviderConnection[] = [];
     this.launches.clear();
     this.agySupportsDisableSlashCommands = false;
+    this.agySupported = false;
     try {
+      await this.refreshGeminiKey();
       for (const { provider, binary } of providers) {
         if (this.platform === 'win32' && provider !== 'codex') continue;
         if (automatic && provider === 'claude-code') continue;
@@ -316,9 +336,13 @@ export class LocalAiRuntime {
           this.launches.set(provider, launch);
           if (provider === 'antigravity') {
             const [major, minor, patch] = version.split('.').map(part => Number.parseInt(part, 10));
-            this.agySupportsDisableSlashCommands = major > 1 || (major === 1 && (minor > 4 || (minor === 4 && patch >= 12)));
+            // 1.4.12 is both the oldest agy verified in API key mode (user decision) and the first with --disable-slash-commands.
+            this.agySupported = major > 1 || (major === 1 && (minor > 4 || (minor === 4 && patch >= 12)));
+            this.agySupportsDisableSlashCommands = this.agySupported;
           }
-          let message = '설치를 확인했습니다. 로그인·실제 응답·접근 제한은 아직 미검증입니다.';
+          let message = provider === 'antigravity'
+            ? `설치를 확인했습니다. ${this.geminiKeySaved ? '' : `${GEMINI_NEEDS_KEY} `}실제 응답·접근 제한은 아직 미검증입니다.`
+            : '설치를 확인했습니다. 로그인·실제 응답·접근 제한은 아직 미검증입니다.';
           if (provider === 'codex') {
             const login = this.platform === 'win32'
               ? `PowerShell에서 로그인이 필요할 수 있어요: $env:CODEX_HOME="${this.codexHome}"; codex login`
@@ -337,7 +361,8 @@ export class LocalAiRuntime {
           if (this.platform === 'win32' && mode === 'codex' && !blocker) {
             return { mode, ready: true, reason: WINDOWS_CODEX_READY, warning: WINDOWS_CODEX_WARNING };
           }
-          return { mode, ready: !blocker, reason: blocker ?? SINGLE_READY };
+          return { mode, ready: !blocker, reason: blocker ?? SINGLE_READY,
+            ...(mode === 'antigravity' && !blocker ? { warning: GEMINI_KEY_WARNING } : {}) };
         }) };
     } finally { await rm(directory, { recursive: true, force: true }); }
   }
@@ -346,7 +371,10 @@ export class LocalAiRuntime {
   private blocker(mode: LearningMode): string | null {
     if (mode === 'claude-code') return CLAUDE_CODE_CLOSED;
     if (this.platform === 'win32' && mode === 'antigravity') return WINDOWS_GEMINI_CLOSED;
-    return this.launches.has(mode) ? null : SINGLE_NEEDS[mode];
+    if (!this.launches.has(mode)) return SINGLE_NEEDS[mode];
+    if (mode === 'antigravity' && !this.agySupported) return GEMINI_UPDATE_AGY;
+    if (mode === 'antigravity' && !this.geminiKeySaved) return GEMINI_NEEDS_KEY;
+    return null;
   }
 
   assertReady(mode: LearningMode): void {
@@ -402,7 +430,7 @@ export class LocalAiRuntime {
       const stdin = request.provider === 'codex' ? request.prompt : `${JSON.stringify({ event: 'user', message: {
         content: `${request.prompt}\n\n응답은 아래 JSON schema를 따르는 JSON 하나만 출력한다. 코드 울타리나 다른 글을 붙이지 않는다.\n${JSON.stringify(request.schema)}`,
       } })}\n`;
-      const env = await this.environment(request.provider);
+      const env = await this.environment(request.provider, true);
       const start = await this.launchFor(request.provider, launch, directory);
       // TMPDIR (macOS) and TEMP/TMP (Windows) point into this run's folder: the only temporary place the
       // fence lets the CLI write, and removed after the run.

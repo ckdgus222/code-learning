@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
-import type { CodeSymbol, ProjectView, SourceView } from '../shared/contracts';
+import type { CodeSymbol, GeminiKeyStatus, ProjectView, SourceView } from '../shared/contracts';
 import type { ConnectionReport, LearningEvent, LearningMode } from '../shared/ai';
 import { inspectionBlockedReason, needsAutomaticInspection } from './connections';
 import { rememberFileExplanation, type FileExplanationEntry, type FileExplanationState } from './file-explanation';
@@ -21,6 +21,18 @@ export function useAiJobs({ project, source, symbol, revision, setError, setNoti
   const [connections, setConnections] = useState<ConnectionReport | null>(null);
   const [checking, setChecking] = useState(false);
   const inspectionPending = useRef(false);
+  const [keyBusy, setKeyBusy] = useState(false);
+  const keyPending = useRef(false);
+  const [geminiKeyStatus, setGeminiKeyStatus] = useState<GeminiKeyStatus | null>(null);
+  useEffect(() => {
+    let active = true;
+    void window.learning.geminiKeyStatus().then(result => {
+      if (!active) return;
+      if (result.ok) setGeminiKeyStatus(result.value);
+      else setError(result.message);
+    }).catch(() => { if (active) setError('Gemini API 키 상태를 확인하지 못했어요.'); });
+    return () => { active = false; };
+  }, []);
   const [mode, setMode] = useState<LearningMode>('codex');
   const [featureGuideRunning, setFeatureGuideRunning] = useState(false);
   const [questionRunning, setQuestionRunning] = useState(false);
@@ -172,6 +184,7 @@ export function useAiJobs({ project, source, symbol, revision, setError, setNoti
   }
 
   function connectionCheckBlockedReason(): string | null {
+    if (keyPending.current) return 'Gemini API 키를 변경하는 중이에요.';
     if (planCompareRunning) return '대조 작업 중에는 설치를 다시 확인할 수 없어요.';
     // A check starts main's list of AI programs over: the overview's next stage would find none.
     return inspectionBlockedReason({ overviewRunning: overviewAi?.status === 'running',
@@ -186,6 +199,9 @@ export function useAiJobs({ project, source, symbol, revision, setError, setNoti
     const blocked = connectionCheckBlockedReason();
     if (blocked) return blocked;
     if (inspectionPending.current) return null;
+    return checkConnections(request);
+  }
+  async function checkConnections(request?: { automatic: true }): Promise<string | null> {
     inspectionPending.current = true;
     setChecking(true);
     try {
@@ -201,6 +217,24 @@ export function useAiJobs({ project, source, symbol, revision, setError, setNoti
       setChecking(false);
     }
   }
+  async function changeGeminiKey(key: string | null): Promise<string | null> {
+    const blocked = connectionCheckBlockedReason();
+    if (blocked) return blocked;
+    if (inspectionPending.current) return '로컬 AI 설치를 확인하는 중이에요.';
+    keyPending.current = true;
+    setKeyBusy(true);
+    try {
+      const result = key === null ? await window.learning.clearGeminiKey() : await window.learning.saveGeminiKey({ key });
+      if (!result.ok) return result.message;
+      setGeminiKeyStatus(result.value);
+      return await checkConnections();
+    } catch {
+      return 'Gemini API 키를 변경하지 못했어요. 다시 시도해 주세요.';
+    } finally {
+      keyPending.current = false;
+      setKeyBusy(false);
+    }
+  }
   function forget() {
     savedOverviewRequest.current++;
     savedExplanationRequest.current++;
@@ -213,7 +247,7 @@ export function useAiJobs({ project, source, symbol, revision, setError, setNoti
     setOverviewCard(count => count + 1);
   }
   async function startOverview(startFileId: string | null) {
-    if (!project || planCompareRunning || questionRunning || fileExplanationRunning || featureGuideRunning || checking) return;
+    if (keyPending.current || !project || planCompareRunning || questionRunning || fileExplanationRunning || featureGuideRunning || checking) return;
     savedOverviewRequest.current++;
     const token = ++overviewRequest.current;
     overviewJob.current = { id: null, starting: true, queued: [] };
@@ -240,7 +274,7 @@ export function useAiJobs({ project, source, symbol, revision, setError, setNoti
   }
 
   async function startFileExplanation() {
-    if (!project || !source || planCompareRunning || questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running' || checking) return;
+    if (keyPending.current || !project || !source || planCompareRunning || questionRunning || fileExplanationRunning || featureGuideRunning || overviewAi?.status === 'running' || checking) return;
     const token = ++fileExplanationRequest.current;
     fileExplanationJob.current = { id: null, starting: true, queued: [], revision: revision.current };
     setFileExplanationState({ status: 'running', fileId: source.fileId, revision: revision.current, phase: null, mode });
@@ -267,7 +301,7 @@ export function useAiJobs({ project, source, symbol, revision, setError, setNoti
   }
 
   return {
-    connections, checking, inspectConnections, ensureConnections,
+    connections, checking, inspectConnections, ensureConnections, keyBusy, geminiKeyStatus, changeGeminiKey,
     mode, setMode, questionRunning, setQuestionRunning, featureGuideRunning, setFeatureGuideRunning,
     overview: overviewAi, overviewCard, startOverview, cancelOverview, deleteOverview,
     fileExplanation, fileExplanationStale, fileExplanationState, fileExplanationRunning,

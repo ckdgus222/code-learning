@@ -434,6 +434,7 @@ async function openLoginFlowQuestion() {
 async function check(name, action) { await action(); checks.push(name); console.log(`PASS ${name}`); }
 // All three consent forms keep the full disclosure available through the checkbox even while it is folded.
 async function checkConsentDisclosure(container, expectedText) {
+  expectedText += ' 보낸 자료는 그 회사의 약관과 계정 설정에 따라 처리돼요(학습에 쓰일 수 있어요).';
   const checkbox = container.getByRole('checkbox', { name: '보낼 자료에 동의', exact: true });
   const details = container.locator('.consent-details');
   const description = details.locator('p');
@@ -790,6 +791,104 @@ try {
       assert.deepEqual(await app.evaluate(() => globalThis.testUnexpectedAiCalls), []);
     });
     await app.close();
+  }
+  if (onMac) {
+    for (const initial of ['missing', 'unreadable', 'unencrypted']) {
+      await launch(inspectionBootstrap);
+      await check(`Gemini API key: ${initial}, shared change lock and provider warning`, async () => {
+        await app.evaluate(({ ipcMain }, initial) => {
+          let status = { saved: initial === 'unreadable', readable: false, canEncrypt: initial !== 'unencrypted' };
+          globalThis.testKeyCheckCount = 0;
+          globalThis.testKeyReleaseCheck = null;
+          globalThis.testKeyChanged = false;
+          for (const channel of ['learning:gemini-key-status', 'learning:save-gemini-key', 'learning:clear-gemini-key', 'learning:connections']) ipcMain.removeHandler(channel);
+          ipcMain.handle('learning:gemini-key-status', () => ({ ok: true, value: status }));
+          ipcMain.handle('learning:save-gemini-key', (_event, input) => {
+            if (input.key !== 'fake-gemini-key-for-smoke-only') throw new Error('Unexpected fake key');
+            status = { saved: true, readable: true, canEncrypt: true };
+            globalThis.testKeyChanged = true;
+            return { ok: true, value: status };
+          });
+          ipcMain.handle('learning:clear-gemini-key', () => {
+            status = { saved: false, readable: false, canEncrypt: true };
+            globalThis.testKeyChanged = true;
+            return { ok: true, value: status };
+          });
+          ipcMain.handle('learning:connections', async () => {
+            globalThis.testKeyCheckCount++;
+            if (globalThis.testKeyChanged) {
+              globalThis.testKeyChanged = false;
+              await new Promise(resolve => { globalThis.testKeyReleaseCheck = resolve; });
+            }
+            return { ok: true, value: { checkedAt: new Date().toISOString(), providers: [], modes: [
+              { mode: 'codex', ready: true, reason: '시험용 준비됨' },
+              { mode: 'antigravity', ready: status.readable, reason: status.readable ? '시험용 준비됨' : 'API 키 필요',
+                ...(status.readable ? { warning: 'Gemini는 API 키로만 연결해요. 개인 Google 계정 로그인으로 다른 앱에서 Antigravity를 쓰면 Google 약관상 계정이 정지될 수 있어서예요. 무료 등급 키로 보낸 코드와 질문은 Google이 제품 개선에 쓸 수 있어요.' } : {}) },
+            ] } };
+          });
+        }, initial);
+        await page.reload();
+        await dialogTo(fixture);
+        await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+        await page.getByRole('heading', { name: '한글 프로젝트', exact: true }).waitFor();
+        await openAiSection('설정');
+        const panel = page.getByRole('complementary', { name: 'AI 질문' });
+        const group = panel.getByRole('group', { name: 'Gemini API 키', exact: true });
+        const input = group.getByLabel('Gemini API 키', { exact: true });
+        const message = initial === 'missing' ? '없음' : initial === 'unreadable' ? '저장된 키를 읽지 못했어요. 다시 넣어 주세요.' : '이 컴퓨터에서 키를 안전하게 저장할 수 없어요';
+        await group.getByText(message, { exact: true }).waitFor();
+        assert.equal(await input.getAttribute('type'), 'password');
+        assert.equal(await input.getAttribute('autocomplete'), 'off');
+        assert.equal(await input.getAttribute('spellcheck'), 'false');
+        if (initial === 'unencrypted') {
+          assert.equal(await input.isDisabled(), true);
+          assert.equal(await group.getByRole('button', { name: '저장', exact: true }).isDisabled(), true);
+          return;
+        }
+        // Codex is already ready: the new lock, not missing Gemini readiness, must stop these starts.
+        await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+        await page.getByRole('button', { name: 'order.ts', exact: true }).click();
+        await page.getByRole('button', { name: '주문', exact: true }).click();
+        await panel.getByRole('textbox', { name: '선택한 코드에 질문' }).fill('가짜 키 잠금 시험');
+        await panel.getByRole('checkbox', { name: '보낼 자료에 동의', exact: true }).check();
+        await until(() => panel.getByRole('button', { name: '질문 보내기', exact: true }).isEnabled());
+        await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).click();
+        await page.getByRole('button', { name: '이 파일 설명 만들기', exact: true }).click();
+        const fileCard = page.getByRole('region', { name: '이 파일 설명', exact: true });
+        await fileCard.getByRole('checkbox', { name: '보낼 자료에 동의', exact: true }).check();
+        assert.equal(await fileCard.getByRole('button', { name: '동의하고 파일 설명 만들기', exact: true }).isEnabled(), true);
+        await input.fill('fake-gemini-key-for-smoke-only');
+        const before = await app.evaluate(() => globalThis.testKeyCheckCount);
+        await group.getByRole('button', { name: '저장', exact: true }).click();
+        await until(() => app.evaluate(() => !!globalThis.testKeyReleaseCheck));
+        assert.equal(await group.getByRole('button', { name: '저장', exact: true }).isDisabled(), true);
+        assert.equal(await group.getByRole('button', { name: '지우기', exact: true }).isDisabled(), true);
+        assert.equal(await panel.locator('.ai-settings').getByRole('button', { name: '설치 확인 중…', exact: true }).isDisabled(), true);
+        assert.equal(await panel.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
+        assert.equal(await fileCard.getByRole('button', { name: '동의하고 파일 설명 만들기', exact: true }).isDisabled(), true);
+        await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+        const overviewCard = page.locator('.overview-ai');
+        await overviewCard.getByRole('checkbox', { name: '보낼 자료에 동의', exact: true }).check();
+        assert.equal(await overviewCard.getByRole('button', { name: '개요 만들기', exact: true }).isDisabled(), true);
+        await app.evaluate(() => { globalThis.testKeyReleaseCheck(); globalThis.testKeyReleaseCheck = null; });
+        await until(async () => await input.inputValue() === '');
+        await group.getByText('저장됨', { exact: true }).waitFor();
+        await panel.getByLabel('AI 사용 방식', { exact: true }).selectOption('antigravity');
+        await panel.getByText('AI · Gemini 단독 · 준비됨', { exact: true }).waitFor();
+        assert.equal(await app.evaluate(() => globalThis.testKeyCheckCount), before + 1);
+        assert.equal((await page.locator('body').innerText()).includes('fake-gemini-key-for-smoke-only'), false);
+        const warning = panel.getByTestId('ai-warning');
+        await warning.waitFor();
+        assert.match(await warning.innerText(), /무료 등급 키/);
+        assert.equal(await warning.evaluate(node => !!(node.compareDocumentPosition(node.parentElement.querySelector('.ai-consent')) & Node.DOCUMENT_POSITION_FOLLOWING)), true);
+        await group.getByRole('button', { name: '지우기', exact: true }).click();
+        await until(() => app.evaluate(() => !!globalThis.testKeyReleaseCheck));
+        await app.evaluate(() => { globalThis.testKeyReleaseCheck(); globalThis.testKeyReleaseCheck = null; });
+        await group.getByText('없음', { exact: true }).waitFor();
+        await panel.getByText('AI · Gemini 단독 · 사용할 수 없음', { exact: true }).waitFor();
+      });
+      await app.close();
+    }
   }
   // Welcome layout uses its own profile so the existing fresh-profile checks still start empty.
   const welcomeProfile = path.join(temporary, 'welcome-profile');
@@ -3908,9 +4007,12 @@ try {
       await selector.selectOption(mode);
       const found = new RegExp(`${binary} · 설치 확인`).test(listed);
       const closed = process.platform === 'win32' && mode === 'antigravity';
+      const gemini = mode === 'antigravity';
+      // This isolated profile has no key. An installed Gemini stays closed, including old CLI versions.
       assert.match(await page.getByTestId('ai-readiness').innerText(), closed ? /Windows에서는 아직 Gemini 단독/
+        : found && gemini ? /API 키로만 연결|Antigravity CLI 1\.4\.12 이상/
         : found ? /한 AI가 바로 설명하고 다른 AI의 대조는 없어요/ : /단독에는 .+ 필요해요/);
-      assert.equal(await page.getByRole('checkbox').isEnabled(), !closed && found);
+      assert.equal(await page.getByRole('checkbox').isEnabled(), !closed && !gemini && found);
       await checkConsentDisclosure(page.locator('.ai-panel'), `선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·질문·최근 답변을 ${recipient}에 보내는 데 동의합니다. 다른 파일은 더 읽지 않습니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.`);
       assert.equal(await page.getByRole('button', { name: '질문 보내기', exact: true }).isDisabled(), true);
     }
@@ -4146,16 +4248,16 @@ try {
     await app.evaluate(() => { globalThis.testFakeAiBehavior = 'fail'; });
     await openAiPanel();
     const panel = page.locator('.ai-panel');
-    await panel.getByRole('textbox').fill('실패할 질문');
+    await panel.getByRole('textbox', { name: '선택한 코드에 질문' }).fill('실패할 질문');
     await panel.getByRole('checkbox').check();
     await panel.getByRole('button', { name: '질문 보내기', exact: true }).click();
     await panel.getByRole('alert').filter({ hasText: '가짜 질문 실패' }).waitFor();
     await panel.getByRole('button', { name: '질문 칸 닫기', exact: true }).click();
-    assert.equal(await panel.getByRole('textbox').isVisible(), false);
+    assert.equal(await panel.getByRole('textbox', { name: '선택한 코드에 질문' }).isVisible(), false);
     await openAiPanel();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await panel.getByRole('alert').filter({ hasText: '가짜 질문 실패' }).waitFor();
-    assert.equal(await panel.getByRole('textbox').isVisible(), true);
+    assert.equal(await panel.getByRole('textbox', { name: '선택한 코드에 질문' }).isVisible(), true);
     await app.evaluate(() => { globalThis.testFakeAiBehavior = 'early'; });
   });
   await check('FAKE AI IPC: a question finishes while the panel is hidden and survives reopening', async () => {
@@ -5573,7 +5675,7 @@ try {
     await panel.getByRole('combobox', { name: 'AI 사용 방식' }).selectOption('codex');
     await panel.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).click();
     await until(async () => (await page.getByTestId('ai-readiness').innerText()).includes('테스트 전용'));
-    await panel.getByRole('textbox').fill('파일 설명을 열어도 남을 질문');
+    await panel.getByRole('textbox', { name: '선택한 코드에 질문' }).fill('파일 설명을 열어도 남을 질문');
     await panel.getByRole('checkbox').check();
     await panel.getByRole('button', { name: '질문 보내기', exact: true }).click();
     await page.getByText('가짜 설명: 파일 설명을 열어도 남을 질문', { exact: true }).waitFor();
@@ -5590,11 +5692,11 @@ try {
     for (const running of [false, true]) {
       if (running) {
         await app.evaluate(() => { globalThis.testFakeAiBehavior = 'hold'; globalThis.testFakeAiLate = null; });
-        await panel.getByRole('textbox').fill('안내를 보는 동안 진행 중인 질문');
+        await panel.getByRole('textbox', { name: '선택한 코드에 질문' }).fill('안내를 보는 동안 진행 중인 질문');
         await panel.getByRole('button', { name: '질문 보내기', exact: true }).click();
         await until(() => app.evaluate(() => typeof globalThis.testFakeAiLate === 'function'));
       }
-      const draft = await panel.getByRole('textbox').inputValue();
+      const draft = await panel.getByRole('textbox', { name: '선택한 코드에 질문' }).inputValue();
       const reads = await app.evaluate(() => globalThis.testGuideReadCount);
       const answers = await page.getByRole('region', { name: 'AI 설명' }).allInnerTexts();
       const cancelled = await app.evaluate(() => globalThis.testFakeAiCancelled.length);
@@ -5606,7 +5708,7 @@ try {
         if (basis) await guide.getByRole('button', { name: /^근거:/ }).click();
         assert.equal(await page.locator('.symbols__item[aria-pressed="true"]').innerText(), selected);
         assert.equal(await page.getByTestId('question-scope').innerText(), scope);
-        assert.equal(await panel.getByRole('textbox').inputValue(), draft);
+        assert.equal(await panel.getByRole('textbox', { name: '선택한 코드에 질문' }).inputValue(), draft);
         assert.deepEqual(await page.getByRole('region', { name: 'AI 설명' }).allInnerTexts(), answers);
         assert.equal(await app.evaluate(() => globalThis.testGuideReadCount), reads);
         assert.equal(await app.evaluate(() => globalThis.testFakeAiCancelled.length), cancelled);

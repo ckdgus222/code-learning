@@ -209,3 +209,5 @@ export type LearningEvent =
   | { kind: 'file-explanation-completed'; jobId: string; projectId: string; result: FileExplanationResult }
   | { kind: 'feature-guide-completed'; jobId: string; projectId: string; result: FeatureGuideResult }
   | { kind: 'failed'; jobId: string; projectId: string; error: { code: import('./contracts').AppErrorCode; message: string } };
+
+export const PROVIDER_DATA_NOTICE = '보낸 자료는 그 회사의 약관과 계정 설정에 따라 처리돼요(학습에 쓰일 수 있어요).';

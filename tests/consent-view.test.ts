@@ -1,4 +1,5 @@
 import React from 'react';
+import { PROVIDER_DATA_NOTICE } from '../src/shared/ai';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { AiPanel } from '../src/renderer/ai-panel';
@@ -14,7 +15,7 @@ function checkDisclosure(html: string, expectedText: string, ready: boolean) {
   const descriptionId = checkbox?.match(/aria-describedby="([^"]+)"/)?.[1];
   expect(descriptionId).toBeTruthy();
   expect(html).toContain('/>보낼 자료에 동의</label><details class="consent-details"><summary>무엇을 보내나요?</summary>');
-  expect(html).toContain(`<p id="${descriptionId}">${expectedText}</p></details>`);
+  expect(html).toContain(`<p id="${descriptionId}">${expectedText} ${PROVIDER_DATA_NOTICE}</p></details>`);
 }
 
 describe('folded AI consent disclosures', () => {

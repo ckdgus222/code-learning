@@ -9,7 +9,7 @@ export interface PlanCompareFreshness {
 }
 const watchError = '파일 감시가 멈춰 바뀐 코드를 알 수 없어요. 폴더를 다시 열어 주세요';
 
-export function usePlanCompare(project: { id: string } | null) {
+export function usePlanCompare(project: { id: string } | null, keyBusy: () => boolean = () => false) {
   const projectId = project?.id ?? null;
   const [document, setDocument] = useState<PlanDocument | null>(null);
   const [selection, updateSelection] = useState<PlanSelection | null>(null);
@@ -157,7 +157,7 @@ export function usePlanCompare(project: { id: string } | null) {
     updateSelection(next); clearResult(); setConsent(false); setError('');
   }
   async function start(mode: LearningMode) {
-    if (!projectId || !document || !selection || !consent || job.current.starting || job.current.id) return;
+    if (keyBusy() || !projectId || !document || !selection || !consent || job.current.starting || job.current.id) return;
     const current = ++runRequest.current;
     job.current = { id: null, starting: true, queued: [] };
     setRunning(true); setPhase(null); clearResult(); setConsent(false); setError('');

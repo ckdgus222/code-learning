@@ -1,8 +1,8 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { savedDate } from './overview';
 import { Icon } from './icons';
-import type { Evidence, SourceView } from '../shared/contracts';
-import { GEMINI_MODEL, type ConnectionReport, type LearningEvent, type LearningMode, type LearningPhase, type LearningResult } from '../shared/ai';
+import type { Evidence, GeminiKeyStatus, SourceView } from '../shared/contracts';
+import { GEMINI_MODEL, PROVIDER_DATA_NOTICE, type ConnectionReport, type LearningEvent, type LearningMode, type LearningPhase, type LearningResult } from '../shared/ai';
 
 const modes: { id: LearningMode; label: string }[] = [
   { id: 'codex', label: 'Codex 단독 · 대조 없음' },
@@ -60,7 +60,9 @@ export function SourceButtons({ ids, sources, selectionId, stale, label, onEvide
   </li>)}</ul>;
 }
 
-export function AiPanel({ open, onClose, projectId, openedAt = 0, onSavedEvidence, evidence, relativePath, stale, draft, connections, checking, otherRunning, mode, onMode, onRunning, onInspect, onEnsure, onEvidence }: {
+export function AiPanel({ keyBusy = false, geminiKeyStatus = null, onChangeGeminiKey, open, onClose, projectId, openedAt = 0, onSavedEvidence, evidence, relativePath, stale, draft, connections, checking, otherRunning, mode, onMode, onRunning, onInspect, onEnsure, onEvidence }: {
+  keyBusy?: boolean; geminiKeyStatus?: GeminiKeyStatus | null;
+  onChangeGeminiKey?(key: string | null): Promise<string | null>;
   open: boolean; onClose(): void;
   openedAt?: number; onSavedEvidence?(value: { source: SourceView; evidence: Evidence }): void;
   projectId: string; evidence: Evidence | null; relativePath: string; stale: boolean;
@@ -79,6 +81,8 @@ export function AiPanel({ open, onClose, projectId, openedAt = 0, onSavedEvidenc
   onEnsure(): Promise<string | null>;
   onEvidence(evidence: Evidence): void;
 }) {
+  const [keyInput, setKeyInput] = useState('');
+  const onMac = typeof navigator !== 'undefined' && /Mac/.test(navigator.userAgent);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [question, setQuestion] = useState('');
   const [consent, setConsent] = useState(false);
@@ -279,7 +283,7 @@ export function AiPanel({ open, onClose, projectId, openedAt = 0, onSavedEvidenc
   const ensure = () => check(onEnsure);
   const inspect = () => check(onInspect);
   async function ask() {
-    if (checking || !evidence || stale || !consent || !ready?.ready || running || otherRunning || !question.trim()) return;
+    if (keyBusy || checking || !evidence || stale || !consent || !ready?.ready || running || otherRunning || !question.trim()) return;
     const token = ++sequence.current;
     starting.current = true; queued.current = [];
     setRunning(true); setError(''); setStatus('AI 작업 시작 중');
@@ -311,8 +315,17 @@ export function AiPanel({ open, onClose, projectId, openedAt = 0, onSavedEvidenc
     }
   }
 
+  async function changeKey(clear: boolean) {
+    if (!onChangeGeminiKey || keyBusy || checking || running || otherRunning) return;
+    setCheckError('');
+    try {
+      const message = await onChangeGeminiKey(clear ? null : keyInput);
+      if (message) setCheckError(message);
+    } finally { setKeyInput(''); }
+  }
+
   const blockedReason = sendBlockedReason({
-    checked: connections !== null, checking, ready: ready?.ready ?? false, readyReason: ready?.reason ?? null,
+    checked: connections !== null, checking: checking || keyBusy, ready: ready?.ready ?? false, readyReason: ready?.reason ?? null,
     hasEvidence: evidence !== null, stale, running, otherRunning, question, consent,
   });
   return <div className="ai-panel">
@@ -331,13 +344,26 @@ export function AiPanel({ open, onClose, projectId, openedAt = 0, onSavedEvidenc
       {running && <button className="btn" onClick={cancel}>AI 작업 취소</button>}
       <div className="ai-settings" hidden={!settingsOpen}>
         <label>AI 사용 방식
-          <select aria-label="AI 사용 방식" value={mode} disabled={running || otherRunning} onChange={event => onMode(event.target.value as LearningMode)}>
+          <select aria-label="AI 사용 방식" value={mode} disabled={keyBusy || running || otherRunning} onChange={event => onMode(event.target.value as LearningMode)}>
             {modes.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
           </select>
         </label>
-        <p className="hint">이 컴퓨터에 설치된 공식 프로그램을 실행합니다. 답변 생성은 각 AI 제공자 서버에서 이뤄집니다.</p>
+        {onMac && <fieldset aria-label="Gemini API 키">
+          <legend>Gemini API 키</legend>
+          <input aria-label="Gemini API 키" type="password" autoComplete="off" spellCheck={false} value={keyInput}
+            disabled={!geminiKeyStatus?.canEncrypt || keyBusy || checking || running || otherRunning}
+            onChange={event => setKeyInput(event.target.value)} />
+          <button className="btn" disabled={!geminiKeyStatus?.canEncrypt || !keyInput.trim() || keyBusy || checking || running || otherRunning}
+            onClick={() => void changeKey(false)}>저장</button>
+          <button className="btn" disabled={!geminiKeyStatus?.saved || keyBusy || checking || running || otherRunning}
+            onClick={() => void changeKey(true)}>지우기</button>
+          <p role="status">{!geminiKeyStatus ? '키 상태 확인 중…' : !geminiKeyStatus.canEncrypt ? '이 컴퓨터에서 키를 안전하게 저장할 수 없어요'
+            : !geminiKeyStatus.saved ? '없음' : geminiKeyStatus.readable ? '저장됨' : '저장된 키를 읽지 못했어요. 다시 넣어 주세요.'}</p>
+          <p className="hint">Google AI Studio에서 API 키를 만들 수 있어요. 키는 이 컴퓨터에 암호화해 저장하고 Gemini 실행에만 넘겨요.</p>
+        </fieldset>}
+        <p className="hint">이 컴퓨터에 설치된 공식 프로그램을 실행합니다. 답변 생성은 각 AI 제공자 서버에서 이뤄지고, {PROVIDER_DATA_NOTICE}</p>
         <p className="hint">원본 파일은 수정·생성·삭제하지 않습니다. 민감 파일·제외 파일·폴더 밖 파일은 읽기 대상에서 제외합니다.</p>
-        <button className="btn" disabled={checking || running || otherRunning} onClick={inspect}>{checking ? '설치 확인 중…' : '로컬 AI 설치 확인'}</button>
+        <button className="btn" disabled={keyBusy || checking || running || otherRunning} onClick={inspect}>{checking ? '설치 확인 중…' : '로컬 AI 설치 확인'}</button>
         {connections && <ul aria-label="로컬 AI 설치 상태">
           {connections.providers.map(item => <li key={item.provider} className="fact fact--muted">
             <b>{names[item.provider]} · {item.installation === 'found' ? `설치 확인 (${item.version})` : item.installation === 'missing' ? '찾지 못함' : '실행 확인 실패'}</b>
@@ -365,7 +391,7 @@ export function AiPanel({ open, onClose, projectId, openedAt = 0, onSavedEvidenc
         <details className="consent-details">
           <summary>무엇을 보내나요?</summary>
           <p id={consentDescriptionId}>선택한 코드와 그 파일 전체(크기 제한 안)·프로젝트 파일 목록·질문·최근 답변을 {recipients[mode]}에 보내는 데 동의합니다.
-            다른 파일은 더 읽지 않습니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.</p>
+            다른 파일은 더 읽지 않습니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다. {PROVIDER_DATA_NOTICE}</p>
         </details>
         <div className="ai-actions">
           <button className="btn btn--primary" onClick={ask} aria-describedby={blockedReason ? sendBlockedId : undefined}

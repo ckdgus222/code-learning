@@ -115,7 +115,7 @@ vi.mock('node:child_process', async original => {
 const appData = path.join(os.homedir(), 'Library/Application Support/Code Learning');
 const appAgyHome = path.join(appData, 'agy-home');
 const userGemini = path.join(os.homedir(), '.gemini');
-const runtime = new LocalAiRuntime(path.join(appData, 'codex-home'), appAgyHome);
+const runtime = new LocalAiRuntime(path.join(appData, 'codex-home'), appAgyHome, process.platform, async () => process.env.GEMINI_API_KEY ?? null);
 const runStage = (request: StageRequest): Promise<StageResponse> =>
   (runtime as unknown as { executeVerifiedStage(request: StageRequest): Promise<StageResponse> }).executeVerifiedStage(request);
 const evidenceId = randomUUID();
@@ -141,6 +141,7 @@ let started = 0;
 
 /** Runs a check and records it as passed only after its own assertions have passed too. */
 async function record<T>(name: string, action: () => Promise<T>, summarize: (value: T) => Record<string, unknown>, verify: (value: T) => void) {
+  if (!process.env.GEMINI_API_KEY) throw new Error('Set GEMINI_API_KEY before running Gemini account checks.');
   const begin = Date.now();
   let summary: Record<string, unknown> = {};
   try {
@@ -403,12 +404,11 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
         env: { HOME: probe.home }, signal: new AbortController().signal });
       const version = versionOutput.stdout.match(/(?:^|\s)(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)(?:\s|$)/)?.[1] ?? null;
       // A runtime with temporary homes from the start: the app runtime above is never used here.
-      const localRuntime = new LocalAiRuntime(probe.codexHome, probe.home);
-      (localRuntime as unknown as { launches: Map<string, typeof launch> }).launches.set('antigravity', launch);
+      const localRuntime = new LocalAiRuntime(probe.codexHome, probe.home, process.platform, async () => 'code-learning-fake-key');
+      await localRuntime.checkConnections();
       output = '';
       stdoutText = '';
-      const appOutcome = await (localRuntime as unknown as { executeVerifiedStage(request: StageRequest): Promise<StageResponse> })
-        .executeVerifiedStage({ ...stage(new AbortController().signal), prompt: 'Return the JSON object for this check.' })
+      const appOutcome = await localRuntime.run({ ...stage(new AbortController().signal), prompt: 'Return the JSON object for this check.' })
         .then(response => ({ answered: explanationSchema.safeParse(response.value).success, reportedModel: response.reportedModel }),
           (error: { code?: string }) => ({ answered: false, code: error.code }));
       const events = agyEvents(stdoutText);
@@ -477,13 +477,11 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
       probe.forced.push(...calls);
       inside = fixture.inside;
       localProbe = probe;
-      const launch = await findAgyLaunch();
-      const localRuntime = new LocalAiRuntime(probe.codexHome, probe.home);
-      (localRuntime as unknown as { launches: Map<string, typeof launch> }).launches.set('antigravity', launch);
+      const localRuntime = new LocalAiRuntime(probe.codexHome, probe.home, process.platform, async () => 'code-learning-fake-key');
+      await localRuntime.checkConnections();
       output = '';
       stdoutText = '';
-      const appOutcome = await (localRuntime as unknown as { executeVerifiedStage(request: StageRequest): Promise<StageResponse> })
-        .executeVerifiedStage({ ...stage(new AbortController().signal), prompt: 'Return the JSON object for this check.' })
+      const appOutcome = await localRuntime.run({ ...stage(new AbortController().signal), prompt: 'Return the JSON object for this check.' })
         .then(() => 'answered', (error: { code?: string }) => error.code);
       const events = agyEvents(stdoutText);
       const lastResult = events.filter(event => event.event === 'result').map(bodyOf).at(-1);

@@ -13,6 +13,7 @@ const host = vi.hoisted(() => ({
     session: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, on() {} } },
 }));
 vi.mock('electron', () => ({
+  safeStorage: { isEncryptionAvailable: () => false },
   app: { getPath: () => host.profile, getVersion: () => '1.0.0', whenReady: () => ({ then: (start: () => Promise<void>) => {
     host.start = start;
     return Promise.resolve();

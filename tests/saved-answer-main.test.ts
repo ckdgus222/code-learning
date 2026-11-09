@@ -16,6 +16,7 @@ const host = vi.hoisted(() => ({
     session: { setPermissionRequestHandler: () => {}, setPermissionCheckHandler: () => {}, on: () => {} } },
 }));
 vi.mock('electron', () => ({
+  safeStorage: { isEncryptionAvailable: () => false },
   app: { getPath: () => host.profile, whenReady: () => Promise.resolve(), on: () => {}, exit: vi.fn() },
   BrowserWindow: class { webContents = host.contents; on() {} loadURL() {} },
   dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: [host.folder] }), showErrorBox: vi.fn() },

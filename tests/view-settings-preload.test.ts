@@ -63,3 +63,16 @@ it('sets the attribute as soon as the HTML root is inserted, without waiting for
   expect(document.documentElement.dataset.codeColors).toBe('contrast');
   expect(disconnect).toHaveBeenCalledOnce();
 });
+
+it('exposes only the three Gemini key operations without reading any key', async () => {
+  vi.resetModules();
+  vi.stubGlobal('document', { documentElement: { dataset: {} } });
+  await import('../src/preload/preload');
+  const api = bridge.expose.mock.calls[0][1] as LearningApi;
+  const input = { key: 'fake-gemini-key-for-tests-only' };
+  expect(bridge.invoke).not.toHaveBeenCalled();
+  await api.geminiKeyStatus();
+  await api.saveGeminiKey(input);
+  await api.clearGeminiKey();
+  expect(bridge.invoke.mock.calls).toEqual([[channels.geminiKeyStatus], [channels.saveGeminiKey, input], [channels.clearGeminiKey]]);
+});

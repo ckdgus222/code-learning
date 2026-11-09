@@ -76,7 +76,8 @@ describe('Plan comparison through the app runtime (real account, non-secret fixt
       };
       const context = new ProjectAiContext(root, project);
       const source = { projectId: project.id, root, context, map: async () => map, restoreMap: async () => map, cancelMap() {} };
-      const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
+      if (mode === 'antigravity' && !process.env.GEMINI_API_KEY) throw new Error('Set GEMINI_API_KEY before running Gemini account checks.');
+      const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => process.env.GEMINI_API_KEY ?? null);
       const connections = await runtime.checkConnections();
       console.log(`[${mode}] readiness:`, connections.modes.find(item => item.mode === mode));
       const events: LearningEvent[] = [];

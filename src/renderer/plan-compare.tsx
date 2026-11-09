@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { GEMINI_MODEL, type LearningMode, type LearningPhase, type ConnectionReport } from '../shared/ai';
+import { GEMINI_MODEL, PROVIDER_DATA_NOTICE, type LearningMode, type LearningPhase, type ConnectionReport } from '../shared/ai';
 import { PLAN_SEND_LIMIT, selectionBytes } from '../shared/plan-compare';
 import { savedDate } from './overview';
 import { PlanCompareResultView, modes } from './plan-compare-result';
@@ -113,7 +113,7 @@ export function PlanCompare({ state, locked, mode, checking, readiness, onInspec
           <details><summary>무엇을 보내나요?</summary>
             <p>고른 기획 범위(최대 48 KiB), 파일 목록과 지도 연결을 {mode === 'codex' ? 'Codex' : mode === 'antigravity' ? 'Gemini(Antigravity)' : 'Claude Code'}에 보내요.
               {' 같은 AI가 고른 코드 최대 8개·파일당 32 KiB·합계 80 KiB를 보내요.'}
-              비밀값처럼 보이는 내용은 가린 뒤 보내지만 모든 비밀값을 찾는다고 보장하지는 않아요.</p>
+              비밀값처럼 보이는 내용은 가린 뒤 보내지만 모든 비밀값을 찾는다고 보장하지는 않아요. {PROVIDER_DATA_NOTICE}</p>
           </details>
           <button className="btn btn--primary" disabled={locked || picking || state.running || checking || !state.consent || !readiness?.ready}
             onClick={() => void state.start(mode)}>대조하기</button>

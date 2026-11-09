@@ -82,7 +82,8 @@ function FileTreeList({ folder, expanded, searching, currentFileId, busy, onTogg
 
 function App() {
   const [project, setProject] = useState<ProjectView | null>(null);
-  const planCompare = usePlanCompare(project);
+  const aiKeyPending = useRef(false);
+  const planCompare = usePlanCompare(project, () => aiKeyPending.current);
   const [source, setSource] = useState<SourceView | null>(null);
   const [evidence, setReaderEvidence] = useState<Evidence | null>(null);
   const [questionEvidence, setQuestionEvidence] = useState<Evidence | null>(null);
@@ -149,6 +150,7 @@ function App() {
   }), [project?.id]);
 
   const ai = useAiJobs({ project, source, symbol, revision, setError, setNotice, planCompareRunning: planCompare.running });
+  aiKeyPending.current = ai.keyBusy;
   // Coming back to the overview puts the focus on the card the topic came from (plan U1).
   useEffect(() => {
     if (view !== 'overview' || !focusAnchor) return;
@@ -683,7 +685,7 @@ function App() {
               </section>}
               <FeatureChooser key={project.files[0]?.id ?? project.id} project={project} state={features}
                 mode={ai.mode} running={planCompare.running || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'}
-                checking={ai.checking} connections={ai.connections} onInspect={ai.inspectConnections} onEnsure={ai.ensureConnections} onRunning={ai.setFeatureGuideRunning}
+                checking={ai.checking || ai.keyBusy} connections={ai.connections} onInspect={ai.inspectConnections} onEnsure={ai.ensureConnections} onRunning={ai.setFeatureGuideRunning}
                 revision={revision.current} locked={busy} onFollow={(index, start) => void followFeatureRoute(index, start)}
                 starts={
                   <section className="card overview-starts" aria-labelledby="overview-start">
@@ -709,7 +711,7 @@ function App() {
               {view === 'overview' && <React.Fragment key={ai.overviewCard}>
                 <OverviewAi project={project} mode={ai.mode} state={ai.overview} locked={busy || planCompare.running || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning}
                   stale={ai.overview?.status === 'done' && (ai.overview.revision !== revision.current || ai.overview.changed)}
-                  readiness={ai.connections?.modes.find(item => item.mode === ai.mode) ?? null} checking={ai.checking}
+                  readiness={ai.connections?.modes.find(item => item.mode === ai.mode) ?? null} checking={ai.checking || ai.keyBusy}
                   revealAnchor={learning.topic?.anchor ?? null} topicName={learning.topic ? learning.topic.name.trim() || learning.topic.original : null} onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
                   onStart={startFileId => void ai.startOverview(startFileId)} onCancel={() => void ai.cancelOverview()} onDelete={() => void ai.deleteOverview()}
                   onEvidence={next => { setView('code'); void showEvidence(next, null, 'overview'); }}
@@ -735,7 +737,7 @@ function App() {
           </div>
         </div>
 
-        {view === 'plan' && <PlanCompare state={planCompare} mode={ai.mode} checking={ai.checking}
+        {view === 'plan' && <PlanCompare state={planCompare} mode={ai.mode} checking={ai.checking || ai.keyBusy}
           onFile={fileId => { setView('code'); void readFile(fileId); }} onImport={site => void showImport(site)}
           readiness={ai.connections?.modes.find(item => item.mode === ai.mode) ?? null}
           onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
@@ -939,12 +941,12 @@ function App() {
       </main>
 
       <aside id="ai-question-panel" className="panel" aria-label="AI 질문" hidden={!panelOpen}>
-        <AiPanel key={project.id} open={panelOpen} onClose={() => setPanelOpen(false)} projectId={project.id} openedAt={openedAt.current}
+        <AiPanel keyBusy={ai.keyBusy} geminiKeyStatus={ai.geminiKeyStatus} onChangeGeminiKey={ai.changeGeminiKey} key={project.id} open={panelOpen} onClose={() => setPanelOpen(false)} projectId={project.id} openedAt={openedAt.current}
           onSavedEvidence={value => {
             request.current++; setBusy(false); setError(''); setNotice(''); setView('code');
             setSource(value.source); setReaderEvidence(value.evidence); selectSymbol(null); selectStep(null);
           }} evidence={questionEvidence} stale={stale} draft={draft}
-          connections={ai.connections} checking={ai.checking} otherRunning={planCompare.running || ai.overview?.status === 'running' || ai.fileExplanationRunning || ai.featureGuideRunning} onInspect={ai.inspectConnections} onEnsure={ai.ensureConnections}
+          connections={ai.connections} checking={ai.checking || ai.keyBusy} otherRunning={planCompare.running || ai.overview?.status === 'running' || ai.fileExplanationRunning || ai.featureGuideRunning} onInspect={ai.inspectConnections} onEnsure={ai.ensureConnections}
           mode={ai.mode} onMode={ai.setMode} onRunning={ai.setQuestionRunning}
           relativePath={project.files.find(file => file.id === questionEvidence?.fileId)?.relativePath ?? ''}
           onEvidence={next => { setView('code'); void showEvidence(next, null, 'answer'); }} />
@@ -957,7 +959,7 @@ function App() {
           <FileExplanationCard source={source} entry={ai.fileExplanation}
             state={ai.sourceExplanationState} stale={ai.fileExplanationStale}
             mode={ai.mode} locked={busy} running={planCompare.running || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'}
-            checking={ai.checking} connections={ai.connections}
+            checking={ai.checking || ai.keyBusy} connections={ai.connections}
             onEnsure={() => { void ai.ensureConnections().then(message => { if (message) setError(message); }); }}
             onInspect={() => { void ai.inspectConnections().then(message => { if (message) setError(message); }); }}
             onStart={() => void ai.startFileExplanation()} onCancel={() => void ai.cancelFileExplanation()}

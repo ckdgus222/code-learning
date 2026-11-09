@@ -96,7 +96,7 @@ vi.mock('node:child_process', async original => {
 // `CODEX_HOME="<this folder>" codex login`. The user's global ~/.codex is never used.
 const appCodexHome = path.join(os.homedir(), 'Library/Application Support/Code Learning/codex-home');
 const appAgyHome = path.join(os.homedir(), 'Library/Application Support/Code Learning/agy-home');
-const runtime = new LocalAiRuntime(appCodexHome, appAgyHome);
+const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => process.env.GEMINI_API_KEY ?? null);
 const runStage = (request: StageRequest, on = runtime): Promise<StageResponse> =>
   (on as unknown as { executeVerifiedStage(request: StageRequest): Promise<StageResponse> }).executeVerifiedStage(request);
 const evidenceId = randomUUID();
@@ -230,6 +230,7 @@ describe('Codex connection through the app runtime (real account, non-secret fix
   // each). Run them after C01, which finds the CLIs. Only the outcome, phases, models, time and whether
   // every cited evidence resolves are recorded, never the text.
   async function askOnce(mode: LearningMode, key: string, stages: [ModelRun['stage'], ModelRun['provider']][]) {
+    if (mode === 'antigravity' && !process.env.GEMINI_API_KEY) throw new Error('Set GEMINI_API_KEY before running Gemini account checks.');
     stderrTail = '';
     stdoutText = '';
     const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'worker-live-')));

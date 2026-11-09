@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { savedDate } from './overview';
-import { GEMINI_MODEL, type ConnectionReport, type FeatureGuideResult, type LearningEvent, type ResultMode, type LearningMode, type LearningPhase } from '../shared/ai';
+import { GEMINI_MODEL, PROVIDER_DATA_NOTICE, type ConnectionReport, type FeatureGuideResult, type LearningEvent, type ResultMode, type LearningMode, type LearningPhase } from '../shared/ai';
 
 const modes: Record<ResultMode, string> = {
   'local-worker': '로컬 워커(이전 방식)', codex: 'Codex 단독 · 대조 없음',
@@ -90,7 +90,7 @@ export function FeatureGuideCard({ projectId, routesId, result, mode, locked, ru
       <details className="consent-details"><summary>무엇을 보내나요?</summary>
         <p id={descriptionId}>프로젝트 이름, 앱이 찾은 서버 주소·요청·화면 목록(파일 경로와 함수 이름 포함)을
           {mode === 'codex' ? ' Codex' : mode === 'antigravity' ? ' Gemini(Antigravity)' : ' Claude Code'}에 보내는 데 동의합니다.
-          코드 원문은 보내지 않습니다. 비밀값처럼 보이는 부분은 가리지만 모두 찾는다고 보장하지 않습니다.</p>
+          코드 원문은 보내지 않습니다. 비밀값처럼 보이는 부분은 가리지만 모두 찾는다고 보장하지 않습니다. {PROVIDER_DATA_NOTICE}</p>
       </details>
       <button className="btn btn--primary" disabled={!consent || !ready?.ready || locked || running || deleting || checking} onClick={() => void start()}>동의하고 정리하기</button>
     </div>}

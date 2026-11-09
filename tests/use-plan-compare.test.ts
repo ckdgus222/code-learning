@@ -40,9 +40,9 @@ let api: {
   startPlanCompare: ReturnType<typeof vi.fn<LearningApi['startPlanCompare']>>;
   cancelExplanation: ReturnType<typeof vi.fn<LearningApi['cancelExplanation']>>;
 };
-function render() {
+function render(keyBusy: () => boolean = () => false) {
   hooks.stateIndex = 0; hooks.refIndex = 0; hooks.effects = [];
-  return usePlanCompare(project);
+  return usePlanCompare(project, keyBusy);
 }
 async function loaded(reasons: string[] = []) {
   load({ ok: true, value: { result: saved, savedAt, reasons } });
@@ -179,4 +179,16 @@ it('reports a rejected delete request and retains the result', async () => {
   await (await loaded()).remove();
   expect(render().result).toBe(saved);
   expect(render().error).toBe('대조 결과를 지우지 못했어요.');
+});
+
+it('refuses plan comparison while a shared key change is pending', async () => {
+  await render().pick();
+  render().setConsent(true);
+  let busy = true;
+  const state = render(() => busy);
+  await state.start('antigravity');
+  expect(api.startPlanCompare).not.toHaveBeenCalled();
+  busy = false;
+  await state.start('antigravity');
+  expect(api.startPlanCompare).toHaveBeenCalledTimes(1);
 });

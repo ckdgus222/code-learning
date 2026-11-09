@@ -1,3 +1,4 @@
+import { PROVIDER_DATA_NOTICE } from '../shared/ai';
 import React, { useEffect, useId, useState } from 'react';
 import type { Evidence, LearningSpot, ProjectFile, ProjectView, SavedSpot } from '../shared/contracts';
 import type { LearningMode, LearningPhase, OverviewFeature, OverviewResult } from '../shared/ai';
@@ -183,10 +184,10 @@ export function OverviewAi({ project, mode, state, stale, locked, readiness, che
         aria-describedby={consentDescriptionId} onChange={event => setConsent(event.target.checked)} />보낼 자료에 동의</label>
       <details className="consent-details">
         <summary>무엇을 보내나요?</summary>
-        <p id={consentDescriptionId}>프로젝트 파일 목록, 고른 시작 파일, {picker}가 고른 관련 파일(최대 4개)을 {recipients[mode]}에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다.</p>
+        <p id={consentDescriptionId}>프로젝트 파일 목록, 고른 시작 파일, {picker}가 고른 관련 파일(최대 4개)을 {recipients[mode]}에 보내는 데 동의합니다. 비밀값처럼 보이는 부분은 가린 뒤 보내지만 모두 찾는다고 보장하지는 않습니다. {PROVIDER_DATA_NOTICE}</p>
       </details>
       <div className="ai-actions">
-        <button className="btn btn--primary" disabled={!readiness?.ready || !consent || running || locked}
+        <button className="btn btn--primary" disabled={!readiness?.ready || !consent || running || locked || checking}
           onClick={() => { setConsent(false); onStart(startFileId || null); }}>{state?.status === 'done' ? '개요 다시 만들기' : '개요 만들기'}</button>
         {running && <button className="btn" onClick={onCancel}>개요 작업 취소</button>}
       </div>

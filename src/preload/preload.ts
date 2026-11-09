@@ -17,6 +17,9 @@ if (document.documentElement) {
 }
 
 const api: LearningApi = {
+  geminiKeyStatus: () => ipcRenderer.invoke(channels.geminiKeyStatus),
+  saveGeminiKey: input => ipcRenderer.invoke(channels.saveGeminiKey, input),
+  clearGeminiKey: () => ipcRenderer.invoke(channels.clearGeminiKey),
   checkForUpdate: () => ipcRenderer.invoke(channels.checkForUpdate),
   openReleasePage: () => ipcRenderer.invoke(channels.openReleasePage),
   getViewSettings: () => ipcRenderer.invoke(channels.getViewSettings),

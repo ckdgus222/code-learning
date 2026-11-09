@@ -147,11 +147,11 @@ Windows에서는 macOS의 접근 제한 장치 없이 실행합니다. 도구 �
 **1. CLI를 설치합니다.**
 
 - Codex: [공식 안내](https://developers.openai.com/codex/cli/)대로 설치하고 ChatGPT 계정으로 로그인합니다.
-- Antigravity: [공식 안내](https://antigravity.google/docs/getting-started)의 CLI 항목에서 `agy`를 설치합니다. 앱에서는 Gemini 모델이 3.8 Flash · High(`gemini-3.8-flash-high`)로 고정됩니다.
+- Antigravity: [공식 안내](https://antigravity.google/docs/getting-started)의 CLI 항목에서 `agy` 1.4.12 이상을 설치합니다. 앱에서는 Gemini 모델이 3.8 Flash · High(`gemini-3.8-flash-high`)로 고정됩니다.
 
 앱은 `~/.local/bin`, `~/.npm-global/bin`, `/opt/homebrew/bin`, `/usr/local/bin`에서만 실행 파일을 찾습니다.
 
-**2. 앱 전용 폴더를 만들고 한 번 로그인합니다.** 개인 AI 설정과 분리되어 있어서, 터미널에서 이미 로그인했어도 연결되지 않을 수 있습니다.
+**2. Codex는 앱 전용 폴더에서 로그인하고, Gemini는 API 키를 저장합니다.** Codex는 개인 AI 설정과 분리되어 있어서, 터미널에서 이미 로그인했어도 연결되지 않을 수 있습니다.
 
 Codex:
 
@@ -160,14 +160,9 @@ mkdir -p "$HOME/Library/Application Support/Code Learning/codex-home"
 CODEX_HOME="$HOME/Library/Application Support/Code Learning/codex-home" codex login
 ```
 
-Antigravity(로그인을 마치면 종료하세요):
+Gemini: Google AI Studio에서 API 키를 만든 뒤 앱 → **질문 → 설정 → Gemini API 키**에 붙여 넣고 **저장**을 누릅니다. 키는 이 컴퓨터에 암호화해 저장하며 Gemini 실행에만 넘깁니다.
 
-```sh
-mkdir -p "$HOME/Library/Application Support/Code Learning/agy-home"
-HOME="$HOME/Library/Application Support/Code Learning/agy-home" agy
-```
-
-이 HOME 방식은 Antigravity의 공식 설정 기능이 아니라서, CLI 업데이트 후 동작이 바뀔 수 있습니다.
+개인 Google 계정 로그인으로 다른 앱에서 Antigravity를 쓰면 Google 약관상 계정이 정지될 수 있어 API 키만 사용합니다. 무료 등급 키로 보낸 코드와 질문은 Google이 제품 개선에 쓸 수 있습니다. 기존 사용자가 앱 폴더에 남긴 Google 로그인은 더 이상 사용하지 않습니다.
 
 **3. 앱에서 질문합니다.** 위쪽 **질문**을 누르면 설치 확인이 시작되고, 질문 칸의 **설정**에서 방식을 고릅니다. **코드 읽기**에서 함수나 구문을 고른 뒤 질문을 쓰고, **무엇을 보내나요?**를 확인한 다음 전송에 동의합니다.
 
@@ -199,6 +194,7 @@ $env:CODEX_HOME="$env:APPDATA\Code Learning\codex-home"; codex login
 
 - 프로젝트 파일을 바꾸지 않고, 프로젝트의 코드·설정·스크립트를 실행하지 않습니다.
 - AI를 쓰지 않으면 코드는 밖으로 나가지 않습니다. 사용 기록 수집(텔레메트리)도 없습니다.
+- AI에 보낸 자료는 고른 회사의 약관과 계정 설정에 따라 처리되며 학습에 쓰일 수 있습니다.
 - 새 버전 확인은 앱 설정(톱니 버튼)에서 **새 버전 확인**을 누를 때만 GitHub(`api.github.com`)에 한 번 물어봅니다. 자동 확인, 자동 설치는 없고 프로젝트 정보도 보내지 않습니다.
 - AI에 보내기 전에 흔한 비밀값 형태를 `[MASKED_SECRET]` 등으로 가리지만, 모두 찾아낸다고 보장하지는 않습니다.
 - Codex와 Gemini는 앱 전용 폴더와 임시 폴더에서 실행하고, macOS에서는 접근 제한 장치(`sandbox-exec`) 안에서만 실행합니다. 이 장치를 쓸 수 없으면 실행하지 않습니다. 설치 확인 때 Claude Code의 버전 확인(`--version`)만은 이 장치 없이 실행합니다.

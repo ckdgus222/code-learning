@@ -1,3 +1,4 @@
+import { PROVIDER_DATA_NOTICE } from '../src/shared/ai';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it } from 'vitest';
@@ -20,6 +21,7 @@ function render(text: string | null, selection: PlanSelection | null = null, sav
 
 it.each(['codex', 'antigravity'] as const)('explains code sharing for %s without structure-only labels', mode => {
   const html = render('# 작은 문서', null, null, mode);
+  expect(html).toContain(PROVIDER_DATA_NOTICE);
   expect(html).toContain('같은 AI가 고른 코드 최대 8개·파일당 32 KiB·합계 80 KiB를 보내요.');
   expect(html).not.toContain('코드를 읽지 않은 구조 비교');
   expect(html).not.toContain('코드 원문은 보내지 않아요');

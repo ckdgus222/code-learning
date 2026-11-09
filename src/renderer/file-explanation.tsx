@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useState } from 'react';
 import { savedDate } from './overview';
 import type { SourceView } from '../shared/contracts';
-import { GEMINI_MODEL, type ConnectionReport, type FileExplanationRange, type FileExplanationResult,
+import { GEMINI_MODEL, PROVIDER_DATA_NOTICE, type ConnectionReport, type FileExplanationRange, type FileExplanationResult,
   type ResultMode, type LearningMode, type LearningPhase } from '../shared/ai';
 
 export interface FileExplanationEntry { result: FileExplanationResult; revision: number; savedAt: string | null }
@@ -57,7 +57,7 @@ export function FileExplanationCard({ source, entry, state, stale, mode, locked,
         <summary>무엇을 보내나요?</summary>
         <p id={consentDescriptionId}>이 파일의 경로와 원문(비밀값처럼 보이는 형태는 가림)·덩어리 목록(ID·종류·이름·행 범위)을
           {mode === 'codex' ? ' Codex' : mode === 'antigravity' ? ' Gemini(Antigravity)' : ' Claude Code'}에 보내는 데 동의합니다.
-          다른 파일은 보내지 않습니다. 모든 비밀값을 찾는다고 보장하지는 않습니다.</p>
+          다른 파일은 보내지 않습니다. 모든 비밀값을 찾는다고 보장하지는 않습니다. {PROVIDER_DATA_NOTICE}</p>
       </details>
       <button className="btn btn--primary" disabled={!consent || !ready?.ready || locked || running || checking || tooLarge}
         onClick={() => { setConsent(false); onStart(); }}>동의하고 파일 설명 만들기</button>
