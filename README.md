@@ -212,6 +212,7 @@ $env:CODEX_HOME="$env:APPDATA\Code Learning\codex-home"; codex login
 - 경로 별칭(`@/…` 등)은 일부만 지원합니다. Fastify·Hono·Koa 등은 기능 흐름 분석 대상이 아닙니다.
 - AI 답과 기획 대조는 틀릴 수 있고, 다른 AI가 교차 확인하지도 않습니다. 근거 코드가 바뀌면 다시 확인해야 하며, 오래된 근거로는 이동하지 않습니다.
 - Windows의 AI는 Codex만 되는 실험 기능이고, 실제 Windows PC에서 확인하지 못했습니다.
+- macOS에서 AI는 IPv4로만 연결합니다. IPv6만 쓰는 네트워크에서는 AI가 연결되지 않을 수 있습니다.
 - AI 요청을 취소하거나 시간이 초과돼도, AI 프로그램이 띄운 하위 프로세스가 남을 수 있습니다. Windows에서 `taskkill`이 실패하거나 2초 안에 끝나지 않는 경우, CLI가 하위 프로세스를 분리해 두고 먼저 종료하는 경우입니다.
 - CLI가 업데이트되면 AI 동작과 도구 제한이 달라질 수 있습니다.
 

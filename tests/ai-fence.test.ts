@@ -53,7 +53,8 @@ describe('AI CLI fence profile', () => {
     const rules = [
       '(deny network-outbound (remote unix-socket))',
       '(allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))',
-      '(deny network-outbound (remote ip "localhost:*"))',
+      '(deny network-outbound (remote ip4 "localhost:*"))',
+      '(deny network-outbound (remote ip6 "*:*"))',
       '(deny signal)',
       '(allow signal (target same-sandbox))',
       '(deny lsopen)',
@@ -172,6 +173,8 @@ describe.runIf(process.platform === 'darwin')('AI CLI fence under the real macOS
             localhost: await connect({ host: '127.0.0.1', port: Number(port) }),
             // The same loopback address in IPv6-mapped form must not slip past the localhost rule.
             localhostMapped: await connect({ host: '::ffff:127.0.0.1', port: Number(port), family: 6 }),
+            // Nothing listens on ::1 here: an allowed connection would end in ECONNREFUSED instead.
+            ipv6Loopback: await connect({ host: '::1', port: Number(port), family: 6 }),
             outsideSignal: attempt(() => process.kill(Number(outsidePid), 'SIGCONT')),
             security: spawnSync('/usr/bin/security', ['help'], { stdio: 'ignore' }).error?.code ?? 'allowed',
             launchctl: spawnSync('/bin/launchctl', ['version'], { stdio: 'ignore' }).error?.code ?? 'allowed',
@@ -193,7 +196,7 @@ describe.runIf(process.platform === 'darwin')('AI CLI fence under the real macOS
         cwd: run, env: { HOME: home, PATH: '/usr/bin:/bin', TMPDIR: run }, signal: new AbortController().signal, timeoutMs: 10_000 });
       expect(output.exitCode, output.stderr).toBe(0);
       const denied = expect.stringMatching(/^(EPERM|EACCES)$/);
-      expect(JSON.parse(output.stdout)).toEqual({ unixSocket: denied, dnsSocket: 'allowed', localhost: denied, localhostMapped: denied,
+      expect(JSON.parse(output.stdout)).toEqual({ unixSocket: denied, dnsSocket: 'allowed', localhost: denied, localhostMapped: denied, ipv6Loopback: denied,
         outsideSignal: 'EPERM', security: 'EPERM', launchctl: 'EPERM', tempRead: denied, userTempRead: denied,
         ownSignal: 'allowed', childExitSignal: 'SIGTERM' });
     } finally {

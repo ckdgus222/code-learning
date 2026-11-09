@@ -34,9 +34,13 @@ export interface FenceOptions {
  * clipboard access or the blocked system commands. Each CLI gets only its own home, so neither
  * can read the other's login.
  * Later rules override earlier ones. Metadata (stat) stays readable for path resolution; file
- * contents and folder listings do not. The internet stays open for the model API, with the
- * mDNSResponder socket allowed for DNS. Codex needs the keychain service, so it stays reachable;
- * only the security command is blocked, not keychain access through other programs.
+ * contents and folder listings do not. The internet stays open for the model API over IPv4, with
+ * the mDNSResponder socket allowed for DNS. IPv6 is closed because on macOS 26 the IPv4-mapped
+ * loopback form (::ffff:127.0.0.1) passed the localhost rule (seen on CI). The loopback rule
+ * names ip4: probed on macOS 27, `remote ip` stopped matching 127.0.0.1 once an ip6 rule was
+ * added, while 0.0.0.0 and the Mac's LAN address still count as localhost for ip4.
+ * Codex needs the keychain service, so it stays reachable; only the security command is
+ * blocked, not keychain access through other programs.
  */
 export function fenceProfile({ home, appHome, runDirectory, readable }: FenceOptions): string {
   const own = [appHome, runDirectory];
@@ -48,7 +52,8 @@ export function fenceProfile({ home, appHome, runDirectory, readable }: FenceOpt
 (allow file-write* ${subpaths(own)} (literal "/dev/null"))
 (deny network-outbound (remote unix-socket))
 (allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))
-(deny network-outbound (remote ip "localhost:*"))
+(deny network-outbound (remote ip4 "localhost:*"))
+(deny network-outbound (remote ip6 "*:*"))
 (deny signal)
 (allow signal (target same-sandbox))
 (deny lsopen)
