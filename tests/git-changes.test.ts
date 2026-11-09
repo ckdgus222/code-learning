@@ -361,6 +361,40 @@ describe.runIf(process.platform === 'darwin')('changes against a chosen commit (
     }
   });
 
+  it.each([
+    ['1,024 units', Array(10).fill('a'.repeat(100)).join('/') + '/abcdefghijk.ts', false],
+    ['1,025 units', Array(10).fill('a'.repeat(100)).join('/') + '/abcdefghijkl.ts', true],
+    ['21 components', Array(20).fill('a').join('/') + '/main.ts', false],
+    ['22 components', Array(21).fill('a').join('/') + '/main.ts', true],
+    ['NFC 1,024 units', Array(20).fill('가'.repeat(50)).join('/') + '/a.ts', false],
+    ['NFC 1,025 units', Array(20).fill('가'.repeat(50)).join('/') + '/aa.ts', true],
+    ['NFD 1,025 units', Array(20).fill('가'.repeat(25).normalize('NFD')).join('/') + '/aa.ts', true],
+  ])('applies path limits to historical paths with %s', async (_name, relative, excluded) => {
+    git(root, 'init', '-q');
+    // Build git objects directly: these historical paths need not fit the host filesystem's limits.
+    const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: root, env, input: 'old code' }).toString().trim();
+    const parts = relative.split('/');
+    let entry = `100644 blob ${blob}\t${parts.pop()}\0`;
+    let tree = execFileSync('git', ['mktree', '-z'], { cwd: root, env, input: entry }).toString().trim();
+    for (const folder of parts.reverse()) {
+      entry = `040000 tree ${tree}\t${folder}\0`;
+      tree = execFileSync('git', ['mktree', '-z'], { cwd: root, env, input: entry }).toString().trim();
+    }
+    const oid = git(root, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit-tree', tree, '-m', 'historical path');
+    git(root, 'update-ref', 'HEAD', oid);
+    const project = await open(root);
+    const found = await compare(root, project, oid);
+    if (excluded) {
+      expect(found.changes).toEqual([]);
+      expect(found.notCompared).toEqual([{ reason: '제외 규칙(경로 길이·깊이 제한)', count: 1 }]);
+      await expect(oldCode(root, project, oid, relative)).rejects.toMatchObject({ code: 'NOT_ALLOWED', message: expect.stringContaining('경로 길이·깊이 제한') });
+      return;
+    }
+    expect(found.notCompared).toEqual([]);
+    expect(found.changes).toMatchObject([{ kind: 'deleted', path: relative }]);
+    expect(await oldCode(root, project, oid, relative)).toBe('old code');
+  });
+
   it('matches Korean names however they are normalized on disk', async () => {
     git(root, 'init', '-q');
     const nfd = (value: string) => value.normalize('NFD');

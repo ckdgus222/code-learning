@@ -25,6 +25,13 @@ beforeEach(async () => {
 afterEach(async () => { await rm(sandbox, { recursive: true, force: true }); });
 
 describe('README introduction', () => {
+  it('leaves a link as literal text when the 4,000-unit input cutoff falls inside its URL', async () => {
+    await put('README.md', `[label](${'a'.repeat(4000)})`);
+    expect((await overview()).intro?.text).toBe(`[label](${'a'.repeat(392)}…`);
+    await put('README.md', `[label](${'a'.repeat(3991)})`);
+    expect((await overview()).intro?.text).toBe('label');
+  });
+
   it('skips the whole taxonomy notice and keeps the introduction source lines', async () => {
     await put('README.md', [
       '> [!NOTE]', '> This project has been officially archived and will no longer receive updates.',

@@ -10,6 +10,32 @@ export { MAX_FILE_BYTES } from '../../shared/contracts';
 const MAX_FILES = 1000;
 const MAX_ENTRIES = 5000;
 const MAX_DEPTH = 20;
+const MAX_PATH_LENGTH = 1024;
+// Limits measured with ignore@7.0.12 on paths within MAX_PATH_LENGTH and MAX_DEPTH (2026-11-09):
+// - three risky parts in one line took tens of ms to seconds; two took about 1ms at worst;
+// - a line weighing more than 3 (risky parts plus unpinned `*`), e.g. *[a/]*[a/]*b, took 6ms, and 5,000 of
+//   them stalled a scan for 13s; heavy lines (weight 2 or more) cost up to 0.055ms each, so at most 200 per
+//   file keep one path check near 11ms; light lines (*.log) stay cheap in any number;
+// - compiling 64 KiB of 1,024-unit lines took 43ms, while a much longer single line is slow to compile.
+const MAX_GITIGNORE_LINE = 1024;
+const MAX_RISKY_PARTS_PER_LINE = 2;
+const MAX_WEIGHT_PER_LINE = 3;
+const MAX_HEAVY_LINES = 200;
+const COMPLEX_GITIGNORE = '.gitignore에 너무 복잡하거나 긴 규칙이 있어 이 범위를 열지 않습니다.';
+// The regex pieces ignore@7.0.12 leaves unpinned (leading, middle and trailing `**`, a class holding '/'),
+// and the unpinned stars it emits: [^\/]* inside a pattern, [^/]* or [^/]+ at its end. Pinned stars
+// appear as (?:(?!…)[^\/])* and cannot backtrack into each other. Any other repeat left after removing
+// these is a shape not measured here, so it counts as complex (fail closed).
+const RISKY_PARTS = ['(?:.*\\/)?', '(?:\\/[^\\/]+)*', '(?:\\/[^\\/]+)+', '.+(?=', '(?!\\/)'];
+const UNPINNED_STARS = ['[^\\/]*', '[^/]*', '[^/]+'];
+const PINNED_STAR = /\(\?:\(\?!(?:\\.|[^()\\])*\)\[\^\\\/\]\)\*/g;
+const occurrences = (source: string, part: string) => source.split(part).length - 1;
+function hasUnknownRepeat(source: string): boolean {
+  let rest = source.replace(PINNED_STAR, '');
+  for (const part of [...RISKY_PARTS, ...UNPINNED_STARS]) rest = rest.split(part).join('');
+  return /[*+]/.test(rest.replace(/\\./g, ''));
+}
+const isComplexGitignore = (error: unknown) => error instanceof AppError && error.message === COMPLEX_GITIGNORE;
 // Folders of secrets and tool state: never read, not even inside a dependency folder (plan v2.3 V-2).
 const secretDirs = new Set(['.git', '.svn', '.hg', '.ssh', '.aws', '.azure', '.gcloud', '.codex', '.claude', '.gemini']);
 const excludedDirs = new Set([...secretDirs,
@@ -19,6 +45,11 @@ export const textExtensions = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.j
   '.yaml', '.yml', '.toml', '.css', '.html', '.sql', '.conf']);
 const textNames = new Set(['Dockerfile', 'Makefile', 'LICENSE', '.gitignore']);
 type Rules = { base: string; matcher: Ignore }[];
+
+function exceedsPathLimit(relative: string): boolean {
+  return relative.length > MAX_PATH_LENGTH || relative.normalize('NFC').length > MAX_PATH_LENGTH ||
+    relative.split('/').length > MAX_DEPTH + 1;
+}
 
 export function validateRelative(relative: string): void {
   if (!relative || path.isAbsolute(relative) || relative.includes('\\') || relative.includes('\0') ||
@@ -101,13 +132,38 @@ export async function readStable(root: string, relative: string, limit = MAX_FIL
   } finally { await handle.close(); }
 }
 
+function safeMatcher(text: string): Ignore {
+  let heavyLines = 0;
+  for (const original of text.split('\n')) {
+    const line = original.endsWith('\r') ? original.slice(0, -1) : original;
+    if (!line || line.startsWith('#')) continue;
+    if (line.length > MAX_GITIGNORE_LINE) throw new AppError('NOT_ALLOWED', COMPLEX_GITIGNORE);
+    // Like decideOwnPath, this relies on ignore@7.0.12 internals. Inspect the library's actual regex,
+    // including escaped characters and ranges containing '/', without rewriting the pattern.
+    const rules = (ignore().add(line) as unknown as { _rules?: { _rules?: { regex?: RegExp }[] } })._rules?._rules;
+    if (!Array.isArray(rules)) throw new AppError('INTERNAL', '.gitignore 규칙을 확인할 수 없어 이 범위를 열지 않습니다.');
+    for (const rule of rules) {
+      if (!(rule.regex instanceof RegExp)) throw new AppError('INTERNAL', '.gitignore 규칙을 확인할 수 없어 이 범위를 열지 않습니다.');
+      const source = rule.regex.source;
+      const riskyParts = RISKY_PARTS.reduce((count, part) => count + occurrences(source, part), 0);
+      const weight = riskyParts + UNPINNED_STARS.reduce((count, part) => count + occurrences(source, part), 0);
+      if (riskyParts > MAX_RISKY_PARTS_PER_LINE || weight > MAX_WEIGHT_PER_LINE || hasUnknownRepeat(source)) {
+        throw new AppError('NOT_ALLOWED', COMPLEX_GITIGNORE);
+      }
+      if (weight >= 2 && ++heavyLines > MAX_HEAVY_LINES) throw new AppError('NOT_ALLOWED', COMPLEX_GITIGNORE);
+    }
+  }
+  return ignore().add(text);
+}
+
 /** A folder's .gitignore added to the rules above it; `composed` keeps its patterns and folder in NFC (pathPolicy). */
 async function addRules(root: string, base: string, inherited: Rules, composed = false): Promise<Rules> {
   const relative = base ? `${base}/.gitignore` : '.gitignore';
   try {
     const { text } = await readStable(root, relative, 64 * 1024);
-    return [...inherited, composed ? { base: base.normalize('NFC'), matcher: ignore().add(text.normalize('NFC')) } : { base, matcher: ignore().add(text) }];
+    return [...inherited, composed ? { base: base.normalize('NFC'), matcher: safeMatcher(text.normalize('NFC')) } : { base, matcher: safeMatcher(text) }];
   } catch (error) {
+    if (isComplexGitignore(error)) throw error;
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return inherited;
     throw new AppError('NOT_ALLOWED', '.gitignore 규칙을 안전하게 읽을 수 없어 이 범위를 열지 않습니다.');
   }
@@ -137,6 +193,7 @@ function ignored(relative: string, directory: boolean, rules: Rules): boolean {
 }
 
 export async function assertAllowed(root: string, relative: string): Promise<void> {
+  if (exceedsPathLimit(relative)) throw new AppError('NOT_ALLOWED', '경로 길이·깊이 제한에 해당하는 파일입니다.');
   validateRelative(relative);
   const parts = relative.split('/');
   let rules = await addRules(root, '', []);
@@ -179,12 +236,16 @@ export function pathPolicy(root: string): (relative: string) => Promise<string |
       const reason = exclusionReason(current, directory);
       if (reason) return reason;
       let rules: Rules;
-      try { rules = await rulesFor(parts.slice(0, i).join('/'), composed); } catch { return '.gitignore를 읽을 수 없음'; }
+      try { rules = await rulesFor(parts.slice(0, i).join('/'), composed); }
+      catch (error) { return isComplexGitignore(error) ? '복잡한 .gitignore 규칙' : '.gitignore를 읽을 수 없음'; }
       if (ignored(current, directory, rules)) return '.gitignore';
     }
     return null;
   };
-  return async relative => await judge(relative, false) ?? await judge(relative, true);
+  return async relative => {
+    if (exceedsPathLimit(relative)) return '경로 길이·깊이 제한';
+    return await judge(relative, false) ?? await judge(relative, true);
+  };
 }
 
 export async function readAllowed(root: string, relative: string, limit = MAX_FILE_BYTES) {
@@ -204,19 +265,22 @@ export async function assertAllowedFile(root: string, relative: string): Promise
   }
 }
 
-export async function scanProject(root: string, projectId: string): Promise<ProjectFiles> {
+export async function scanProject(root: string, projectId: string, shouldStop?: () => boolean): Promise<ProjectFiles> {
   const result: ProjectFiles = { id: projectId, name: path.basename(root), files: [], excluded: {}, warnings: [] };
   let visited = 0;
   let limited = false;
   const exclude = (why: string) => { result.excluded[why] = (result.excluded[why] ?? 0) + 1; };
   async function walk(base: string, inherited: Rules, depth: number): Promise<void> {
+    if (shouldStop?.()) throw new AppError('CANCELLED', '탐색을 멈췄습니다.');
     if (depth > MAX_DEPTH) { limited = true; return; }
     if (base) await inspectPath(root, base);
     const rules = await addRules(root, base, inherited);
     const directory = await opendir(path.join(root, base));
     for await (const entry of directory) {
+      if (shouldStop?.()) throw new AppError('CANCELLED', '탐색을 멈췄습니다.');
       if (++visited > MAX_ENTRIES || result.files.length >= MAX_FILES) { limited = true; break; }
       const relative = base ? `${base}/${entry.name}` : entry.name;
+      if (exceedsPathLimit(relative)) { exclude('경로 길이·깊이 제한'); continue; }
       const reason = exclusionReason(relative, entry.isDirectory());
       if (entry.isSymbolicLink()) { exclude('심볼릭 링크'); continue; }
       if (reason) { exclude(reason); continue; }
@@ -230,7 +294,10 @@ export async function scanProject(root: string, projectId: string): Promise<Proj
           if (stat.size > MAX_FILE_BYTES) { exclude('크기 제한'); continue; }
           result.files.push({ id: randomUUID(), relativePath: relative, size: stat.size });
         } else exclude('특수 파일');
-      } catch { exclude('읽기 권한·경로·제외 규칙 확인 실패'); }
+      } catch (error) {
+        if (error instanceof AppError && error.code === 'CANCELLED') throw error;
+        exclude(isComplexGitignore(error) ? '복잡한 .gitignore 규칙' : '읽기 권한·경로·제외 규칙 확인 실패');
+      }
     }
   }
   await walk('', [], 0);

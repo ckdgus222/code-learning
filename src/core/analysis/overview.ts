@@ -97,6 +97,8 @@ const codeOrEmphasis = /(`+)([^\n]*?)\1|https?:\/\/[^\s<>]+|<[^>\n]+>|(?<![\p{L}
 
 /** Plain display text only; source lines and HTML handling stay unchanged. */
 function introText(value: string): string {
+  // These regexes can take quadratic time on a long single line. Bound work before matching.
+  value = value.slice(0, MAX_INTRO * 10);
   return value.replace(headingMark, '')
     .replace(urlTagOrLink, (match, label: string | undefined) => label ?? match)
     .replace(codeOrEmphasis, (match, ticks: string | undefined, code: string, marker: string | undefined, content: string) =>

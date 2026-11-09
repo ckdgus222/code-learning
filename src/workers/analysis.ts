@@ -63,7 +63,7 @@ parentPort!.on('message', async (request: WorkerRequest) => {
   try {
     if (request.kind === 'scan') {
       // The overview rides on the scan reply: the session handles one request at a time.
-      const files = await scanProject(root, projectId);
+      const files = await scanProject(root, projectId, stopped);
       project = { ...files, overview: await buildOverview(root, files, stopped) };
       result = { ok: true, value: project };
     } else if (request.kind === 'read') {
