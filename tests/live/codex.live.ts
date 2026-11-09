@@ -96,7 +96,7 @@ vi.mock('node:child_process', async original => {
 // `CODEX_HOME="<this folder>" codex login`. The user's global ~/.codex is never used.
 const appCodexHome = path.join(os.homedir(), 'Library/Application Support/Code Learning/codex-home');
 const appAgyHome = path.join(os.homedir(), 'Library/Application Support/Code Learning/agy-home');
-const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => process.env.GEMINI_API_KEY ?? null);
+const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => !!process.env.GEMINI_API_KEY, read: async () => process.env.GEMINI_API_KEY ?? null });
 const runStage = (request: StageRequest, on = runtime): Promise<StageResponse> =>
   (on as unknown as { executeVerifiedStage(request: StageRequest): Promise<StageResponse> }).executeVerifiedStage(request);
 const evidenceId = randomUUID();

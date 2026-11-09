@@ -27,7 +27,7 @@ it.each([
   const input = html.match(/<input[^>]*type="password"[^>]*>/)?.[0];
   expect(input).toContain('autoComplete="off"');
   expect(input).toContain('spellCheck="false"');
-  expect(input?.includes('disabled=""')).toBe(!status.canEncrypt);
+  expect(input?.includes('disabled=""')).toBe(false);
   expect(html).toContain(PROVIDER_DATA_NOTICE);
   expect(html.indexOf(GEMINI_KEY_WARNING)).toBeLessThan(html.indexOf('class="ai-consent"'));
 });

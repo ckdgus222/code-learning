@@ -43,7 +43,7 @@ let finishedPlanCompare: { result: PlanCompareResult; planPath: string } | null 
 let pickingPlan = false;
 // App-only Codex and Antigravity folders keep the user's own AI settings out of app runs.
 const geminiKey = createGeminiKeyStore(path.join(app.getPath('userData'), 'gemini-api-key.bin'), safeStorage);
-const aiRuntime = new LocalAiRuntime(path.join(app.getPath('userData'), 'codex-home'), path.join(app.getPath('userData'), 'agy-home'), process.platform, geminiKey.read);
+const aiRuntime = new LocalAiRuntime(path.join(app.getPath('userData'), 'codex-home'), path.join(app.getPath('userData'), 'agy-home'), process.platform, geminiKey);
 const learning = new LearningWorkflow({
   assertReady: mode => aiRuntime.assertReady(mode),
   capture: async (request, signal) => {

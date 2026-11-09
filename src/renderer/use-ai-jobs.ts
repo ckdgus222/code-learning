@@ -26,13 +26,17 @@ export function useAiJobs({ project, source, symbol, revision, setError, setNoti
   const [geminiKeyStatus, setGeminiKeyStatus] = useState<GeminiKeyStatus | null>(null);
   useEffect(() => {
     let active = true;
-    void window.learning.geminiKeyStatus().then(result => {
-      if (!active) return;
-      if (result.ok) setGeminiKeyStatus(result.value);
-      else setError(result.message);
-    }).catch(() => { if (active) setError('Gemini API 키 상태를 확인하지 못했어요.'); });
+    void refreshGeminiKeyStatus(() => active);
     return () => { active = false; };
   }, []);
+  async function refreshGeminiKeyStatus(active = () => true): Promise<void> {
+    try {
+      const result = await window.learning.geminiKeyStatus();
+      if (!active()) return;
+      if (result.ok) setGeminiKeyStatus(result.value);
+      else setError(result.message);
+    } catch { if (active()) setError('Gemini API 키 상태를 확인하지 못했어요.'); }
+  }
   const [mode, setMode] = useState<LearningMode>('codex');
   const [featureGuideRunning, setFeatureGuideRunning] = useState(false);
   const [questionRunning, setQuestionRunning] = useState(false);
@@ -213,6 +217,7 @@ export function useAiJobs({ project, source, symbol, revision, setError, setNoti
       setConnections(null);
       return '로컬 AI 설치를 확인하지 못했어요. 다시 시도해 주세요.';
     } finally {
+      await refreshGeminiKeyStatus();
       inspectionPending.current = false;
       setChecking(false);
     }
@@ -231,6 +236,7 @@ export function useAiJobs({ project, source, symbol, revision, setError, setNoti
     } catch {
       return 'Gemini API 키를 변경하지 못했어요. 다시 시도해 주세요.';
     } finally {
+      await refreshGeminiKeyStatus();
       keyPending.current = false;
       setKeyBusy(false);
     }
@@ -301,7 +307,7 @@ export function useAiJobs({ project, source, symbol, revision, setError, setNoti
   }
 
   return {
-    connections, checking, inspectConnections, ensureConnections, keyBusy, geminiKeyStatus, changeGeminiKey,
+    connections, checking, inspectConnections, ensureConnections, keyBusy, geminiKeyStatus, changeGeminiKey, refreshGeminiKeyStatus,
     mode, setMode, questionRunning, setQuestionRunning, featureGuideRunning, setFeatureGuideRunning,
     overview: overviewAi, overviewCard, startOverview, cancelOverview, deleteOverview,
     fileExplanation, fileExplanationStale, fileExplanationState, fileExplanationRunning,

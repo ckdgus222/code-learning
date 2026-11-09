@@ -15,7 +15,7 @@ vi.mock('react', async original => ({
 }));
 import { useAiJobs } from '../src/renderer/use-ai-jobs';
 const report: ConnectionReport = { checkedAt: 'test', modes: [{ mode: 'antigravity', ready: true, reason: 'test' }], providers: [] };
-let api: { [K in 'saveGeminiKey' | 'clearGeminiKey' | 'checkConnections' | 'startOverview' | 'startFileExplanation']: ReturnType<typeof vi.fn<LearningApi[K]>> };
+let api: { [K in 'geminiKeyStatus' | 'saveGeminiKey' | 'clearGeminiKey' | 'checkConnections' | 'startOverview' | 'startFileExplanation']: ReturnType<typeof vi.fn<LearningApi[K]>> };
 function render(planCompareRunning = false) {
   hooks.stateIndex = 0; hooks.refIndex = 0;
   return useAiJobs({ project: { id: 'project' } as ProjectView, source: { fileId: 'file' } as SourceView,
@@ -23,7 +23,8 @@ function render(planCompareRunning = false) {
 }
 beforeEach(() => {
   hooks.state = []; hooks.refs = [];
-  api = { saveGeminiKey: vi.fn(), clearGeminiKey: vi.fn(), checkConnections: vi.fn(), startOverview: vi.fn(), startFileExplanation: vi.fn() };
+  api = { geminiKeyStatus: vi.fn(), saveGeminiKey: vi.fn(), clearGeminiKey: vi.fn(), checkConnections: vi.fn(), startOverview: vi.fn(), startFileExplanation: vi.fn() };
+  api.geminiKeyStatus.mockResolvedValue({ ok: true, value: { saved: false, readable: false, canEncrypt: true } });
   vi.stubGlobal('window', { learning: api });
 });
 afterEach(() => vi.unstubAllGlobals());
@@ -52,6 +53,7 @@ it.each(['save', 'clear'] as const)('holds the shared lock across %s and exactly
   expect(await operation).toBeNull();
   expect(render().keyBusy).toBe(false);
   expect(render().connections).toEqual(report);
+  expect(api.geminiKeyStatus).toHaveBeenCalledTimes(2);
 });
 it.each(['save-failure', 'save-rejection', 'clear-failure', 'check-failure', 'check-rejection'])('releases the lock after %s', async failure => {
   api.saveGeminiKey.mockResolvedValue({ ok: true, value: { saved: true, readable: true, canEncrypt: true } });
@@ -64,6 +66,31 @@ it.each(['save-failure', 'save-rejection', 'clear-failure', 'check-failure', 'ch
   expect(render().keyBusy).toBe(false);
   expect(render().checking).toBe(false);
   expect(api.checkConnections).toHaveBeenCalledTimes(failure.startsWith('check') ? 1 : 0);
+  expect(api.geminiKeyStatus).toHaveBeenCalledTimes(failure.startsWith('check') ? 2 : 1);
+});
+it('refreshes the encryption message after a refused save', async () => {
+  api.saveGeminiKey.mockResolvedValue({ ok: false, code: 'UNSUPPORTED', message: 'cannot encrypt' });
+  const status = { saved: false, readable: false, canEncrypt: false };
+  api.geminiKeyStatus.mockResolvedValue({ ok: true, value: status });
+  expect(await render().changeGeminiKey('fake-key-for-tests-only')).toBe('cannot encrypt');
+  expect(render().geminiKeyStatus).toEqual(status);
+});
+it.each(['manual', 'automatic'] as const)('refreshes key status after a %s installation check', async kind => {
+  const status = { saved: true, readable: false, canEncrypt: true };
+  api.geminiKeyStatus.mockResolvedValue({ ok: true, value: status });
+  api.checkConnections.mockResolvedValue({ ok: true, value: report });
+  const jobs = render();
+  expect(await (kind === 'manual' ? jobs.inspectConnections() : jobs.ensureConnections())).toBeNull();
+  expect(api.checkConnections).toHaveBeenCalledExactlyOnceWith(kind === 'manual' ? undefined : { automatic: true });
+  expect(api.geminiKeyStatus).toHaveBeenCalledOnce();
+  expect(render().geminiKeyStatus).toEqual(status);
+});
+it.each(['failure', 'rejection'])('refreshes key status after an installation check %s', async failure => {
+  if (failure === 'failure') api.checkConnections.mockResolvedValue({ ok: false, code: 'IO', message: 'check failed' });
+  if (failure === 'rejection') api.checkConnections.mockRejectedValue(new Error('synthetic'));
+  expect(await render().inspectConnections()).toBeTruthy();
+  expect(api.geminiKeyStatus).toHaveBeenCalledOnce();
+  expect(render().checking).toBe(false);
 });
 it('refuses a key change during an installation check or another AI job', async () => {
   api.checkConnections.mockReturnValue(new Promise(() => {}));

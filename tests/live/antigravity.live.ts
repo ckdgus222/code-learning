@@ -115,7 +115,7 @@ vi.mock('node:child_process', async original => {
 const appData = path.join(os.homedir(), 'Library/Application Support/Code Learning');
 const appAgyHome = path.join(appData, 'agy-home');
 const userGemini = path.join(os.homedir(), '.gemini');
-const runtime = new LocalAiRuntime(path.join(appData, 'codex-home'), appAgyHome, process.platform, async () => process.env.GEMINI_API_KEY ?? null);
+const runtime = new LocalAiRuntime(path.join(appData, 'codex-home'), appAgyHome, process.platform, { has: async () => !!process.env.GEMINI_API_KEY, read: async () => process.env.GEMINI_API_KEY ?? null });
 const runStage = (request: StageRequest): Promise<StageResponse> =>
   (runtime as unknown as { executeVerifiedStage(request: StageRequest): Promise<StageResponse> }).executeVerifiedStage(request);
 const evidenceId = randomUUID();
@@ -404,7 +404,7 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
         env: { HOME: probe.home }, signal: new AbortController().signal });
       const version = versionOutput.stdout.match(/(?:^|\s)(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)(?:\s|$)/)?.[1] ?? null;
       // A runtime with temporary homes from the start: the app runtime above is never used here.
-      const localRuntime = new LocalAiRuntime(probe.codexHome, probe.home, process.platform, async () => 'code-learning-fake-key');
+      const localRuntime = new LocalAiRuntime(probe.codexHome, probe.home, process.platform, { has: async () => true, read: async () => 'code-learning-fake-key' });
       await localRuntime.checkConnections();
       output = '';
       stdoutText = '';
@@ -477,7 +477,7 @@ describe('Antigravity with an app-only HOME (real account, non-secret fixture)',
       probe.forced.push(...calls);
       inside = fixture.inside;
       localProbe = probe;
-      const localRuntime = new LocalAiRuntime(probe.codexHome, probe.home, process.platform, async () => 'code-learning-fake-key');
+      const localRuntime = new LocalAiRuntime(probe.codexHome, probe.home, process.platform, { has: async () => true, read: async () => 'code-learning-fake-key' });
       await localRuntime.checkConnections();
       output = '';
       stdoutText = '';

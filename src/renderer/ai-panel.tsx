@@ -60,9 +60,10 @@ export function SourceButtons({ ids, sources, selectionId, stale, label, onEvide
   </li>)}</ul>;
 }
 
-export function AiPanel({ keyBusy = false, geminiKeyStatus = null, onChangeGeminiKey, open, onClose, projectId, openedAt = 0, onSavedEvidence, evidence, relativePath, stale, draft, connections, checking, otherRunning, mode, onMode, onRunning, onInspect, onEnsure, onEvidence }: {
+export function AiPanel({ keyBusy = false, geminiKeyStatus = null, onChangeGeminiKey, onRefreshGeminiKeyStatus, open, onClose, projectId, openedAt = 0, onSavedEvidence, evidence, relativePath, stale, draft, connections, checking, otherRunning, mode, onMode, onRunning, onInspect, onEnsure, onEvidence }: {
   keyBusy?: boolean; geminiKeyStatus?: GeminiKeyStatus | null;
   onChangeGeminiKey?(key: string | null): Promise<string | null>;
+  onRefreshGeminiKeyStatus?(): Promise<void>;
   open: boolean; onClose(): void;
   openedAt?: number; onSavedEvidence?(value: { source: SourceView; evidence: Evidence }): void;
   projectId: string; evidence: Evidence | null; relativePath: string; stale: boolean;
@@ -333,7 +334,10 @@ export function AiPanel({ keyBusy = false, geminiKeyStatus = null, onChangeGemin
       <h2>질문</h2>
       <div className="ai-line" role="group" aria-label="AI 연결">
         <span>AI · {shortModes[mode]} · {ready?.ready ? '준비됨' : connections ? '사용할 수 없음' : '설치 확인 필요'}</span>
-        <button className="btn btn--small" aria-expanded={settingsOpen} onClick={() => { if (!settingsOpen) void ensure(); setSettingsOpen(!settingsOpen); }}>설정</button>
+        <button className="btn btn--small" aria-expanded={settingsOpen} onClick={() => {
+          if (!settingsOpen) { void onRefreshGeminiKeyStatus?.(); void ensure(); }
+          setSettingsOpen(!settingsOpen);
+        }}>설정</button>
       </div>
       <button className="btn btn--ghost btn--icon" aria-label="질문 칸 닫기" title="질문 칸 닫기" onClick={onClose}><Icon name="close" /></button>
     </div>
@@ -351,9 +355,9 @@ export function AiPanel({ keyBusy = false, geminiKeyStatus = null, onChangeGemin
         {onMac && <fieldset aria-label="Gemini API 키">
           <legend>Gemini API 키</legend>
           <input aria-label="Gemini API 키" type="password" autoComplete="off" spellCheck={false} value={keyInput}
-            disabled={!geminiKeyStatus?.canEncrypt || keyBusy || checking || running || otherRunning}
+            disabled={keyBusy || checking || running || otherRunning}
             onChange={event => setKeyInput(event.target.value)} />
-          <button className="btn" disabled={!geminiKeyStatus?.canEncrypt || !keyInput.trim() || keyBusy || checking || running || otherRunning}
+          <button className="btn" disabled={!keyInput.trim() || keyBusy || checking || running || otherRunning}
             onClick={() => void changeKey(false)}>저장</button>
           <button className="btn" disabled={!geminiKeyStatus?.saved || keyBusy || checking || running || otherRunning}
             onClick={() => void changeKey(true)}>지우기</button>

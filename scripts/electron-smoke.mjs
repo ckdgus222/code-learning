@@ -799,10 +799,14 @@ try {
         await app.evaluate(({ ipcMain }, initial) => {
           let status = { saved: initial === 'unreadable', readable: false, canEncrypt: initial !== 'unencrypted' };
           globalThis.testKeyCheckCount = 0;
+          globalThis.testKeyStatusCount = 0;
           globalThis.testKeyReleaseCheck = null;
           globalThis.testKeyChanged = false;
           for (const channel of ['learning:gemini-key-status', 'learning:save-gemini-key', 'learning:clear-gemini-key', 'learning:connections']) ipcMain.removeHandler(channel);
-          ipcMain.handle('learning:gemini-key-status', () => ({ ok: true, value: status }));
+          ipcMain.handle('learning:gemini-key-status', () => {
+            globalThis.testKeyStatusCount++;
+            return { ok: true, value: status };
+          });
           ipcMain.handle('learning:save-gemini-key', (_event, input) => {
             if (input.key !== 'fake-gemini-key-for-smoke-only') throw new Error('Unexpected fake key');
             status = { saved: true, readable: true, canEncrypt: true };
@@ -837,14 +841,19 @@ try {
         const input = group.getByLabel('Gemini API 키', { exact: true });
         const message = initial === 'missing' ? '없음' : initial === 'unreadable' ? '저장된 키를 읽지 못했어요. 다시 넣어 주세요.' : '이 컴퓨터에서 키를 안전하게 저장할 수 없어요';
         await group.getByText(message, { exact: true }).waitFor();
+        await until(() => panel.getByRole('button', { name: '로컬 AI 설치 확인', exact: true }).isEnabled());
+        await panel.getByRole('button', { name: '설정', exact: true }).click();
+        const statusBefore = await app.evaluate(() => globalThis.testKeyStatusCount);
+        const checksBefore = await app.evaluate(() => globalThis.testKeyCheckCount);
+        await panel.getByRole('button', { name: '설정', exact: true }).click();
+        await until(async () => await app.evaluate(() => globalThis.testKeyStatusCount) > statusBefore);
+        assert.equal(await app.evaluate(() => globalThis.testKeyCheckCount), checksBefore);
         assert.equal(await input.getAttribute('type'), 'password');
         assert.equal(await input.getAttribute('autocomplete'), 'off');
         assert.equal(await input.getAttribute('spellcheck'), 'false');
-        if (initial === 'unencrypted') {
-          assert.equal(await input.isDisabled(), true);
-          assert.equal(await group.getByRole('button', { name: '저장', exact: true }).isDisabled(), true);
-          return;
-        }
+        assert.equal(await input.isEnabled(), true);
+        await input.fill('fake-gemini-key-for-smoke-only');
+        assert.equal(await group.getByRole('button', { name: '저장', exact: true }).isEnabled(), true);
         // Codex is already ready: the new lock, not missing Gemini readiness, must stop these starts.
         await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
         await page.getByRole('button', { name: 'order.ts', exact: true }).click();

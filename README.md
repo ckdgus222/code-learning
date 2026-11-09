@@ -161,6 +161,7 @@ CODEX_HOME="$HOME/Library/Application Support/Code Learning/codex-home" codex lo
 ```
 
 Gemini: Google AI Studio에서 API 키를 만든 뒤 앱 → **질문 → 설정 → Gemini API 키**에 붙여 넣고 **저장**을 누릅니다. 키는 이 컴퓨터에 암호화해 저장하며 Gemini 실행에만 넘깁니다.
+앱은 키 저장 또는 Gemini 전송 때만 키체인에 접근하며, Apple 서명이 없어 업데이트 후 Gemini를 처음 실행할 때 macOS가 키체인 접근을 물으면 **허용(또는 항상 허용)**을 선택해 주세요.
 
 Google은 이 앱처럼 Antigravity CLI를 다른 앱에서 실행하는 방식에 개인 Google 로그인을 허용하지 않고, 어기면 Antigravity·Gemini CLI 이용이 정지될 수 있어 API 키만 사용합니다([Antigravity FAQ](https://antigravity.google/docs/faq)). 무료 등급 키로 보낸 코드와 질문은 Google이 제품 개선에 쓸 수 있습니다. 기존 사용자가 앱 폴더에 남긴 Google 로그인은 더 이상 사용하지 않습니다.
 

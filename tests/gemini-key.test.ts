@@ -15,6 +15,7 @@ const crypto = {
 beforeEach(async () => {
   directory = await mkdtemp(path.join(os.tmpdir(), 'gemini-key-'));
   file = path.join(directory, 'key.bin');
+  vi.clearAllMocks();
   crypto.isEncryptionAvailable.mockReturnValue(true);
   crypto.decryptString.mockImplementation(value => value.toString().split('').reverse().join(''));
 });
@@ -44,6 +45,10 @@ it('refuses saving without encryption and writes nothing', async () => {
   await expect(store.save(key)).rejects.toMatchObject({ code: 'UNSUPPORTED' });
   expect(await readdir(directory)).toEqual([]);
   expect(await store.status()).toEqual({ saved: false, readable: false, canEncrypt: false });
+  crypto.isEncryptionAvailable.mockReturnValue(true);
+  expect((await store.status()).canEncrypt).toBe(false);
+  await store.save(key);
+  expect(await store.status()).toEqual({ saved: true, readable: true, canEncrypt: true });
 });
 it.each(['', '   ', 'x'.repeat(10), 'x'.repeat(300), 'x'.repeat(19), 'x'.repeat(201), 'x'.repeat(20) + '!', 'x'.repeat(20) + '\ny'])('rejects invalid key %# without writing', async value => {
   await expect(createGeminiKeyStore(file, crypto).save(value)).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
@@ -59,10 +64,52 @@ it('preserves saved status on decrypt failure and can replace the unreadable key
   await writeFile(file, 'broken cipher');
   crypto.decryptString.mockImplementationOnce(() => { throw new Error('decrypt'); });
   expect(await store.read()).toBeNull();
-  crypto.decryptString.mockImplementationOnce(() => { throw new Error('decrypt'); });
   expect(await store.status()).toEqual({ saved: true, readable: false, canEncrypt: true });
   await store.save(key);
+  expect(await store.status()).toEqual({ saved: true, readable: true, canEncrypt: true });
   expect(await store.read()).toBe(key);
+});
+it.each([false, true])('checks file presence without touching the keychain (saved: %s)', async saved => {
+  if (saved) await writeFile(file, 'existing cipher');
+  const touched = () => { throw new Error('keychain touched'); };
+  const guardedCrypto = { isEncryptionAvailable: vi.fn(touched), encryptString: vi.fn(touched), decryptString: vi.fn(touched) };
+  const store = createGeminiKeyStore(file, guardedCrypto);
+  expect(await store.has()).toBe(saved);
+  expect(await store.status()).toEqual({ saved, readable: saved, canEncrypt: true });
+  for (const method of Object.values(guardedCrypto)) expect(method).not.toHaveBeenCalled();
+  await expect(store.save(key)).rejects.toThrow('keychain touched');
+  expect(guardedCrypto.isEncryptionAvailable).toHaveBeenCalledOnce();
+  if (!saved) await writeFile(file, 'existing cipher');
+  expect(await store.read()).toBeNull();
+  expect(guardedCrypto.decryptString).toHaveBeenCalledOnce();
+});
+it('encrypts only when saving and decrypts only when reading', async () => {
+  const store = createGeminiKeyStore(file, crypto);
+  await store.save(key);
+  expect(crypto.isEncryptionAvailable).toHaveBeenCalledOnce();
+  expect(crypto.encryptString).toHaveBeenCalledExactlyOnceWith(key);
+  expect(crypto.decryptString).not.toHaveBeenCalled();
+  expect(await store.read()).toBe(key);
+  expect(crypto.decryptString).toHaveBeenCalledOnce();
+});
+it('recovers readability after a later successful read without saving or clearing', async () => {
+  const store = createGeminiKeyStore(file, crypto);
+  await store.save(key);
+  crypto.decryptString.mockImplementationOnce(() => { throw new Error('denied'); });
+  expect(await store.read()).toBeNull();
+  expect((await store.status()).readable).toBe(false);
+  expect(await store.read()).toBe(key);
+  expect((await store.status()).readable).toBe(true);
+});
+it('clears the failed-read flag when deleting a key', async () => {
+  const store = createGeminiKeyStore(file, crypto);
+  await writeFile(file, 'existing cipher');
+  crypto.decryptString.mockImplementationOnce(() => { throw new Error('denied'); });
+  expect(await store.read()).toBeNull();
+  await store.clear();
+  expect(await store.has()).toBe(false);
+  await writeFile(file, 'restored cipher');
+  expect((await store.status()).readable).toBe(true);
 });
 it('orders save and clear by request order and recovers after a failed operation', async () => {
   const store = createGeminiKeyStore(file, crypto);

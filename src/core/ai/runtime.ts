@@ -236,10 +236,12 @@ export class LocalAiRuntime {
    */
   constructor(private readonly codexHome: string, private readonly antigravityHome: string,
     private readonly platform: NodeJS.Platform = process.platform,
-    private readonly geminiKey: () => Promise<string | null> = async () => null) {}
+    private readonly geminiKey: { has(): Promise<boolean>; read(): Promise<string | null> } = {
+      has: async () => false, read: async () => null,
+    }) {}
 
   async refreshGeminiKey(): Promise<void> {
-    this.geminiKeySaved = !!await this.geminiKey();
+    this.geminiKeySaved = await this.geminiKey.has();
   }
 
   /**
@@ -271,7 +273,7 @@ export class LocalAiRuntime {
     }
     if (provider === 'antigravity' && running) {
       if (this.platform === 'win32') throw new AppError('AI_UNAVAILABLE', 'Windows에서는 Codex 단독만 실행할 수 있어요.');
-      const key = await this.geminiKey();
+      const key = await this.geminiKey.read();
       if (!key) throw new AppError('AI_UNAVAILABLE', GEMINI_NEEDS_KEY);
       return { ...localProcessEnv(), HOME: home, GEMINI_API_KEY: key };
     }

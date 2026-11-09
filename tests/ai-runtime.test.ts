@@ -56,7 +56,7 @@ afterEach(() => { vi.unstubAllEnvs(); });
 
 describe('local connection readiness', () => {
   it.runIf(process.platform === 'win32')('uses the default Windows platform to probe only Codex without a fence', async () => {
-    const report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey).checkConnections();
+    const report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey }).checkConnections();
     const script = executableCandidates('codex')[0];
     const node = executableCandidates('node')[0];
     expect(report.providers).toMatchObject([{ provider: 'codex', installation: 'found' }]);
@@ -66,7 +66,7 @@ describe('local connection readiness', () => {
   });
 
   it.runIf(onMac)('automatically probes only Codex and Antigravity without looking for Claude Code', async () => {
-    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey);
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey });
     const report = await runtime.checkConnections({ automatic: true });
     expect(report.providers.map(item => item.provider)).toEqual(['codex', 'antigravity']);
     expect(vi.mocked(realpath).mock.calls.some(([name]) => String(name).endsWith('/claude'))).toBe(false);
@@ -86,7 +86,7 @@ describe('local connection readiness', () => {
     ]);
   });
   it.runIf(onMac)('only probes versions and never claims authentication or isolation succeeded', async () => {
-    const report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey).checkConnections();
+    const report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey }).checkConnections();
     expect(report.providers).toHaveLength(3);
     expect(report.providers.every(item => item.installation === 'found' && item.authentication === 'unchecked' && item.isolation === 'unverified')).toBe(true);
     // Finding each CLI opens its single mode; Claude Code stays closed.
@@ -101,7 +101,7 @@ describe('local connection readiness', () => {
     expect(rm).toHaveBeenCalled();
   });
   it.runIf(onMac)('checks the codex and agy versions inside the fence with their own app home; Claude Code, without one, as it is', async () => {
-    await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey).checkConnections();
+    await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey }).checkConnections();
     const calls = vi.mocked(runProcess).mock.calls.map(([request]) => request);
     const of = (binary: string) => calls.find(request => inner(request).executable.endsWith(`/${binary}`))!;
     for (const [binary, own, other] of [['codex', appCodexHome, appAgyHome], ['agy', appAgyHome, appCodexHome]]) {
@@ -114,12 +114,12 @@ describe('local connection readiness', () => {
   });
   it('distinguishes missing and unusable installations without leaking output', async () => {
     vi.mocked(realpath).mockRejectedValue(new Error('private path'));
-    let report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey).checkConnections();
+    let report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey }).checkConnections();
     expect(report.providers.every(item => item.installation === 'missing')).toBe(true);
     expect(runProcess).not.toHaveBeenCalled();
     vi.mocked(realpath).mockImplementation(async (name: unknown) => String(name));
     vi.mocked(runProcess).mockResolvedValue({ stdout: 'PRIVATE_OUTPUT', stderr: 'PRIVATE_PATH', exitCode: 1 });
-    report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey).checkConnections();
+    report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey }).checkConnections();
     expect(report.providers.every(item => item.installation === 'unusable')).toBe(true);
     expect(JSON.stringify(report)).not.toContain('PRIVATE_');
   });
@@ -146,7 +146,7 @@ describe('local connection readiness', () => {
     const script = `${home}/.npm-global/lib/node_modules/@openai/codex/bin/codex.js`;
     vi.mocked(realpath).mockImplementation(async (name: unknown) => name === `${home}/.local/bin/codex` ? script : String(name));
     heads[script] = '#!/usr/bin/env node\n';
-    const report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey).checkConnections();
+    const report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey }).checkConnections();
     expect(report.providers.find(item => item.provider === 'codex')?.installation).toBe('found');
     const codexCall = vi.mocked(runProcess).mock.calls.map(([request]) => inner(request)).find(request => request.args[0] === script);
     expect(codexCall).toMatchObject({ executable: `${home}/.local/bin/node`, args: [script, '--version'] });
@@ -155,7 +155,7 @@ describe('local connection readiness', () => {
     const before = process.env.CODEX_HOME;
     process.env.CODEX_HOME = '/Users/test/.codex';
     try {
-      const report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey).checkConnections();
+      const report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey }).checkConnections();
       expect(report.providers.find(item => item.provider === 'codex')?.message).toContain(`CODEX_HOME="${appCodexHome}" codex login`);
       const calls = vi.mocked(runProcess).mock.calls.map(([request]) => inner(request));
       const codex = calls.find(request => request.executable.endsWith('/codex'))!;
@@ -189,14 +189,14 @@ describe('local connection readiness', () => {
     ]) {
       vi.mocked(runProcess).mockClear();
       setup();
-      const report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey).checkConnections();
+      const report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey }).checkConnections();
       expect(report.providers.find(item => item.provider === 'codex')).toMatchObject({ installation: 'unusable', message: expect.stringContaining('앱 전용 Codex 위치') });
       expect(vi.mocked(runProcess).mock.calls.some(([request]) => inner(request).executable.endsWith('/codex')
         || request.args.some(arg => arg.endsWith('codex.js')))).toBe(false);
     }
   });
   it.runIf(onMac)('deduplicates simultaneous inspections', async () => {
-    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey);
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey });
     const first = runtime.checkConnections();
     expect(runtime.checkConnections()).toBe(first);
     await first;
@@ -204,7 +204,7 @@ describe('local connection readiness', () => {
   });
   const privateStage = () => ({ stage: 'explaining' as const, provider: 'antigravity' as const, prompt: 'private code', schema: {}, signal: new AbortController().signal });
   it.runIf(onMac)('opens a mode only after this run found its CLIs, and never Claude Code', async () => {
-    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey);
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey });
     // Before an installation check nothing is started.
     await expect(runtime.run(privateStage())).rejects.toMatchObject({ code: 'AI_UNAVAILABLE', message: SINGLE_NEEDS.antigravity });
     expect(runProcess).not.toHaveBeenCalled();
@@ -217,7 +217,7 @@ describe('local connection readiness', () => {
       if (String(name).endsWith('/agy')) throw new Error('missing');
       return String(name);
     });
-    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey);
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey });
     const report = await runtime.checkConnections();
     expect(report.providers.find(item => item.provider === 'antigravity')?.installation).toBe('missing');
     expect(report.modes.map(mode => [mode.mode, mode.ready, mode.reason]).slice(0, 2)).toEqual([['codex', true, SINGLE_READY], ['antigravity', false, SINGLE_NEEDS.antigravity]]);
@@ -230,7 +230,7 @@ describe('local connection readiness', () => {
       if (String(name).endsWith('/codex')) throw new Error('missing');
       return String(name);
     });
-    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey);
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey });
     const report = await runtime.checkConnections();
     expect(report.modes.map(mode => [mode.mode, mode.ready, mode.reason]).slice(0, 2)).toEqual([['codex', false, SINGLE_NEEDS.codex], ['antigravity', true, SINGLE_READY]]);
     expect(() => runtime.assertReady('codex')).toThrow(SINGLE_NEEDS.codex);
@@ -356,7 +356,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     { provider: 'codex' as const, timeoutMs: undefined, expected: 120_000 },
     { provider: 'codex' as const, timeoutMs: 240_000, expected: 240_000 },
   ])('passes the same timeout to the process and CLI for $provider with $timeoutMs', async ({ provider, timeoutMs, expected }) => {
-    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey);
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey });
     await runtime.checkConnections();
     vi.mocked(runProcess).mockClear();
     const stdout = provider === 'antigravity' ? agy(init(GEMINI_MODEL), ok)
@@ -404,7 +404,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     expect(() => parseStageOutput('antigravity', agy(...events), 0)).toThrow();
   });
   it.runIf(onMac)('sends the agy prompt on stdin as one stream-json user message, never as an argument', async () => {
-    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey);
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey });
     await runtime.checkConnections();
     vi.mocked(runProcess).mockClear();
     vi.mocked(runProcess).mockResolvedValue({ stdout: agy(init(GEMINI_MODEL), ok), stderr: '', exitCode: 0 });
@@ -433,7 +433,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     ['1.4.11', false], ['1.1.25', false], ['1.3.5', false], ['0.10.20', false],
   ])('uses the agy version %s to decide whether to disable slash expansion (%s)', async (version, supported) => {
     vi.mocked(runProcess).mockResolvedValue({ stdout: `agy ${version}\n`, stderr: '', exitCode: 0 });
-    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey);
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey });
     await runtime.checkConnections();
     expect(runProcess).toHaveBeenCalledTimes(3);
     for (const [request] of vi.mocked(runProcess).mock.calls) expect(inner(request).args).toEqual(['--version']);
@@ -452,7 +452,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
       '--mode', 'plan', '--sandbox', ...(supported ? ['--disable-slash-commands'] : []), '--print-timeout', '120s']);
   });
   it.runIf(onMac)('blocks Gemini when the same runtime rechecks agy 1.4.12 as 1.4.11', async () => {
-    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey);
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey });
     for (const version of ['1.4.12', '1.4.11']) {
       vi.mocked(runProcess).mockResolvedValue({ stdout: `agy ${version}\n`, stderr: '', exitCode: 0 });
       await runtime.checkConnections();
@@ -470,7 +470,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     }
   });
   it.runIf(onMac).each(['missing', 'nonzero exit', 'unreadable version', 'process failure'])('refuses agy after a successful check followed by %s', async failure => {
-    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey);
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey });
     vi.mocked(runProcess).mockResolvedValue({ stdout: 'agy 1.4.12\n', stderr: '', exitCode: 0 });
     await runtime.checkConnections();
     expect(() => runtime.assertReady('antigravity')).not.toThrow();
@@ -492,7 +492,7 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
     expect(runProcess).not.toHaveBeenCalled();
   });
   it.runIf(onMac)('passes explicit Codex restrictions for shell, hooks, agents, images, image generation, history notes, web, apps and plugins', async () => {
-    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey);
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey });
     vi.mocked(runProcess).mockResolvedValue({ stdout: 'cli 1.4.12\n', stderr: '', exitCode: 0 });
     await runtime.checkConnections();
     vi.mocked(runProcess).mockClear();
@@ -536,14 +536,14 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
   ];
   it.runIf(onMac).each(fenceFailures)('does not check the version at all when %s, and reports the fence', async (_case, arrange) => {
     arrange();
-    const report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey).checkConnections();
+    const report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey }).checkConnections();
     // The fence's own refusal, not a missing installation.
     expect(report.providers.find(item => item.provider === 'codex')).toMatchObject({ installation: 'unusable', message: expect.stringContaining('울타리') });
     expect(vi.mocked(runProcess).mock.calls.some(([request]) => inner(request).executable.endsWith('/codex')
       || inner(request).args[0]?.endsWith('/codex'))).toBe(false);
   });
   it.runIf(onMac)('does not start a stage at all when sandbox-exec is gone after the version check', async () => {
-    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey);
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey });
     await runtime.checkConnections();
     fenceFailures[0][1]();
     vi.mocked(runProcess).mockClear();
@@ -553,11 +553,11 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
   it.runIf(onMac)('does not retry without the fence when sandbox-exec cannot apply the profile, for a version check or a stage', async () => {
     vi.mocked(runProcess).mockImplementation(async request => request.executable === '/usr/bin/sandbox-exec'
       ? { stdout: '', stderr: 'sandbox-exec: invalid profile', exitCode: 65 } : { stdout: 'claude 1.2.3\n', stderr: '', exitCode: 0 });
-    const report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey).checkConnections();
+    const report = await new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey }).checkConnections();
     expect(report.providers.filter(item => item.installation === 'unusable').map(item => item.provider)).toEqual(['codex', 'antigravity']);
     // One fenced call each, and no codex or agy start outside the fence.
     expect(vi.mocked(runProcess).mock.calls.map(([request]) => request.executable)).toEqual(['/usr/bin/sandbox-exec', '/usr/bin/sandbox-exec', `${os.homedir()}/.local/bin/claude`]);
-    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, async () => fakeKey);
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, process.platform, { has: async () => true, read: async () => fakeKey });
     vi.mocked(runProcess).mockResolvedValue({ stdout: 'codex-cli 1.4.12\n', stderr: '', exitCode: 0 });
     await runtime.checkConnections();
     vi.mocked(runProcess).mockClear();
@@ -590,9 +590,19 @@ describe('CLI response parsers (synthetic format fixtures, not real AI)', () => 
 });
 
 describe('Gemini API key boundary', () => {
-  it.runIf(onMac)('requires a readable key after the version gate and refreshes readiness synchronously', async () => {
+  it.runIf(onMac).each([undefined, { automatic: true } as const])('checks readiness without reading the key (%j)', async request => {
+    const read = vi.fn(async () => { throw new Error('keychain touched'); });
+    const has = vi.fn(async () => true);
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, 'darwin', { has, read });
+    const report = await runtime.checkConnections(request);
+    expect(report.modes.find(item => item.mode === 'antigravity')).toMatchObject({ ready: true });
+    expect(() => runtime.assertReady('antigravity')).not.toThrow();
+    expect(has).toHaveBeenCalledOnce();
+    expect(read).not.toHaveBeenCalled();
+  });
+  it.runIf(onMac)('requires a saved key after the version gate and refreshes readiness synchronously', async () => {
     let key: string | null = null;
-    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, 'darwin', async () => key);
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, 'darwin', { has: async () => !!key, read: async () => key });
     const report = await runtime.checkConnections();
     expect(report.modes.find(item => item.mode === 'antigravity')).toMatchObject({ ready: false, reason: GEMINI_NEEDS_KEY });
     expect(() => runtime.assertReady('antigravity')).toThrow(GEMINI_NEEDS_KEY);
@@ -605,7 +615,8 @@ describe('Gemini API key boundary', () => {
   });
   it.runIf(onMac)('passes the key only to an agy stage, never a version check or Codex', async () => {
     vi.stubEnv('GEMINI_API_KEY', 'fake-inherited-key-must-not-leak');
-    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, 'darwin', async () => fakeKey);
+    const read = vi.fn(async () => fakeKey);
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, 'darwin', { has: async () => true, read });
     const report = await runtime.checkConnections();
     expect(report.modes.find(item => item.mode === 'antigravity')).toMatchObject({ ready: true, warning: GEMINI_KEY_WARNING });
     for (const [request] of vi.mocked(runProcess).mock.calls) expect(request.env?.GEMINI_API_KEY).toBeUndefined();
@@ -613,13 +624,15 @@ describe('Gemini API key boundary', () => {
     vi.mocked(runProcess).mockResolvedValue({ stdout: '', stderr: '', exitCode: 1 });
     await stage(runtime, 'codex').catch(() => {});
     expect(vi.mocked(runProcess).mock.calls[0][0].env?.GEMINI_API_KEY).toBeUndefined();
+    expect(read).not.toHaveBeenCalled();
     vi.mocked(runProcess).mockClear();
     await stage(runtime, 'antigravity').catch(() => {});
     expect(vi.mocked(runProcess).mock.calls[0][0].env?.GEMINI_API_KEY).toBe(fakeKey);
+    expect(read).toHaveBeenCalledOnce();
   });
   it.runIf(onMac)('does not start agy if the key disappears after inspection', async () => {
     const getter = vi.fn<() => Promise<string | null>>().mockResolvedValue(fakeKey);
-    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, 'darwin', getter);
+    const runtime = new LocalAiRuntime(appCodexHome, appAgyHome, 'darwin', { has: async () => true, read: getter });
     await runtime.checkConnections();
     getter.mockResolvedValue(null);
     vi.mocked(runProcess).mockClear();
