@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="처음 보는 TypeScript·JavaScript 프로젝트를 코드 근거와 함께 읽어 나가는 데스크톱 앱입니다. 프로젝트 파일은 읽기만 합니다.">
+  <meta property="og:title" content="Code Learning">
+  <meta property="og:description" content="처음 보는 TypeScript·JavaScript 프로젝트를 코드 근거와 함께 읽어 나가는 데스크톱 앱입니다. 프로젝트 파일은 읽기만 합니다.">
+  <meta property="og:image" content="https://ckdgus222.github.io/code-learning/images/feature-flow.png">
+  <title>Code Learning</title>
+  <link rel="icon" type="image/svg+xml" href="images/icon.svg">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0A1422;
+      --surface: #0D1828;
+      --line: #2A4364;
+      --ink: #DCE8F7;
+      --muted: #93A8C2;
+      --accent: #7DB2F8;
+      --accent-ink: #0B1626;
+      color: var(--ink);
+      background: var(--bg);
+      font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", system-ui, sans-serif;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        color-scheme: light;
+        --bg: #F7FAFD;
+        --surface: #FFFFFF;
+        --line: #C8D6E7;
+        --ink: #183B63;
+        --muted: #56677D;
+        --accent: #285EAC;
+        --accent-ink: #FFFFFF;
+      }
+    }
+    * { box-sizing: border-box; }
+    /* keep-all breaks Korean at spaces, not mid-word; anywhere still wraps a long unbroken string. */
+    body { max-width: 1072px; margin: 0 auto; padding: 0 16px; word-break: keep-all; overflow-wrap: anywhere; }
+    h1, h2, p, figure { margin: 0; }
+    h1 { font-size: clamp(32px, 6vw, 48px); line-height: 1.2; }
+    h2 { margin-bottom: 12px; font-size: 24px; line-height: 1.4; }
+    p + p { margin-top: 12px; }
+    a { color: var(--accent); text-underline-offset: 4px; }
+    a:hover { text-decoration-thickness: 2px; }
+    a:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+    img { display: block; max-width: 100%; height: auto; }
+    .hero { padding: 48px 0 32px; }
+    .brand { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
+    .brand img { flex: none; width: 72px; }
+    .intro { max-width: 720px; font-size: 20px; }
+    .downloads { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
+    .download {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-height: 48px; padding: 12px 20px;
+      border: 1px solid var(--accent); border-radius: 3px;
+      color: var(--accent-ink); background: var(--accent);
+      font-weight: 600; text-align: center; text-decoration: none;
+    }
+    .download:hover { text-decoration: underline; }
+    .links { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 16px 0 8px; }
+    .muted, figcaption { color: var(--muted); font-size: 14px; }
+    .screenshot { border: 1px solid var(--line); border-radius: 3px; }
+    figcaption { margin-top: 12px; }
+    section { margin-top: 48px; }
+    ul { margin: 0; padding-left: 24px; }
+    li + li { margin-top: 8px; }
+    .feature p { max-width: 800px; margin-bottom: 20px; }
+    .notice { padding: 24px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); }
+    .notice ul + p { margin-top: 16px; }
+    footer { margin-top: 48px; padding: 24px 0 32px; border-top: 1px solid var(--line); }
+    @media (max-width: 540px) {
+      .hero { padding-top: 32px; }
+      .downloads { flex-direction: column; }
+      .notice { padding: 20px 16px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="brand">
+      <img src="images/icon.svg" alt="Code Learning 아이콘" width="1024" height="1024">
+      <h1>Code Learning</h1>
+    </div>
+    <p class="intro">처음 보는 TypeScript·JavaScript 프로젝트를 코드 근거와 함께 읽어 나가는 데스크톱 앱입니다. 프로젝트 파일은 읽기만 합니다.</p>
+    <div class="downloads">
+      <a class="download" href="https://github.com/ckdgus222/code-learning/releases/latest/download/Code-Learning-mac-arm64.dmg" rel="noopener">macOS (Apple silicon) 내려받기</a>
+      <a class="download" href="https://github.com/ckdgus222/code-learning/releases/latest/download/Code-Learning-win-x64-Setup.exe" rel="noopener">Windows (x64) 내려받기</a>
+    </div>
+    <nav class="links" aria-label="프로젝트 링크">
+      <a href="https://github.com/ckdgus222/code-learning/releases" rel="noopener">모든 버전</a>
+      <a href="https://github.com/ckdgus222/code-learning" rel="noopener">GitHub에서 보기</a>
+    </nav>
+    <p class="muted">무료, MIT 라이선스</p>
+  </header>
+  <main>
+    <figure>
+      <img class="screenshot" src="images/feature-flow.png" alt="기능 흐름의 첫 단계에서 화면 코드와 근거 줄을 함께 보는 모습" width="2880" height="1736">
+      <figcaption>스크린샷은 공개 프로젝트 <a href="https://github.com/shadcn-ui/taxonomy" rel="noopener">shadcn-ui/taxonomy</a>(MIT)를 연 화면입니다.</figcaption>
+    </figure>
+
+    <section>
+      <h2>이런 때 씁니다</h2>
+      <ul>
+        <li>AI가 짜 준 코드를 검토할 때</li>
+        <li>새 팀이나 오픈소스 프로젝트의 구조를 파악할 때</li>
+        <li>버튼을 누르면 서버에서 무슨 일이 일어나는지 궁금할 때</li>
+      </ul>
+    </section>
+
+    <section class="feature">
+      <h2>한눈에 보기</h2>
+      <p>README 소개와 코드에서 찾은 화면·요청·서버 기능 수를 보여 주고, 처음 따라갈 기능을 추천합니다. README 소개가 실제 코드와 맞는지는 확인하지 않습니다.</p>
+      <img class="screenshot" src="images/overview.png" alt="README 소개, 프로젝트 구성, 처음 따라갈 기능을 보여 주는 한눈에 보기" width="2880" height="1736" loading="lazy">
+    </section>
+
+    <section class="feature">
+      <h2>기능 흐름 따라가기</h2>
+      <p>화면 → 프론트 처리 → 요청 → 서버 받는 곳 → 서버 처리 → 저장소(DB) 순서로, 기능 하나를 실제 코드와 줄 번호로 따라갑니다. 확실하지 않은 연결은 '추정'으로 표시하고, 찾지 못한 단계는 건너뜁니다.</p>
+      <img class="screenshot" src="images/feature-flow-server.png" alt="서버 처리 단계에서 권한 확인 함수와 DB 호출 코드를 보는 모습" width="2880" height="1736" loading="lazy">
+    </section>
+
+    <section class="feature">
+      <h2>프로젝트 지도</h2>
+      <p>폴더와 파일 사이의 import 관계를 그림으로 봅니다. 화살표는 실행 순서가 아닙니다.</p>
+      <img class="screenshot" src="images/file-map.png" alt="폴더 상자와 import 화살표로 그린 프로젝트 지도" width="2880" height="1736" loading="lazy">
+    </section>
+
+    <section class="feature">
+      <h2>코드 읽기</h2>
+      <p>파일 트리와 검색으로 파일을 열고, 함수 안의 구문 단계와 해당 줄을 함께 봅니다. 함수를 고르고 '이 함수 흐름으로 보기'를 열면 그 함수가 부르는 것과 부르는 곳, 값이 어디서 오는지, TypeScript 타입을 볼 수 있습니다.</p>
+      <img class="screenshot" src="images/code-reading.png" alt="파일 트리, 함수 목록, 고른 함수의 코드를 함께 보는 모습" width="2880" height="1736" loading="lazy">
+    </section>
+
+    <section class="notice">
+      <h2>처음 열 때</h2>
+      <p>macOS에서는 Apple 유료 개발자 프로그램의 서명·공증을 받지 않은 앱이라 처음 실행할 때 Apple 경고가 나옵니다.</p>
+      <p>Windows에서는 코드 서명을 하지 않은 설치 파일이라 SmartScreen의 "Windows의 PC 보호" 경고가 나옵니다.</p>
+      <p><a href="https://github.com/ckdgus222/code-learning#설치" rel="noopener">설치 방법 보기</a></p>
+    </section>
+
+    <section class="notice">
+      <h2>안전</h2>
+      <ul>
+        <li>프로젝트 파일은 읽기만 합니다. 프로젝트 파일을 바꾸지 않고, 프로젝트의 코드·설정·스크립트를 실행하지 않습니다.</li>
+        <li>AI를 쓰지 않으면 코드는 밖으로 나가지 않습니다. 사용 기록 수집(텔레메트리)도 없습니다.</li>
+        <li>AI는 선택 기능입니다. 직접 설치한 AI 프로그램(CLI)인 Codex나 Gemini(Antigravity)를 연결해서 씁니다.</li>
+      </ul>
+      <p><a href="https://github.com/ckdgus222/code-learning#안전과-개인정보" rel="noopener">안전과 개인정보 보기</a></p>
+    </section>
+  </main>
+  <footer>
+    <p><a href="https://github.com/ckdgus222/code-learning/blob/main/LICENSE" rel="noopener">MIT License</a> · <a href="https://github.com/ckdgus222/code-learning" rel="noopener">GitHub</a></p>
+    <p class="muted">macOS(Apple silicon) · Windows(x64)</p>
+  </footer>
+</body>
+</html>
