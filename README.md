@@ -8,7 +8,7 @@ Explore unfamiliar TypeScript and JavaScript projects with evidence from the cod
 [![Platform: macOS (Apple silicon) | Windows (x64)](https://img.shields.io/badge/Platform-macOS%20%28Apple%20silicon%29%20%7C%20Windows%20%28x64%29-555)](#설치)
 [![최신 릴리스](https://img.shields.io/github/v/release/ckdgus222/code-learning)](https://github.com/ckdgus222/code-learning/releases/latest)
 
-**[macOS (Apple silicon) 내려받기](https://github.com/ckdgus222/code-learning/releases/latest/download/Code-Learning-mac-arm64.dmg)** · **[Windows (x64) 내려받기](https://github.com/ckdgus222/code-learning/releases/latest/download/Code-Learning-win-x64-Setup.exe)** · [모든 버전](https://github.com/ckdgus222/code-learning/releases)
+**[macOS (Apple silicon) 내려받기](https://github.com/ckdgus222/code-learning/releases/latest/download/Code-Learning-mac-arm64.dmg)** · **[Windows (x64) 내려받기](https://github.com/ckdgus222/code-learning/releases/latest/download/Code-Learning-win-x64-Setup.exe)** · [모든 버전](https://github.com/ckdgus222/code-learning/releases) · [소개 페이지](https://ckdgus222.github.io/code-learning/)
 
 [설치](#설치) · [사용법](#사용법) · [AI 기능](#ai-기능-선택) · [안전과 개인정보](#안전과-개인정보)
 
