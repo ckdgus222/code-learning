@@ -823,7 +823,7 @@ try {
             return { ok: true, value: { checkedAt: new Date().toISOString(), providers: [], modes: [
               { mode: 'codex', ready: true, reason: '시험용 준비됨' },
               { mode: 'antigravity', ready: status.readable, reason: status.readable ? '시험용 준비됨' : 'API 키 필요',
-                ...(status.readable ? { warning: 'Gemini는 API 키로만 연결해요. 개인 Google 계정 로그인으로 다른 앱에서 Antigravity를 쓰면 Google 약관상 계정이 정지될 수 있어서예요. 무료 등급 키로 보낸 코드와 질문은 Google이 제품 개선에 쓸 수 있어요.' } : {}) },
+                ...(status.readable ? { warning: 'Gemini는 API 키로만 연결해요. Google은 이 앱처럼 Antigravity CLI를 다른 앱에서 실행하는 방식에 개인 Google 로그인을 허용하지 않고, 어기면 Antigravity·Gemini CLI 이용이 정지될 수 있어요. 무료 등급 키로 보낸 코드와 질문은 Google이 제품 개선에 쓸 수 있어요.' } : {}) },
             ] } };
           });
         }, initial);

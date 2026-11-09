@@ -24,7 +24,7 @@ export const WINDOWS_CODEX_READY = `질문을 보낼 수 있어요. 한 AI가 �
 export const WINDOWS_GEMINI_CLOSED = 'Windows에서는 아직 Gemini 단독을 쓸 수 없어요. Antigravity의 도구 차단을 Windows에서 확인하지 못했어요.';
 export const GEMINI_NEEDS_KEY = 'Gemini는 Google AI Studio API 키로만 연결해요. 설정에서 API 키를 넣어 주세요.';
 export const GEMINI_UPDATE_AGY = 'Gemini는 Antigravity CLI 1.4.12 이상에서만 돼요. agy를 업데이트해 주세요.';
-export const GEMINI_KEY_WARNING = 'Gemini는 API 키로만 연결해요. 개인 Google 계정 로그인으로 다른 앱에서 Antigravity를 쓰면 Google 약관상 계정이 정지될 수 있어서예요. 무료 등급 키로 보낸 코드와 질문은 Google이 제품 개선에 쓸 수 있어요.';
+export const GEMINI_KEY_WARNING = 'Gemini는 API 키로만 연결해요. Google은 이 앱처럼 Antigravity CLI를 다른 앱에서 실행하는 방식에 개인 Google 로그인을 허용하지 않고, 어기면 Antigravity·Gemini CLI 이용이 정지될 수 있어요. 무료 등급 키로 보낸 코드와 질문은 Google이 제품 개선에 쓸 수 있어요.';
 const providers: { provider: ProviderId; binary: string }[] = [
   { provider: 'codex', binary: 'codex' }, { provider: 'antigravity', binary: 'agy' }, { provider: 'claude-code', binary: 'claude' },
 ];

@@ -1,7 +1,7 @@
 {
   "name": "universal-code-learning",
   "productName": "Code Learning",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "Read-only app for exploring unfamiliar TypeScript and JavaScript projects",
   "license": "MIT",
