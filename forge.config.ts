@@ -1,5 +1,7 @@
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
+import { FusesPlugin } from '@electron-forge/plugin-fuses';
+import { FuseV1Options, FuseVersion } from '@electron/fuses';
 import { signMacPackages } from './scripts/mac-signing';
 
 export default {
@@ -20,7 +22,7 @@ export default {
     iconUrl: 'https://raw.githubusercontent.com/ckdgus222/code-learning/main/assets/icon/icon.ico',
     noMsi: true,
   }, ['win32'])],
-  // Keep inside-out signing and verification together in this hook instead of osxSign.
+  // FusesPlugin runs in packageAfterCopy, before this final inside-out signing and verification.
   hooks: { postPackage: signMacPackages },
   // These pinned packages ship N-API prebuilts verified in Electron on macOS arm64.
   // tree-sitter 0.21's source build selects C++17, incompatible with Electron 44 headers.
@@ -32,5 +34,15 @@ export default {
       { entry: 'src/workers/analysis.ts', config: 'vite.main.config.ts', target: 'main' },
     ],
     renderer: [{ name: 'main_window', config: 'vite.renderer.config.ts' }],
+  }), new FusesPlugin({
+    version: FuseVersion.V1,
+    // postPackage signs the finished bundle, so the plugin must not reset its signature early.
+    resetAdHocDarwinSignature: false,
+    [FuseV1Options.RunAsNode]: false,
+    [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
+    [FuseV1Options.EnableNodeCliInspectArguments]: false,
+    [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
+    [FuseV1Options.OnlyLoadAppFromAsar]: true,
+    // Keep GrantFileProtocolExtraPrivileges at its default: file:// loads our module scripts.
   })],
 };

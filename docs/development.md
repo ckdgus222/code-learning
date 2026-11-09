@@ -84,6 +84,8 @@ Windows 설치 프로그램은 Windows에서 `npm run make:win`으로 만듭니�
 
 개발 실행은 이 폴더에서 `npm start`입니다. 설치된 의존성 버전은 `package-lock.json`에 고정했습니다. 새 환경에서는 `npm ci` 후 아래 검증을 실행합니다.
 
+tree-sitter 패키지들은 macOS arm64·Windows x64용 N-API 미리 빌드 파일을 포함하므로 설치 스크립트가 필요 없어 `allowScripts`에서 차단하며, `.npmrc`의 `strict-allow-scripts=true`는 검토하지 않은 설치 스크립트가 추가되면 설치를 실패시킵니다.
+
 ```sh
 npm run typecheck
 npm test

@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { checkPlanCompare } from './plan-compare-smoke.mjs';
 import { checkViewSettings, checkCodeColors } from './view-settings-smoke.mjs';
+import { checkPlainLaunch, createInspectableCopy } from './fuse-check.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const packagedApp = {
@@ -60,14 +61,18 @@ await writeFile(path.join(treeFixture, 'api/src/main.ts'), 'export function nest
 await writeFile(path.join(treeFixture, 'api/test/helper.ts'), 'export const helper = 1;\n');
 await writeFile(path.join(treeFixture, 'root.ts'), 'export const root = 1;\n');
 let app;
+let testCopy;
 async function openFunctionFlow(page) {
   await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
   if (await page.locator('.symbols__item[aria-pressed="true"]').count() === 0) await page.locator('.symbols__item').first().click();
   await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
 }
 try {
+  const releaseExecutable = path.join(root, packagedApp);
+  testCopy = await createInspectableCopy(releaseExecutable);
+  await checkPlainLaunch(releaseExecutable, path.join(temp, 'release-profile'));
   app = await electron.launch({
-    executablePath: path.join(root, packagedApp),
+    executablePath: testCopy.executablePath,
     // Playwright pretends the system is light unless told not to; null lets nativeTheme reach the page as on a real Mac.
     args: [`--user-data-dir=${profile}`], chromiumSandbox: true, timeout: 30_000, colorScheme: null,
   });
@@ -78,7 +83,7 @@ try {
   await page.getByRole('heading', { name: 'Code Learning', exact: true }).waitFor();
   ({ app, page } = await checkViewSettings(app, page, async () => {
     await app.close();
-    app = await electron.launch({ executablePath: path.join(root, packagedApp),
+    app = await electron.launch({ executablePath: testCopy.executablePath,
       args: [`--user-data-dir=${profile}`], chromiumSandbox: true, timeout: 30_000, colorScheme: null });
     page = await app.firstWindow();
     await page.getByRole('heading', { name: 'Code Learning', exact: true }).waitFor();
@@ -328,7 +333,8 @@ try {
   await page.getByRole('region', { name: '기능 따라가기', exact: true }).getByText('화면 /login에서 입력 양식을 보내면 시작해요', { exact: true }).waitFor();
   assert.equal(await app.evaluate(() => globalThis.packagedFlowCalls), 0);
   await app.close(); app = undefined;
-  const report = { passed: true, checks: ['screen groups and cached flow selection without flow IPC', 'system light and dark themes, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', onMac ? 'changes from git inside its sandbox' : 'Windows changes unavailable notice', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel'], state };
+  await testCopy.cleanup(); testCopy = undefined;
+  const report = { passed: true, checks: ['screen groups and cached flow selection without flow IPC', 'system light and dark themes, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', onMac ? 'changes from git inside its sandbox' : 'Windows changes unavailable notice', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel', 'release fuses and plain startup', 'UI uses an inspect-enabled temporary copy', 'entire distributed app unchanged'], state };
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {
@@ -337,5 +343,11 @@ try {
   process.exitCode = 1;
 } finally {
   if (app) await app.close().catch(() => {});
+  try { if (testCopy) await testCopy.cleanup(); }
+  catch (error) {
+    console.error(error);
+    await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify({ passed: false, error: String(error) }, null, 2));
+    process.exitCode = 1;
+  }
   await rm(temp, { recursive: true, force: true });
 }

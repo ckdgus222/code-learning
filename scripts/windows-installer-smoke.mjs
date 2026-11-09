@@ -1,11 +1,13 @@
 import { _electron as electron } from 'playwright';
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import os from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
+import { checkPlainLaunch, createInspectableCopy } from './fuse-check.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const artifacts = path.join(root, 'test-results');
@@ -20,6 +22,8 @@ let startMenu;
 let desktopShortcut;
 let diagnostics;
 let iconDiagnostics;
+let testCopy;
+let testProfile;
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true, timeout: 120_000, ...options });
@@ -140,12 +144,18 @@ try {
   assert.ok(!existsSync(database), 'Installation started the app and created learning.sqlite');
   passed.push('Installation did not create learning.sqlite');
 
-  app = await electron.launch({ executablePath: executable, chromiumSandbox: true, timeout: 30_000 });
+  testCopy = await createInspectableCopy(executable);
+  await checkPlainLaunch(executable, path.dirname(database));
+  passed.push('Installed release fuses match and plain first launch creates learning.sqlite');
+  testProfile = await mkdtemp(path.join(os.tmpdir(), 'code-learning-installer-profile-'));
+  app = await electron.launch({ executablePath: testCopy.executablePath,
+    args: [`--user-data-dir=${testProfile}`], chromiumSandbox: true, timeout: 30_000 });
   const page = await app.firstWindow({ timeout: 30_000 });
   await page.getByRole('heading', { name: 'Code Learning', exact: true }).waitFor({ timeout: 30_000 });
   await until(() => assert.ok(existsSync(database), 'First launch did not create learning.sqlite'));
   await closeApp();
-  passed.push('Installed app shows Code Learning and creates learning.sqlite on first launch');
+  await testCopy.cleanup(); testCopy = undefined;
+  passed.push('Temporary copy shows Code Learning and the entire installed app is unchanged');
 
   const shortcuts = startMenuShortcuts();
   assert.ok(shortcuts.length > 0, 'Start Menu shortcut disappeared after first launch');
@@ -168,6 +178,11 @@ try {
   // Attempt removal even after an earlier check fails, and report cleanup failures as test failures.
   if (installStarted) {
     try { await closeApp(); }
+    catch (error) { console.error(error); errors.push(String(error)); }
+    // Check the installed app before the uninstaller intentionally removes it.
+    try { if (testCopy) await testCopy.cleanup(); }
+    catch (error) { console.error(error); errors.push(String(error)); }
+    try { if (testProfile) await rm(testProfile, { recursive: true, force: true }); }
     catch (error) { console.error(error); errors.push(String(error)); }
     try {
       assert.ok(existsSync(updater), 'Cannot uninstall: Update.exe is missing');
