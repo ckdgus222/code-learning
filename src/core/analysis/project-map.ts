@@ -6,8 +6,13 @@ import { assertAllowedFile, MAX_FILE_BYTES, readAllowed, textExtensions } from '
 import { functionName, functionTypes, importOf, measureFunction, parse } from './syntax';
 import { readPathAliases, resolveImport } from './path-aliases';
 import { scriptFilesOf, unusedFiles } from './unused-files';
+import { initFactsOf, mentionsMachinery, pythonImportsOf, resolvePythonImport, type InitFacts, type PythonImport } from './python-imports';
+import { measurePythonFunction, pythonFunction } from './python-syntax';
 
 export const codeFile = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
+export const pythonFile = /\.py$/i;
+// The files the map reads. `codeFile` keeps meaning TS/JS only: the TS/JS-only analyses filter by it.
+const mapFile = (relativePath: string) => codeFile.test(relativePath) || pythonFile.test(relativePath);
 // Plan v2.3 A: a relative path without an extension may name one of these files or its folder's index file.
 // TS importers also consider the TS counterpart of an explicit JS extension; multiple files stay ambiguous.
 export const EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
@@ -121,6 +126,137 @@ function scanTree(text: string, relativePath: string, nodeBudget: number) {
 const linesOf = (node: Parser.SyntaxNode) => ({ startLine: node.startPosition.row + 1,
   endLine: Math.max(node.startPosition.row + 1, node.endPosition.row + (node.endPosition.column === 0 ? 0 : 1)) });
 
+// Characters of Python import material one map may hold, counted twice against the same number: what the
+// scans keep until every package's facts are known (import statements, the names an __init__.py binds), and
+// the results (statement text, paths, names, reasons). Files of nothing but imports would otherwise take
+// many times the memory of the code they were read from.
+const MAX_PYTHON_RESULT = 2_000_000;
+const PYTHON_RESULT_NOTE = 'Python import 결과가 너무 많아 일부만 적었어요. 그 뒤의 Python import는 연결을 보지 않았어요.';
+// The same kind of bound for the Python functions listed as hard to read: a file of tiny deeply nested
+// functions would otherwise list one for every few lines.
+const MAX_PYTHON_FUNCTIONS = 500_000;
+const PYTHON_FUNCTIONS_NOTE = 'Python의 어려운 함수가 너무 많아 일부만 적었어요.';
+// Fixed fields of one kept entry (ids, hash, numbers) are counted as this many characters.
+const ENTRY_SIZE = 100;
+
+/** Characters still free in one map for what Python scans keep. Below zero: the rest was left out. */
+interface PythonRoom { imports: number; functions: number }
+
+interface PythonScan {
+  relativePath: string;
+  statements: { evidence: MapImport; imports: PythonImport[]; syntax: boolean }[];
+  functions: ProjectMap['complexFunctions'];
+  plain: boolean;
+  init: InitFacts | null;
+  reason: string | null;
+}
+
+/** Retain values, never tree nodes: package facts must be known before resolving any Python import. */
+function scanPython(text: string, hash: string, file: ProjectFile, nodeBudget: number, room: PythonRoom): PythonScan {
+  const root = parse(text, file.relativePath);
+  const scan: PythonScan = { relativePath: file.relativePath, statements: [], functions: [], plain: false, init: null, reason: null };
+  const pending = [{ node: root, inBroken: false }];
+  let visited = 0;
+  let machinery = false;
+  while (pending.length) {
+    if (++visited > nodeBudget) { scan.reason = '분석량 한도에 닿아 파일 뒷부분의 import와 함수는 보지 않았어요.'; break; }
+    const { node, inBroken } = pending.pop()!;
+    if (node.nextNamedSibling) pending.push({ node: node.nextNamedSibling, inBroken });
+    if (node.isError || node.isMissing) continue;
+    // Checked name by name inside this walk, so the node budget also bounds the check.
+    if (node.type === 'identifier' && mentionsMachinery(node)) machinery = true;
+    if (node.type === 'import_statement' || node.type === 'import_from_statement') {
+      // Counted by its length in the file, which also bounds the names it lists.
+      room.imports -= node.endIndex - node.startIndex + ENTRY_SIZE;
+      if (room.imports >= 0) {
+        const statement = node.text;
+        scan.statements.push({ imports: pythonImportsOf(node), syntax: node.hasError,
+          evidence: { fromFileId: file.id, fileHash: hash, startUtf16: node.startIndex, endUtf16: node.endIndex,
+            ...linesOf(node), text: statement.length > MAX_TEXT ? `${statement.slice(0, MAX_TEXT)}…` : statement, specifier: null } });
+      }
+    }
+    const fn = inBroken ? null : pythonFunction(node);
+    const size = fn && measurePythonFunction(fn.body, text);
+    if (fn && size && (size.lines > COMPLEXITY_LIMITS.lines || size.depth > COMPLEXITY_LIMITS.depth)) {
+      room.functions -= fn.name.length + ENTRY_SIZE;
+      if (room.functions >= 0) {
+        scan.functions.push({ fileId: file.id, fileHash: hash, startUtf16: fn.declaration.startIndex, endUtf16: fn.declaration.endIndex,
+          ...linesOf(fn.declaration), name: fn.name, ...size });
+      }
+    }
+    if (node.firstNamedChild) pending.push({ node: node.firstNamedChild,
+      inBroken: inBroken || (node.type === 'function_definition' && node.hasError) });
+  }
+  scan.reason ??= root.hasError ? '구문 오류가 있어 오류 구역 안의 import와 함수는 놓쳤을 수 있어요.' : null;
+  scan.plain = !scan.reason && !machinery;
+  if (!scan.reason && room.imports >= 0 && path.posix.basename(file.relativePath) === '__init__.py') {
+    // Kept as long as the statements, so the names share their room (ten more characters a name for the
+    // set that holds it). A package left without facts has its imports listed as candidates, never drawn.
+    scan.init = initFactsOf(root);
+    for (const name of scan.init ?? []) room.imports -= name.length + 10;
+  }
+  return scan;
+}
+
+const lengthOf = (texts: string[]) => texts.reduce((total, text) => total + text.length, 0);
+
+/** Adds the kept statements' results to the map; false when the map's size limit stopped it. */
+async function settlePythonImports(scans: PythonScan[], known: Map<string, ProjectFile>, map: Omit<ProjectMap, 'unused'>,
+  available: (relative: string) => Promise<boolean>, shouldStop: () => boolean): Promise<boolean> {
+  let left = MAX_PYTHON_RESULT;
+  // False once the next entry no longer fits.
+  const fits = (size: number) => { if (size > left) return false; left -= size; return true; };
+  const cancelled = () => new AppError('CANCELLED', '지도 만들기를 취소했어요.');
+  const byPath = new Map(scans.map(scan => [scan.relativePath, scan]));
+  const paths = new Set(known.keys());
+  const facts = { init: (name: string) => byPath.get(name)?.init ?? null, plain: (name: string) => byPath.get(name)?.plain ?? false };
+
+  /** Adds one statement's entries to the map; false when the map's size limit stopped it. */
+  const settle = async (relativePath: string, { evidence, imports, syntax }: PythonScan['statements'][number]): Promise<boolean> => {
+    const base = evidence.text.length + ENTRY_SIZE;
+    if (syntax) {
+      if (!fits(base)) return false;
+      map.unresolved.push({ ...evidence, reason: 'syntax', candidates: [] });
+      return true;
+    }
+    const seen = new Set<string>();
+    // One module of the statement at a time (`import a, b, c` names several), so a cancel or the size limit
+    // stops before the rest is worked out.
+    for (const imported of imports) {
+      for (const target of resolvePythonImport(relativePath, imported, paths, facts)) {
+        if (shouldStop()) throw cancelled();
+        if (target.kind === 'file' && seen.has(target.relativePath)) continue;
+        const size = base + target.specifier.length + (target.kind === 'unresolved'
+          ? (target.reasonText?.length ?? 0) + lengthOf(target.candidates)
+          : target.kind === 'file' && target.names !== 'all' ? lengthOf(target.names) : 0);
+        if (!fits(size)) return false;
+        const item = { ...evidence, specifier: target.specifier };
+        if (target.kind === 'external') { map.external.push(item); continue; }
+        if (target.kind === 'unresolved') {
+          map.unresolved.push({ ...item, reason: target.reason, candidates: target.candidates, reasonText: target.reasonText });
+          continue;
+        }
+        seen.add(target.relativePath);
+        if (!await available(target.relativePath)) {
+          map.unresolved.push({ ...item, reason: 'unavailable', candidates: [target.relativePath] });
+          continue;
+        }
+        map.edges.push({ ...item, toFileId: known.get(target.relativePath)!.id, names: target.names });
+      }
+    }
+    return true;
+  };
+
+  for (const scan of scans) {
+    for (const statement of scan.statements) {
+      // One file can hold very many imports, so a cancel is checked for each statement and each result.
+      if (shouldStop()) throw cancelled();
+      if (!await settle(scan.relativePath, statement)) return false;
+    }
+  }
+  return true;
+}
+
 export const isRelative = (specifier: string) =>
   specifier === '.' || specifier === '..' || specifier.startsWith('./') || specifier.startsWith('../');
 
@@ -170,13 +306,15 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
     return availability.get(relative)!;
   };
 
+  const python: PythonScan[] = [];
+  const pythonRoom: PythonRoom = { imports: MAX_PYTHON_RESULT, functions: MAX_PYTHON_FUNCTIONS };
   let filesRead = 0;
   const aliases = await readPathAliases(root, files, limits.bytes, shouldStop);
   map.notes.push(...aliases.notes);
   const aliasCount = aliases.configs.filter(config => config.readable && (config.paths.length || config.baseUrl !== null)).length;
   if (aliasCount) map.notes.push(`tsconfig ${aliasCount}개의 경로 별칭을 따라갔어요.`);
   let bytesRead = aliases.bytesRead;
-  const codeFiles = files.filter(file => codeFile.test(file.relativePath))
+  const codeFiles = files.filter(file => mapFile(file.relativePath))
     .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   for (const file of codeFiles) {
     // A cancel is checked between files: ending the thread while Tree-sitter parses aborts the whole process.
@@ -198,6 +336,13 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
       continue;
     }
     bytesRead += Buffer.byteLength(source.text);
+    if (pythonFile.test(file.relativePath)) {
+      const scan = scanPython(source.text, source.hash, file, limits.nodesPerFile, pythonRoom);
+      python.push(scan);
+      place(file, scan.reason ? 'partial' : 'full', scan.reason);
+      map.complexFunctions.push(...scan.functions);
+      continue;
+    }
     const { found, functions, exports, reason } = scanTree(source.text, file.relativePath, limits.nodesPerFile);
     place(file, reason ? 'partial' : 'full', reason);
     map.exports.push(...exports.map(item => ({ ...item, fileId: file.id, fileHash: source.hash })));
@@ -240,13 +385,17 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
             .flatMap(part => part.childForFieldName('name')?.text ?? []);
         }) ?? [];
         map.edges.push({ ...item, toFileId: target.id, names: all ? 'all' : names });
-        if (!codeFile.test(target.relativePath) && !placed.has(target.id)) place(target, 'not-code', null);
+        if (!mapFile(target.relativePath) && !placed.has(target.id)) place(target, 'not-code', null);
         continue;
       }
       map.unresolved.push({ ...item, reason: !named.length ? 'not-found' : !usable.length ? 'unavailable' : 'ambiguous',
         candidates: usable.length ? usable : named });
     }
   }
+  if (pythonRoom.functions < 0) map.notes.push(PYTHON_FUNCTIONS_NOTE);
+  const settled = await settlePythonImports(python, known, map, available, shouldStop);
+  if (!settled || pythonRoom.imports < 0) map.notes.push(PYTHON_RESULT_NOTE);
+  if (python.length) map.notes.push('Python import는 점으로 시작하는 상대 import와, 파일이 속한 최상위 패키지 이름으로 시작하는 import만 선으로 이었어요. 그 밖의 import는 실행 방법·Python 버전·설치된 패키지에 따라 달라져서, 후보 파일을 ‘확인 못 함’에 적었어요. importlib처럼 실행 중에 정하는 import는 보지 않았어요.');
   if (map.limited) map.notes.push(`지도는 파일 ${limits.files}개·합계 ${limits.bytes / 1024 / 1024} MiB까지만 읽어요. 나머지 파일의 연결은 보지 않았어요.`);
   map.files = [...placed.values()].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   const scripts = await scriptFilesOf(root, files, known, limits.bytes - bytesRead, shouldStop);

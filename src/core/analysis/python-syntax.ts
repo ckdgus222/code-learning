@@ -7,7 +7,7 @@ const definitions = new Set(['function_definition', 'class_definition', 'decorat
 const imports = new Set(['import_statement', 'import_from_statement', 'future_import_statement']);
 
 /** Bare strings do not run code, but an interpolated f-string does. */
-function stringOnly(node: Parser.SyntaxNode): boolean {
+export function stringOnly(node: Parser.SyntaxNode): boolean {
   if (node.type !== 'expression_statement' || node.namedChildCount !== 1) return false;
   let value = node.firstNamedChild!;
   while (value.type === 'parenthesized_expression') {
@@ -120,8 +120,22 @@ function stepsFor(body: Parser.SyntaxNode, text: string, budget: AnalysisBudget)
 function declarationName(node: Parser.SyntaxNode, declaration: Parser.SyntaxNode): string {
   const owner = declaration.parent?.type === 'block' ? declaration.parent.parent : null;
   const className = owner?.type === 'class_definition' ? owner.childForFieldName('name')?.text : null;
-  const name = node.childForFieldName('name')!.text;
-  return className ? `${className}.${name}` : name;
+  // Names are shown, not matched: each part is cut short, since a class name repeats in every method's name.
+  const name = clip(node.childForFieldName('name')!.text);
+  return className ? `${clip(className)}.${name}` : name;
+}
+
+/** The analyzer's function, with decorators included in its evidence range. */
+export function pythonFunction(node: Parser.SyntaxNode): { declaration: Parser.SyntaxNode; name: string; body: Parser.SyntaxNode } | null {
+  if (node.type !== 'function_definition' || node.hasError) return null;
+  const body = node.childForFieldName('body');
+  if (!body) return null;
+  const declaration = node.parent?.type === 'decorated_definition' ? node.parent : node;
+  return { declaration, name: declarationName(node, declaration), body };
+}
+
+export function measurePythonFunction(body: Parser.SyntaxNode, text: string): { lines: number; depth: number } {
+  return measureBody(body, text, pythonRules);
 }
 
 /** Python functions, their steps, classes and imports (static syntax only; nothing is run or resolved). */
@@ -141,14 +155,14 @@ export function collectPython(root: Parser.SyntaxNode, text: string, result: Ana
         bases: clip(node.childForFieldName('superclasses')?.text ?? ''), evidence: budget.evidence(declaration),
       });
     }
-    const body = node.type === 'function_definition' ? node.childForFieldName('body') : null;
-    if (body) {
+    const fn = pythonFunction(node);
+    if (fn) {
       if (result.symbols.length >= MAX_SYMBOLS) { budget.limited = true; break; }
-      const declaration = node.parent?.type === 'decorated_definition' ? node.parent : node;
+      const { declaration, name, body } = fn;
       result.symbols.push({
-        id: randomUUID(), name: declarationName(node, declaration), kind: 'function_definition',
+        id: randomUUID(), name, kind: 'function_definition',
         params: clip(node.childForFieldName('parameters')?.text ?? ''), exported: false,
-        evidence: budget.evidence(declaration), steps: stepsFor(body, text, budget), complexity: measureBody(body, text, pythonRules),
+        evidence: budget.evidence(declaration), steps: stepsFor(body, text, budget), complexity: measurePythonFunction(body, text),
       });
     }
     if (node.firstNamedChild) pending.push(node.firstNamedChild);

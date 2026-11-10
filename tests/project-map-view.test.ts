@@ -57,7 +57,7 @@ it('renders file map contents without a page wrapper or title', () => {
   expect(html).not.toContain('class="page');
   expect(html).toContain('지도 다시 만들기');
   expect(html).toContain('data-testid="map-canvas"');
-  expect(html).toContain('지도는 TS/JS 파일의 import만 봐요.');
+  expect(html).toContain('지도는 TS/JS와 Python 파일의 import만 봐요.');
 });
 
 it.each([undefined, 0, 1080])('sets canvas height and lets wheel events scroll the page only with height=%s', height => {
@@ -920,4 +920,23 @@ describe('file map side cards', () => {
       expect(html).toContain('바뀐 파일');
     }
   });
+});
+
+it('gives distinct row keys to one Python statement in all four import lists', () => {
+  const first = { ...map.edges[0], text: 'from . import b, root', specifier: '.', names: 'all' as const };
+  const source: ProjectMap = { ...map,
+    files: map.files.map(file => ({ ...file, relativePath: file.relativePath.replace(/\.ts$/, '.py') })),
+    edges: [first, { ...first, toFileId: 'root' }, { ...first, fromFileId: 'b', toFileId: 'a' }, { ...first, fromFileId: 'root', toFileId: 'a' }],
+    unresolved: [{ ...first, reason: 'ambiguous', candidates: ['web/b.py'] }, { ...first, reason: 'ambiguous', candidates: ['root.py'] }],
+  };
+  const selected = { ...visibleGraph(source, new Set()).arrows[0], items: source.edges.slice(0, 2) };
+  const html = render(new Set(), null, null, source, selected);
+  const lists = vi.mocked(JSX.jsxDEV).mock.results.map(result => result.value as React.ReactElement<{ children?: React.ReactElement[] }>)
+    .filter(element => element.type === 'ul' && Array.isArray(element.props.children))
+    .map(element => element.props.children!.filter(child => child.type === 'li' && child.key?.startsWith('a:0')))
+    .filter(rows => rows.length === 2);
+  expect(lists).toHaveLength(4);
+  for (const rows of lists) expect(new Set(rows.map(row => row.key)).size).toBe(2);
+  expect(html).toContain('지도는 TS/JS와 Python 파일의 import만 봐요.');
+  expect(html).toContain('Python은 표준 라이브러리와 설치한 패키지가 여기에 들어가요.');
 });

@@ -342,7 +342,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
     </section>
     {selected && <section className="card" aria-label="고른 화살표의 근거">
       <h3>고른 화살표의 근거 · import {selected.items.length}개</h3>
-      <ul className="map-list">{firstRows(selected.items).map(item => <li key={`${item.fromFileId}:${item.startUtf16}`}>
+      <ul className="map-list">{firstRows(selected.items).map((item, index) => <li key={`${item.fromFileId}:${item.startUtf16}:${index}`}>
         <span className="path">{pathOf(item.fromFileId)} {item.startLine}행 → {pathOf(item.toFileId)}</span> <code>{item.text}</code> {showButton(item)}
       </li>)}</ul>
       <Omitted count={selected.items.length} />
@@ -363,7 +363,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
           onClick={() => onOpenFile(file.id)}>{file.relativePath}</button>)}
         <Omitted count={group.files.length} />
         <details><summary>묶음 안 import {group.imports.length}개</summary>
-          <ul className="map-list">{firstRows(group.imports).map(item => <li key={`${item.fromFileId}:${item.startUtf16}`}>
+          <ul className="map-list">{firstRows(group.imports).map((item, index) => <li key={`${item.fromFileId}:${item.startUtf16}:${index}`}>
             <span className="path">{pathOf(item.fromFileId)} {item.startLine}행 → {pathOf(item.toFileId)}</span> <code>{item.text}</code> {showButton(item)}
           </li>)}</ul>
           <Omitted count={group.imports.length} />
@@ -416,20 +416,20 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
       <Omitted count={map.complexFunctions.length} />
     </section>
     <details className="card"><summary>연결 목록 · {map.edges.length}개</summary>
-      <ul className="map-list">{firstRows(map.edges).map(item => <li key={`${item.fromFileId}:${item.startUtf16}`}>
+      <ul className="map-list">{firstRows(map.edges).map((item, index) => <li key={`${item.fromFileId}:${item.startUtf16}:${index}`}>
         <span className="path">{pathOf(item.fromFileId)} {item.startLine}행 → {pathOf(item.toFileId)}</span> {showButton(item)}
       </li>)}</ul>
       <Omitted count={map.edges.length} />
     </details>
     <details className="card" open={map.unresolved.length > 0}><summary id="map-unresolved" tabIndex={-1}>확인 못 함 · {map.unresolved.length}개</summary>
-      <ul className="map-list">{firstRows(map.unresolved).map(item => <li key={`${item.fromFileId}:${item.startUtf16}`}>
+      <ul className="map-list">{firstRows(map.unresolved).map((item, index) => <li key={`${item.fromFileId}:${item.startUtf16}:${index}`}>
         <span className="path">{pathOf(item.fromFileId)} {item.startLine}행</span> <code>{item.text}</code> · {item.reasonText ?? unresolvedLabels[item.reason]}
         {item.candidates.length > 0 && <> · 후보: {item.candidates.join(', ')}</>} {showButton(item)}
       </li>)}</ul>
       <Omitted count={map.unresolved.length} />
     </details>
     <details className="card"><summary>외부 패키지 또는 경로 별칭 · {externals.length}개</summary>
-      <p className="hint">import 글만으로는 설치한 패키지와 경로 별칭(@/… 등)을 구분할 수 없어 선을 긋지 않았어요.</p>
+      <p className="hint">import 글만으로는 설치한 패키지와 경로 별칭(@/… 등)을 구분할 수 없어 선을 긋지 않았어요. Python은 표준 라이브러리와 설치한 패키지가 여기에 들어가요.</p>
       <ul className="map-list">{firstRows(externals).map(([specifier, count]) => <li key={specifier}><code>{specifier}</code> · {count}곳</li>)}</ul>
       <Omitted count={externals.length} />
     </details>
@@ -462,6 +462,6 @@ export function ProjectMapView({ project, entry, stale, mapping, locked, changes
     </div>
     {entry && <MapBody key={entry.build} map={entry.map} changes={changes} locked={locked} onOpenFile={onOpenFile} onShowImport={onShowImport}
       onShowFunction={onShowFunction} onShowChange={onShowChange} />}
-    <p className="hint">지도는 TS/JS 파일의 import만 봐요. 새 파일은 폴더를 다시 열어야 지도에 들어와요.</p>
+    <p className="hint">지도는 TS/JS와 Python 파일의 import만 봐요. 새 파일은 폴더를 다시 열어야 지도에 들어와요.</p>
   </>;
 }

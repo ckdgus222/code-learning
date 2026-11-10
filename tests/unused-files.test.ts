@@ -464,3 +464,17 @@ it('resolves dynamic alias candidates without counting them as computed paths', 
   expect(result.candidates.map(item => item.relativePath)).toEqual(['from.ts']);
   expect(result.notes.some(note => note.includes('코드로 정하는'))).toBe(false);
 });
+
+it('adds Python notes only when Python is present and keeps both TS candidate lists unchanged', () => {
+  const original = mapOf([file('a.ts'), file('b.ts')], { exports: [{ fileId: 'a.ts', fileHash: 'h', name: 'value', displayName: 'value', kind: 'value',
+    startUtf16: 0, endUtf16: 10, startLine: 1, endLine: 1, usedInFile: false }] });
+  const before = unusedFiles(original, scripts());
+  const after = unusedFiles({ ...original, files: [...original.files, file('pkg/main.py'), file('pkg/other.py', { checked: 'partial' })],
+    edges: [{ ...imported('.other', 'pkg/main.py'), toFileId: 'pkg/other.py', names: 'all' }],
+    unresolved: [{ ...imported('a', 'pkg/main.py'), reason: 'ambiguous', candidates: ['pkg/a.py'] }],
+    external: [imported('a', 'pkg/main.py')] }, scripts());
+  expect(after).toEqual({ ...before, notes: ['Python 파일은 이 후보 목록에서 다루지 않아요.', ...before.notes],
+    exports: { ...before.exports, notes: ['Python 파일의 함수·클래스는 이 후보 목록에서 다루지 않아요.', ...before.exports.notes] } });
+  expect(before.notes.join(' ')).not.toContain('Python');
+  expect(before.exports.notes.join(' ')).not.toContain('Python');
+});

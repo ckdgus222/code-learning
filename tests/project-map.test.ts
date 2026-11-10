@@ -515,3 +515,319 @@ describe('path aliases in the map', () => {
     expect(map.edges).toEqual([]);
   });
 });
+
+describe('Python project maps', () => {
+  it('settles relative and own-package imports after reading initializers, preserving statement evidence and TS results', async () => {
+    const beforeProject = await scanProject(root, randomUUID());
+    const before = await mapOf(beforeProject);
+    const sources: Record<string, string> = {
+      'app/__init__.py': 'from .models import Item\n',
+      'app/models.py': 'class Item: pass\n',
+      'app/service.py': '# 😀\nfrom .models import Item\nimport os.path\nfrom os import getenv\nfrom fastapi.responses import Response\nfrom . import models, service, absent\nfrom .missing import X\nfrom ... import outside\nfrom . import (x as)\n',
+      'app/api.py': 'from app.service import total\nimport app.models, app.models as same\nfrom __future__ import annotations\n',
+      'main.py': 'from app.api import run\n',
+    };
+    for (const [name, source] of Object.entries(sources)) await put(name, source);
+    const project = await scanProject(root, randomUUID());
+    const result = await mapOf(project);
+    const pythonIds = new Set(project.files.filter(file => file.relativePath.endsWith('.py')).map(file => file.id));
+    const pathOf = (id: string) => project.files.find(file => file.id === id)!.relativePath;
+    const pythonEdges = result.edges.filter(edge => pythonIds.has(edge.fromFileId));
+    // The syntax error makes service.py non-plain, so its otherwise valid imports remain candidates.
+    expect(pythonEdges.map(edge => [pathOf(edge.fromFileId), edge.startLine, pathOf(edge.toFileId)])).toEqual([
+      ['app/__init__.py', 1, 'app/models.py'], ['app/api.py', 1, 'app/service.py'], ['app/api.py', 2, 'app/models.py'],
+    ]);
+    expect(result.external.filter(item => pythonIds.has(item.fromFileId)).map(item => item.specifier)).toEqual(['os', 'os', 'fastapi']);
+    expect(result.unresolved.filter(item => pythonIds.has(item.fromFileId)).map(item => item.reason))
+      .toEqual(['ambiguous', 'ambiguous', 'ambiguous', 'ambiguous', 'not-found', 'outside', 'syntax', 'ambiguous']);
+    expect(result.unresolved.find(item => pathOf(item.fromFileId) === 'main.py')).toMatchObject({ candidates: ['app/api.py'],
+      reasonText: '코드만으로는 확정하지 못했어요. 실행 방법, Python 버전, 설치된 패키지에 따라 이 파일이 아닐 수 있어요.' });
+    expect(result.exports.every(item => !pythonIds.has(item.fileId))).toBe(true);
+    expect(result.notes).toContain('Python import는 점으로 시작하는 상대 import와, 파일이 속한 최상위 패키지 이름으로 시작하는 import만 선으로 이었어요. 그 밖의 import는 실행 방법·Python 버전·설치된 패키지에 따라 달라져서, 후보 파일을 ‘확인 못 함’에 적었어요. importlib처럼 실행 중에 정하는 import는 보지 않았어요.');
+    expect(result.files.filter(file => pythonIds.has(file.id)).map(file => [file.relativePath, file.checked]))
+      .toEqual(Object.keys(sources).sort((a, b) => a.localeCompare(b)).map(name => [name, name === 'app/service.py' ? 'partial' : 'full']));
+    for (const item of [...result.edges, ...result.external, ...result.unresolved].filter(item => pythonIds.has(item.fromFileId))) {
+      const source = sources[pathOf(item.fromFileId)];
+      const analysis = analyzeSource(source, pathOf(item.fromFileId), { projectId: project.id, fileId: item.fromFileId, fileHash: item.fileHash });
+      expect(source.slice(item.startUtf16, item.endUtf16)).toBe(item.text);
+      expect(item.fileHash).toBe(createHash('sha256').update(source).digest('hex'));
+      expect(analysis.imports.some(entry => entry.evidence.startUtf16 === item.startUtf16 && entry.evidence.endUtf16 === item.endUtf16)).toBe(true);
+    }
+    const ts = { ...result, edges: result.edges.filter(item => !pythonIds.has(item.fromFileId)),
+      external: result.external.filter(item => !pythonIds.has(item.fromFileId)), unresolved: result.unresolved.filter(item => !pythonIds.has(item.fromFileId)) };
+    expect(readable(project, ts)).toEqual(readable(beforeProject, before));
+    expect(result.unused.candidates.map(item => item.relativePath)).toEqual(before.unused.candidates.map(item => item.relativePath));
+    expect(result.unused.unsure.map(item => item.relativePath)).toEqual(before.unused.unsure.map(item => item.relativePath));
+    expect(result.edges.slice(-pythonEdges.length)).toEqual(pythonEdges);
+  });
+
+  it('makes several arrows from one statement, deduplicates modules and includes decorated complex functions', async () => {
+    const source = `from . import models, service, models\n@decorate\ndef long():\n${'    work()\n'.repeat(61)}`;
+    await put('pkg/__init__.py', '');
+    await put('pkg/main.py', source);
+    await put('pkg/models.py', '');
+    await put('pkg/service.py', '');
+    const project = await scanProject(root, randomUUID());
+    const result = await mapOf(project);
+    const main = project.files.find(file => file.relativePath === 'pkg/main.py')!;
+    const edges = result.edges.filter(item => item.fromFileId === main.id);
+    expect(edges.map(edge => project.files.find(file => file.id === edge.toFileId)!.relativePath)).toEqual(['pkg/models.py', 'pkg/service.py']);
+    expect(edges[0].startUtf16).toBe(edges[1].startUtf16);
+    const fn = result.complexFunctions.find(item => item.fileId === main.id)!;
+    const analyzed = analyzeSource(source, 'pkg/main.py', { projectId: project.id, fileId: main.id, fileHash: fn.fileHash }).symbols[0];
+    expect(fn).toMatchObject({ name: 'long', lines: 61, startUtf16: analyzed.evidence.startUtf16, endUtf16: analyzed.evidence.endUtf16 });
+    expect(source.slice(fn.startUtf16, fn.endUtf16)).toMatch(/^@decorate/);
+  });
+
+  it('withholds arrows through an initializer cut short by the node budget', async () => {
+    await put('pkg/__init__.py', 'pass\n'.repeat(40));
+    await put('pkg/main.py', 'from . import models\n');
+    await put('pkg/models.py', '');
+    const project = await scanProject(root, randomUUID());
+    const result = await mapOf(project, [], { ...MAP_LIMITS, nodesPerFile: 20 });
+    expect(result.files.find(file => file.relativePath === 'pkg/__init__.py')).toMatchObject({ checked: 'partial', reason: expect.stringContaining('분석량 한도') });
+    const main = project.files.find(file => file.relativePath === 'pkg/main.py')!;
+    expect(result.edges.filter(item => item.fromFileId === main.id)).toEqual([]);
+    expect(result.unresolved.filter(item => item.fromFileId === main.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason: 'ambiguous', candidates: ['pkg/models.py'], reasonText: expect.stringContaining('import 동작을 바꿀 수 있는 이름') }),
+    ]));
+  });
+
+  it.each(['deleted', 'excluded', 'linked'] as const)('rechecks target availability after the scan: %s', async change => {
+    await put('pkg/main.py', 'from .model import X\n');
+    await put('pkg/model.py', 'class X: pass\n');
+    const project = await scanProject(root, randomUUID());
+    if (change === 'excluded') await appendFile(path.join(root, '.gitignore'), 'pkg/model.py\n');
+    if (change !== 'excluded') await rm(path.join(root, 'pkg/model.py'));
+    if (change === 'linked') await symlink(path.join(root, 'src/a.ts'), path.join(root, 'pkg/model.py'));
+    const result = await mapOf(project);
+    const main = project.files.find(file => file.relativePath === 'pkg/main.py')!;
+    expect(result.unresolved.filter(item => item.fromFileId === main.id)).toMatchObject([{ reason: 'unavailable', candidates: ['pkg/model.py'] }]);
+    expect(result.files.find(file => file.relativePath === 'pkg/model.py')?.checked).toBe('failed');
+  });
+
+  it('keeps unreadable Python files failed and does not add the read-Python note for them', async () => {
+    await put('broken.py', Buffer.from([0xff, 0xfe]));
+    const project = await scanProject(root, randomUUID());
+    const result = await mapOf(project);
+    expect(result.files.find(file => file.relativePath === 'broken.py')).toMatchObject({ checked: 'failed', reason: 'UTF-8로 읽을 수 없는 파일입니다.' });
+    expect(result.notes.some(note => note.startsWith('Python import'))).toBe(false);
+  });
+
+  it.each(['file', 'byte'] as const)('shares the %s limit across languages', async kind => {
+    await put('a.py', 'pass\n');
+    await put('b.ts', 'const b = 1;\n');
+    await put('c.py', 'pass\n');
+    const project = await scanProject(root, randomUUID());
+    const files = project.files.filter(file => ['a.py', 'b.ts', 'c.py'].includes(file.relativePath));
+    const limits = { ...MAP_LIMITS, ...(kind === 'file' ? { files: 2 } : { bytes: Buffer.byteLength('pass\nconst b = 1;\n') }) };
+    const result = await buildProjectMap(root, project.id, files, [], limits);
+    expect(result.files.map(file => [file.relativePath, file.checked])).toEqual([['a.py', 'full'], ['b.ts', 'full'], ['c.py', 'skipped']]);
+    expect(result.limited).toBe(true);
+    expect(result.notes).toContain(`지도는 파일 ${limits.files}개·합계 ${limits.bytes / 1024 / 1024} MiB까지만 읽어요. 나머지 파일의 연결은 보지 않았어요.`);
+  });
+
+  it('uses the same code placement predicate for a TS import of a skipped Python file', async () => {
+    await put('a.ts', "import './z.py';\n");
+    await put('z.py', 'pass\n');
+    const project = await scanProject(root, randomUUID());
+    const result = await buildProjectMap(root, project.id, project.files.filter(file => ['a.ts', 'z.py'].includes(file.relativePath)), [], { ...MAP_LIMITS, files: 1 });
+    expect(result.files.map(file => [file.relativePath, file.checked])).toEqual([['a.ts', 'full'], ['z.py', 'skipped']]);
+    expect(result.edges).toHaveLength(1);
+  });
+
+  it('clips long Python evidence text and ignores dynamic calls and future imports', async () => {
+    const source = `from __future__ import annotations\nimportlib.import_module('x')\n__import__('y')\nfrom .model import ${'long_name_'.repeat(40)}\n`;
+    await put('pkg/main.py', source);
+    await put('pkg/model.py', '');
+    const project = await scanProject(root, randomUUID());
+    const result = await mapOf(project);
+    const main = project.files.find(file => file.relativePath === 'pkg/main.py')!;
+    const items = [...result.edges, ...result.unresolved, ...result.external].filter(item => item.fromFileId === main.id);
+    expect(items).toHaveLength(1);
+    expect(items[0].text.length).toBe(301);
+    expect(items[0].text.endsWith('…')).toBe(true);
+    expect(source.slice(items[0].startUtf16, items[0].endUtf16).length).toBeGreaterThan(300);
+  });
+
+  it('bounds the Python results one map carries and says so', async () => {
+    // Six same-named files no import path reaches: each import is one entry of about 230 characters.
+    for (let index = 0; index < 6; index++) await put(`lib${index}/a.py`, '');
+    await put('main.py', 'import a\n'.repeat(12_000));
+    const project = await scanProject(root, randomUUID());
+    const result = await mapOf(project);
+    const main = project.files.find(file => file.relativePath === 'main.py')!;
+    const entries = result.unresolved.filter(item => item.fromFileId === main.id);
+    expect(entries[0].candidates).toEqual(['lib0/a.py', 'lib1/a.py', 'lib2/a.py', 'lib3/a.py', 'lib4/a.py']);
+    expect(entries[0].reasonText).toContain('후보가 더 있지만 처음 5개만 적었어요.');
+    expect(entries.length).toBeGreaterThan(1_000);
+    expect(entries.length).toBeLessThan(12_000);
+    const carried = entries.reduce((total, item) => total + item.text.length + (item.specifier?.length ?? 0) + (item.reasonText?.length ?? 0)
+      + item.candidates.reduce((sum, name) => sum + name.length, 0) + 100, 0);
+    expect(carried).toBeLessThanOrEqual(2_000_000);
+    expect(carried).toBeGreaterThan(2_000_000 - 1_000);
+    expect(result.notes).toContain('Python import 결과가 너무 많아 일부만 적었어요. 그 뒤의 Python import는 연결을 보지 않았어요.');
+  });
+
+  it('does not add the result limit note below the limit', async () => {
+    await put('lib/a.py', '');
+    await put('main.py', 'import a\n');
+    const result = await mapOf(await scanProject(root, randomUUID()));
+    expect(result.notes.some(note => note.includes('결과가 너무 많아'))).toBe(false);
+  });
+
+  it('bounds the Python import statements kept while files are read, however small their results are', async () => {
+    // One statement of about 250,000 characters a file, naming the same module again and again: its result
+    // is a single short arrow, so only the count of what is kept can stop it.
+    const long = `from . import ${Array.from({ length: 10_000 }, () => 'module_with_a_long_name').join(', ')}\n`;
+    await put('pkg/__init__.py', '');
+    await put('pkg/module_with_a_long_name.py', '');
+    for (let index = 0; index < 9; index++) await put(`pkg/a${index}.py`, long);
+    await put('pkg/z.py', 'import os\n');
+    const project = await scanProject(root, randomUUID());
+    const result = await mapOf(project);
+    const from = (relativePath: string) => {
+      const file = project.files.find(item => item.relativePath === relativePath)!;
+      return [...result.edges, ...result.unresolved, ...result.external].filter(item => item.fromFileId === file.id);
+    };
+    expect(from('pkg/a0.py')).toHaveLength(1);
+    const target = project.files.find(item => item.relativePath === 'pkg/module_with_a_long_name.py')!;
+    expect(result.edges.filter(edge => edge.toFileId === target.id)).toHaveLength(7);
+    expect(from('pkg/a7.py')).toHaveLength(0);
+    expect(from('pkg/z.py')).toHaveLength(0);
+    expect(result.notes.filter(note => note.includes('결과가 너무 많아'))).toHaveLength(1);
+  });
+
+  it('counts the names package initializers bind against the same limit', async () => {
+    // Assignments bind names without an import statement: 1,200 names of 200 characters a file, counted as
+    // 252,000 characters. The importing file is read before them and the package it names after them.
+    const names = Array.from({ length: 1_200 }, (_, index) => `n${String(index).padStart(199, '0')}=0\n`).join('');
+    await put('pkg/__init__.py', '');
+    await put('pkg/a.py', 'from .z import b\n');
+    for (let index = 0; index < 8; index++) await put(`pkg/p${index}/__init__.py`, names);
+    await put('pkg/z/__init__.py', '');
+    await put('pkg/z/b.py', '');
+    const project = await scanProject(root, randomUUID());
+    const a = project.files.find(file => file.relativePath === 'pkg/a.py')!;
+    // Seven of them fit, and the arrow is drawn.
+    const fitting = await buildProjectMap(root, project.id, project.files.filter(file => !file.relativePath.startsWith('pkg/p7/')), []);
+    expect(fitting.edges.filter(edge => edge.fromFileId === a.id)).toHaveLength(1);
+    expect(fitting.notes.some(note => note.includes('결과가 너무 많아'))).toBe(false);
+    // The eighth does not: the package read after it is left without facts, so the import is only listed.
+    const result = await mapOf(project);
+    expect(result.edges.filter(edge => edge.fromFileId === a.id)).toHaveLength(0);
+    expect(result.unresolved.filter(item => item.fromFileId === a.id)).toMatchObject([{ candidates: ['pkg/z/b.py', 'pkg/z/__init__.py'] }]);
+    expect(result.notes.filter(note => note.includes('결과가 너무 많아'))).toHaveLength(1);
+  });
+
+  it('keeps one entry for an unsettled import however many folders above hold the name and however often a name repeats', async () => {
+    // The same package at every level above the importing file, and one from-import repeating a name.
+    const levels = Array.from({ length: 15 }, (_, depth) => Array.from({ length: depth }, (_, index) => `d${index}`).join('/'));
+    for (const level of levels) {
+      await put(path.posix.join(level, 'pkg/__init__.py'), '');
+      await put(path.posix.join(level, 'pkg/mod.py'), '');
+    }
+    await put(path.posix.join(levels.at(-1)!, 'main.py'), `from pkg import ${Array.from({ length: 1_000 }, () => 'mod').join(', ')}\n`);
+    const project = await scanProject(root, randomUUID());
+    const result = await mapOf(project);
+    const main = project.files.find(file => file.relativePath.endsWith('/main.py'))!;
+    const entries = [...result.edges, ...result.unresolved, ...result.external].filter(item => item.fromFileId === main.id);
+    expect(entries).toHaveLength(1);
+    expect(result.unresolved.find(item => item.fromFileId === main.id)).toMatchObject({ reason: 'ambiguous' });
+    expect(result.unresolved.find(item => item.fromFileId === main.id)!.candidates).toHaveLength(5);
+  });
+
+  it('cuts long Python function names and bounds the hard-function list of one map', async () => {
+    // One very long class name repeated in the name of every method, each method nested deeply enough to be listed.
+    const className = 'C'.repeat(100_000);
+    // One-space indents keep 1,500 methods and the name inside the 256 KiB a file may have.
+    const method = (index: number) => ` def m${index}(s):\n  if a:\n   if b:\n    if c:\n     if d:\n      if e:\n       pass\n`;
+    await put('big.py', `class ${className}:\n${Array.from({ length: 1_500 }, (_, index) => method(index)).join('')}`);
+    const project = await scanProject(root, randomUUID());
+    const result = await mapOf(project);
+    const big = project.files.find(file => file.relativePath === 'big.py')!;
+    const listed = result.complexFunctions.filter(item => item.fileId === big.id);
+    expect(listed[0].name).toBe(`${'C'.repeat(300)}….m0`);
+    expect(listed.length).toBeGreaterThan(1_000);
+    expect(listed.length).toBeLessThan(1_500);
+    expect(listed.reduce((total, item) => total + item.name.length + 100, 0)).toBeLessThanOrEqual(500_000);
+    expect(result.notes).toContain('Python의 어려운 함수가 너무 많아 일부만 적었어요.');
+    // The analyzer's own names for the same file are cut the same way.
+    const analysis = analyzeSource(await readFile(path.join(root, 'big.py'), 'utf8'), 'big.py', { projectId: project.id, fileId: big.id, fileHash: 'h' });
+    expect(analysis.symbols[0].name).toBe(listed[0].name);
+    expect(analysis.classes![0].name).toBe(`${'C'.repeat(300)}…`);
+  });
+
+  it('does not add the hard-function note below the limit', async () => {
+    await put('small.py', 'def f():\n    if a:\n        if b:\n            if c:\n                if d:\n                    if e:\n                        pass\n');
+    const result = await mapOf(await scanProject(root, randomUUID()));
+    expect(result.complexFunctions.some(item => item.name === 'f')).toBe(true);
+    expect(result.notes.some(note => note.includes('어려운 함수가 너무 많아'))).toBe(false);
+  });
+
+  it('checks for a cancel at every result of one long Python import', async () => {
+    const names = Array.from({ length: 200 }, (_, index) => `m${index}`);
+    await put('pkg/__init__.py', '');
+    for (const name of names) await put(`pkg/${name}.py`, '');
+    await put('pkg/main.py', `from . import ${names.join(', ')}\n`);
+    const project = await scanProject(root, randomUUID());
+    let total = 0;
+    const result = await buildProjectMap(root, project.id, project.files, [], MAP_LIMITS, () => { total++; return false; });
+    const main = project.files.find(file => file.relativePath === 'pkg/main.py')!;
+    expect(result.edges.filter(item => item.fromFileId === main.id)).toHaveLength(200);
+    // One statement, 200 results: without a check per result this count stays near the number of files.
+    expect(total).toBeGreaterThanOrEqual(400);
+    let seen = 0;
+    await expect(buildProjectMap(root, project.id, project.files, [], MAP_LIMITS, () => ++seen > total - 100))
+      .rejects.toMatchObject({ code: 'CANCELLED' });
+  });
+
+  it('checks for a cancel at every statement while settling Python imports, even when statements give no result', async () => {
+    // A star import from a folder without `__init__.py` runs nothing and gives no entry.
+    await put('ns/other.py', '');
+    await put('ns/main.py', 'from . import *\n'.repeat(200));
+    const project = await scanProject(root, randomUUID());
+    let total = 0;
+    const result = await buildProjectMap(root, project.id, project.files, [], MAP_LIMITS, () => { total++; return false; });
+    const main = project.files.find(file => file.relativePath === 'ns/main.py')!;
+    expect([...result.edges, ...result.unresolved, ...result.external].filter(item => item.fromFileId === main.id)).toEqual([]);
+    // 200 of the checks were made while settling; without them this count stays far below 200.
+    expect(total).toBeGreaterThanOrEqual(200);
+    let seen = 0;
+    await expect(buildProjectMap(root, project.id, project.files, [], MAP_LIMITS, () => ++seen > total - 100))
+      .rejects.toMatchObject({ code: 'CANCELLED', message: '지도 만들기를 취소했어요.' });
+    expect(seen).toBe(total - 99);
+  });
+});
+
+it.each([
+  ['pkg/main.py', '__package__ = "other"\nfrom .sub.models import X\n'],
+  ['pkg/main.py', '__name__ = "email.main"\nfrom .sub.models import X\n'],
+  ['pkg/__init__.py', 'from .helpers import lookup as __getattr__\n'],
+  ['pkg/__init__.py', '__path__ = []\n'],
+  ['pkg/sub/__init__.py', '__path__ = []\n'],
+])('records machinery in %s during the map scan', async (changed, source) => {
+  await put('pkg/__init__.py', '');
+  await put('pkg/sub/__init__.py', '');
+  await put('pkg/sub/models.py', 'class X: pass\n');
+  await put('pkg/main.py', 'from .sub.models import X\n');
+  await put(changed, source);
+  const project = await scanProject(root, randomUUID());
+  const result = await mapOf(project);
+  const main = project.files.find(file => file.relativePath === 'pkg/main.py')!;
+  expect(result.edges.filter(item => item.fromFileId === main.id)).toEqual([]);
+  expect(result.unresolved.filter(item => item.fromFileId === main.id))
+    .toMatchObject([{ reason: 'ambiguous', candidates: ['pkg/sub/models.py'], reasonText: expect.stringContaining('import 동작을 바꿀 수 있는 이름') }]);
+});
+
+it('withholds a reached import when its own Python file exceeds the node budget', async () => {
+  await put('pkg/main.py', `from .model import X\n${'pass\n'.repeat(30)}`);
+  await put('pkg/model.py', '');
+  const project = await scanProject(root, randomUUID());
+  const result = await mapOf(project, [], { ...MAP_LIMITS, nodesPerFile: 20 });
+  const main = project.files.find(file => file.relativePath === 'pkg/main.py')!;
+  expect(result.files.find(file => file.id === main.id)?.checked).toBe('partial');
+  expect(result.edges.filter(item => item.fromFileId === main.id)).toEqual([]);
+  expect(result.unresolved.filter(item => item.fromFileId === main.id))
+    .toMatchObject([{ reason: 'ambiguous', candidates: ['pkg/model.py'], reasonText: expect.stringContaining('import 동작을 바꿀 수 있는 이름') }]);
+});

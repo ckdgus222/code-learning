@@ -47,6 +47,12 @@ await writeFile(path.join(treeFixture, 'root.ts'), 'export const root = 1;\n');
 const pythonFixture = path.join(temporary, 'Python 읽기 프로젝트');
 await mkdir(pythonFixture);
 await writeFile(path.join(pythonFixture, 'order.py'), 'import os\nfrom pathlib import Path\nclass Item:\n    name: str\n    count: int\nclass Order:\n    def total(self, value):\n        if value < 0:\n            return 0\n        elif value == 0:\n            return 1\n        return value\n');
+await mkdir(path.join(pythonFixture, 'app'));
+await writeFile(path.join(pythonFixture, 'app/__init__.py'), '');
+await writeFile(path.join(pythonFixture, 'app/models.py'), 'class Item:\n    value: int\n');
+await writeFile(path.join(pythonFixture, 'app/service.py'), 'from .models import Item\nimport os\ndef total(item: Item):\n    return item.value\n');
+await writeFile(path.join(pythonFixture, 'app/api.py'), 'from app.service import total\ndef run(item):\n    return total(item)\n');
+await writeFile(path.join(pythonFixture, 'main.py'), 'from app.api import run\n');
 await writeFile(path.join(pythonFixture, 'reference.ts'), 'export function total(value: number) { return value; }\n');
 const aliasFixture = path.join(temporary, '경로 별칭 프로젝트');
 await mkdir(path.join(aliasFixture, 'src'), { recursive: true });
@@ -3585,13 +3591,33 @@ try {
     await page.getByRole('button', { name: '다른 조건 확인', exact: true }).click();
     await page.waitForFunction(() => [...document.querySelectorAll('.cm-content .cm-line span')].some(span =>
       getComputedStyle(span).color !== getComputedStyle(span.closest('.cm-content')).color));
-    await page.getByText('Python은 함수·클래스·import 목록과 구문 단계까지만 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 프로젝트 지도, 기능 흐름은 아직 TypeScript·JavaScript만 지원해요.', { exact: true }).waitFor();
+    await page.getByText('Python은 함수·클래스·import 목록, 구문 단계와 프로젝트 지도의 import 연결까지만 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 기능 흐름은 아직 TypeScript·JavaScript만 지원해요.', { exact: true }).waitFor();
     assert.equal(await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).count(), 0);
     await page.getByText('부르는 곳·값 찾기는 아직 TypeScript·JavaScript만 지원해요. 단계는 ‘이 함수 흐름으로 보기’에서 하나씩 볼 수 있어요.', { exact: true }).waitFor();
     await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
     await page.getByRole('button', { name: 'Order.total', exact: true }).click();
     await page.getByText('부르는 것·부르는 곳·값 찾기는 아직 TypeScript·JavaScript 파일만 지원해요.', { exact: true }).waitFor();
     await page.getByRole('banner').getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
+  });
+  await check('Python map: relative and own-package arrows, external modules and unsettled candidates', async () => {
+    await openFileMap();
+    await page.getByText('지도는 TS/JS와 Python 파일의 import만 봐요. 새 파일은 폴더를 다시 열어야 지도에 들어와요.', { exact: true }).waitFor();
+    await page.getByText('연결 목록 · 2개', { exact: true }).click();
+    const service = page.locator('.map-list li').filter({ hasText: 'app/service.py 1행 → app/models.py' });
+    await service.waitFor();
+    await page.locator('.map-list li').filter({ hasText: 'app/api.py 1행 → app/service.py' }).waitFor();
+    const externals = page.locator('details.card').filter({ has: page.locator('summary', { hasText: /^외부 패키지 또는 경로 별칭/ }) });
+    await externals.locator('summary').click();
+    await externals.getByText('os', { exact: true }).waitFor();
+    await externals.getByText('import 글만으로는 설치한 패키지와 경로 별칭(@/… 등)을 구분할 수 없어 선을 긋지 않았어요. Python은 표준 라이브러리와 설치한 패키지가 여기에 들어가요.', { exact: true }).waitFor();
+    // This list is already open whenever it has rows; clicking its summary would fold it.
+    const unresolved = page.locator('details.card').filter({ has: page.locator('summary', { hasText: /^확인 못 함/ }) });
+    const candidate = unresolved.locator('li').filter({ hasText: 'main.py' });
+    assert.match(await candidate.innerText(), /app\/api\.py/);
+    assert.match(await candidate.innerText(), /코드만으로는 확정하지 못했어요. 실행 방법, Python 버전, 설치된 패키지에 따라 이 파일이 아닐 수 있어요./);
+    await service.getByRole('button', { name: '코드 보기', exact: true }).click();
+    await page.getByRole('heading', { name: 'app/service.py', exact: true }).waitFor();
+    assert.match(await page.getByTestId('evidence-range').innerText(), /app\/service\.py · 1–1줄/);
   });
   await check('Path aliases: map arrow, file guide and unused candidates agree', async () => {
     await dialogTo(aliasFixture);

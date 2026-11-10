@@ -2,7 +2,7 @@ import path from 'node:path';
 import type { ProjectFile, ProjectMap, UnusedExcludeKind, UnusedFiles } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 import { MAX_FILE_BYTES, readAllowed } from '../project/files';
-import { candidatesFor, codeFile } from './project-map';
+import { candidatesFor, codeFile, pythonFile } from './project-map';
 import { NO_ALIASES, resolveImport, type PathAliases } from './path-aliases';
 import { isTestFile } from './routes';
 import { isNextConfig } from './next-routes';
@@ -31,6 +31,10 @@ const failedNames = (failed: ScriptFiles['failed']) => failed.slice(0, 5).map(fi
 
 export function unusedFiles(map: Omit<ProjectMap, 'unused'>, scripts: ScriptFiles, pathAliases: PathAliases = NO_ALIASES): UnusedFiles {
   const result: UnusedFiles = { candidates: [], unsure: [], excluded: [], notes: [], exports: { candidates: [], unsure: [], notes: [] } };
+  if (map.files.some(file => pythonFile.test(file.relativePath))) {
+    result.notes.push('Python 파일은 이 후보 목록에서 다루지 않아요.');
+    result.exports.notes.push('Python 파일의 함수·클래스는 이 후보 목록에서 다루지 않아요.');
+  }
   const files = map.files.filter(file => file.checked !== 'not-code' && codeFile.test(file.relativePath))
     .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   const known = new Map(files.map(file => [file.relativePath, { id: file.id, relativePath: file.relativePath, size: 0 }]));

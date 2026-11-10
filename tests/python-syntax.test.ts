@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { analyzeSource } from '../src/core/analysis/syntax';
+import { pythonFunction, measurePythonFunction } from '../src/core/analysis/python-syntax';
+import { analyzeSource, parse } from '../src/core/analysis/syntax';
 import type { Evidence } from '../src/shared/contracts';
 
 const context = { projectId: 'project', fileId: 'python', fileHash: 'hash' };
@@ -39,7 +40,7 @@ class Empty:
     expect(result.symbols[0].params).toBe('(x: int = 1, *args, **kwargs)');
     expect(slice(text, result.symbols[0].evidence)).toMatch(/^@decorate\ndef f/);
     expect(slice(text, result.symbols[4].evidence)).toMatch(/^@staticmethod\n    async def decorated/);
-    expect(result.warnings[1]).toBe('Python은 함수·클래스·import 목록과 구문 단계까지만 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 프로젝트 지도, 기능 흐름은 아직 TypeScript·JavaScript만 지원해요.');
+    expect(result.warnings[1]).toBe('Python은 함수·클래스·import 목록, 구문 단계와 프로젝트 지도의 import 연결까지만 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 기능 흐름은 아직 TypeScript·JavaScript만 지원해요.');
   });
 
   it('collects classes with and without methods and preserves their base lists and ranges', () => {
@@ -248,4 +249,15 @@ def factory():
     const limited = analyze(`def f():\n${'    work()\n'.repeat(499)}    if ok:\n        done()\n    after()\n`).symbols[0].steps;
     expect(limited.at(-1)).toMatchObject({ kind: 'if_statement', branch: { whenTrue: null, whenFalse: null } });
   });
+});
+
+it('shares Python function names, decorator ranges and measurements with the map', () => {
+  const text = '@decorate\ndef f():\n    return 1\nclass C:\n    @staticmethod\n    async def run():\n        return 2\n';
+  const root = parse(text, 'x.py');
+  const functions = root.descendantsOfType('function_definition').map(node => pythonFunction(node)!);
+  const symbols = analyze(text).symbols;
+  expect(functions.map(fn => [fn.name, fn.declaration.startIndex, fn.declaration.endIndex, measurePythonFunction(fn.body, text)]))
+    .toEqual(symbols.map(symbol => [symbol.name, symbol.evidence.startUtf16, symbol.evidence.endUtf16, symbol.complexity]));
+  expect(pythonFunction(root)).toBeNull();
+  expect(pythonFunction(parse('def broken():\n    x =', 'x.py').firstNamedChild!)).toBeNull();
 });

@@ -448,6 +448,17 @@ describe('finding the code evidence of a map entry', () => {
     }
   });
 
+  it('finds the same Python import evidence for multiple edges from one statement', async () => {
+    await writeFile(path.join(sandbox, 'a.py'), '');
+    await writeFile(path.join(sandbox, 'b.py'), '');
+    const { source, items } = await entries('main.py', '# 😀\nfrom . import a, b\n');
+    expect(items).toHaveLength(2);
+    expect(items.every(item => 'toFileId' in item)).toBe(true);
+    for (const item of items) {
+      expect(matchImport(source, item)).toMatchObject({ status: 'found', evidence: { startUtf16: item.startUtf16, endUtf16: item.endUtf16 } });
+    }
+  });
+
   it('does not match once the file has another hash', async () => {
     const { source, items } = await entries('one.ts', "import { a } from './a';\n");
     expect(matchImport({ ...source, hash: 'other' }, items[0])).toEqual({ status: 'changed' });
