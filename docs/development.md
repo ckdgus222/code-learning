@@ -165,6 +165,7 @@ AI 설명 계약은 `src/shared/ai.ts`의 `Explanation`입니다: `summary`, `st
 | `src/core/analysis/side-stop.ts` | 별도 작업자의 멈춤 신호와, 검사기 프로세스 번호를 한쪽만 가져가 끝내는 규칙 |
 | `src/core/analysis/project-map.ts` | 프로젝트 지도의 import 수집·상대 경로와 지원하는 경로 별칭 연결·대상 재확인·조사 상태, 기준을 넘는 함수 목록 |
 | `src/renderer/project-map.tsx`, `map-layout.ts` | 지도 화면(React Flow), 설계 보기의 폴더 묶기와 열 순서, 지도 근거와 코드 근거 짝 찾기 |
+| `src/renderer/outline-lists.tsx` | Python 코드 읽기의 클래스·import 목록과 근거 이동 |
 | `src/renderer/calls.tsx` | 함수 안 순서 요약의 ‘부르는 것’·‘부르는 곳’ 목록 |
 | `src/renderer/values.tsx` | 함수 안 순서 요약의 ‘값 따라가기’ 이름 버튼과 이름 카드, ‘돌려주는 값의 모양’·‘모양’ 행과 질의 목록 |
 | `src/renderer/changes.tsx` | ‘달라진 내용’ 보기: 기준 커밋 고르기, 변경 목록(지도에서도 씀), 이전·지금 코드 나란히 비교 |

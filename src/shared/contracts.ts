@@ -114,10 +114,21 @@ export interface CodeSymbol {
 /** Said for every TS/JS file; the file guide leaves it out of its warnings, which are kept for real limits. */
 export const STRUCTURE_NOTE = '코드에 적힌 구문 구조입니다. 실제 실행 순서와 호출 대상은 확인하지 않았습니다.';
 
+/** A class a file declares. Collected for Python only so far (roadmap L2a-2). */
+export interface CodeClass {
+  /** `Outer.Inner` for a class declared directly in another class's body, otherwise its own name. */
+  name: string;
+  /** The parenthesised base list as written (`(BaseModel)`), cut short like step details; '' when there is none. */
+  bases: string;
+  evidence: Evidence;
+}
+
 export interface Analysis {
   language: SourceLanguage;
   symbols: CodeSymbol[];
   imports: { text: string; evidence: Evidence }[];
+  /** Absent for languages whose classes are not listed (TypeScript, JavaScript, plain text). */
+  classes?: CodeClass[];
   warnings: string[];
 }
 

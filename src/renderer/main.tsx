@@ -10,6 +10,7 @@ import { Icon } from './icons';
 import { ancestorFolderPaths, buildFileTree, filterFileTree, type TreeFolder } from './file-tree';
 import { AiPanel } from './ai-panel';
 import { FileGuideCard } from './file-guide';
+import { OutlineLists } from './outline-lists';
 import { fileUses } from './screen-groups';
 import { aiFunctionSummaries, functionDoes, importersOf } from './guide-facts';
 import { FileExplanationCard } from './file-explanation';
@@ -882,6 +883,8 @@ function App() {
                 : '돌려주는 값의 모양과 이 함수를 부르는 곳은 ‘이 함수 흐름으로 보기’에서 찾아요.'}</p>
               <button className="btn btn--small" onClick={() => setView('function')}>이 함수 흐름으로 보기</button>
             </section>}
+            {source.analysis.language === 'python' && <OutlineLists analysis={source.analysis} locked={busy || stale} current={evidence}
+              onShow={next => { selectSymbol(null); void showEvidence(next, null); }} />}
           </section>
           <div className="reader__main">
             <div className="reader__head">

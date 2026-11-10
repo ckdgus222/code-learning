@@ -116,8 +116,17 @@ function stepsFor(body: Parser.SyntaxNode, text: string, budget: AnalysisBudget)
   return steps;
 }
 
-/** Python functions, their steps and the file's imports (static syntax only; nothing is run or resolved). */
+/** `Class.name` for a function or class declared directly in a class body (through its decorators), otherwise its own name. */
+function declarationName(node: Parser.SyntaxNode, declaration: Parser.SyntaxNode): string {
+  const owner = declaration.parent?.type === 'block' ? declaration.parent.parent : null;
+  const className = owner?.type === 'class_definition' ? owner.childForFieldName('name')?.text : null;
+  const name = node.childForFieldName('name')!.text;
+  return className ? `${className}.${name}` : name;
+}
+
+/** Python functions, their steps, classes and imports (static syntax only; nothing is run or resolved). */
 export function collectPython(root: Parser.SyntaxNode, text: string, result: Analysis, budget: AnalysisBudget): void {
+  result.classes = [];
   const pending = [root];
   while (pending.length && !budget.limited && budget.available()) {
     const node = pending.pop()!;
@@ -125,15 +134,19 @@ export function collectPython(root: Parser.SyntaxNode, text: string, result: Ana
     if (node.isError || node.isMissing) continue;
     if (imports.has(node.type)) result.imports.push({ text: node.text, evidence: budget.evidence(node) });
     if (node.type === 'function_definition' && node.hasError) continue;
+    if (node.type === 'class_definition' && !node.hasError) {
+      const declaration = node.parent?.type === 'decorated_definition' ? node.parent : node;
+      result.classes.push({
+        name: declarationName(node, declaration),
+        bases: clip(node.childForFieldName('superclasses')?.text ?? ''), evidence: budget.evidence(declaration),
+      });
+    }
     const body = node.type === 'function_definition' ? node.childForFieldName('body') : null;
     if (body) {
       if (result.symbols.length >= MAX_SYMBOLS) { budget.limited = true; break; }
       const declaration = node.parent?.type === 'decorated_definition' ? node.parent : node;
-      const owner = declaration.parent?.type === 'block' ? declaration.parent.parent : null;
-      const className = owner?.type === 'class_definition' ? owner.childForFieldName('name')?.text : null;
-      const name = node.childForFieldName('name')!.text;
       result.symbols.push({
-        id: randomUUID(), name: className ? `${className}.${name}` : name, kind: 'function_definition',
+        id: randomUUID(), name: declarationName(node, declaration), kind: 'function_definition',
         params: clip(node.childForFieldName('parameters')?.text ?? ''), exported: false,
         evidence: budget.evidence(declaration), steps: stepsFor(body, text, budget), complexity: measureBody(body, text, pythonRules),
       });

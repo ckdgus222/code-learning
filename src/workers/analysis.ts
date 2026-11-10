@@ -70,6 +70,7 @@ parentPort!.on('message', async (request: WorkerRequest) => {
       result = { ok: true, value: await readSource(request.target!) };
     } else {
       const all = [...sources.values()].flatMap(source => [...source.analysis.imports.map(item => item.evidence),
+        ...(source.analysis.classes ?? []).map(item => item.evidence),
         ...source.analysis.symbols.flatMap(symbol => [symbol.evidence, ...symbol.steps.map(step => step.evidence)])]);
       const evidence = all.find(item => item.id === request.target);
       if (!evidence || evidence.projectId !== projectId) throw new AppError('NOT_ALLOWED', '현재 코드에서 수집한 근거가 아닙니다.');

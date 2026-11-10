@@ -46,7 +46,7 @@ await writeFile(path.join(treeFixture, 'api/test/helper.ts'), 'export const help
 await writeFile(path.join(treeFixture, 'root.ts'), 'export const root = 1;\n');
 const pythonFixture = path.join(temporary, 'Python 읽기 프로젝트');
 await mkdir(pythonFixture);
-await writeFile(path.join(pythonFixture, 'order.py'), 'class Order:\n    def total(self, value):\n        if value < 0:\n            return 0\n        elif value == 0:\n            return 1\n        return value\n');
+await writeFile(path.join(pythonFixture, 'order.py'), 'import os\nfrom pathlib import Path\nclass Item:\n    name: str\n    count: int\nclass Order:\n    def total(self, value):\n        if value < 0:\n            return 0\n        elif value == 0:\n            return 1\n        return value\n');
 await writeFile(path.join(pythonFixture, 'reference.ts'), 'export function total(value: number) { return value; }\n');
 const aliasFixture = path.join(temporary, '경로 별칭 프로젝트');
 await mkdir(path.join(aliasFixture, 'src'), { recursive: true });
@@ -3574,12 +3574,18 @@ try {
     await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).waitFor();
     await page.getByText('돌려주는 값의 모양과 이 함수를 부르는 곳은 ‘이 함수 흐름으로 보기’에서 찾아요.', { exact: true }).waitFor();
     await openTreeFile('order.py');
+    await page.getByRole('heading', { name: '클래스 2개', exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Item', exact: true }).click();
+    await until(async () => await page.getByTestId('evidence-range').innerText() === '근거: order.py · 3–5줄');
+    await page.locator('summary').filter({ hasText: /^import 2개$/ }).click();
+    await page.getByRole('button', { name: 'from pathlib import Path', exact: true }).click();
+    await until(async () => await page.getByTestId('evidence-range').innerText() === '근거: order.py · 2–2줄');
     await page.getByRole('button', { name: 'Order.total', exact: true }).click();
     await page.getByRole('button', { name: '조건 확인', exact: true }).click();
     await page.getByRole('button', { name: '다른 조건 확인', exact: true }).click();
     await page.waitForFunction(() => [...document.querySelectorAll('.cm-content .cm-line span')].some(span =>
       getComputedStyle(span).color !== getComputedStyle(span.closest('.cm-content')).color));
-    await page.getByText('Python은 함수와 구문 단계까지만 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 프로젝트 지도, 기능 흐름은 아직 TypeScript·JavaScript만 지원해요.', { exact: true }).waitFor();
+    await page.getByText('Python은 함수·클래스·import 목록과 구문 단계까지만 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 프로젝트 지도, 기능 흐름은 아직 TypeScript·JavaScript만 지원해요.', { exact: true }).waitFor();
     assert.equal(await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).count(), 0);
     await page.getByText('부르는 곳·값 찾기는 아직 TypeScript·JavaScript만 지원해요. 단계는 ‘이 함수 흐름으로 보기’에서 하나씩 볼 수 있어요.', { exact: true }).waitFor();
     await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();

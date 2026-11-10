@@ -39,7 +39,88 @@ class Empty:
     expect(result.symbols[0].params).toBe('(x: int = 1, *args, **kwargs)');
     expect(slice(text, result.symbols[0].evidence)).toMatch(/^@decorate\ndef f/);
     expect(slice(text, result.symbols[4].evidence)).toMatch(/^@staticmethod\n    async def decorated/);
-    expect(result.warnings[1]).toBe('Python은 함수와 구문 단계까지만 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 프로젝트 지도, 기능 흐름은 아직 TypeScript·JavaScript만 지원해요.');
+    expect(result.warnings[1]).toBe('Python은 함수·클래스·import 목록과 구문 단계까지만 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 프로젝트 지도, 기능 흐름은 아직 TypeScript·JavaScript만 지원해요.');
+  });
+
+  it('collects classes with and without methods and preserves their base lists and ranges', () => {
+    const text = `class Item:
+    name: str
+class Model(BaseModel):
+    value: int
+class Service( Base, Mixin, metaclass=Meta ):
+    def run(self):
+        pass
+`;
+    const result = analyze(text);
+    expect(result.classes?.map(item => [item.name, item.bases])).toEqual([
+      ['Item', ''], ['Model', '(BaseModel)'], ['Service', '( Base, Mixin, metaclass=Meta )'],
+    ]);
+    expect(result.classes?.map(item => slice(text, item.evidence))).toEqual([
+      'class Item:\n    name: str', 'class Model(BaseModel):\n    value: int',
+      'class Service( Base, Mixin, metaclass=Meta ):\n    def run(self):\n        pass',
+    ]);
+    expect(result.symbols.map(item => item.name)).toEqual(['Service.run']);
+    const bases = `(${'Base'.repeat(100)})`;
+    expect(analyze(`class Long${bases}:\n    pass\n`).classes?.[0].bases).toBe(bases.slice(0, 300) + '…');
+  });
+
+  it('prefixes only direct class members and includes class decorators in evidence', () => {
+    const text = `@dataclass
+class Outer:
+    class Inner:
+        pass
+    @decorate
+    class Decorated:
+        pass
+    def method(self):
+        class Local:
+            pass
+    if ready:
+        class Conditional:
+            pass
+def factory():
+    @dataclass
+    class Item:
+        name: str
+`;
+    const classes = analyze(text).classes!;
+    expect(classes.map(item => item.name)).toEqual(['Outer', 'Outer.Inner', 'Outer.Decorated', 'Local', 'Conditional', 'Item']);
+    expect(classes[0].evidence.startLine).toBe(1);
+    expect(slice(text, classes[0].evidence)).toBe(text.slice(0, text.indexOf('\ndef factory')));
+    expect(slice(text, classes[2].evidence)).toBe('@decorate\n    class Decorated:\n        pass');
+    expect(slice(text, classes[5].evidence)).toBe('@dataclass\n    class Item:\n        name: str');
+  });
+
+  it('excludes a broken class but keeps its sound methods', () => {
+    const result = analyze('class Broken:\n    def bad(self):\n        value =\n    def good(self):\n        return 1\n');
+    expect(result.classes).toEqual([]);
+    expect(result.symbols.map(item => item.name)).toEqual(['Broken.good']);
+    expect(result.warnings).toContain('구문 오류가 있습니다. 오류가 포함된 함수와 클래스는 분석에서 제외합니다.');
+  });
+
+  it('excludes sound classes inside a function with a syntax error', () => {
+    const result = analyze('def broken():\n    class Kept:\n        pass\n    value =\nclass Good:\n    pass\n');
+    expect(result.classes?.map(item => item.name)).toEqual(['Good']);
+    expect(result.symbols).toEqual([]);
+    expect(result.warnings).toContain('구문 오류가 있습니다. 오류가 포함된 함수와 클래스는 분석에서 제외합니다.');
+  });
+
+  it('shares the evidence budget with classes without a separate class cap', () => {
+    const result = analyze('import os\ndef f():\n    return 1\n'
+      + Array.from({ length: 1001 }, (_, i) => `class C${i}:\n    pass\n`).join(''));
+    expect(result.classes).toHaveLength(997);
+    expect(result.imports.length + result.classes!.length
+      + result.symbols.reduce((sum, item) => sum + 1 + item.steps.length, 0)).toBe(1000);
+    expect(result.warnings.join(' ')).toContain('근거 합계 1000개');
+  });
+
+  it('leaves classes absent for other languages and keeps the TS syntax-error sentence', () => {
+    for (const file of ['main.ts', 'main.js', 'main.txt']) {
+      expect(analyzeSource('class Item {}', file, context)).not.toHaveProperty('classes');
+    }
+    expect(analyzeSource('function broken( {', 'main.ts', context).warnings)
+      .toContain('구문 오류가 있습니다. 오류가 포함된 함수는 분석에서 제외합니다.');
+    expect(analyze('')).toHaveProperty('classes', []);
   });
 
   it.each([

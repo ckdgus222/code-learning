@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import type { ProjectView, SourceView } from '../src/shared/contracts';
+import type { Evidence, ProjectView, SourceView } from '../src/shared/contracts';
 import type { WorkerRequest, WorkerResponse } from '../src/workers/analysis';
 
 const worker = vi.hoisted(() => ({ data: { root: '', projectId: 'aliases', stop: new SharedArrayBuffer(4) },
@@ -82,4 +82,35 @@ it('reads Python symbols without building a TS/JS file guide', async () => {
   expect(source.analysis.language).toBe('python');
   expect(source.analysis.symbols.map(symbol => symbol.name)).toEqual(['total']);
   expect(source.analysis.symbols[0].steps[0].title).toBe('조건 확인');
+});
+
+it('accepts Python class evidence and rejects it after the source changes', async () => {
+  root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-class-worker-')));
+  worker.data.root = root;
+  const text = 'from dataclasses import dataclass\n@dataclass\nclass Item:\n    name: str\n';
+  await writeFile(path.join(root, 'main.py'), text);
+  vi.resetModules();
+  await import('../src/workers/analysis');
+  await worker.receive!({ id: 7, kind: 'scan' });
+  const scanned = worker.send.mock.lastCall![0].result;
+  if (!scanned.ok) throw new Error(scanned.message);
+  const file = (scanned.value as ProjectView).files.find(file => file.relativePath === 'main.py')!;
+  await worker.receive!({ id: 8, kind: 'read', target: file.id });
+  const read = worker.send.mock.lastCall![0].result;
+  if (!read.ok) throw new Error(read.message);
+  const source = read.value as SourceView;
+  const evidence = source.analysis.classes![0].evidence;
+  await worker.receive!({ id: 9, kind: 'evidence', target: evidence.id });
+  const shown = worker.send.mock.lastCall![0].result;
+  if (!shown.ok) throw new Error(shown.message);
+  const value = shown.value as { source: SourceView; evidence: Evidence };
+  expect(value.evidence).toEqual(evidence);
+  expect(value.evidence).toMatchObject({ startLine: 2, endLine: 4 });
+  expect(value.source.text.slice(value.evidence.startUtf16, value.evidence.endUtf16)).toBe('@dataclass\nclass Item:\n    name: str');
+
+  await writeFile(path.join(root, 'main.py'), text + '# changed\n');
+  await worker.receive!({ id: 10, kind: 'evidence', target: evidence.id });
+  expect(worker.send.mock.lastCall![0].result).toMatchObject({ ok: false, code: 'CHANGED' });
+  await worker.receive!({ id: 11, kind: 'evidence', target: evidence.id });
+  expect(worker.send.mock.lastCall![0].result).toMatchObject({ ok: false, code: 'NOT_ALLOWED' });
 });

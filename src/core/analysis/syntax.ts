@@ -178,17 +178,19 @@ export function analyzeSource(
   const root = parse(text, relativePath);
   result.warnings.push(STRUCTURE_NOTE);
   if (language === 'python') {
-    result.warnings.push('Python은 함수와 구문 단계까지만 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 프로젝트 지도, 기능 흐름은 아직 TypeScript·JavaScript만 지원해요.');
+    result.warnings.push('Python은 함수·클래스·import 목록과 구문 단계까지만 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 프로젝트 지도, 기능 흐름은 아직 TypeScript·JavaScript만 지원해요.');
   }
   if (root.hasError) {
-    result.warnings.push('구문 오류가 있습니다. 오류가 포함된 함수는 분석에서 제외합니다.');
+    result.warnings.push(language === 'python'
+      ? '구문 오류가 있습니다. 오류가 포함된 함수와 클래스는 분석에서 제외합니다.'
+      : '구문 오류가 있습니다. 오류가 포함된 함수는 분석에서 제외합니다.');
   }
 
   const budget = createBudget(context);
   if (language === 'python') collectPython(root, text, result, budget);
   else collectScript(root, text, result, budget);
   if (budget.limited) {
-    result.warnings.push(`분석량 제한에 도달하여 일부 결과만 표시합니다. 파일 전체에서 함수 ${MAX_SYMBOLS}개, import·함수·단계의 근거 합계 ${MAX_EVIDENCE}개, 구문 방문 ${MAX_VISITED_NODES}회까지 처리합니다. 나머지 원문은 코드 보기에서 확인하세요.`);
+    result.warnings.push(`분석량 제한에 도달하여 일부 결과만 표시합니다. 파일 전체에서 함수 ${MAX_SYMBOLS}개, import·함수·클래스·단계의 근거 합계 ${MAX_EVIDENCE}개, 구문 방문 ${MAX_VISITED_NODES}회까지 처리합니다. 나머지 원문은 코드 보기에서 확인하세요.`);
   }
   if (result.symbols.length === 0 && !budget.limited) {
     result.warnings.push('분석할 수 있는 함수가 없습니다. 원문과 import 선언을 확인할 수 있습니다.');
