@@ -41,6 +41,7 @@ describe('build hardening', () => {
       'tree-sitter@0.21.1': false,
       'tree-sitter-javascript@0.21.4': false,
       'tree-sitter-javascript@0.23.1': false,
+      'tree-sitter-python@0.23.4': false,
       'tree-sitter-typescript@0.23.2': false,
     });
     expect(manifest.devDependencies.electron).toBe('44.10.2');

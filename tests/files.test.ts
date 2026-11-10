@@ -43,7 +43,7 @@ describe('project file boundary', () => {
       const read = await readAllowed(root, name);
       const analysis = analyzeSource(read.text, name, { projectId: project.id, fileId: name, fileHash: read.hash });
       expect(analysis.language).toBe('text');
-      expect(analysis.warnings).toContain('이 파일은 원문만 표시합니다. 현재 구문 분석은 TypeScript와 JavaScript만 지원합니다.');
+      expect(analysis.warnings).toContain('이 파일은 원문만 표시합니다. 현재 구문 분석은 TypeScript, JavaScript, Python만 지원합니다.');
     }
     for (const name of ['logo.png', 'layout.xml', 'app.properties']) {
       await expect(readAllowed(root, name)).rejects.toMatchObject({ code: 'NOT_ALLOWED' });

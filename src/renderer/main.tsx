@@ -877,7 +877,9 @@ function App() {
                   <dt>부르는 것</dt><dd>{functionCalls(symbolGuide.calls, symbolGuide.callsOmitted)}</dd>
                 </>}
               </dl>
-              <p className="hint">돌려주는 값의 모양과 이 함수를 부르는 곳은 ‘이 함수 흐름으로 보기’에서 찾아요.</p>
+              <p className="hint">{source.analysis.language === 'python'
+                ? '부르는 곳·값 찾기는 아직 TypeScript·JavaScript만 지원해요. 단계는 ‘이 함수 흐름으로 보기’에서 하나씩 볼 수 있어요.'
+                : '돌려주는 값의 모양과 이 함수를 부르는 곳은 ‘이 함수 흐름으로 보기’에서 찾아요.'}</p>
               <button className="btn btn--small" onClick={() => setView('function')}>이 함수 흐름으로 보기</button>
             </section>}
           </section>
@@ -950,7 +952,7 @@ function App() {
           mode={ai.mode} onMode={ai.setMode} onRunning={ai.setQuestionRunning}
           relativePath={project.files.find(file => file.id === questionEvidence?.fileId)?.relativePath ?? ''}
           onEvidence={next => { setView('code'); void showEvidence(next, null, 'answer'); }} />
-        {view === 'code' && source && source.analysis.language !== 'text' && <details className="card"
+        {view === 'code' && source && (source.analysis.language === 'typescript' || source.analysis.language === 'javascript') && <details className="card"
           key={`${source.fileId}:${source.hash}`}
           open={ai.fileExplanationOpen}>
           <summary onClick={event => {

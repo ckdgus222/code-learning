@@ -1,5 +1,6 @@
 import { EditorView } from '@codemirror/view';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
+import { python } from '@codemirror/lang-python';
 import { javascript } from '@codemirror/lang-javascript';
 import type { Extension } from '@codemirror/state';
 import { tags } from '@lezer/highlight';
@@ -48,6 +49,7 @@ export const codeHighlightStyle = HighlightStyle.define([
 export function codeHighlighting(language: SourceLanguage): Extension[] {
   switch (language) {
     case 'text': return [];
+    case 'python': return [python(), syntaxHighlighting(codeHighlightStyle)];
     case 'typescript': case 'javascript':
       return [javascript({ typescript: language === 'typescript', jsx: true }), syntaxHighlighting(codeHighlightStyle)];
   }

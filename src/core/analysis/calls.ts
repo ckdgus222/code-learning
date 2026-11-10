@@ -132,6 +132,7 @@ export async function findFunctionCalls(root: string, projectId: string, files: 
   limits: MapLimits, shouldStop: () => boolean = () => false, cache?: CallsCache, pathAliases?: PathAliases): Promise<FunctionCalls> {
   const chosenFile = files.find(file => file.id === target.fileId);
   if (!chosenFile) throw new AppError('NOT_ALLOWED', '현재 프로젝트의 파일이 아닙니다.');
+  if (!codeFile.test(chosenFile.relativePath)) throw new AppError('UNSUPPORTED', '부르는 것·부르는 곳·값 찾기는 아직 TypeScript·JavaScript 파일만 지원해요.');
   const known = new Map(files.map(file => [file.relativePath, file]));
   const result = { limited: false, unexamined: new Map<string, { fileId: string; relativePath: string; reason: string }>() };
   const skip = (file: ProjectFile, reason: string) => {

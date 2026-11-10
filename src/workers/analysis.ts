@@ -7,7 +7,7 @@ import { analyzeSource } from '../core/analysis/syntax';
 import { readPathAliases } from '../core/analysis/path-aliases';
 import { describeFile } from '../core/analysis/file-guide';
 import { buildOverview } from '../core/analysis/overview';
-import { buildProjectMap, MAP_LIMITS } from '../core/analysis/project-map';
+import { buildProjectMap, codeFile, MAP_LIMITS } from '../core/analysis/project-map';
 import { findFunctionCalls } from '../core/analysis/calls';
 import { findProjectRoutes } from '../core/analysis/routes';
 import { buildFeatureFlow, buildFeatureFlows } from '../core/analysis/feature-flow';
@@ -48,7 +48,7 @@ async function readSource(fileId: string): Promise<SourceView> {
   const aliases = await readPathAliases(root, project!.files, MAX_FILE_BYTES, stopped);
   const analysis = previous?.hash === hash ? previous.analysis : analyzeSource(text, file.relativePath, { projectId, fileId, fileHash: hash });
   let guide: SourceView['guide'] = null;
-  if (analysis.language !== 'text') {
+  if (codeFile.test(file.relativePath)) {
     try { guide = describeFile(text, file.relativePath, fileId, hash, analysis, project!.files, aliases); }
     catch { /* A guide is optional: a failed description must not prevent reading the source. */ }
   }

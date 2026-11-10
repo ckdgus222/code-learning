@@ -2,13 +2,17 @@ import { randomUUID } from 'node:crypto';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
-import { STRUCTURE_NOTE, type Analysis, type CodeStep, type Evidence } from '../../shared/contracts';
+import Python from 'tree-sitter-python';
+import { collectPython } from './python-syntax';
+import { clip, createBudget, MAX_EVIDENCE, MAX_SYMBOLS, MAX_VISITED_NODES, measureBody, type AnalysisBudget, type MeasureRules } from './syntax-tools';
+import { STRUCTURE_NOTE, type Analysis, type CodeStep } from '../../shared/contracts';
 import { languageOf } from '../../shared/languages';
 
-/** The syntax tree of a TS/JS source. Any path that is not JavaScript parses as TypeScript (TSX for .tsx). */
+/** TypeScript, JavaScript or Python by `languageOf`; any other path parses as TypeScript (TSX for .tsx). */
 export function parse(text: string, relativePath: string): Parser.SyntaxNode {
+  const language = languageOf(relativePath);
   const parser = new Parser();
-  parser.setLanguage(languageOf(relativePath) === 'javascript' ? JavaScript
+  parser.setLanguage(language === 'python' ? Python : language === 'javascript' ? JavaScript
     : /\.tsx$/i.test(relativePath) ? TypeScript.tsx : TypeScript.typescript);
   // This binding's string callback needs room for the source plus its terminator.
   return parser.parse(text, undefined, { bufferSize: Math.max(32 * 1024, text.length + 1) }).rootNode;
@@ -18,10 +22,6 @@ export const functionTypes = new Set([
   'function_declaration', 'generator_function_declaration', 'function_expression',
   'generator_function', 'arrow_function', 'method_definition',
 ]);
-// File-wide budgets bound IPC/UI output, including imports and nested functions.
-const MAX_EVIDENCE = 1_000;
-const MAX_SYMBOLS = 200;
-const MAX_VISITED_NODES = 20_000;
 const stepTitles: Record<string, string> = {
   lexical_declaration: '변수 선언', variable_declaration: '변수 선언',
   expression_statement: '표현식', return_statement: '반환문', throw_statement: '오류 던지기',
@@ -38,9 +38,6 @@ const stepTitles: Record<string, string> = {
 const classTypes = new Set(['class_declaration', 'abstract_class_declaration', 'class']);
 // Parents whose statements run one after another, so the next statement is where code continues.
 const statementLists = new Set(['statement_block', 'switch_case', 'switch_default']);
-// Details travel over IPC once per step, so a long condition or returned value is cut short.
-const MAX_DETAIL = 300;
-const clip = (value: string): string => value.length > MAX_DETAIL ? `${value.slice(0, MAX_DETAIL)}…` : value;
 const firstCode = (node: Parser.SyntaxNode | null): Parser.SyntaxNode | undefined =>
   node?.namedChildren.find(child => child.type !== 'comment');
 const withoutParens = (node: Parser.SyntaxNode | null): Parser.SyntaxNode | undefined =>
@@ -110,55 +107,11 @@ export function functionName(node: Parser.SyntaxNode): string {
  * all, belongs to itself and is measured on its own from depth 0.
  */
 export function measureFunction(node: Parser.SyntaxNode, text: string): { lines: number; depth: number } {
-  const body = node.childForFieldName('body')!;
-  // Comments and nested functions, in source order: their text is not this function's code.
-  const skipped: { start: number; end: number; endRow: number }[] = [];
-  let depth = 0;
-  // A cursor rather than `nextNamedSibling`/`parent`, which search from the root and get slow in deeply
-  // nested code. `level` counts the nesting statements around the cursor's node; `outside` keeps the level
-  // and type of each node the cursor went into, so returning to it restores the level.
-  const cursor = body.walk();
-  let level = 0;
-  const outside: { level: number; type: string }[] = [];
-  let entering = true;
-  for (;;) {
-    const type = cursor.nodeType;
-    if (entering && cursor.nodeIsNamed) {
-      if (type === 'comment' || functionTypes.has(type)) {
-        // An arrow's body can itself be a function (`() => () => x`); then all of it belongs to that function.
-        skipped.push({ start: cursor.startIndex, end: cursor.endIndex, endRow: cursor.endPosition.row });
-      } else {
-        const elseIf = type === 'if_statement' && outside.at(-1)?.type === 'else_clause';
-        const inner = nestingTypes.has(type) && !elseIf ? level + 1 : level;
-        depth = Math.max(depth, inner);
-        if (cursor.gotoFirstChild()) { outside.push({ level, type }); level = inner; continue; }
-      }
-    }
-    // The cursor starts at the body, so it never moves to the body's siblings or parent.
-    if (cursor.gotoNextSibling()) { entering = true; continue; }
-    if (!outside.length) break;
-    cursor.gotoParent();
-    level = outside.pop()!.level;
-    entering = false;
-  }
-
-  let lines = 0;
-  let counted = -1;
-  let row = body.startPosition.row;
-  let next = 0;
-  for (let index = body.startIndex; index < body.endIndex; index++) {
-    if (next < skipped.length && index >= skipped[next].start) {
-      index = skipped[next].end - 1;
-      row = skipped[next].endRow;
-      next++;
-      continue;
-    }
-    const character = text[index];
-    if (character === '\n') row++;
-    else if (character !== '{' && character !== '}' && !/\s/.test(character) && counted !== row) { lines++; counted = row; }
-  }
-  return { lines, depth };
+  return measureBody(node.childForFieldName('body')!, text, scriptRules);
 }
+const scriptRules: MeasureRules = {
+  nestingTypes, skipped: cursor => cursor.nodeType === 'comment' || functionTypes.has(cursor.nodeType), ignoredCharacters: '{}',
+};
 
 /**
  * `export function f`, `export default …`, or a function assigned in `export const f = …`.
@@ -218,45 +171,37 @@ export function analyzeSource(
   const language = languageOf(relativePath);
   const result: Analysis = { language, symbols: [], imports: [], warnings: [] };
   if (language === 'text') {
-    result.warnings.push('이 파일은 원문만 표시합니다. 현재 구문 분석은 TypeScript와 JavaScript만 지원합니다.');
+    result.warnings.push('이 파일은 원문만 표시합니다. 현재 구문 분석은 TypeScript, JavaScript, Python만 지원합니다.');
     return result;
   }
 
   const root = parse(text, relativePath);
   result.warnings.push(STRUCTURE_NOTE);
+  if (language === 'python') {
+    result.warnings.push('Python은 함수와 구문 단계까지만 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 프로젝트 지도, 기능 흐름은 아직 TypeScript·JavaScript만 지원해요.');
+  }
   if (root.hasError) {
     result.warnings.push('구문 오류가 있습니다. 오류가 포함된 함수는 분석에서 제외합니다.');
   }
 
-  let evidenceCount = 0;
-  let visitedNodes = 0;
-  let limited = false;
-  const budgetAvailable = (): boolean => {
-    if (evidenceCount >= MAX_EVIDENCE || visitedNodes >= MAX_VISITED_NODES) {
-      limited = true;
-      return false;
-    }
-    visitedNodes++;
-    return true;
-  };
+  const budget = createBudget(context);
+  if (language === 'python') collectPython(root, text, result, budget);
+  else collectScript(root, text, result, budget);
+  if (budget.limited) {
+    result.warnings.push(`분석량 제한에 도달하여 일부 결과만 표시합니다. 파일 전체에서 함수 ${MAX_SYMBOLS}개, import·함수·단계의 근거 합계 ${MAX_EVIDENCE}개, 구문 방문 ${MAX_VISITED_NODES}회까지 처리합니다. 나머지 원문은 코드 보기에서 확인하세요.`);
+  }
+  if (result.symbols.length === 0 && !budget.limited) {
+    result.warnings.push('분석할 수 있는 함수가 없습니다. 원문과 import 선언을 확인할 수 있습니다.');
+  }
+  return result;
+}
 
-  // tree-sitter's Node binding 0.21.1 reports JavaScript UTF-16 indices (not byte offsets).
-  const evidence = (node: Parser.SyntaxNode): Evidence => {
-    evidenceCount++;
-    return {
-      id: randomUUID(), ...context,
-      startUtf16: node.startIndex, endUtf16: node.endIndex,
-      startLine: node.startPosition.row + 1,
-      endLine: Math.max(node.startPosition.row + 1,
-        node.endPosition.row + (node.endPosition.column === 0 ? 0 : 1)),
-    };
-  };
-
+function collectScript(root: Parser.SyntaxNode, text: string, result: Analysis, budget: AnalysisBudget): void {
   const stepsFor = (body: Parser.SyntaxNode): CodeStep[] => {
     const steps: CodeStep[] = [];
     const ifs: { step: CodeStep; node: Parser.SyntaxNode }[] = [];
     const pending = [{ node: body, depth: 0 }];
-    while (pending.length && budgetAvailable()) {
+    while (pending.length && budget.available()) {
       const { node, depth } = pending.pop()!;
       if (node !== body && node.nextNamedSibling) pending.push({ node: node.nextNamedSibling, depth });
       // An arrow function's expression body is its returned value, whatever expression it is.
@@ -267,7 +212,7 @@ export function analyzeSource(
       const title = expressionBody ? '표현식 결과 반환' : stepTitles[node.type];
       if (title) {
         const step: CodeStep = {
-          id: randomUUID(), kind: expressionBody ? 'expression_body' : node.type, title, depth, evidence: evidence(node),
+          id: randomUUID(), kind: expressionBody ? 'expression_body' : node.type, title, depth, evidence: budget.evidence(node),
         };
         const detail = expressionBody ? undefined : detailOf(node, text);
         if (detail) step.detail = clip(detail);
@@ -306,35 +251,28 @@ export function analyzeSource(
   };
 
   const pending = [root];
-  while (pending.length && !limited && budgetAvailable()) {
+  while (pending.length && !budget.limited && budget.available()) {
     const node = pending.pop()!;
     if (node.nextNamedSibling) pending.push(node.nextNamedSibling);
     if (node.isError || node.isMissing) continue;
     if (importOf(node)) {
-      result.imports.push({ text: text.slice(node.startIndex, node.endIndex), evidence: evidence(node) });
+      result.imports.push({ text: text.slice(node.startIndex, node.endIndex), evidence: budget.evidence(node) });
     }
     if (functionTypes.has(node.type)) {
       if (node.hasError) continue;
       const body = node.childForFieldName('body');
       if (body) {
         if (result.symbols.length >= MAX_SYMBOLS) {
-          limited = true;
+          budget.limited = true;
           break;
         }
         const params = node.childForFieldName('parameters') ?? node.childForFieldName('parameter');
         result.symbols.push({
           id: randomUUID(), name: functionName(node), kind: node.type, params: params ? clip(params.text) : '', exported: isExported(node),
-          evidence: evidence(node), steps: stepsFor(body), complexity: measureFunction(node, text),
+          evidence: budget.evidence(node), steps: stepsFor(body), complexity: measureFunction(node, text),
         });
       }
     }
     if (node.firstNamedChild) pending.push(node.firstNamedChild);
   }
-  if (limited) {
-    result.warnings.push(`분석량 제한에 도달하여 일부 결과만 표시합니다. 파일 전체에서 함수 ${MAX_SYMBOLS}개, import·함수·단계의 근거 합계 ${MAX_EVIDENCE}개, 구문 방문 ${MAX_VISITED_NODES}회까지 처리합니다. 나머지 원문은 코드 보기에서 확인하세요.`);
-  }
-  if (result.symbols.length === 0 && !limited) {
-    result.warnings.push('분석할 수 있는 함수가 없습니다. 원문과 import 선언을 확인할 수 있습니다.');
-  }
-  return result;
 }

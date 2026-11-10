@@ -10,7 +10,7 @@ const cases: [string, SourceLanguage][] = [
     [`src/main.${extension}`, 'javascript'], [`src/main.${extension.toUpperCase()}`, 'javascript'],
   ] as [string, SourceLanguage][]),
   ['a.test.tsx', 'typescript'], ['types.d.ts', 'typescript'], ['.config.ts', 'typescript'], ['.ts', 'typescript'],
-  ['main.py', 'text'], ['main.go', 'text'], ['README.md', 'text'], ['Dockerfile', 'text'],
+  ['main.py', 'python'], ['MAIN.PY', 'python'], ['main.go', 'text'], ['README.md', 'text'], ['Dockerfile', 'text'],
   ['.gitignore', 'text'], ['v1.2/readme', 'text'], ['a.', 'text'],
   ['src.ts/readme', 'text'], ['src.ts\\readme', 'text'], ['', 'text'],
 ];
@@ -20,7 +20,7 @@ describe('languageOf', () => {
     expect(languageOf(file)).toBe(expected);
   });
 
-  it.each(cases)('agrees with the TS/JS-only codeFile filter for %s', file => {
-    expect(languageOf(file) !== 'text').toBe(codeFile.test(file));
+  it.each(cases)('codeFile is true exactly for TypeScript and JavaScript: %s', file => {
+    expect(['typescript', 'javascript'].includes(languageOf(file))).toBe(codeFile.test(file));
   });
 });

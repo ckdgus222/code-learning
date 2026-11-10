@@ -155,6 +155,8 @@ AI 설명 계약은 `src/shared/ai.ts`의 `Explanation`입니다: `summary`, `st
 | `src/workers/analysis.ts` | 작업자 하나에서 탐색·분석·근거 대조. 프로젝트 지도는 같은 스크립트로 띄운 별도 작업자가 만듦 |
 | `src/core/project/files.ts` | 제외 규칙, 읽기 경계, 크기·UTF-8·해시 검사 |
 | `src/core/analysis/syntax.ts` | Tree-sitter 구문 추출과 UTF-16 근거, 함수별 코드 줄 수·중첩 깊이 |
+| `src/core/analysis/syntax-tools.ts` | 언어 공통 분석량 제한·UTF-16 근거 생성·함수 본문의 코드 줄 수와 중첩 깊이 |
+| `src/core/analysis/python-syntax.ts` | Python 함수·메서드·구문 단계·분기와 import 근거 추출 |
 | `src/core/analysis/names.ts` | 파일 하나의 이름 범위·선언(종류·타입·처음 값·매개변수 자리)·대입·쓰임·내보내기 모으기(F·V-1 공용) |
 | `src/core/analysis/calls.ts` | 함수 호출 관계: 호출의 이름 찾기, 가져온 함수 따라가기, 부르는 곳 찾기 |
 | `src/core/analysis/values.ts` | 값 따라가기: 고른 함수가 쓰는 이름과 코드에 적힌 값·식 |

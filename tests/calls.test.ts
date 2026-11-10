@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, realpath, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
@@ -605,4 +605,19 @@ it('follows alias imports and refuses competing candidates', async () => {
   project = await scanProject(root, project.id);
   const uncertain = await callsOf('src/alias-entry.ts', 'aliasRun');
   expect(uncertain.calls[0]).toMatchObject({ status: 'unknown', detail: '경로 별칭이 가리키는 파일을 하나로 정하지 못했어요.' });
+});
+
+it('rejects a Python target before reading aliases or any source', async () => {
+  const filesModule = await import('../src/core/project/files');
+  const aliasesModule = await import('../src/core/analysis/path-aliases');
+  const read = vi.spyOn(filesModule, 'readAllowed');
+  const aliases = vi.spyOn(aliasesModule, 'readPathAliases');
+  try {
+    await expect(findFunctionCalls('/missing', 'project', [{ id: 'py', relativePath: 'main.py', size: 20 }],
+      { fileId: 'py', fileHash: 'hash', startUtf16: 0, endUtf16: 20 }, MAP_LIMITS)).rejects.toMatchObject({
+      code: 'UNSUPPORTED', message: '부르는 것·부르는 곳·값 찾기는 아직 TypeScript·JavaScript 파일만 지원해요.',
+    });
+    expect(aliases).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); aliases.mockRestore(); }
 });

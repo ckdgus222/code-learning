@@ -63,3 +63,23 @@ it('forwards the shared stop flag to scanning even when the root has no files', 
   expect(worker.send.mock.lastCall![0]).toEqual({ id: 4,
     result: { ok: false, code: 'CANCELLED', message: '탐색을 멈췄습니다.' } });
 });
+
+it('reads Python symbols without building a TS/JS file guide', async () => {
+  root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-python-worker-')));
+  worker.data.root = root;
+  await writeFile(path.join(root, 'main.py'), 'def total(value):\n    if value:\n        return value\n');
+  vi.resetModules();
+  await import('../src/workers/analysis');
+  await worker.receive!({ id: 5, kind: 'scan' });
+  const scanned = worker.send.mock.lastCall![0].result;
+  if (!scanned.ok) throw new Error(scanned.message);
+  const file = (scanned.value as ProjectView).files.find(file => file.relativePath === 'main.py')!;
+  await worker.receive!({ id: 6, kind: 'read', target: file.id });
+  const read = worker.send.mock.lastCall![0].result;
+  if (!read.ok) throw new Error(read.message);
+  const source = read.value as SourceView;
+  expect(source.guide).toBeNull();
+  expect(source.analysis.language).toBe('python');
+  expect(source.analysis.symbols.map(symbol => symbol.name)).toEqual(['total']);
+  expect(source.analysis.symbols[0].steps[0].title).toBe('조건 확인');
+});

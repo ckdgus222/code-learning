@@ -39,6 +39,7 @@
   "dependencies": {
     "@codemirror/commands": "6.11.1",
     "@codemirror/lang-javascript": "6.2.5",
+    "@codemirror/lang-python": "6.2.1",
     "@codemirror/language": "6.13.1",
     "@codemirror/merge": "6.12.2",
     "@codemirror/search": "6.7.2",
@@ -52,6 +53,7 @@
     "react-dom": "19.3.0",
     "tree-sitter": "0.21.1",
     "tree-sitter-javascript": "0.21.4",
+    "tree-sitter-python": "0.23.4",
     "tree-sitter-typescript": "0.23.2",
     "typescript": "7.0.2",
     "zod": "4.6.7",
@@ -63,6 +65,7 @@
     "tree-sitter@0.21.1": false,
     "tree-sitter-javascript@0.21.4": false,
     "tree-sitter-javascript@0.23.1": false,
+    "tree-sitter-python@0.23.4": false,
     "tree-sitter-typescript@0.23.2": false
   }
 }

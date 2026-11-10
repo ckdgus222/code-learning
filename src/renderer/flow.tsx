@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { CodeStep, CodeSymbol, Evidence, LearningMark, MarkKey, SourceView } from '../shared/contracts';
+import type { SourceLanguage } from '../shared/languages';
 import { functionCodeHash, markKeysOf, sameMarkKey, type MarkChange } from './marks';
 import { MarkBadge, MarkEditor } from './learning-marks';
 
@@ -37,6 +38,32 @@ const detailLabels: Record<string, string> = {
   for_in_statement: '꺼내는 항목', switch_statement: '비교할 값', switch_case: 'case 값',
   return_statement: '돌려주는 값', throw_statement: '던지는 오류',
 };
+// Python words for the kinds whose TS/JS sentence names catch, switch or labels, and the Python-only kinds.
+const pythonDoing: Record<string, string> = {
+  try_statement: '안쪽 코드를 지나요. 안쪽에서 오류가 나면 그 오류를 받는 except로 갈 수 있고, finally가 있으면 마지막에 그 부분을 지나요.',
+  // No order is claimed: several `except*` clauses can each take part of one error group.
+  catch_clause: '앞의 try 안에서 난 오류를 이 except가 받을 때 여기로 와요.',
+  // A with block can stop an error too (contextlib.suppress), so only "not handled in this function" leaves it.
+  throw_statement: '오류를 던져요. 이 오류가 어디서 처리되는지는 감싼 except·finally·with에 따라 달라요. 이 함수 안에서 처리되지 않으면 함수를 부른 곳으로 넘어가요.',
+  break_statement: '감싼 반복문을 빠져나가려고 해요. 감싼 finally가 있으면 그 부분을 먼저 지나고 거기서 흐름이 바뀔 수 있어요.',
+  loop_else_clause: '반복이 중간에 빠져나가지 않고 다 돌았을 때 여기를 지나요. break로 나가면 건너뛰어요.',
+  try_else_clause: 'try 안쪽이 오류 없이, return·break·continue로 빠져나가지도 않고 끝났을 때 여기를 지나요.',
+  with_statement: '쓸 것을 준비하고 안쪽 단계를 지나요. 안쪽을 나갈 때는 오류가 나도 정리 동작을 하고, 그 동작에 따라 오류가 멈출 수도 있어요.',
+  match_statement: '값을 위에서부터 case와 견줘, 처음 맞는 case로 가요. 맞는 case가 없으면 그냥 지나가요.',
+  case_clause: '값이 이 모양과 맞고, 뒤에 if 조건이 있으면 그것도 맞을 때 여기로 와요. 안쪽을 지난 뒤 다음 case로 내려가지 않아요.',
+  assert_statement: '조건이 맞는지 확인해요. 맞지 않으면 오류를 던져요. 최적화 옵션으로 실행하면 이 확인은 건너뛰어요.',
+  assignment: '값을 계산해서 왼쪽 대상에 넣어요. += 같은 연산은 원래 있던 값도 함께 써요.',
+  annotation: '이름의 타입만 적어 둬요. 값은 넣지 않아요.',
+};
+const pythonDetailLabels: Record<string, string> = {
+  catch_clause: '받는 오류', with_statement: '준비하는 것', match_statement: '비교할 값', case_clause: 'case 모양',
+  assert_statement: '확인하는 조건',
+};
+// A Python source reads its own sentence first; every other language reads the shared one.
+const doingOf = (kind: string, language: SourceLanguage): string | undefined =>
+  (language === 'python' ? pythonDoing[kind] : undefined) ?? doing[kind];
+const detailLabelOf = (kind: string, language: SourceLanguage): string | undefined =>
+  (language === 'python' ? pythonDetailLabels[kind] : undefined) ?? detailLabels[kind];
 const loops = new Set(['for_statement', 'for_in_statement', 'while_statement', 'do_statement']);
 const exitKinds = new Set(['return_statement', 'throw_statement', 'expression_body']);
 const SNIPPET_LINES = 12;
@@ -125,8 +152,8 @@ export function Flow({ source, symbol, step, evidence, locked, onSymbol, onStep,
               <dt>지금 하는 일</dt>
               <dd>{step.kind === 'return_statement' && !step.detail
                 ? '돌려주는 값 없이 함수를 끝내려고 해요. 감싼 finally가 있으면 그 부분을 먼저 지나고 거기서 결과나 흐름이 바뀔 수 있어요.'
-                : doing[step.kind] ?? '이 부분의 코드를 지나요.'}</dd>
-              {step.detail && <><dt>{detailLabels[step.kind] ?? '코드'}</dt><dd><code>{step.detail}</code></dd></>}
+                : doingOf(step.kind, source.analysis.language) ?? '이 부분의 코드를 지나요.'}</dd>
+              {step.detail && <><dt>{detailLabelOf(step.kind, source.analysis.language) ?? '코드'}</dt><dd><code>{step.detail}</code></dd></>}
               {step.branch && <>
                 <dt>맞으면</dt><dd><Target id={step.branch.whenTrue} steps={steps} locked={locked} onStep={onStep} /></dd>
                 <dt>아니면</dt><dd><Target id={step.branch.whenFalse} steps={steps} locked={locked} onStep={onStep} /></dd>
@@ -171,7 +198,7 @@ function Summary({ symbol, source, locked, onStep, calls, learningMark }: {
             {symbol.steps.indexOf(item) + 1}. {item.title}</button>
           {item.detail && <code>{item.detail}</code>}
         </li>)}</ul> : <p>코드에서 찾은 반환·오류 던지기가 없어요.</p>}
-        <p className="hint">함수가 실제로 어디서 끝나는지는 확인하지 않았어요. try 안에서 던진 오류는 catch로 이어질 수 있고, finally가 결과를 바꿀 수 있고, 마지막 줄까지 내려와 끝날 수도 있어요.</p>
+        <p className="hint">함수가 실제로 어디서 끝나는지는 확인하지 않았어요. try 안에서 던진 오류는 {source.analysis.language === 'python' ? 'except' : 'catch'}로 이어질 수 있고, finally가 결과를 바꿀 수 있고, 마지막 줄까지 내려와 끝날 수도 있어요.</p>
       </dd>
       {calls}
       <dt>하는 일</dt>

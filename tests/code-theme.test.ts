@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { tags, highlightTree } from '@lezer/highlight';
 import { javascriptLanguage, jsxLanguage, tsxLanguage } from '@codemirror/lang-javascript';
+import { pythonLanguage } from '@codemirror/lang-python';
 import { EditorState } from '@codemirror/state';
 import { highlightingFor, language, syntaxTree } from '@codemirror/language';
 import { codeHighlighting, codeHighlightStyle } from '../src/renderer/code-theme';
@@ -175,4 +176,18 @@ it('keeps property and variable declarations distinct from functions in parsed c
   ] as const) {
     expect(spans.find(span => span.text === word)?.classes, word).toBe(codeHighlightStyle.style([tag]));
   }
+});
+
+it('provides the Python parser and shared colours', () => {
+  const extensions = codeHighlighting('python');
+  expect(extensions).toHaveLength(2);
+  const state = EditorState.create({ doc: 'def f():\n    return "hello" # comment\n', extensions });
+  expect(state.facet(language)).toBe(pythonLanguage);
+  for (const tag of [tags.keyword, tags.string, tags.comment]) {
+    expect(highlightingFor(state, [tag])).toBe(codeHighlightStyle.style([tag]));
+  }
+  expect(syntaxTree(state).toString()).toContain('FunctionDefinition');
+  const errors: string[] = [];
+  syntaxTree(state).iterate({ enter: node => { if (node.type.isError) errors.push(node.name); } });
+  expect(errors).toEqual([]);
 });

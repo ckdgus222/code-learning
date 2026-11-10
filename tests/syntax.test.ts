@@ -163,7 +163,7 @@ describe('static source analysis', () => {
   });
 
   it('does not pretend to analyze unsupported languages or execute JavaScript', () => {
-    expect(analyze('def hello():\n  return 1', 'main.py')).toMatchObject({ language: 'text', symbols: [], imports: [] });
+    expect(analyze('def hello():\n  return 1', 'main.go')).toMatchObject({ language: 'text', symbols: [], imports: [] });
     expect(() => analyze('throw new Error("must not execute"); function keep() {}', 'main.js')).not.toThrow();
   });
 

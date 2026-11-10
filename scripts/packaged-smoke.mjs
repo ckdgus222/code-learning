@@ -332,9 +332,22 @@ try {
   await screen.getByRole('listitem').filter({ hasText: 'POST /login' }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
   await page.getByRole('region', { name: '기능 따라가기', exact: true }).getByText('화면 /login에서 입력 양식을 보내면 시작해요', { exact: true }).waitFor();
   assert.equal(await app.evaluate(() => globalThis.packagedFlowCalls), 0);
+  // A separate project proves that the Python prebuilt grammar loads in the packaged worker.
+  const pythonFixture = path.join(temp, 'Python 읽기');
+  await mkdir(pythonFixture);
+  await writeFile(path.join(pythonFixture, 'order.py'), 'class Order:\n    def total(self, value):\n        if value:\n            return value\n        return 0\n');
+  await app.evaluate(({ dialog }, folder) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] });
+  }, pythonFixture);
+  await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+  await page.getByRole('heading', { name: 'Python 읽기', exact: true }).waitFor();
+  await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+  await page.getByRole('button', { name: 'order.py', exact: true }).click();
+  await page.getByRole('button', { name: 'Order.total', exact: true }).click();
+  await page.getByRole('button', { name: '조건 확인', exact: true }).click();
   await app.close(); app = undefined;
   await testCopy.cleanup(); testCopy = undefined;
-  const report = { passed: true, checks: ['screen groups and cached flow selection without flow IPC', 'system light and dark themes, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', onMac ? 'changes from git inside its sandbox' : 'Windows changes unavailable notice', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel', 'release fuses and plain startup', 'UI uses an inspect-enabled temporary copy', 'entire distributed app unchanged'], state };
+  const report = { passed: true, checks: ['Python native grammar, method outline and conditional step', 'screen groups and cached flow selection without flow IPC', 'system light and dark themes, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', onMac ? 'changes from git inside its sandbox' : 'Windows changes unavailable notice', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel', 'release fuses and plain startup', 'UI uses an inspect-enabled temporary copy', 'entire distributed app unchanged'], state };
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

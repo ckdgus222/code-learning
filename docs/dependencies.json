@@ -8,6 +8,12 @@
       "scope": "runtime"
     },
     {
+      "name": "@codemirror/lang-python",
+      "version": "6.2.1",
+      "license": "MIT",
+      "scope": "runtime"
+    },
+    {
       "name": "@codemirror/state",
       "version": "6.7.6",
       "license": "MIT",
@@ -52,6 +58,12 @@
     {
       "name": "tree-sitter-javascript",
       "version": "0.21.4",
+      "license": "MIT",
+      "scope": "runtime"
+    },
+    {
+      "name": "tree-sitter-python",
+      "version": "0.23.4",
       "license": "MIT",
       "scope": "runtime"
     },
