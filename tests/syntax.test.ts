@@ -1,7 +1,27 @@
 import { describe, expect, it } from 'vitest';
-import { analyzeSource } from '../src/core/analysis/syntax';
+import { analyzeSource, parse } from '../src/core/analysis/syntax';
 import { COMPLEXITY_LIMITS, type Evidence } from '../src/shared/contracts';
 import { complexityExpected, complexitySource, legacyExpected, legacySource } from './complexity-fixture';
+
+describe('parse', () => {
+  it('uses TSX for an uppercase TSX extension', () => {
+    const root = parse('const view: JSX.Element = <div />;', 'A.TSX');
+    expect(root.hasError).toBe(false);
+    expect(root.descendantsOfType('type_annotation')).toHaveLength(1);
+    expect(root.descendantsOfType('jsx_self_closing_element')).toHaveLength(1);
+  });
+
+  it('uses JavaScript for CommonJS files', () => {
+    expect(parse('module.exports = <div />;', 'a.cjs').hasError).toBe(false);
+    expect(parse('const value: number = 1;', 'a.cjs').hasError).toBe(true);
+  });
+
+  it('falls back to TypeScript for a non-code path', () => {
+    const root = parse('const value: number = 1;', 'README.md');
+    expect(root.hasError).toBe(false);
+    expect(root.descendantsOfType('type_annotation')).toHaveLength(1);
+  });
+});
 
 const context = {
   projectId: '8659dbe6-e890-454b-b75c-c70622a99e18',

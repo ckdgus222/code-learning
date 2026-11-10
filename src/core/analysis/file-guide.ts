@@ -2,10 +2,10 @@ import type Parser from 'tree-sitter';
 import type { Analysis, FileGuide, GuideFunction, GuideImport, GuideRange, ProjectFile } from '../../shared/contracts';
 import { NO_ALIASES, resolveImport, type PathAliases } from './path-aliases';
 import { splitFileChunks } from './file-chunks';
-import { MAP_LIMITS, parse } from './project-map';
+import { MAP_LIMITS } from './project-map';
 import { readFacts } from './names';
 import { serverFacts } from './feature-flow';
-import { functionTypes, importOf } from './syntax';
+import { functionTypes, importOf, parse } from './syntax';
 import { formatNextPath, nextRouteOf } from './next-routes';
 
 type Node = Parser.SyntaxNode;

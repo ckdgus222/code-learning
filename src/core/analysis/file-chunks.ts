@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type Parser from 'tree-sitter';
 import type { FileChunk } from '../../shared/ai';
 import { AppError } from '../../shared/errors';
-import { codeFile, parse } from './project-map';
-import { functionName, functionTypes } from './syntax';
+import { codeFile } from './project-map';
+import { functionName, functionTypes, parse } from './syntax';
 
 /** Only top-level statements and direct class members; nested callbacks stay inside their chunk. */
 export function splitFileChunks(text: string, relativePath: string, fileId: string, fileHash: string, parsedRoot?: Parser.SyntaxNode) {

@@ -1,12 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView, highlightSpecialChars, lineNumbers } from '@codemirror/view';
-import { syntaxHighlighting } from '@codemirror/language';
-import { codeTheme, codeHighlightStyle, HIDDEN_CHARS } from './code-theme';
-import { javascript } from '@codemirror/lang-javascript';
+import { codeTheme, codeHighlighting, HIDDEN_CHARS } from './code-theme';
 import { MergeView } from '@codemirror/merge';
 import { changedLineCounts, codeLines } from './changed-line-counts';
 import type { ChangeKind, FileChange, GitCommit, GitHistory, ProjectChanges } from '../shared/contracts';
+import { languageOf } from '../shared/languages';
 
 /*
  * Plan v2.3 C-2: a chosen commit against the files now. Read only: nothing here changes a file, the index or a branch.
@@ -158,15 +157,12 @@ function DiffPane({ entry, commit, onOpenCode }: { entry: DiffEntry; commit: str
 
 /** Read-only code with line numbers, coloured for TS/JS as in the reader; CR and BOM are kept. */
 function readOnly(file: string, label: string): Extension[] {
-  const extension = file.slice(file.lastIndexOf('.')).toLowerCase();
-  const typescript = ['.ts', '.tsx', '.mts', '.cts'].includes(extension);
-  const code = typescript || ['.js', '.jsx', '.mjs', '.cjs'].includes(extension);
   return [EditorState.lineSeparator.of('\n'), EditorState.readOnly.of(true), EditorView.editable.of(false), codeTheme, lineNumbers(),
     highlightSpecialChars({ specialChars: HIDDEN_CHARS }),
     // The folded unchanged part is labelled by the merge view; the rest of the app speaks Korean.
     EditorState.phrases.of({ '$ unchanged lines': '바뀌지 않은 줄 $개' }),
     EditorView.contentAttributes.of({ 'aria-label': label, role: 'textbox', 'aria-readonly': 'true', tabindex: '0' }),
-    ...(code ? [javascript({ typescript, jsx: true }), syntaxHighlighting(codeHighlightStyle)] : [])];
+    ...codeHighlighting(languageOf(file))];
 }
 
 function Merge({ before, after, file }: { before: string; after: string; file: string }) {

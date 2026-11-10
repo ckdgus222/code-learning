@@ -1,8 +1,36 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { tags, highlightTree } from '@lezer/highlight';
-import { javascriptLanguage } from '@codemirror/lang-javascript';
-import { codeHighlightStyle } from '../src/renderer/code-theme';
+import { javascriptLanguage, jsxLanguage, tsxLanguage } from '@codemirror/lang-javascript';
+import { EditorState } from '@codemirror/state';
+import { highlightingFor, language, syntaxTree } from '@codemirror/language';
+import { codeHighlighting, codeHighlightStyle } from '../src/renderer/code-theme';
+
+describe('codeHighlighting', () => {
+  it('leaves plain text without a parser or syntax colours', () => {
+    const extensions = codeHighlighting('text');
+    expect(extensions).toEqual([]);
+    const state = EditorState.create({ extensions });
+    expect(state.facet(language)).toBeNull();
+    expect(highlightingFor(state, [tags.keyword])).toBeNull();
+  });
+
+  it.each(['typescript', 'javascript'] as const)('provides the %s parser and shared colours with JSX enabled', sourceLanguage => {
+    const extensions = codeHighlighting(sourceLanguage);
+    expect(extensions).toHaveLength(2);
+    const state = EditorState.create({ doc: 'const value: number = 1;', extensions });
+    expect(state.facet(language)).toBe(sourceLanguage === 'typescript' ? tsxLanguage : jsxLanguage);
+    for (const tag of [tags.keyword, tags.string, tags.comment]) {
+      expect(highlightingFor(state, [tag])).toBe(codeHighlightStyle.style([tag]));
+    }
+    if (sourceLanguage === 'typescript') {
+      const errors: string[] = [];
+      syntaxTree(state).iterate({ enter: node => { if (node.type.isError) errors.push(node.name); } });
+      expect(errors).toEqual([]);
+      expect(syntaxTree(state).toString()).toContain('TypeAnnotation');
+    }
+  });
+});
 
 const css = readFileSync(new URL('../src/renderer/styles.css', import.meta.url), 'utf8');
 const lightBlock = css.match(/:root\s*\{([^}]+)\}/)![1];

@@ -1,9 +1,18 @@
 import { randomUUID } from 'node:crypto';
-import { extname } from 'node:path';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
 import { STRUCTURE_NOTE, type Analysis, type CodeStep, type Evidence } from '../../shared/contracts';
+import { languageOf } from '../../shared/languages';
+
+/** The syntax tree of a TS/JS source. Any path that is not JavaScript parses as TypeScript (TSX for .tsx). */
+export function parse(text: string, relativePath: string): Parser.SyntaxNode {
+  const parser = new Parser();
+  parser.setLanguage(languageOf(relativePath) === 'javascript' ? JavaScript
+    : /\.tsx$/i.test(relativePath) ? TypeScript.tsx : TypeScript.typescript);
+  // This binding's string callback needs room for the source plus its terminator.
+  return parser.parse(text, undefined, { bufferSize: Math.max(32 * 1024, text.length + 1) }).rootNode;
+}
 
 export const functionTypes = new Set([
   'function_declaration', 'generator_function_declaration', 'function_expression',
@@ -206,20 +215,14 @@ export function analyzeSource(
   relativePath: string,
   context: { projectId: string; fileId: string; fileHash: string },
 ): Analysis {
-  const extension = extname(relativePath).toLowerCase();
-  const language = ['.ts', '.tsx', '.mts', '.cts'].includes(extension) ? 'typescript'
-    : ['.js', '.jsx', '.mjs', '.cjs'].includes(extension) ? 'javascript' : 'text';
+  const language = languageOf(relativePath);
   const result: Analysis = { language, symbols: [], imports: [], warnings: [] };
   if (language === 'text') {
     result.warnings.push('이 파일은 원문만 표시합니다. 현재 구문 분석은 TypeScript와 JavaScript만 지원합니다.');
     return result;
   }
 
-  const parser = new Parser();
-  parser.setLanguage(language === 'javascript' ? JavaScript
-    : extension === '.tsx' ? TypeScript.tsx : TypeScript.typescript);
-  // This binding's string callback needs room for the source plus its terminator.
-  const root = parser.parse(text, undefined, { bufferSize: Math.max(32 * 1024, text.length + 1) }).rootNode;
+  const root = parse(text, relativePath);
   result.warnings.push(STRUCTURE_NOTE);
   if (root.hasError) {
     result.warnings.push('구문 오류가 있습니다. 오류가 포함된 함수는 분석에서 제외합니다.');

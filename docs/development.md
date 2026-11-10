@@ -151,6 +151,7 @@ AI 설명 계약은 `src/shared/ai.ts`의 `Explanation`입니다: `summary`, `st
 |---|---|
 | `src/main` | 창, IPC 요청 검사, 프로젝트 세션·작업 취소·파일 감시 |
 | `src/preload` | 화면에 필요한 제한된 API만 전달 |
+| `src/shared/languages.ts` | 파일의 언어 판정 |
 | `src/workers/analysis.ts` | 작업자 하나에서 탐색·분석·근거 대조. 프로젝트 지도는 같은 스크립트로 띄운 별도 작업자가 만듦 |
 | `src/core/project/files.ts` | 제외 규칙, 읽기 경계, 크기·UTF-8·해시 검사 |
 | `src/core/analysis/syntax.ts` | Tree-sitter 구문 추출과 UTF-16 근거, 함수별 코드 줄 수·중첩 깊이 |

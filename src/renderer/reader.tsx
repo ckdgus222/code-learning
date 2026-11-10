@@ -1,14 +1,12 @@
 import React, { useEffect, useImperativeHandle, useRef, type Ref } from 'react';
 import { Compartment, EditorState, RangeSet } from '@codemirror/state';
 import { Decoration, EditorView, GutterMarker, WidgetType, gutter, lineNumbers, drawSelection, highlightSpecialChars, keymap, type KeyBinding } from '@codemirror/view';
-import { syntaxHighlighting } from '@codemirror/language';
 import {
   cursorCharLeft, cursorCharRight, cursorDocEnd, cursorDocStart, cursorLineBoundaryBackward, cursorLineBoundaryForward, cursorLineDown,
   cursorLineUp, cursorPageDown, cursorPageUp, selectAll, selectCharLeft, selectCharRight, selectDocEnd, selectDocStart,
   selectLineBoundaryBackward, selectLineBoundaryForward, selectLineDown, selectLineUp, selectPageDown, selectPageUp,
 } from '@codemirror/commands';
-import { codeTheme, codeHighlightStyle, HIDDEN_CHARS } from './code-theme';
-import { javascript } from '@codemirror/lang-javascript';
+import { codeTheme, codeHighlighting, HIDDEN_CHARS } from './code-theme';
 import { openSearchPanel, search, searchKeymap } from '@codemirror/search';
 import type { CodeStep, Evidence, SourceView } from '../shared/contracts';
 import { groupStepMarkers, type StepMarkerGroup } from './step-markers';
@@ -109,9 +107,7 @@ export function Reader({ source, evidence, codeSize, wrap, symbolId, stepId, loc
         wrapping.of(wrap ? EditorView.lineWrapping : []), sizing.of(sizeTheme(codeSize)),
         // A non-editable element takes keyboard focus only with a tabindex (CodeMirror read-only example).
         EditorView.contentAttributes.of({ 'aria-label': '원본 코드 (읽기 전용)', role: 'textbox', 'aria-readonly': 'true', tabindex: '0' }),
-        ...(source.analysis.language !== 'text' ? [javascript({ typescript: source.analysis.language === 'typescript', jsx: true }),
-          // The language support parses; this is what colours keywords, strings and comments.
-          syntaxHighlighting(codeHighlightStyle)] : []),
+        ...codeHighlighting(source.analysis.language),
       ],
     }) });
     view.current = editor;

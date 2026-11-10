@@ -1,7 +1,6 @@
 import type Parser from 'tree-sitter';
 import type { ProjectFile } from '../../shared/contracts';
-import { parse } from './project-map';
-import { functionTypes, importOf } from './syntax';
+import { functionTypes, importOf, parse } from './syntax';
 
 /*
  * Names in one file, read from the code only (plan v2.3 F and V-1): which declaration a name means, scope by

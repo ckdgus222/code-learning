@@ -1,11 +1,9 @@
 import path from 'node:path';
-import Parser from 'tree-sitter';
-import JavaScript from 'tree-sitter-javascript';
-import TypeScript from 'tree-sitter-typescript';
+import type Parser from 'tree-sitter';
 import { COMPLEXITY_LIMITS, type MapExport, type MapFile, type MapImport, type ProjectFile, type ProjectMap } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 import { assertAllowedFile, MAX_FILE_BYTES, readAllowed, textExtensions } from '../project/files';
-import { functionName, functionTypes, importOf, measureFunction } from './syntax';
+import { functionName, functionTypes, importOf, measureFunction, parse } from './syntax';
 import { readPathAliases, resolveImport } from './path-aliases';
 import { scriptFilesOf, unusedFiles } from './unused-files';
 
@@ -19,15 +17,6 @@ export interface MapLimits { files: number; bytes: number; nodesPerFile: number 
 // Files as many as the folder scan allows; 16 MiB confirmed by the user (2026-10-19) so a large project
 // still finishes inside the map worker's 30 seconds; the node budget keeps one huge file from taking it all.
 export const MAP_LIMITS: MapLimits = { files: 1000, bytes: 16 * 1024 * 1024, nodesPerFile: 200_000 };
-
-export function parse(text: string, relativePath: string): Parser.SyntaxNode {
-  const extension = path.extname(relativePath).toLowerCase();
-  const parser = new Parser();
-  parser.setLanguage(['.js', '.jsx', '.mjs', '.cjs'].includes(extension) ? JavaScript
-    : extension === '.tsx' ? TypeScript.tsx : TypeScript.typescript);
-  // This binding's string callback needs room for the source plus its terminator (as in syntax.ts).
-  return parser.parse(text, undefined, { bufferSize: Math.max(32 * 1024, text.length + 1) }).rootNode;
-}
 
 /** Binding names only: object keys and default-value expressions are not declarations. */
 function bindingNames(pattern: Parser.SyntaxNode | null): Parser.SyntaxNode[] {

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { SourceLanguage } from './languages';
 import type { PlanCompareCheck, PlanCompareRequest, PlanCompareResult, SavePlanCompare, PlanDocument } from './plan-compare';
 import type { CheckConnectionsRequest, ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest, FeatureGuideRequest, FeatureGuideResult, FileChunk, FileExplanationRange, FileExplanationResult, OverviewResult, LearningResult } from './ai';
 
@@ -114,7 +115,7 @@ export interface CodeSymbol {
 export const STRUCTURE_NOTE = '코드에 적힌 구문 구조입니다. 실제 실행 순서와 호출 대상은 확인하지 않았습니다.';
 
 export interface Analysis {
-  language: 'typescript' | 'javascript' | 'text';
+  language: SourceLanguage;
   symbols: CodeSymbol[];
   imports: { text: string; evidence: Evidence }[];
   warnings: string[];
