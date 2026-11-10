@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { BIG_FOLDER_LIMIT, boxName, boxPlace, closeArea, expandableIds, FILE_VIEW_LIMIT, fileViewFolder, fileViewOf, folderArrows, folderFileList, foldersWithFiles,
-  linkedArrows, matchCallStep, matchFunction, matchImport, NEIGHBOR_LIMIT, NEIGHBOR_ROW_HEIGHT, neighborhoodGraph, shownBigFolder, visibleGraph } from '../src/renderer/map-layout';
+  importCycles, linkedArrows, matchCallStep, matchFunction, matchImport, NEIGHBOR_LIMIT, NEIGHBOR_ROW_HEIGHT, neighborhoodGraph, shownBigFolder, visibleGraph } from '../src/renderer/map-layout';
 import { buildProjectMap } from '../src/core/analysis/project-map';
 import { analyzeSource } from '../src/core/analysis/syntax';
 import { readAllowed, scanProject } from '../src/core/project/files';
@@ -19,6 +19,58 @@ const map: ProjectMap = { projectId: 'p', files: [file('a1', 'a'), file('a2', 'a
   edges: [edge('a1', 'b1'), edge('a2', 'b1'), edge('b2', 'a1'), edge('a1', 'a2')], unresolved: [], external: [], complexFunctions: [], exports: [], unused: { exports: { candidates: [], unsure: [], notes: [] }, candidates: [], unsure: [], excluded: [], notes: [] }, limited: false, notes: [] };
 const summary = (graph: ReturnType<typeof visibleGraph>) => graph.arrows.map(arrow => [arrow.source, arrow.target, arrow.items.length]);
 const backs = (graph: ReturnType<typeof visibleGraph>) => graph.arrows.filter(arrow => arrow.back).map(arrow => arrow.id);
+
+describe('import cycles', () => {
+  it('groups a two-file loop, sorts paths and retains repeated import lines in input order', () => {
+    const files = [file('b', ''), file('a', '')];
+    const imports = [edge('b', 'a'), edge('a', 'b'), { ...edge('a', 'b'), startLine: 2, startUtf16: 10 }];
+    expect(importCycles({ ...map, files, edges: imports })).toEqual([{ files: [files[1], files[0]], imports }]);
+  });
+
+  it('keeps a three-file loop without its incoming or outgoing tails', () => {
+    const files = ['tail', 'c', 'b', 'a', 'head'].map(id => file(id, ''));
+    const imports = [edge('a', 'b'), edge('b', 'c'), edge('c', 'a')];
+    expect(importCycles({ ...map, files, edges: [edge('head', 'a'), ...imports, edge('c', 'tail')] }))
+      .toEqual([{ files: [files[3], files[2], files[1]], imports }]);
+  });
+
+  it('sorts separate components by size and then first relative path, even when linked one way', () => {
+    const files = ['a', 'b', 'c', 'd', 'x', 'y', 'z'].map(id => file(id, ''));
+    const edges = [edge('c', 'd'), edge('d', 'c'), edge('a', 'b'), edge('b', 'a'),
+      edge('x', 'y'), edge('y', 'z'), edge('z', 'x'), edge('b', 'c'), edge('d', 'x')];
+    expect(importCycles({ ...map, files, edges }).map(group => group.files.map(file => file.id)))
+      .toEqual([['x', 'y', 'z'], ['a', 'b'], ['c', 'd']]);
+  });
+
+  it('counts a self import but excludes a lone file without one', () => {
+    const files = [file('a', ''), file('b', '')];
+    const imports = [edge('a', 'a')];
+    expect(importCycles({ ...map, files, edges: imports })).toEqual([{ files: [files[0]], imports }]);
+  });
+
+  it('returns no groups for an empty map or a branching acyclic graph', () => {
+    expect(importCycles({ ...map, files: [], edges: [] })).toEqual([]);
+    const files = ['a', 'b', 'c', 'd'].map(id => file(id, ''));
+    expect(importCycles({ ...map, files, edges: [edge('a', 'b'), edge('a', 'c'), edge('b', 'c'), edge('c', 'd')] })).toEqual([]);
+  });
+
+  it('handles a 1,000-file chain and loop without recursion', () => {
+    const files = Array.from({ length: 1000 }, (_, index) => file(String(index).padStart(4, '0'), 'src'));
+    const chain = files.slice(1).map((file, index) => edge(files[index].id, file.id));
+    expect(importCycles({ ...map, files, edges: chain })).toEqual([]);
+    const imports = [...chain, edge(files.at(-1)!.id, files[0].id)];
+    expect(importCycles({ ...map, files, edges: imports })).toEqual([{ files, imports }]);
+  });
+
+  it('ignores unknown sources and targets, including apparent loops through missing files', () => {
+    const files = [file('a', ''), file('b', '')];
+    const imports = [edge('a', 'b'), edge('b', 'a')];
+    const unknown = [edge('a', 'missing'), edge('missing', 'a'), edge('missing', 'missing')];
+    expect(importCycles({ ...map, files, edges: [...unknown, ...imports] })).toEqual([{ files, imports }]);
+    expect(importCycles({ ...map, files, edges: unknown })).toEqual([]);
+    expect(importCycles({ ...map, files: [], edges: unknown })).toEqual([]);
+  });
+});
 
 describe('big folder lists and neighbourhoods', () => {
   it('lists only direct files, counts distinct non-self neighbours across folders and sorts all three keys', () => {

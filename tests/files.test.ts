@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { MAX_FILE_BYTES, readAllowed, readStable, scanProject } from '../src/core/project/files';
+import { analyzeSource } from '../src/core/analysis/syntax';
 
 let root: string;
 let sandbox: string;
@@ -31,6 +32,24 @@ beforeEach(async () => {
 afterEach(async () => { await rm(sandbox, { recursive: true, force: true }); });
 
 describe('project file boundary', () => {
+  it('opens additional source types as plain text while excluding general XML, properties and binaries', async () => {
+    const names = ['main.go', 'lib.rs', 'App.vue', 'go.mod', 'pom.xml', 'Gemfile', 'Main.kt', 'build.kts', 'Main.cs',
+      'main.rb', 'index.php', 'Main.swift', 'main.c', 'main.h', 'main.cpp', 'main.hpp', 'App.svelte', 'theme.scss', 'run.sh', 'build.gradle'];
+    for (const name of [...names, 'logo.png', 'layout.xml', 'app.properties']) await put(name, 'plain source');
+    const project = await scanProject(root, randomUUID());
+    expect(project.files.map(file => file.relativePath).sort()).toEqual([...names].sort());
+    expect(project.excluded['미지원·바이너리 파일']).toBe(3);
+    for (const name of names) {
+      const read = await readAllowed(root, name);
+      const analysis = analyzeSource(read.text, name, { projectId: project.id, fileId: name, fileHash: read.hash });
+      expect(analysis.language).toBe('text');
+      expect(analysis.warnings).toContain('이 파일은 원문만 표시합니다. 현재 구문 분석은 TypeScript와 JavaScript만 지원합니다.');
+    }
+    for (const name of ['logo.png', 'layout.xml', 'app.properties']) {
+      await expect(readAllowed(root, name)).rejects.toMatchObject({ code: 'NOT_ALLOWED' });
+    }
+  });
+
   it('reads exact UTF-8 source and preserves project bytes without running scripts', async () => {
     const source = '\uFEFFexport const hello = "안녕 🌱";\r\n';
     await put('src/main.ts', source);

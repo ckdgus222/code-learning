@@ -126,6 +126,7 @@ Windows PowerShell에서 `True`가 나오면 정상입니다.
 지원 범위는 다음과 같습니다.
 
 - 언어: TypeScript, JavaScript
+- 원문으로만 열기: Python, Java, Go, Rust, Kotlin, C#, Ruby, PHP, Swift, C/C++, Vue, Svelte 등
 - 기능 흐름: NestJS·Next API·Express 서버, fetch·axios 요청
 - 폴더 한도: 파일 1,000개, 파일당 256 KiB, UTF-8 텍스트. 제외한 파일은 이유를 보여 주며, 한도를 넘으면 더 작은 폴더를 열면 됩니다.
 
@@ -204,7 +205,7 @@ $env:CODEX_HOME="$env:APPDATA\Code Learning\codex-home"; codex login
 
 ## 알려진 한계
 
-- 코드 분석은 TypeScript·JavaScript만 합니다. 문서 같은 일부 텍스트 파일은 읽을 수 있습니다.
+- 코드 분석은 TypeScript·JavaScript만 합니다. Python·Java·Go·Rust 등 다른 언어 파일과 문서 같은 일부 텍스트 파일은 원문으로만 읽을 수 있습니다.
 - 연결은 주소 문자열과 코드 모양으로 찾습니다. 실제로 실행해서 확인한 결과가 아닙니다.
 - 경로 별칭(`@/…` 등)은 일부만 지원합니다. Fastify·Hono·Koa 등은 기능 흐름 분석 대상이 아닙니다.
 - AI 답과 기획 대조는 틀릴 수 있고, 다른 AI가 교차 확인하지도 않습니다. 근거 코드가 바뀌면 다시 확인해야 하며, 오래된 근거로는 이동하지 않습니다.

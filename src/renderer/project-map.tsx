@@ -4,7 +4,7 @@ import { Background, BackgroundVariant, Controls, Handle, MarkerType, Position, 
 import '@xyflow/react/dist/style.css';
 import type { ChangeKind, FileChange, MapExport, MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectChanges, ProjectMap, ProjectView, UnusedExcludeKind } from '../shared/contracts';
 import { BIG_FOLDER_LIMIT, boxName, boxPlace, closeArea, expandableIds, FILE_VIEW_LIMIT, fileViewFolder, fileViewOf, folderArrows, folderFileList, folderName,
-  foldersWithFiles, linkedArrows, NEIGHBOR_LIMIT, NEIGHBOR_ROW_HEIGHT, neighborhoodGraph, shownBigFolder, visibleGraph, type MapArrow, type MapBox } from './map-layout';
+  foldersWithFiles, importCycles, linkedArrows, NEIGHBOR_LIMIT, NEIGHBOR_ROW_HEIGHT, neighborhoodGraph, shownBigFolder, visibleGraph, type MapArrow, type MapBox } from './map-layout';
 import { COMPLEXITY_NOTE, ComplexityTags } from './complexity';
 import { ChangeList, kindLabels } from './changes';
 
@@ -127,6 +127,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
 }) {
   const expandable = useMemo(() => expandableIds(map), [map]);
   const folders = useMemo(() => foldersWithFiles(map), [map]);
+  const cycles = useMemo(() => importCycles(map), [map]);
   const paths = useMemo(() => new Map(map.files.map(file => [file.id, file.relativePath])), [map]);
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
   const large = map.files.length > FILE_VIEW_LIMIT;
@@ -203,6 +204,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
   const focusedUses = connections?.arrows.filter(arrow => arrow.source === focused) ?? [];
   const focusedUsers = connections?.arrows.filter(arrow => arrow.target === focused) ?? [];
   const reviewPlaces = [
+    { id: 'map-import-cycles', label: '서로 가져다 쓰는 파일 묶음', count: cycles.length },
     { id: 'map-unused-files', label: '아무도 가져다 쓰지 않는 파일 후보', count: map.unused.candidates.length },
     { id: 'map-unused-exports', label: '다른 파일이 가져다 쓰지 않는 export 후보', count: map.unused.exports.candidates.length },
     { id: 'map-complex-functions', label: '어려운 코드 살펴볼 곳', count: map.complexFunctions.length },
@@ -351,6 +353,23 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
         {folderName(arrow.source.replace(/^folder:/, ''))} → {folderName(arrow.target.replace(/^folder:/, ''))} · import {arrow.items.length}개
       </li>)}</ul> : <p className="hint">폴더 사이에 이어진 import가 없어요.</p>}
       <Omitted count={design.length} />
+    </section>
+    <section className="card" aria-label="서로 가져다 쓰는 파일 묶음">
+      <h3 id="map-import-cycles" tabIndex={-1}>서로 가져다 쓰는 파일 묶음 · {cycles.length}개</h3>
+      <p className="hint">import를 따라가면 처음 파일로 돌아오는 묶음이에요(순환 import). 서로 기대고 있으니 함께 읽으면 좋아요. 타입만 가져오는 import도 세기 때문에, 실행할 때 문제가 생긴다는 뜻은 아니에요.</p>
+      {cycles.length ? <ul className="map-list">{firstRows(cycles).map(group => <li key={group.files[0].id}>
+        <p>파일 {group.files.length}개 · import {group.imports.length}개</p>
+        {firstRows(group.files).map(file => <button key={file.id} className="btn btn--small path" disabled={locked}
+          onClick={() => onOpenFile(file.id)}>{file.relativePath}</button>)}
+        <Omitted count={group.files.length} />
+        <details><summary>묶음 안 import {group.imports.length}개</summary>
+          <ul className="map-list">{firstRows(group.imports).map(item => <li key={`${item.fromFileId}:${item.startUtf16}`}>
+            <span className="path">{pathOf(item.fromFileId)} {item.startLine}행 → {pathOf(item.toFileId)}</span> <code>{item.text}</code> {showButton(item)}
+          </li>)}</ul>
+          <Omitted count={group.imports.length} />
+        </details>
+      </li>)}</ul> : <p className="hint">돌고 도는 import가 없어요.</p>}
+      <Omitted count={cycles.length} />
     </section>
     <section className="card" aria-label="아무도 가져다 쓰지 않는 파일 후보">
       <h3 id="map-unused-files" tabIndex={-1}>아무도 가져다 쓰지 않는 파일 후보 · {map.unused.candidates.length}개</h3>

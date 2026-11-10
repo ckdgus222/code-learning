@@ -1,5 +1,71 @@
 import type { CallSite, CodeStep, CodeSymbol, Evidence, MapFile, MapFunction, MapImport, ProjectMap, SourceView } from '../shared/contracts';
 
+export interface ImportCycle {
+  /** The files in the loop, sorted by relativePath. */
+  files: MapFile[];
+  /** Every edge inside the group, including repeated imports, in map.edges order. */
+  imports: ProjectMap['edges'];
+}
+
+/** Find strongly connected groups with two iterative depth-first walks (Kosaraju). */
+export function importCycles(map: ProjectMap): ImportCycle[] {
+  const files = new Map(map.files.map(file => [file.id, file]));
+  const outgoing = new Map(map.files.map(file => [file.id, [] as string[]]));
+  const incoming = new Map(map.files.map(file => [file.id, [] as string[]]));
+  for (const edge of map.edges) {
+    if (!files.has(edge.fromFileId) || !files.has(edge.toFileId)) continue;
+    outgoing.get(edge.fromFileId)!.push(edge.toFileId);
+    incoming.get(edge.toFileId)!.push(edge.fromFileId);
+  }
+
+  const visited = new Set<string>();
+  const finished: string[] = [];
+  // Seed every file so disconnected parts are visited too. Exit frames record postorder.
+  const walk = map.files.map(file => ({ id: file.id, exit: false }));
+  while (walk.length) {
+    const current = walk.pop()!;
+    if (current.exit) { finished.push(current.id); continue; }
+    if (visited.has(current.id)) continue;
+    visited.add(current.id);
+    walk.push({ id: current.id, exit: true });
+    for (const id of outgoing.get(current.id)!) {
+      if (!visited.has(id)) walk.push({ id, exit: false });
+    }
+  }
+
+  const componentOf = new Map<string, ImportCycle>();
+  const components: ImportCycle[] = [];
+  const pending: string[] = [];
+  let component: ImportCycle = { files: [], imports: [] };
+  // Walk reversed edges in decreasing finish order; each new root starts one component.
+  while (finished.length || pending.length) {
+    if (!pending.length) {
+      const root = finished.pop()!;
+      if (componentOf.has(root)) continue;
+      component = { files: [], imports: [] };
+      components.push(component);
+      componentOf.set(root, component);
+      pending.push(root);
+    }
+    const id = pending.pop()!;
+    component.files.push(files.get(id)!);
+    for (const source of incoming.get(id)!) {
+      if (componentOf.has(source)) continue;
+      componentOf.set(source, component);
+      pending.push(source);
+    }
+  }
+
+  for (const edge of map.edges) {
+    const group = componentOf.get(edge.fromFileId);
+    if (group && group === componentOf.get(edge.toFileId)) group.imports.push(edge);
+  }
+  // A group of two or more always has imports inside it; a lone file has one only when it imports itself.
+  const cycles = components.filter(group => group.imports.length > 0);
+  for (const group of cycles) group.files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  return cycles.sort((a, b) => b.files.length - a.files.length || a.files[0].relativePath.localeCompare(b.files[0].relativePath));
+}
+
 export interface MapBox {
   id: string;
   kind: 'file' | 'folder';

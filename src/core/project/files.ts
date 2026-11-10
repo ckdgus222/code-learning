@@ -42,8 +42,9 @@ const excludedDirs = new Set([...secretDirs,
   '.idea', '.vscode', 'node_modules', 'vendor', 'dist', 'build', 'out', 'coverage', '.next', '.venv', 'venv', '__pycache__']);
 /** The file types a project scan lists; anything else is excluded as unsupported or binary. */
 export const textExtensions = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.json', '.md', '.txt', '.py', '.java', '.dart',
-  '.yaml', '.yml', '.toml', '.css', '.html', '.sql', '.conf']);
-const textNames = new Set(['Dockerfile', 'Makefile', 'LICENSE', '.gitignore']);
+  '.yaml', '.yml', '.toml', '.css', '.html', '.sql', '.conf', '.go', '.rs', '.kt', '.kts', '.cs', '.rb', '.php', '.swift',
+  '.c', '.h', '.cpp', '.hpp', '.vue', '.svelte', '.scss', '.sh', '.gradle']);
+const textNames = new Set(['Dockerfile', 'Makefile', 'LICENSE', '.gitignore', 'go.mod', 'pom.xml', 'Gemfile']);
 type Rules = { base: string; matcher: Ignore }[];
 
 function exceedsPathLimit(relative: string): boolean {

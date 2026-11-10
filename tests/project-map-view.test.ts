@@ -609,6 +609,78 @@ describe('connections listed by visible box', () => {
   });
 });
 
+describe('import cycles card', () => {
+  const section = (html: string) => html.match(/<section class="card" aria-label="서로 가져다 쓰는 파일 묶음">(.*?)<\/section>/)![1];
+  const cycleMap = { ...map, edges: [...map.edges, { ...map.edges[0], fromFileId: 'b', toFileId: 'a',
+    startLine: 3, startUtf16: 20, text: "import './a'" }] };
+
+  it.each([false, true])('shows evidence and file actions before unused files with locked=%s', locked => {
+    const onOpenFile = vi.fn();
+    const onShowImport = vi.fn();
+    const html = renderToStaticMarkup(React.createElement(ProjectMapView, { project, entry: { map: cycleMap, revision: 0, build: 1 },
+      stale: false, mapping: false, locked, changes: null, onBuild() {}, onCancel() {}, onOpenFile, onShowImport,
+      onShowFunction() {}, onShowChange() {} }));
+    const card = section(html);
+    expect(html).toContain('aria-label="서로 가져다 쓰는 파일 묶음 1개"');
+    expect(card).toContain('id="map-import-cycles" tabindex="-1">서로 가져다 쓰는 파일 묶음 · 1개');
+    expect(card).toContain('파일 2개 · import 2개');
+    expect(card).toContain('<details><summary>묶음 안 import 2개</summary>');
+    expect(card).toContain('web/app/a.ts 1행 → web/lib/b.ts');
+    expect(card).toContain('web/lib/b.ts 3행 → web/app/a.ts');
+    expect(card).toContain('<code>import &#x27;./a&#x27;</code>');
+    expect(card).toContain('타입만 가져오는 import도 세기 때문에, 실행할 때 문제가 생긴다는 뜻은 아니에요.');
+    const cardEnd = html.indexOf('</section>', html.indexOf('aria-label="서로 가져다 쓰는 파일 묶음"')) + '</section>'.length;
+    expect(html.slice(cardEnd)).toMatch(/^<section class="card" aria-label="아무도 가져다 쓰지 않는 파일 후보">/);
+    expect(card.match(/<button /g)).toHaveLength(4);
+    expect(card.match(/disabled=""/g) ?? []).toHaveLength(locked ? 4 : 0);
+    const buttons = vi.mocked(JSX.jsxDEV).mock.results.map(result => result.value as React.ReactElement<Record<string, unknown>>)
+      .filter(element => element.type === 'button');
+    for (const file of cycleMap.files.slice(0, 2)) {
+      const button = buttons.find(element => element.props.children === file.relativePath)!;
+      expect(button.props.disabled).toBe(locked);
+      if (!locked) (button.props.onClick as () => void)();
+    }
+    const evidenceButtons = buttons.filter(element => element.props.children === '코드 보기').slice(0, 2);
+    for (const button of evidenceButtons) {
+      expect(button.props.disabled).toBe(locked);
+      if (!locked) (button.props.onClick as () => void)();
+    }
+    expect(onOpenFile.mock.calls).toEqual(locked ? [] : [['a'], ['b']]);
+    expect(onShowImport.mock.calls).toEqual(locked ? [] : cycleMap.edges.map(item => [item]));
+  });
+
+  it('shows the empty state without a group list', () => {
+    const card = section(render());
+    expect(card).toContain('서로 가져다 쓰는 파일 묶음 · 0개');
+    expect(card).toContain('<p class="hint">돌고 도는 import가 없어요.</p>');
+    expect(card).not.toContain('<ul');
+  });
+
+  it('caps the number of groups at 300 and reports omitted groups', () => {
+    const files = Array.from({ length: 301 }, (_, index) => file(String(index).padStart(3, '0'), ''));
+    const source = { ...map, files, edges: files.map(file => ({ ...map.edges[0], fromFileId: file.id, toFileId: file.id })) };
+    const card = section(render(new Set(), null, null, source));
+    expect(card).toContain('서로 가져다 쓰는 파일 묶음 · 301개');
+    expect(card.match(/<summary>/g)).toHaveLength(300);
+    expect(card).not.toContain('300.ts');
+    expect(card).toContain('처음 300개만 보여요. 나머지 1개는 생략했어요.');
+  });
+
+  it('caps each group file and import list at 300 and keeps full counts', () => {
+    const files = Array.from({ length: 301 }, (_, index) => file(String(index).padStart(3, '0'), ''));
+    const source = { ...map, files, edges: files.map((file, index) => ({ ...map.edges[0],
+      fromFileId: file.id, toFileId: files[(index + 1) % files.length].id })) };
+    const card = section(render(new Set(), null, null, source));
+    expect(card).toContain('파일 301개 · import 301개');
+    expect(card).toContain('묶음 안 import 301개');
+    expect(card.match(/class="btn btn--small path"/g)).toHaveLength(300);
+    expect(card).not.toContain('>300.ts</button>');
+    expect(card.match(/>코드 보기<\/button>/g)).toHaveLength(300);
+    expect(card).not.toContain('300.ts 1행');
+    expect(card.match(/처음 300개만 보여요. 나머지 1개는 생략했어요./g)).toHaveLength(2);
+  });
+});
+
 describe('unused file candidates card', () => {
   const section = (html: string) => html.match(/<section class="card" aria-label="아무도 가져다 쓰지 않는 파일 후보">(.*?)<\/section>/)![1];
 
@@ -800,6 +872,7 @@ describe('file map side cards', () => {
     expect(html).toContain(`aria-label="아무도 가져다 쓰지 않는 파일 후보 ${count}개"`);
     expect(html).toContain(`id="map-unused-files" tabindex="-1">아무도 가져다 쓰지 않는 파일 후보 · ${count}개`);
     for (const [label, id] of [
+      ['서로 가져다 쓰는 파일 묶음', 'map-import-cycles'],
       ['다른 파일이 가져다 쓰지 않는 export 후보', 'map-unused-exports'],
       ['어려운 코드 살펴볼 곳', 'map-complex-functions'], ['확인 못 한 import', 'map-unresolved'],
     ]) {

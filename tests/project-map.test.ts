@@ -72,6 +72,20 @@ function readable(project: ProjectFiles, map: ProjectMap) {
 }
 
 describe('project map from static imports', () => {
+  it('resolves Vue and SCSS imports as exact non-code files', async () => {
+    await put('src/main.ts', "import Card from './Card.vue';\nimport './theme.scss';\n");
+    await put('src/Card.vue', '<template><p>Hello</p></template>');
+    await put('src/theme.scss', '$color: red;');
+    const project = await scanProject(root, randomUUID());
+    const result = await mapOf(project);
+    const main = project.files.find(file => file.relativePath === 'src/main.ts')!;
+    const targets = ['src/Card.vue', 'src/theme.scss'].map(relativePath => project.files.find(file => file.relativePath === relativePath)!);
+    expect(result.edges).toHaveLength(2);
+    expect(result.edges.map(item => [item.fromFileId, item.toFileId])).toEqual(targets.map(file => [main.id, file.id]));
+    for (const target of targets) expect(result.files.find(file => file.id === target.id)?.checked).toBe('not-code');
+    expect(result.unresolved).toEqual([]);
+  });
+
   it('connects only relative imports with exactly one fitting file and sorts the rest by reason', async () => {
     const project = await scanProject(root, randomUUID());
     const map = await mapOf(project);
