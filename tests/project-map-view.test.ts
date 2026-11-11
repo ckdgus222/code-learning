@@ -4,7 +4,7 @@ import * as JSX from 'react/jsx-dev-runtime';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Background, BackgroundVariant, ReactFlow, ReactFlowProvider, useReactFlow, useStore, type Edge, type Node } from '@xyflow/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ARROW_MARKER, GUESS_MARKER, FitOnWidthChange, MapCanvas, ProjectMapView, type MapChanges } from '../src/renderer/project-map';
+import { ARROW_MARKER, GUESS_MARKER, FitOnWidthChange, ImportPathCard, MapCanvas, ProjectMapView, type MapChanges } from '../src/renderer/project-map';
 import { guessedLinks, boxName, boxPlace, expandableIds, fileViewOf, visibleGraph, type MapArrow } from '../src/renderer/map-layout';
 import type { MapFile, ProjectMap, ProjectView } from '../src/shared/contracts';
 
@@ -50,6 +50,59 @@ function drawnEdges(): Edge[] {
   return vi.mocked(ReactFlow).mock.calls.at(-1)![0].edges!;
 }
 afterEach(() => vi.clearAllMocks());
+
+describe('import path card integration', () => {
+  const cardProps = () => vi.mocked(JSX.jsxDEV).mock.results
+    .map(result => result.value as React.ReactElement<React.ComponentProps<typeof ImportPathCard>>)
+    .find(element => element.type === ImportPathCard)!.props;
+
+  it('places the card directly after the map layout and before box connections', () => {
+    const html = render();
+    expect(html).toContain('</aside></div><section class="card map-path"');
+    expect(html.indexOf('class="map-layout"')).toBeLessThan(html.indexOf('aria-label="두 파일 사이 길"'));
+    expect(html.indexOf('aria-label="두 파일 사이 길"')).toBeLessThan(html.indexOf('aria-label="상자별 연결"'));
+  });
+
+  it('keeps the card after the layout in large-folder list mode', () => {
+    const source = { ...map, files: Array.from({ length: 81 }, (_, i) => file(`f${i}`, 'large')), edges: [] };
+    const html = render(fileViewOf('large', expandableIds(source)), null, null, source);
+    expect(html).toContain('aria-label="큰 폴더 파일 목록"');
+    expect(html).not.toContain('aria-label="상자별 연결"');
+    expect(html).toContain('</aside></div><section class="card map-path"');
+    expect(cardProps().files).toBe(source.files);
+  });
+
+  it.each([
+    [false, 'full', false], [true, 'full', true], [false, 'partial', true],
+    [false, 'failed', true], [false, 'skipped', true], [false, 'not-code', false],
+  ] as const)('passes incomplete=%s/%s as %s', (limited, checked, expected) => {
+    const source = { ...map, limited, files: [{ ...map.files[0], checked }, ...map.files.slice(1)] };
+    render(new Set(), null, null, source);
+    expect(cardProps().incomplete).toBe(expected);
+  });
+
+  it('passes settled and guessed links, files and the existing code navigation callback', () => {
+    const source: ProjectMap = { ...map, files: map.files.map(item => ({ ...item, relativePath: item.relativePath.replace('.ts', '.py') })),
+      unresolved: [{ fromFileId: 'a', fileHash: 'h', startUtf16: 0, endUtf16: 1, startLine: 1, endLine: 1,
+        text: 'from web.lib import b', specifier: 'web.lib', reason: 'ambiguous', reasonText: '실행 환경에 따라 달라져요', candidates: ['web/lib/b.py'] }] };
+    const onShowImport = vi.fn();
+    render(new Set(), null, null, source, null, null, vi.fn(), onShowImport);
+    const props = cardProps();
+    expect(props.files).toBe(source.files);
+    expect(props.links).toEqual([...source.edges, ...guessedLinks(source)]);
+    expect(props.links).toHaveLength(2);
+    expect(props.links[1].guess).toBe('실행 환경에 따라 달라져요');
+    expect(props.locked).toBe(false);
+    expect(props.onShowImport).toBe(onShowImport);
+  });
+
+  it.each([false, true])('locks the card together with the map (locked=%s)', locked => {
+    renderToStaticMarkup(React.createElement(ProjectMapView, { project, entry: { map, revision: 0, build: 1 },
+      stale: false, mapping: false, locked, changes: null,
+      onBuild() {}, onCancel() {}, onOpenFile() {}, onShowImport() {}, onShowFunction() {}, onShowChange() {} }));
+    expect(cardProps().locked).toBe(locked);
+  });
+});
 
 it('renders file map contents without a page wrapper or title', () => {
   const html = render();
@@ -148,7 +201,7 @@ describe('large project file view controls', () => {
 
   it('lists direct-file counts in path order and distinguishes no selection from the root', () => {
     const html = render(new Set(), null, null, large);
-    expect(html.match(/<option[^>]*>.*?<\/option>/g)).toEqual([
+    expect(html.match(/<select aria-label="파일 볼 폴더"[^>]*>(.*?)<\/select>/)![1].match(/<option[^>]*>.*?<\/option>/g)).toEqual([
       '<option value="" selected="">폴더 고르기</option>',
       '<option value="folder:">(최상위 폴더) · 파일 1개</option>',
       '<option value="folder:web">web · 파일 1개</option>',

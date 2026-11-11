@@ -540,6 +540,10 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .map-view-toggle .btn + .btn { margin-left: -1px; }
 .map-view-toggle .btn[aria-pressed="true"] { position: relative; background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .file-map > .map-actions select { height: 38px; min-width: 240px; }
+.map-path .map-actions { align-items: end; }
+.map-path label { display: flex; flex: 1 1 280px; flex-direction: column; gap: 4px; min-width: 0; color: var(--muted); font-size: 12px; }
+.map-path input { height: 38px; min-width: 0; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg); color: var(--ink); font: 14px var(--mono); }
+.map-path .map-actions .btn { height: 38px; }
 .map-help, .map-instruction { color: var(--muted); font-size: 13px; }
 .map-help summary { cursor: pointer; }
 .map-help p { margin-top: 8px; }

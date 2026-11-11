@@ -3675,6 +3675,36 @@ try {
       await writeFile(path.join(pythonFixture, 'reference.ts'), original);
     }
   });
+  await check('Import paths: settled routes, guessed routes, reverse direction and code evidence', async () => {
+    await dialogTo(pythonFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: 'Python 읽기 프로젝트', exact: true }).waitFor();
+    await openTreeFile('order.py');
+    await openFileMap();
+    const card = page.getByRole('region', { name: '두 파일 사이 길', exact: true });
+    const from = page.getByLabel('출발 파일', { exact: true });
+    const to = page.getByLabel('도착 파일', { exact: true });
+    await from.fill('app/api.py');
+    await to.fill('app/models.py');
+    await card.getByRole('heading', { name: '가장 짧은 길 · 2걸음', exact: true }).waitFor();
+    await card.getByText('app/api.py 1행 → app/service.py', { exact: true }).waitFor();
+    await card.getByText('app/service.py 1행 → app/models.py', { exact: true }).waitFor();
+    assert.equal(await card.getByText('추정이 섞인 길:', { exact: true }).count(), 0);
+    await from.fill('main.py');
+    await card.getByRole('heading', { name: '가장 짧은 길 · 3걸음', exact: true }).waitFor();
+    await card.getByText('추정이 섞인 길:', { exact: true }).waitFor();
+    assert.equal(await card.locator('.tag--unknown').filter({ hasText: /^추정$/ }).count(), 1);
+    await card.screenshot({ path: path.join(artifacts, 'import-path.png') });
+    await from.fill('app/models.py');
+    await to.fill('main.py');
+    await card.getByText('출발 파일에서 도착 파일로 가는 import 길을 찾지 못했어요.', { exact: true }).waitFor();
+    await card.getByText('반대 방향으로는 추정 연결이 섞인 길이 있어요.', { exact: false }).waitFor();
+    await card.getByRole('button', { name: '출발·도착 바꾸기', exact: true }).click();
+    await card.getByRole('heading', { name: '가장 짧은 길 · 3걸음', exact: true }).waitFor();
+    await card.locator('li').filter({ hasText: 'app/service.py 1행 → app/models.py' }).getByRole('button', { name: '코드 보기', exact: true }).click();
+    await page.getByRole('heading', { name: 'app/service.py', exact: true }).waitFor();
+    await until(async () => await page.getByTestId('evidence-range').innerText() === '근거: app/service.py · 1–1줄');
+  });
   await check('Path aliases: map arrow, file guide and unused candidates agree', async () => {
     await dialogTo(aliasFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();

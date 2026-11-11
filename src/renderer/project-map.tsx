@@ -4,7 +4,8 @@ import { Background, BackgroundVariant, Controls, Handle, MarkerType, Position, 
 import '@xyflow/react/dist/style.css';
 import type { ChangeKind, FileChange, MapExport, MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectChanges, ProjectMap, ProjectView, UnusedExcludeKind } from '../shared/contracts';
 import { arrowCounts, arrowLabel, guessedLinks, BIG_FOLDER_LIMIT, boxName, boxPlace, closeArea, expandableIds, FILE_VIEW_LIMIT, fileViewFolder, fileViewOf, folderArrows, folderFileList, folderName,
-  foldersWithFiles, importCycles, linkedArrows, NEIGHBOR_LIMIT, NEIGHBOR_ROW_HEIGHT, neighborhoodGraph, shownBigFolder, visibleGraph, type MapArrow, type MapBox } from './map-layout';
+  foldersWithFiles, importCycles, linkedArrows, NEIGHBOR_LIMIT, NEIGHBOR_ROW_HEIGHT, neighborhoodGraph, shownBigFolder, visibleGraph, type MapArrow, type MapBox, type MapLink } from './map-layout';
+import { importPath, pathGraph } from './import-path';
 import { COMPLEXITY_NOTE, ComplexityTags } from './complexity';
 import { ChangeList, kindLabels } from './changes';
 
@@ -120,6 +121,55 @@ export function MapCanvas({ testId, canvasKey, height, fitPadding, nodes, edges,
       <Controls showInteractive={false} />
     </ReactFlow>
   </div>;
+}
+
+export function ImportPathCard({ files, links, incomplete, locked, onShowImport }: {
+  files: MapFile[]; links: MapLink[]; incomplete: boolean; locked: boolean; onShowImport(item: MapImport): void;
+}): React.ReactNode {
+  const [fromText, setFromText] = useState('');
+  const [toText, setToText] = useState('');
+  // A file name may itself start or end with a space, so the text as typed is tried before its trimmed form.
+  const fileAt = (text: string) => files.find(file => file.relativePath === text) ?? files.find(file => file.relativePath === text.trim());
+  const from = fileAt(fromText);
+  const to = fileAt(toText);
+  const graph = useMemo(() => pathGraph(files, links), [files, links]);
+  const result = useMemo(() => from && to ? importPath(graph, from.id, to.id) : null, [graph, from, to]);
+  return <section className="card map-path" aria-label="두 파일 사이 길">
+    <h3>두 파일 사이 길</h3>
+    <div className="map-actions">
+      <label>출발 파일 <input type="text" list="map-path-files" aria-label="출발 파일" placeholder="경로를 적거나 목록에서 고르기"
+        value={fromText} onChange={event => setFromText(event.target.value)} /></label>
+      <label>도착 파일 <input type="text" list="map-path-files" aria-label="도착 파일" placeholder="경로를 적거나 목록에서 고르기"
+        value={toText} onChange={event => setToText(event.target.value)} /></label>
+      <button type="button" className="btn btn--small" onClick={() => { setFromText(toText); setToText(fromText); }}>출발·도착 바꾸기</button>
+      <datalist id="map-path-files">{files.map(file => <option key={file.id} value={file.relativePath} />)}</datalist>
+    </div>
+    {!result && <>
+      <p className="hint">출발 파일과 도착 파일을 고르면, 출발 파일에서 import를 따라 도착 파일에 닿는 가장 짧은 길을 보여 줘요.</p>
+      {fromText && !from && <p className="hint">출발 파일 칸: 지도에 이 경로의 파일이 없어요. 목록에서 골라 주세요.</p>}
+      {toText && !to && <p className="hint">도착 파일 칸: 지도에 이 경로의 파일이 없어요. 목록에서 골라 주세요.</p>}
+    </>}
+    {result?.status === 'same' && <p className="hint">출발과 도착이 같은 파일이에요.</p>}
+    {result?.status === 'found' && <>
+      {result.guessed && <p className="notice notice--warn"><b>추정이 섞인 길:</b> 확정된 import만으로는 길이 없어, 추정 연결(확정하지 못한 Python import의 후보)까지 따라갔어요. ‘추정’ 표시가 있는 걸음은 틀릴 수 있어요.</p>}
+      <h4>가장 짧은 길 · {result.steps.length}걸음</h4>
+      <ol className="map-list">{firstRows(result.steps).map((step, index) => <li key={`${step.from.id}->${step.to.id}`}>
+        <b>{index + 1}.</b> <span className="path">{step.from.relativePath} {step.links[0].startLine}행 → {step.to.relativePath}</span> <code>{step.links[0].text}</code>
+        {step.links[0].guess !== undefined && <> <span className="tag tag--unknown">추정</span> {step.links[0].guess}</>}
+        {step.links.length > 1 && <> <span className="hint">근거 {step.links.length}개 중 첫 번째</span></>}
+        {' '}<button className="btn btn--small" disabled={locked} onClick={() => onShowImport(step.links[0])}>코드 보기</button>
+      </li>)}</ol>
+      <Omitted count={result.steps.length} />
+      <p className="hint">가장 짧은 길 하나예요. 다른 길도 있을 수 있어요.</p>
+    </>}
+    {result?.status === 'none' && <>
+      <p>출발 파일에서 도착 파일로 가는 import 길을 찾지 못했어요.</p>
+      {result.reverse === 'settled' && <p className="hint">반대 방향으로는 길이 있어요. ‘출발·도착 바꾸기’를 눌러 보세요.</p>}
+      {result.reverse === 'guessed' && <p className="hint">반대 방향으로는 추정 연결이 섞인 길이 있어요. ‘출발·도착 바꾸기’를 눌러 보세요.</p>}
+      <p className="hint">지도에 화살표로 그려진 import만 출발에서 도착 방향으로 따라가요. 화살표가 없는 import(동적 import, 후보가 없는 ‘확인 못 함’, 외부 패키지·경로 별칭)로 이어진 곳은 찾지 못해요.</p>
+      {incomplete && <p className="hint">끝까지 읽지 못한 파일이 있어 빠진 연결이 있을 수 있어요.</p>}
+    </>}
+  </section>;
 }
 
 function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunction, onShowChange }: {
@@ -322,6 +372,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
         </section>
       </aside>
     </div>
+    <ImportPathCard files={map.files} links={drawn.edges} incomplete={map.limited || unexamined.length > 0} locked={locked} onShowImport={onShowImport} />
     {!listMode && <section className="card" aria-label="상자별 연결">
       <h3>상자별 연결 · 상자 {graph.boxes.length}개</h3>
       <p className="hint">지금 지도에 보이는 상자끼리의 import예요. 펼치거나 접으면 함께 바뀌어요.</p>
