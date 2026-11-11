@@ -3,7 +3,7 @@ import { mkdtemp, realpath, mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { BIG_FOLDER_LIMIT, boxName, boxPlace, closeArea, expandableIds, FILE_VIEW_LIMIT, fileViewFolder, fileViewOf, folderArrows, folderFileList, foldersWithFiles,
+import { arrowCounts, arrowLabel, guessedLinks, BIG_FOLDER_LIMIT, boxName, boxPlace, closeArea, expandableIds, FILE_VIEW_LIMIT, fileViewFolder, fileViewOf, folderArrows, folderFileList, foldersWithFiles,
   importCycles, linkedArrows, matchCallStep, matchFunction, matchImport, NEIGHBOR_LIMIT, NEIGHBOR_ROW_HEIGHT, neighborhoodGraph, shownBigFolder, visibleGraph } from '../src/renderer/map-layout';
 import { buildProjectMap } from '../src/core/analysis/project-map';
 import { analyzeSource } from '../src/core/analysis/syntax';
@@ -19,6 +19,90 @@ const map: ProjectMap = { projectId: 'p', files: [file('a1', 'a'), file('a2', 'a
   edges: [edge('a1', 'b1'), edge('a2', 'b1'), edge('b2', 'a1'), edge('a1', 'a2')], unresolved: [], external: [], complexFunctions: [], exports: [], unused: { exports: { candidates: [], unsure: [], notes: [] }, candidates: [], unsure: [], excluded: [], notes: [] }, limited: false, notes: [] };
 const summary = (graph: ReturnType<typeof visibleGraph>) => graph.arrows.map(arrow => [arrow.source, arrow.target, arrow.items.length]);
 const backs = (graph: ReturnType<typeof visibleGraph>) => graph.arrows.filter(arrow => arrow.back).map(arrow => arrow.id);
+
+
+describe('guessed Python map links', () => {
+  const files = [file('a', 'app'), file('b', 'lib'), file('c', 'lib')]
+    .map(item => ({ ...item, relativePath: item.relativePath.replace('.ts', '.py') }));
+  const imported = { fromFileId: 'a', fileHash: 'python-hash', startUtf16: 8, endUtf16: 22,
+    startLine: 2, endLine: 3, text: 'from lib import b', specifier: 'lib' };
+  const source: ProjectMap = { ...map, files, edges: [], unresolved: [
+    { ...imported, reason: 'ambiguous', reasonText: '실행 환경에 따라 달라져요', candidates: ['lib/c.py', 'lib/b.py'] },
+    { ...imported, startUtf16: 30, startLine: 5, reason: 'not-found', candidates: ['lib/b.py'] },
+  ] };
+
+  it('keeps each statement and candidate in order, with its reason or the fallback, without changing the map', () => {
+    const before = structuredClone(source);
+    const edges = source.edges;
+    expect(guessedLinks(source)).toEqual([
+      { ...imported, toFileId: 'c', names: [], guess: '실행 환경에 따라 달라져요' },
+      { ...imported, toFileId: 'b', names: [], guess: '실행 환경에 따라 달라져요' },
+      { ...imported, startUtf16: 30, startLine: 5, toFileId: 'b', names: [], guess: '후보 여럿' },
+    ]);
+    expect(source).toEqual(before);
+    expect(source.edges).toBe(edges);
+  });
+
+  it.each([
+    { label: 'TypeScript', files: [file('a', 'app'), files[1]], item: {} },
+    { label: 'JavaScript', files: [{ ...files[0], relativePath: 'app/a.js' }, files[1]], item: {} },
+    { label: 'missing source', files: [files[1]], item: {} },
+    { label: 'unavailable', files, item: { reason: 'unavailable' as const } },
+    { label: 'outside', files, item: { reason: 'outside' as const } },
+    { label: 'syntax', files, item: { reason: 'syntax' as const } },
+    { label: 'not-static', files, item: { reason: 'not-static' as const } },
+    { label: 'unreadable', files, item: { reason: 'unreadable' as const } },
+    { label: 'missing candidate', files, item: { candidates: ['missing.py'] } },
+    { label: 'self import', files, item: { candidates: ['app/a.py'] } },
+  ])('does not draw a guess for $label', ({ files, item }) => {
+    expect(guessedLinks({ ...source, files, unresolved: [{ ...source.unresolved[0], candidates: ['lib/b.py'], ...item }] })).toEqual([]);
+  });
+
+  it('groups repeated guesses with a settled import between the same files', () => {
+    const original = { ...source, edges: [edge('a', 'b')] };
+    const before = structuredClone(original);
+    const drawn = { ...original, edges: [...original.edges, ...guessedLinks(original)] };
+    const arrows = visibleGraph(drawn, expandableIds(drawn)).arrows;
+    expect(arrows).toHaveLength(2);
+    expect(arrowCounts(arrows.find(arrow => arrow.target === 'b')!)).toEqual({ sure: 1, guessed: 2 });
+    const one = { ...original, unresolved: [source.unresolved[1]] };
+    const grouped = visibleGraph({ ...one, edges: [...one.edges, ...guessedLinks(one)] }, expandableIds(one)).arrows;
+    expect(grouped).toHaveLength(1);
+    expect(arrowCounts(grouped[0])).toEqual({ sure: 1, guessed: 1 });
+    expect(original).toEqual(before);
+  });
+
+  it.each([
+    { sure: 1, guessed: 0, label: null },
+    { sure: 2, guessed: 0, label: 'import 2개' },
+    { sure: 0, guessed: 1, label: '추정' },
+    { sure: 0, guessed: 2, label: '추정 2개' },
+    { sure: 1, guessed: 1, label: 'import 1개 · 추정 1개' },
+    { sure: 3, guessed: 2, label: 'import 3개 · 추정 2개' },
+  ])('counts and labels $sure settled imports and $guessed guesses', ({ sure, guessed, label }) => {
+    const arrow = { id: 'a->b', source: 'a', target: 'b', back: false,
+      items: [...Array.from({ length: sure }, () => edge('a', 'b')),
+        ...Array.from({ length: guessed }, () => ({ ...edge('a', 'b'), guess: '' }))] };
+    expect(arrowCounts(arrow)).toEqual({ sure, guessed });
+    expect(arrowLabel(arrow)).toBe(label);
+  });
+
+  it('draws guesses in every graph and uses them for columns while settled judgments keep the original map', () => {
+    const drawn = { ...source, edges: guessedLinks(source) };
+    const graph = visibleGraph(drawn, expandableIds(drawn));
+    expect(graph.arrows.map(arrowCounts)).toEqual([{ sure: 0, guessed: 1 }, { sure: 0, guessed: 2 }]);
+    expect(graph.boxes.map(box => [box.id, box.x])).toEqual([['a', 0], ['b', 320], ['c', 320]]);
+    expect(folderArrows(drawn).map(arrowCounts)).toEqual([{ sure: 0, guessed: 3 }]);
+    expect(neighborhoodGraph(drawn, 'a').arrows).toEqual(graph.arrows);
+    expect(folderFileList(source, 'app')).toEqual([{ file: files[0], uses: 0, usedBy: 0 }]);
+    const mutual: ProjectMap = { ...source, unresolved: [...source.unresolved,
+      { ...imported, fromFileId: 'b', reason: 'ambiguous', candidates: ['app/a.py'] }] };
+    const mutualGraph = visibleGraph({ ...mutual, edges: guessedLinks(mutual) }, expandableIds(mutual));
+    expect(mutualGraph.arrows).toHaveLength(3);
+    expect(mutualGraph.arrows.some(arrow => arrow.back)).toBe(true);
+    expect(importCycles(mutual)).toEqual([]);
+  });
+});
 
 describe('import cycles', () => {
   it('groups a two-file loop, sorts paths and retains repeated import lines in input order', () => {

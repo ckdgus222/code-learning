@@ -3,7 +3,7 @@ import { Background, BackgroundVariant, Controls, Handle, MarkerType, Position, 
   type FitViewOptions, type Node, type NodeChange, type NodeProps, type NodeTypes } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { ChangeKind, FileChange, MapExport, MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectChanges, ProjectMap, ProjectView, UnusedExcludeKind } from '../shared/contracts';
-import { BIG_FOLDER_LIMIT, boxName, boxPlace, closeArea, expandableIds, FILE_VIEW_LIMIT, fileViewFolder, fileViewOf, folderArrows, folderFileList, folderName,
+import { arrowCounts, arrowLabel, guessedLinks, BIG_FOLDER_LIMIT, boxName, boxPlace, closeArea, expandableIds, FILE_VIEW_LIMIT, fileViewFolder, fileViewOf, folderArrows, folderFileList, folderName,
   foldersWithFiles, importCycles, linkedArrows, NEIGHBOR_LIMIT, NEIGHBOR_ROW_HEIGHT, neighborhoodGraph, shownBigFolder, visibleGraph, type MapArrow, type MapBox } from './map-layout';
 import { COMPLEXITY_NOTE, ComplexityTags } from './complexity';
 import { ChangeList, kindLabels } from './changes';
@@ -70,6 +70,7 @@ function MapNode({ data }: NodeProps<Node<BoxData & Record<string, unknown>>>) {
 const nodeTypes = { box: MapNode };
 
 export const ARROW_MARKER = { type: MarkerType.ArrowClosed, width: 18, height: 18, color: 'var(--accent)' };
+export const GUESS_MARKER = { ...ARROW_MARKER, color: 'var(--muted)' };
 const FIT = { maxZoom: 1, minZoom: 0.1 };
 
 /**
@@ -125,6 +126,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
   map: ProjectMap; changes: MapChanges | null; locked: boolean; onOpenFile(fileId: string): void; onShowImport(item: MapImport): void;
   onShowFunction(item: MapFunction | MapExport): void; onShowChange(change: FileChange): void;
 }) {
+  const drawn = useMemo(() => ({ ...map, edges: [...map.edges, ...guessedLinks(map)] }), [map]);
   const expandable = useMemo(() => expandableIds(map), [map]);
   const folders = useMemo(() => foldersWithFiles(map), [map]);
   const cycles = useMemo(() => importCycles(map), [map]);
@@ -139,9 +141,9 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
   const listMode = large && fileFolder !== null && folders.some(item => item.folder === fileFolder && item.count > BIG_FOLDER_LIMIT);
   const files = useMemo(() => listMode ? folderFileList(map, fileFolder!) : [], [map, listMode, fileFolder]);
   const pickedId = pickedFile?.opened === opened && files.some(item => item.file.id === pickedFile.fileId) ? pickedFile.fileId : null;
-  const neighborhood = useMemo(() => pickedId === null ? null : neighborhoodGraph(map, pickedId), [map, pickedId]);
-  const graph = useMemo(() => listMode ? neighborhood ?? { boxes: [], arrows: [] } : visibleGraph(map, opened, expandable),
-    [map, opened, expandable, listMode, neighborhood]);
+  const neighborhood = useMemo(() => pickedId === null ? null : neighborhoodGraph(drawn, pickedId), [drawn, pickedId]);
+  const graph = useMemo(() => listMode ? neighborhood ?? { boxes: [], arrows: [] } : visibleGraph(drawn, opened, expandable),
+    [drawn, opened, expandable, listMode, neighborhood]);
   const placeOf = new Map(graph.boxes.map(box => [box.id, box]));
   // A pick made before the last open or fold no longer applies, even if its box is shown again.
   const stillShown = (pick: { id: string; opened: ReadonlySet<string> } | null) => pick && pick.opened === opened && placeOf.has(pick.id) ? pick.id : null;
@@ -150,7 +152,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
   const highlighted = listMode ? null : stillShown(hovered) ?? focused;
   const lit = highlighted ? linkedArrows(graph.arrows, highlighted).linked : null;
   // The folder-to-folder arrows are the design at a glance, so they are also listed as text.
-  const design = useMemo(() => folderArrows(map), [map]);
+  const design = useMemo(() => folderArrows(drawn), [drawn]);
   const pathOf = (id: string) => paths.get(id) ?? '(목록에 없는 파일)';
   // A file now has a box; a deleted file and a rename's old path have none and are only in the list below.
   const changeOf = useMemo(() => new Map((changes?.result.changes ?? []).flatMap(change => change.fileId ? [[change.fileId, change.kind] as const] : [])),
@@ -171,10 +173,11 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
   };
   const edges: Edge[] = (connections?.arrows ?? graph.arrows).map(arrow => {
     const strong = listMode || selected?.id === arrow.id || arrow.source === highlighted || arrow.target === highlighted;
+    const guessedOnly = arrowCounts(arrow).sure === 0;
     return { id: arrow.id, source: arrow.source, target: arrow.target, ...handlesFor(arrow),
-      label: strong && arrow.items.length > 1 ? `import ${arrow.items.length}개` : undefined,
-      className: `map-arrow map-arrow--${strong ? 'strong' : 'faint'}${arrow.back ? ' map-arrow--back' : ''}`,
-      markerEnd: ARROW_MARKER, selected: selected?.id === arrow.id };
+      label: strong ? arrowLabel(arrow) ?? undefined : undefined,
+      className: `map-arrow map-arrow--${strong ? 'strong' : 'faint'}${arrow.back ? ' map-arrow--back' : ''}${guessedOnly ? ' map-arrow--guess' : ''}`,
+      markerEnd: guessedOnly ? GUESS_MARKER : ARROW_MARKER, selected: selected?.id === arrow.id };
   });
   const connectionGroups = new Map<string, MapBox[]>();
   for (const box of firstRows(graph.boxes)) {
@@ -189,7 +192,8 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
       const neighbour = boxPlace(placeOf.get(other(arrow))!);
       const details = [];
       if (neighbour.area !== area) details.push(neighbour.area ? `${neighbour.area} 안` : '최상위');
-      if (arrow.items.length > 1) details.push(`import ${arrow.items.length}개`);
+      const label = arrowLabel(arrow);
+      if (label) details.push(label);
       return `${neighbour.short}${details.length ? `(${details.join(', ')})` : ''}`;
     }).sort((a, b) => a.localeCompare(b)).join(', ');
   const showButton = (item: MapImport) => <button className="btn btn--small" disabled={locked} onClick={() => onShowImport(item)}>코드 보기</button>;
@@ -197,8 +201,12 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
     new Map<string, number>())];
   const openChips = [...opened].filter(id => expandable.has(id));
   const unexamined = map.files.filter(file => file.checked === 'partial' || file.checked === 'failed' || file.checked === 'skipped');
-  const userNames = neighborhood?.users.map(file => file.relativePath) ?? [];
-  const usedNames = neighborhood?.used.map(file => file.relativePath) ?? [];
+  // A neighbour of the picked file joined by no settled import is there by a guess. Built once per map:
+  // this body runs again on every hover.
+  const settledPairs = useMemo(() => new Set(map.edges.map(item => `${item.fromFileId}->${item.toFileId}`)), [map]);
+  const userNames = neighborhood?.users.map(file => `${file.relativePath}${settledPairs.has(`${file.id}->${pickedId}`) ? '' : ' (추정)'}`) ?? [];
+  const usedNames = neighborhood?.used.map(file => `${file.relativePath}${settledPairs.has(`${pickedId}->${file.id}`) ? '' : ' (추정)'}`) ?? [];
+  const selectedCounts = selected ? arrowCounts(selected) : null;
   const neighborhoodHeight = Math.max(1, ...graph.boxes.map(box => box.y / NEIGHBOR_ROW_HEIGHT + 1)) * NEIGHBOR_ROW_HEIGHT + 80;
   const focusedBox = focused ? placeOf.get(focused)! : null;
   const focusedUses = connections?.arrows.filter(arrow => arrow.source === focused) ?? [];
@@ -239,7 +247,8 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
     </div>
     {!listMode && <details className="map-help"><summary>지도 읽는 법</summary>
       <p>설계 보기는 폴더끼리, 파일 보기는 파일끼리 보여 줘요.</p>
-      <p>상자를 누르면 그 안을 한 단계 펼쳐요. 위 ‘접기’로 다시 접어요. 파일 상자를 누르면 코드를 열어요. 점선은 오른쪽에서 왼쪽으로 거꾸로 가는 연결이라, 서로 가져다 쓰는 곳일 수 있어요. 상자에 마우스를 올리면 그 상자의 화살표가 진해져요. ‘이어진 것만’을 누르면 그 상자와 이어진 화살표만 남아요. 펼치거나 접으면 다시 모두 보여요.</p>
+      <p>상자를 누르면 그 안을 한 단계 펼쳐요. 위 ‘접기’로 다시 접어요. 파일 상자를 누르면 코드를 열어요. 긴 점선은 오른쪽에서 왼쪽으로 거꾸로 가는 연결이라, 서로 가져다 쓰는 곳일 수 있어요. 상자에 마우스를 올리면 그 상자의 화살표가 진해져요. ‘이어진 것만’을 누르면 그 상자와 이어진 화살표만 남아요. 펼치거나 접으면 다시 모두 보여요.</p>
+      <p>촘촘한 회색 점선은 추정이에요. 코드만으로는 확정하지 못한 Python import를, 그 파일일 수 있는 후보마다 이은 선이에요. 틀릴 수 있고, ‘확인 못 함’ 목록에 이유와 함께 그대로 있어요.</p>
     </details>}
     {openChips.length > 0 && <div className="map-actions" role="group" aria-label="펼친 곳">
       <span className="hint">펼친 곳</span>
@@ -316,6 +325,7 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
     {!listMode && <section className="card" aria-label="상자별 연결">
       <h3>상자별 연결 · 상자 {graph.boxes.length}개</h3>
       <p className="hint">지금 지도에 보이는 상자끼리의 import예요. 펼치거나 접으면 함께 바뀌어요.</p>
+      {graph.arrows.some(arrow => arrowCounts(arrow).guessed > 0) && <p className="hint">추정으로 이은 곳은 (추정)이라고 적었어요. 확정된 연결이 아니에요.</p>}
       {areas.map(area => <React.Fragment key={area}>
         <h4>{folderName(area)} 안 · 상자 {connectionGroups.get(area)!.length}개</h4>
         <ul className="map-list map-connections">{connectionGroups.get(area)!.map(box => {
@@ -341,16 +351,17 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
       </> : <p className="hint">달라진 내용에서 기준 커밋을 고르면 바뀐 파일이 여기와 지도 상자에 보여요.</p>}
     </section>
     {selected && <section className="card" aria-label="고른 화살표의 근거">
-      <h3>고른 화살표의 근거 · import {selected.items.length}개</h3>
+      <h3>고른 화살표의 근거{selectedCounts!.sure > 0 && ` · import ${selectedCounts!.sure}개`}{selectedCounts!.guessed > 0 && ` · 추정 ${selectedCounts!.guessed}개`}</h3>
       <ul className="map-list">{firstRows(selected.items).map((item, index) => <li key={`${item.fromFileId}:${item.startUtf16}:${index}`}>
-        <span className="path">{pathOf(item.fromFileId)} {item.startLine}행 → {pathOf(item.toFileId)}</span> <code>{item.text}</code> {showButton(item)}
+        <span className="path">{pathOf(item.fromFileId)} {item.startLine}행 → {pathOf(item.toFileId)}</span> <code>{item.text}</code>
+        {item.guess !== undefined && <> <span className="tag tag--unknown">추정</span> {item.guess}</>} {showButton(item)}
       </li>)}</ul>
       <Omitted count={selected.items.length} />
     </section>}
     <section className="card" aria-label="폴더 사이 연결">
       <h3>폴더 사이 연결(설계) · {design.length}개</h3>
       {design.length ? <ul className="map-list">{firstRows(design).map(arrow => <li key={arrow.id}>
-        {folderName(arrow.source.replace(/^folder:/, ''))} → {folderName(arrow.target.replace(/^folder:/, ''))} · import {arrow.items.length}개
+        {folderName(arrow.source.replace(/^folder:/, ''))} → {folderName(arrow.target.replace(/^folder:/, ''))} · {arrowLabel(arrow) ?? 'import 1개'}
       </li>)}</ul> : <p className="hint">폴더 사이에 이어진 import가 없어요.</p>}
       <Omitted count={design.length} />
     </section>

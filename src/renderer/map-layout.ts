@@ -1,3 +1,4 @@
+import { languageOf } from '../shared/languages';
 import type { CallSite, CodeStep, CodeSymbol, Evidence, MapFile, MapFunction, MapImport, ProjectMap, SourceView } from '../shared/contracts';
 
 export interface ImportCycle {
@@ -77,8 +78,43 @@ export interface MapBox {
   x: number;
   y: number;
 }
+/** One import behind an arrow; a guess keeps the reason it could not be settled. */
+export type MapLink = ProjectMap['edges'][number] & { guess?: string };
+
+/** Guesses are only drawn; map.edges remains the list of settled imports. */
+export function guessedLinks(map: ProjectMap): MapLink[] {
+  const files = new Map(map.files.map(file => [file.id, file]));
+  const paths = new Map(map.files.map(file => [file.relativePath, file]));
+  const links: MapLink[] = [];
+  for (const item of map.unresolved) {
+    const source = files.get(item.fromFileId);
+    if (!source || languageOf(source.relativePath) !== 'python') continue;
+    if (item.reason !== 'ambiguous' && item.reason !== 'not-found') continue;
+    const { reason, reasonText, candidates, ...imported } = item;
+    for (const path of candidates) {
+      const target = paths.get(path);
+      if (!target || target.id === source.id) continue;
+      links.push({ ...imported, toFileId: target.id, names: [], guess: reasonText ?? '후보 여럿' });
+    }
+  }
+  return links;
+}
+
+export function arrowCounts(arrow: MapArrow): { sure: number; guessed: number } {
+  const guessed = arrow.items.filter(item => item.guess !== undefined).length;
+  return { sure: arrow.items.length - guessed, guessed };
+}
+
+/** Shared by the drawing and connection lists so both describe the same imports. */
+export function arrowLabel(arrow: MapArrow): string | null {
+  const { sure, guessed } = arrowCounts(arrow);
+  if (sure && guessed) return `import ${sure}개 · 추정 ${guessed}개`;
+  if (guessed) return guessed === 1 ? '추정' : `추정 ${guessed}개`;
+  return sure > 1 ? `import ${sure}개` : null;
+}
+
 /** `back` when the arrow runs right to left, against the column order: the folders may use each other. */
-export interface MapArrow { id: string; source: string; target: string; back: boolean; items: ProjectMap['edges'] }
+export interface MapArrow { id: string; source: string; target: string; back: boolean; items: MapLink[] }
 
 /** The arrows touching one box, and the boxes at their other ends. */
 export function linkedArrows(arrows: MapArrow[], id: string):

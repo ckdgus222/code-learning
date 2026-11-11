@@ -126,7 +126,7 @@ Windows PowerShell에서 `True`가 나오면 정상입니다.
 지원 범위는 다음과 같습니다.
 
 - 언어: TypeScript, JavaScript
-- Python: 코드 읽기(함수·클래스·import 목록·구문 단계·문법 색)와 프로젝트 지도의 import 연결. 파일 안내, 호출·값 찾기, 기능 흐름은 아직 지원하지 않습니다.
+- Python: 코드 읽기(함수·클래스·import 목록·구문 단계·문법 색)와 프로젝트 지도의 import 연결(확정하지 못한 import는 후보 파일로 가는 추정 선). 파일 안내, 호출·값 찾기, 기능 흐름은 아직 지원하지 않습니다.
 - 원문으로만 열기: Java, Go, Rust, Kotlin, C#, Ruby, PHP, Swift, C/C++, Vue, Svelte 등
 - 기능 흐름: NestJS·Next API·Express 서버, fetch·axios 요청
 - 폴더 한도: 파일 1,000개, 파일당 256 KiB, UTF-8 텍스트. 제외한 파일은 이유를 보여 주며, 한도를 넘으면 더 작은 폴더를 열면 됩니다.
@@ -208,7 +208,7 @@ $env:CODEX_HOME="$env:APPDATA\Code Learning\codex-home"; codex login
 ## 알려진 한계
 
 - 코드 분석은 TypeScript·JavaScript가 중심입니다. Python은 코드 읽기와 프로젝트 지도의 import 연결을 지원하고, Java·Go·Rust 등 다른 언어 파일과 문서 같은 일부 텍스트 파일은 원문으로만 읽을 수 있습니다.
-- Python 지도는 점으로 시작하는 상대 import와 자기 패키지 이름으로 시작하는 import만 선으로 잇습니다. 그 밖의 import는 실행 방법·Python 버전·설치된 패키지에 따라 달라져 후보만 보여 주고, importlib처럼 실행할 때 정해지는 import는 따라가지 못합니다. 소스 파일 옆의 컴파일된 모듈, sys.modules를 직접 바꾸는 코드처럼 코드에 적힌 import 문 밖에서 정해지는 것도 보지 못합니다. 표준 라이브러리 이름은 Python 3.10~3.14를 기준으로 합니다.
+- Python 지도는 점으로 시작하는 상대 import와 자기 패키지 이름으로 시작하는 import만 확실한 선으로 잇습니다. 그 밖의 import는 실행 방법·Python 버전·설치된 패키지에 따라 달라져 후보 파일로 가는 추정 선(촘촘한 점선)으로 그리며 틀릴 수 있습니다. importlib처럼 실행할 때 정해지는 import는 따라가지 못합니다. 소스 파일 옆의 컴파일된 모듈, sys.modules를 직접 바꾸는 코드처럼 코드에 적힌 import 문 밖에서 정해지는 것도 보지 못합니다. 표준 라이브러리 이름은 Python 3.10~3.14를 기준으로 합니다.
 - Python 문법 검사는 하지 않습니다. 들여쓰기가 어긋난 코드처럼 Python이 실행을 거부하는 코드도 일부는 오류 표시 없이 보일 수 있습니다.
 - 연결은 주소 문자열과 코드 모양으로 찾습니다. 실제로 실행해서 확인한 결과가 아닙니다.
 - 경로 별칭(`@/…` 등)은 일부만 지원합니다. Fastify·Hono·Koa 등은 기능 흐름 분석 대상이 아닙니다.

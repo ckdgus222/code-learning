@@ -439,7 +439,7 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
   if (room.functions < 0) map.notes.push(FUNCTIONS_NOTE);
   const settled = await settlePythonImports(python, known, map, available, shouldStop, limits.results);
   if (!settled || room.imports < 0) map.notes.push(PYTHON_RESULT_NOTE);
-  if (python.length) map.notes.push('Python import는 점으로 시작하는 상대 import와, 파일이 속한 최상위 패키지 이름으로 시작하는 import만 선으로 이었어요. 그 밖의 import는 실행 방법·Python 버전·설치된 패키지에 따라 달라져서, 후보 파일을 ‘확인 못 함’에 적었어요. importlib처럼 실행 중에 정하는 import는 보지 않았어요.');
+  if (python.length) map.notes.push('Python import는 점으로 시작하는 상대 import와, 파일이 속한 최상위 패키지 이름으로 시작하는 import만 확실한 선으로 이었어요. 그 밖의 import는 실행 방법·Python 버전·설치된 패키지에 따라 달라져서, 후보 파일을 ‘확인 못 함’에 적고 지도에는 추정(촘촘한 점선)으로 이었어요. importlib처럼 실행 중에 정하는 import는 보지 않았어요.');
   if (readLimited) map.notes.push(`지도는 파일 ${limits.files}개·합계 ${limits.bytes / 1024 / 1024} MiB까지만 읽어요. 나머지 파일의 연결은 보지 않았어요.`);
   map.files = [...placed.values()].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   const scripts = await scriptFilesOf(root, files, known, limits.bytes - bytesRead, shouldStop);

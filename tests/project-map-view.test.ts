@@ -4,8 +4,8 @@ import * as JSX from 'react/jsx-dev-runtime';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Background, BackgroundVariant, ReactFlow, ReactFlowProvider, useReactFlow, useStore, type Edge, type Node } from '@xyflow/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ARROW_MARKER, FitOnWidthChange, MapCanvas, ProjectMapView, type MapChanges } from '../src/renderer/project-map';
-import { boxName, boxPlace, expandableIds, fileViewOf, visibleGraph, type MapArrow } from '../src/renderer/map-layout';
+import { ARROW_MARKER, GUESS_MARKER, FitOnWidthChange, MapCanvas, ProjectMapView, type MapChanges } from '../src/renderer/project-map';
+import { guessedLinks, boxName, boxPlace, expandableIds, fileViewOf, visibleGraph, type MapArrow } from '../src/renderer/map-layout';
 import type { MapFile, ProjectMap, ProjectView } from '../src/shared/contracts';
 
 vi.mock('react', async importOriginal => {
@@ -33,7 +33,7 @@ const changes: MapChanges = { stale: false, result: { projectId: 'p', commit: '1
 
 function render(opened: ReadonlySet<string> = new Set(), focus: { id: string; opened: ReadonlySet<string> } | null = null,
   hovered: { id: string; opened: ReadonlySet<string> } | null = null, source = map, selected: MapArrow | null = null,
-  picked: { fileId: string; opened: ReadonlySet<string> } | null = null, onOpenFile = vi.fn()) {
+  picked: { fileId: string; opened: ReadonlySet<string> } | null = null, onOpenFile = vi.fn(), onShowImport = vi.fn()) {
   vi.mocked(ReactHooks.useState).mockImplementationOnce(() => [opened, vi.fn()]);
   vi.mocked(ReactHooks.useState).mockImplementationOnce(() => [selected, vi.fn()]);
   vi.mocked(ReactHooks.useState).mockImplementationOnce(() => [focus, vi.fn()]);
@@ -41,7 +41,7 @@ function render(opened: ReadonlySet<string> = new Set(), focus: { id: string; op
   vi.mocked(ReactHooks.useState).mockImplementationOnce(() => [picked, vi.fn()]);
   return renderToStaticMarkup(React.createElement(ProjectMapView, { project, entry: { map: source, revision: 0, build: 1 },
     stale: false, mapping: false, locked: false, changes,
-    onBuild() {}, onCancel() {}, onOpenFile, onShowImport() {}, onShowFunction() {}, onShowChange() {} }));
+    onBuild() {}, onCancel() {}, onOpenFile, onShowImport, onShowFunction() {}, onShowChange() {} }));
 }
 function drawnNodes(): Node[] {
   return vi.mocked(ReactFlow).mock.calls.at(-1)![0].nodes!;
@@ -939,4 +939,113 @@ it('gives distinct row keys to one Python statement in all four import lists', (
   for (const rows of lists) expect(new Set(rows.map(row => row.key)).size).toBe(2);
   expect(html).toContain('지도는 TS/JS와 Python 파일의 import만 봐요.');
   expect(html).toContain('Python은 표준 라이브러리와 설치한 패키지가 여기에 들어가요.');
+});
+
+
+describe('guessed Python arrows', () => {
+  const files = [file('a', 'app'), file('b', 'app'), file('c', 'lib')]
+    .map(item => ({ ...item, relativePath: item.relativePath.replace('.ts', '.py') }));
+  const { toFileId, names, ...imported } = map.edges[0];
+  const candidate: ProjectMap['unresolved'][number] = { ...imported, text: 'from app import b',
+    reason: 'ambiguous', reasonText: '실행 환경에 따라 달라져요', candidates: ['app/b.py', 'lib/c.py'] };
+  const source: ProjectMap = { ...map, files, edges: [], unresolved: [candidate] };
+  const opened = expandableIds(source);
+
+  it.each([
+    { sure: 1, guessed: 0, label: undefined, title: 'import 1개' },
+    { sure: 2, guessed: 0, label: 'import 2개', title: 'import 2개' },
+    { sure: 0, guessed: 1, label: '추정', title: '추정 1개' },
+    { sure: 0, guessed: 2, label: '추정 2개', title: '추정 2개' },
+    { sure: 1, guessed: 1, label: 'import 1개 · 추정 1개', title: 'import 1개 · 추정 1개' },
+    { sure: 3, guessed: 2, label: 'import 3개 · 추정 2개', title: 'import 3개 · 추정 2개' },
+  ])('draws, labels and opens evidence for $sure settled imports and $guessed guesses', ({ sure, guessed, label, title }) => {
+    const current = { ...source, edges: Array.from({ length: sure }, () => map.edges[0]),
+      unresolved: Array.from({ length: guessed }, () => ({ ...candidate, candidates: ['app/b.py'] })) };
+    const selected = visibleGraph({ ...current, edges: [...current.edges, ...guessedLinks(current)] }, opened).arrows[0];
+    const onShowImport = vi.fn();
+    const html = render(opened, null, null, current, selected, null, vi.fn(), onShowImport);
+    const arrow = drawnEdges()[0];
+    expect(arrow.className?.includes('map-arrow--guess')).toBe(sure === 0);
+    expect(arrow.markerEnd).toEqual(sure === 0 ? GUESS_MARKER : ARROW_MARKER);
+    expect(arrow.label).toBe(label);
+    const card = html.match(/aria-label="고른 화살표의 근거">(.*?)<\/section>/)![1];
+    expect(card).toContain(`<h3>고른 화살표의 근거 · ${title}</h3>`);
+    expect(card.match(/class="tag tag--unknown">추정<\/span>/g) ?? []).toHaveLength(guessed);
+    expect(card.match(/실행 환경에 따라 달라져요/g) ?? []).toHaveLength(guessed);
+    const evidenceButtons = vi.mocked(JSX.jsxDEV).mock.results
+      .map(result => result.value as React.ReactElement<Record<string, unknown>>)
+      .filter(element => element.type === 'button' && element.props.children === '코드 보기').slice(0, sure + guessed);
+    expect(evidenceButtons).toHaveLength(sure + guessed);
+    for (const button of evidenceButtons) (button.props.onClick as () => void)();
+    expect(onShowImport.mock.calls).toEqual(selected.items.map(item => [item]));
+    expect(html).toContain(`연결 목록 · ${sure}개`);
+  });
+
+  it('shows candidate connections in folder, box and focus lists, with unchanged settled counts', () => {
+    const current = { ...source, unresolved: [candidate, { ...candidate, fromFileId: 'b', candidates: ['app/a.py'] }] };
+    const html = render(opened, { id: 'a', opened }, null, current);
+    expect(drawnEdges()).toHaveLength(3);
+    expect(drawnEdges().every(edge => edge.className?.includes('map-arrow--guess'))).toBe(true);
+    expect(drawnEdges().some(edge => edge.className?.includes('map-arrow--back'))).toBe(true);
+    expect(html).toContain('폴더 사이 연결(설계) · 1개');
+    expect(html).toContain('app → lib · 추정');
+    expect(html).toContain('b.py(추정)');
+    expect(html).toContain('c.py(lib 안, 추정)');
+    expect(html).toContain('가져다 씀 2곳');
+    expect(html).toContain('지금 지도에 보이는 상자끼리의 import예요. 펼치거나 접으면 함께 바뀌어요.');
+    expect(html).toContain('추정으로 이은 곳은 (추정)이라고 적었어요. 확정된 연결이 아니에요.');
+    expect(html).toContain('연결 목록 · 0개');
+    expect(html).toContain('확인 못 함 · 2개');
+    expect(html).toContain('aria-label="확인 못 한 import 2개"');
+    expect(html).toContain('서로 가져다 쓰는 파일 묶음 · 0개');
+    expect(html).toContain('aria-label="서로 가져다 쓰는 파일 묶음 0개"');
+    expect(html).toContain('aria-label="아무도 가져다 쓰지 않는 파일 후보 0개"');
+    expect(html).toContain('긴 점선은 오른쪽에서 왼쪽으로 거꾸로 가는 연결이라');
+    expect(html).toContain('촘촘한 회색 점선은 추정이에요. 코드만으로는 확정하지 못한 Python import를, 그 파일일 수 있는 후보마다 이은 선이에요. 틀릴 수 있고, ‘확인 못 함’ 목록에 이유와 함께 그대로 있어요.');
+  });
+
+  it('groups settled and guessed imports in folder lists and keeps faint guesses unlabelled', () => {
+    const current = { ...source, edges: [{ ...map.edges[0], toFileId: 'c' }] };
+    const html = render(new Set(), null, null, current);
+    expect(drawnEdges()).toHaveLength(1);
+    expect(drawnEdges()[0]).toMatchObject({ className: 'map-arrow map-arrow--faint', markerEnd: ARROW_MARKER });
+    expect(drawnEdges()[0].label).toBeUndefined();
+    expect(html).toContain('app → lib · import 1개 · 추정 1개');
+    expect(html).toContain('lib/(import 1개 · 추정 1개)');
+    render(opened, null, null, source);
+    expect(drawnEdges().every(edge => edge.label === undefined && edge.className?.includes('map-arrow--guess'))).toBe(true);
+  });
+
+  it('marks guessed neighbours in a large folder, including names beyond the drawn limit, while file-list counts stay settled', () => {
+    const current: ProjectMap = { ...source,
+      files: [...files, ...Array.from({ length: 80 }, (_, index) => ({ ...file(`extra${index}`, 'app'), relativePath: `app/extra${index}.py` }))],
+      edges: [{ ...map.edges[0], fromFileId: 'c', toFileId: 'a' }],
+      unresolved: [candidate, { ...candidate, fromFileId: 'b', candidates: ['app/a.py'] },
+        { ...candidate, fromFileId: 'c', candidates: ['app/a.py'] },
+        ...Array.from({ length: 22 }, (_, index) => ({ ...candidate, fromFileId: `extra${index}`, candidates: ['app/a.py'] }))] };
+    const largeOpened = fileViewOf('app', expandableIds(current));
+    const html = render(largeOpened, null, null, current, null, { fileId: 'a', opened: largeOpened });
+    const card = html.match(/aria-label="고른 상자">(.*?)<\/section>/)![1];
+    expect(card).toContain('app/b.py (추정)');
+    expect(card).toContain('app/extra9.py (추정)');
+    expect(card).toContain('이 파일을 가져다 씀 24곳:');
+    expect(card).toContain('lib/c.py</p>');
+    expect(card).toContain('가져다 씀 2곳: app/b.py (추정), lib/c.py (추정)');
+    const list = html.match(/aria-label="큰 폴더 파일 목록">(.*?)<\/section>/)![1];
+    expect(list).toContain('a.py</button><span>가져다 씀 0곳 · 이 파일을 가져다 씀 1곳</span>');
+    expect(html).toContain('data-testid="map-neighborhood"');
+    expect(drawnEdges().some(edge => edge.className?.includes('map-arrow--guess'))).toBe(true);
+  });
+
+  it('leaves TS candidate connections undrawn and omits the extra box-list notice when no guess is visible', () => {
+    const current = { ...map, unresolved: [{ ...candidate, candidates: ['web/lib/b.ts'] }] };
+    const html = render(expandableIds(current), null, null, current);
+    expect(drawnEdges()).toHaveLength(1);
+    expect(drawnEdges()[0].className).not.toContain('map-arrow--guess');
+    expect(html).not.toContain('(추정)');
+    expect(html).not.toContain('추정으로 이은 곳은');
+    const hidden = render(new Set(), null, null, { ...source, unresolved: [{ ...candidate, candidates: ['app/b.py'] }] });
+    expect(drawnEdges()).toEqual([]);
+    expect(hidden).not.toContain('추정으로 이은 곳은');
+  });
 });

@@ -3617,6 +3617,24 @@ try {
     const candidate = unresolved.locator('li').filter({ hasText: 'main.py' });
     assert.match(await candidate.innerText(), /app\/api\.py/);
     assert.match(await candidate.innerText(), /코드만으로는 확정하지 못했어요. 실행 방법, Python 버전, 설치된 패키지에 따라 이 파일이 아닐 수 있어요./);
+    await page.getByRole('button', { name: '파일 보기', exact: true }).click();
+    const canvas = page.getByTestId('map-canvas');
+    const mainBox = canvas.locator('.react-flow__node[aria-label="main.py"]');
+    const apiBox = canvas.locator('.react-flow__node[aria-label="app/api.py"]');
+    await mainBox.waitFor();
+    await apiBox.waitFor();
+    const arrowId = `${await mainBox.getAttribute('data-id')}->${await apiBox.getAttribute('data-id')}`;
+    const arrow = canvas.locator(`.react-flow__edge[data-id="${arrowId}"]`);
+    await arrow.waitFor({ state: 'attached' });
+    assert.match(await arrow.getAttribute('class'), /\bmap-arrow--guess\b/);
+    await arrow.dispatchEvent('click');
+    const evidence = page.getByRole('region', { name: '고른 화살표의 근거', exact: true });
+    await evidence.getByRole('heading', { name: '고른 화살표의 근거 · 추정 1개', exact: true }).waitFor();
+    // Kept for looking at: the guessed arrow's line beside the settled ones.
+    await canvas.screenshot({ path: path.join(artifacts, 'python-guessed-arrow.png') });
+    await evidence.locator('.tag--unknown').filter({ hasText: /^추정$/ }).waitFor();
+    assert.match(await evidence.innerText(), /코드만으로는 확정하지 못했어요. 실행 방법, Python 버전, 설치된 패키지에 따라 이 파일이 아닐 수 있어요./);
+    await page.getByText('연결 목록 · 2개', { exact: true }).waitFor();
     await service.getByRole('button', { name: '코드 보기', exact: true }).click();
     await page.getByRole('heading', { name: 'app/service.py', exact: true }).waitFor();
     assert.match(await page.getByTestId('evidence-range').innerText(), /app\/service\.py · 1–1줄/);

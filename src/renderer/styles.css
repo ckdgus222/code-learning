@@ -551,6 +551,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .map-canvas .map-arrow--strong .react-flow__edge-path { stroke-width: 2.4; }
 .map-canvas .map-arrow.selected .react-flow__edge-path { stroke-width: 3; }
 .map-canvas .map-arrow--back .react-flow__edge-path { stroke-dasharray: 6 4; }
+.map-canvas .map-arrow--guess .react-flow__edge-path { stroke: var(--muted); stroke-dasharray: 2 5; }
 /* Boxes are not connected by hand here, so the connection dots are only routing points. */
 .map-canvas .react-flow__handle { opacity: 0; pointer-events: none; }
 .map-canvas .react-flow__edge-textbg { fill: var(--surface); }
