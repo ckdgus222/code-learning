@@ -167,7 +167,7 @@ export function ImportPathCard({ files, links, incomplete, locked, onShowImport 
       {result.reverse === 'settled' && <p className="hint">반대 방향으로는 길이 있어요. ‘출발·도착 바꾸기’를 눌러 보세요.</p>}
       {result.reverse === 'guessed' && <p className="hint">반대 방향으로는 추정 연결이 섞인 길이 있어요. ‘출발·도착 바꾸기’를 눌러 보세요.</p>}
       <p className="hint">지도에 화살표로 그려진 import만 출발에서 도착 방향으로 따라가요. 화살표가 없는 import(동적 import, 후보가 없는 ‘확인 못 함’, 외부 패키지·경로 별칭)로 이어진 곳은 찾지 못해요.</p>
-      {incomplete && <p className="hint">끝까지 읽지 못한 파일이 있어 빠진 연결이 있을 수 있어요.</p>}
+      {incomplete && <p className="hint">지도가 다 보지 못한 import가 있어 빠진 연결이 있을 수 있어요.</p>}
     </>}
   </section>;
 }
@@ -372,7 +372,8 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
         </section>
       </aside>
     </div>
-    <ImportPathCard files={map.files} links={drawn.edges} incomplete={map.limited || unexamined.length > 0} locked={locked} onShowImport={onShowImport} />
+    {/* Whether imports are missing is decided where the map is built: a cut of Python results leaves every file fully read. */}
+    <ImportPathCard files={map.files} links={drawn.edges} incomplete={map.reading.incomplete} locked={locked} onShowImport={onShowImport} />
     {!listMode && <section className="card" aria-label="상자별 연결">
       <h3>상자별 연결 · 상자 {graph.boxes.length}개</h3>
       <p className="hint">지금 지도에 보이는 상자끼리의 import예요. 펼치거나 접으면 함께 바뀌어요.</p>

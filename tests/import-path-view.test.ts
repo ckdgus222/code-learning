@@ -122,7 +122,7 @@ describe('import path card', () => {
     expect(html).toContain('출발 파일에서 도착 파일로 가는 import 길을 찾지 못했어요.');
     expect(html).toContain('지도에 화살표로 그려진 import만 출발에서 도착 방향으로 따라가요.');
     expect(html).toContain('화살표가 없는 import(동적 import, 후보가 없는 ‘확인 못 함’, 외부 패키지·경로 별칭)로 이어진 곳은 찾지 못해요.');
-    expect(html.includes('끝까지 읽지 못한 파일이 있어 빠진 연결이 있을 수 있어요.')).toBe(incomplete);
+    expect(html.includes('지도가 다 보지 못한 import가 있어 빠진 연결이 있을 수 있어요.')).toBe(incomplete);
     expect(html).not.toContain('반대 방향으로는');
     expect(html).not.toContain('<ol');
   });

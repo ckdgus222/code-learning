@@ -72,13 +72,13 @@ describe('import path card integration', () => {
     expect(cardProps().files).toBe(source.files);
   });
 
+  // The map decides this where it is built; the screen passes the value on without judging file states again.
   it.each([
-    [false, 'full', false], [true, 'full', true], [false, 'partial', true],
-    [false, 'failed', true], [false, 'skipped', true], [false, 'not-code', false],
-  ] as const)('passes incomplete=%s/%s as %s', (limited, checked, expected) => {
-    const source = { ...map, limited, files: [{ ...map.files[0], checked }, ...map.files.slice(1)] };
+    [true, false, 'full'], [false, false, 'full'], [false, true, 'full'], [false, false, 'partial'],
+  ] as const)('passes reading.incomplete=%s on whatever limited=%s and a %s file say', (incomplete, limited, checked) => {
+    const source = { ...map, limited, reading: { ...map.reading, incomplete }, files: [{ ...map.files[0], checked }, ...map.files.slice(1)] };
     render(new Set(), null, null, source);
-    expect(cardProps().incomplete).toBe(expected);
+    expect(cardProps().incomplete).toBe(incomplete);
   });
 
   it('passes settled and guessed links, files and the existing code navigation callback', () => {
