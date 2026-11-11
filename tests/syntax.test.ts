@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { analyzeSource, parse } from '../src/core/analysis/syntax';
+import { analyzeSource, functionName, parse } from '../src/core/analysis/syntax';
+import { clip } from '../src/core/analysis/syntax-tools';
 import { COMPLEXITY_LIMITS, type Evidence } from '../src/shared/contracts';
 import { complexityExpected, complexitySource, legacyExpected, legacySource } from './complexity-fixture';
 
@@ -32,6 +33,19 @@ const analyze = (text: string, path = 'sample.ts') => analyzeSource(text, path, 
 const slice = (source: string, evidence: Evidence) => source.slice(evidence.startUtf16, evidence.endUtf16);
 
 describe('static source analysis', () => {
+  it.each([300, 301])('shortens names only when requested, at the %i-character boundary', length => {
+    const name = 'n'.repeat(length);
+    const className = 'C'.repeat(length);
+    const text = `const ${name} = () => {}; class ${className} { ${name}() {} }`;
+    const nodes = parse(text, 'names.ts').descendantsOfType(['arrow_function', 'method_definition']);
+    expect(nodes.map(node => functionName(node))).toEqual([name, `${className}.${name}`]);
+    const suffix = length > 300 ? '…' : '';
+    expect(nodes.map(node => functionName(node, clip))).toEqual([
+      `${'n'.repeat(300)}${suffix}`, `${'C'.repeat(300)}${suffix}.${'n'.repeat(300)}${suffix}`,
+    ]);
+    expect(analyze(text).symbols.map(symbol => symbol.name)).toEqual([name, `${className}.${name}`]);
+  });
+
   it.each([
     ['useEffect(() => {});', 'useEffect에 넘긴 함수'],
     ['items.map(item => item);', 'map에 넘긴 함수'],

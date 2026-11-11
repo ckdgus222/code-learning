@@ -69,7 +69,7 @@ const nestingTypes = new Set([
 ]);
 
 /** The name a function is listed under: `Class.member` in a named class, its own or assigned name, or its context and line. */
-export function functionName(node: Parser.SyntaxNode): string {
+export function functionName(node: Parser.SyntaxNode, shorten: (text: string) => string = text => text): string {
   const parent = node.parent;
   const assignedName = parent && ['variable_declarator', 'public_field_definition', 'field_definition'].includes(parent.type)
     ? parent.childForFieldName('name')
@@ -81,8 +81,8 @@ export function functionName(node: Parser.SyntaxNode): string {
   const owner = member?.parent?.type === 'class_body' ? member.parent.parent : null;
   const className = owner && classTypes.has(owner.type) ? owner.childForFieldName('name')?.text : null;
   const memberName = member?.childForFieldName('name');
-  if (className && memberName && memberName.type !== 'computed_property_name') return `${className}.${memberName.text}`;
-  if (name !== undefined) return name;
+  if (className && memberName && memberName.type !== 'computed_property_name') return `${shorten(className)}.${shorten(memberName.text)}`;
+  if (name !== undefined) return shorten(name);
   const line = `(${node.startPosition.row + 1}행)`;
   if (parent?.type === 'arguments') {
     const call = parent.parent;

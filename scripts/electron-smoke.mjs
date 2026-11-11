@@ -147,7 +147,9 @@ for (const [name, text] of Object.entries(areaMapFiles)) {
 // 65 code files of about 100 KB in five folders: more than 60, so the map starts folded, and slow enough
 // to parse that a cancel lands while Tree-sitter is working.
 const bigMapFixture = path.join(temporary, '큰 지도 프로젝트');
-const bigBody = 'export function step(x: number) { if (x > 1) { return x + 1; } return 0; }\n'.repeat(1300);
+// One export and many plain functions of the same length: 1,300 exports a file would pass the map's result limit.
+const bigBody = 'export function step(x: number) { if (x > 1) { return x + 1; } return 0; }\n'
+  + 'function stepPadding(x: number) { if (x > 1) { return x + 1; } return 0; }\n'.repeat(1299);
 for (let index = 0; index < 65; index++) {
   const folder = `part${index % 5}`;
   await mkdir(path.join(bigMapFixture, folder), { recursive: true });

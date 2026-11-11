@@ -130,6 +130,7 @@ Windows PowerShell에서 `True`가 나오면 정상입니다.
 - 원문으로만 열기: Java, Go, Rust, Kotlin, C#, Ruby, PHP, Swift, C/C++, Vue, Svelte 등
 - 기능 흐름: NestJS·Next API·Express 서버, fetch·axios 요청
 - 폴더 한도: 파일 1,000개, 파일당 256 KiB, UTF-8 텍스트. 제외한 파일은 이유를 보여 주며, 한도를 넘으면 더 작은 폴더를 열면 됩니다.
+- 지도 한도: 지도 한 장에 담는 import·export가 아주 많으면 일부 결과나 파일을 생략하고 그 사실을 알려 줍니다.
 
 ## AI 기능 (선택)
 
