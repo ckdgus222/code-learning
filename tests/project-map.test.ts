@@ -770,7 +770,8 @@ describe('Python project maps', () => {
   });
 
   it('checks for a cancel at every result of one long Python import', async () => {
-    const names = Array.from({ length: 200 }, (_, index) => `m${index}`);
+    // 50 files, not more: writing and re-checking hundreds of files took a Windows CI machine past the test's time limit.
+    const names = Array.from({ length: 50 }, (_, index) => `m${index}`);
     await put('pkg/__init__.py', '');
     for (const name of names) await put(`pkg/${name}.py`, '');
     await put('pkg/main.py', `from . import ${names.join(', ')}\n`);
@@ -778,11 +779,11 @@ describe('Python project maps', () => {
     let total = 0;
     const result = await buildProjectMap(root, project.id, project.files, [], MAP_LIMITS, () => { total++; return false; });
     const main = project.files.find(file => file.relativePath === 'pkg/main.py')!;
-    expect(result.edges.filter(item => item.fromFileId === main.id)).toHaveLength(200);
-    // One statement, 200 results: without a check per result this count stays near the number of files.
-    expect(total).toBeGreaterThanOrEqual(400);
+    expect(result.edges.filter(item => item.fromFileId === main.id)).toHaveLength(50);
+    // One statement, 50 results: without a check per result this count stays near the number of files.
+    expect(total).toBeGreaterThanOrEqual(100);
     let seen = 0;
-    await expect(buildProjectMap(root, project.id, project.files, [], MAP_LIMITS, () => ++seen > total - 100))
+    await expect(buildProjectMap(root, project.id, project.files, [], MAP_LIMITS, () => ++seen > total - 25))
       .rejects.toMatchObject({ code: 'CANCELLED' });
   });
 
