@@ -35,7 +35,7 @@ const stepTitles: Record<string, string> = {
 };
 // A class body runs later (instance fields on `new`, methods when called), so the function's steps
 // skip it like a nested function. Static initializers that do run here are left out rather than guessed.
-const classTypes = new Set(['class_declaration', 'abstract_class_declaration', 'class']);
+export const classTypes = new Set(['class_declaration', 'abstract_class_declaration', 'class']);
 // Parents whose statements run one after another, so the next statement is where code continues.
 const statementLists = new Set(['statement_block', 'switch_case', 'switch_default']);
 const firstCode = (node: Parser.SyntaxNode | null): Parser.SyntaxNode | undefined =>
@@ -68,8 +68,8 @@ const nestingTypes = new Set([
   'if_statement', 'for_statement', 'for_in_statement', 'while_statement', 'do_statement', 'switch_statement', 'try_statement',
 ]);
 
-/** The name a function is listed under: `Class.member` in a named class, its own or assigned name, or its context and line. */
-export function functionName(node: Parser.SyntaxNode, shorten: (text: string) => string = text => text): string {
+/** A declared or assigned name, without a callback's context and line. */
+export function namedFunction(node: Parser.SyntaxNode, shorten: (text: string) => string = text => text): string | null {
   const parent = node.parent;
   const assignedName = parent && ['variable_declarator', 'public_field_definition', 'field_definition'].includes(parent.type)
     ? parent.childForFieldName('name')
@@ -83,6 +83,14 @@ export function functionName(node: Parser.SyntaxNode, shorten: (text: string) =>
   const memberName = member?.childForFieldName('name');
   if (className && memberName && memberName.type !== 'computed_property_name') return `${shorten(className)}.${shorten(memberName.text)}`;
   if (name !== undefined) return shorten(name);
+  return null;
+}
+
+/** The name a function is listed under: `Class.member` in a named class, its own or assigned name, or its context and line. */
+export function functionName(node: Parser.SyntaxNode, shorten: (text: string) => string = text => text): string {
+  const name = namedFunction(node, shorten);
+  if (name !== null) return name;
+  const parent = node.parent;
   const line = `(${node.startPosition.row + 1}행)`;
   if (parent?.type === 'arguments') {
     const call = parent.parent;

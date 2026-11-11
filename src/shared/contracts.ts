@@ -255,6 +255,17 @@ export interface MapFunction {
   lines: number;
   depth: number;
 }
+/** A named function or class in a file the map read. Like MapFunction it is re-read before use. */
+export interface MapSymbol {
+  fileId: string;
+  fileHash: string;
+  startUtf16: number;
+  endUtf16: number;
+  startLine: number;
+  endLine: number;
+  name: string;
+  kind: 'function' | 'class';
+}
 export type MapUnresolvedReason = 'not-found' | 'ambiguous' | 'outside' | 'not-static' | 'syntax' | 'unavailable' | 'unreadable';
 export type UnusedExcludeKind = 'start' | 'test' | 'config' | 'types' | 'framework' | 'script' | 'reference';
 export interface MapExport extends Pick<MapFunction, 'fileId' | 'fileHash' | 'startUtf16' | 'endUtf16' | 'startLine' | 'endLine'> {
@@ -285,6 +296,10 @@ export interface ProjectMap {
   external: MapImport[];
   /** Functions over a complexity limit in the files the map read, in path and then source order. */
   complexFunctions: MapFunction[];
+  /** Named functions and classes of the files the map read, in path order and then source order. */
+  symbols: MapSymbol[];
+  /** True when the list was cut at the size limit: a name missing from it may still exist. */
+  symbolsCut: boolean;
   exports: MapExport[];
   unused: UnusedFiles;
   limited: boolean;

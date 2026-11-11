@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { FlowNode, CallSite, ValueSite, CodeSymbol, Evidence, MapExport, MapFunction, MapImport, ProjectView, SourceView,
+import type { FlowNode, CallSite, ValueSite, CodeSymbol, Evidence, MapSymbol, MapExport, MapFunction, MapImport, ProjectView, SourceView,
   StartCandidate, LearningMark } from '../shared/contracts';
 import { showsFiles, useSelection, type View } from './selection';
 import { Reader, type ReaderHandle } from './reader';
@@ -28,6 +28,8 @@ import { COMPLEXITY_NOTE, ComplexityTags, overLimit } from './complexity';
 import { ChangesView } from './changes';
 import { useChanges } from './use-changes';
 import { useMap } from './use-map';
+import { findSymbol } from './symbol-search';
+import { SymbolResults } from './symbol-results';
 import { callsKey, useCalls } from './use-calls';
 import { useAiJobs } from './use-ai-jobs';
 import { useLearning } from './use-learning';
@@ -467,6 +469,25 @@ function App() {
       : `이 함수(${item.startLine}행)는 코드 분석 범위 밖이라 고르지 못했어요.`);
   }
 
+  async function showSymbol(item: MapSymbol) {
+    if (busy) return;
+    setView('code');
+    const found = await findSymbol(item, readFile, () => revision.current);
+    if (found.status === 'dropped') return;
+    if (found.status === 'changed') {
+      setNotice('지도를 만든 뒤 이 파일이 바뀌어 위치를 강조하지 않았어요. 지도를 다시 만들어 주세요.');
+      return;
+    }
+    if (found.status === 'function') {
+      selectSymbol(found.symbol.id);
+      setReaderEvidence(found.symbol.evidence);
+      return;
+    }
+    selectSymbol(null);
+    setReaderEvidence({ id: crypto.randomUUID(), projectId: project!.id, fileId: item.fileId, fileHash: item.fileHash,
+      startUtf16: item.startUtf16, endUtf16: item.endUtf16, startLine: item.startLine, endLine: item.endLine });
+  }
+
   // Like showImport: the call is highlighted only while its file has the hash it had for the search.
   async function showCallSite(site: CallSite) {
     if (busy) return;
@@ -643,8 +664,8 @@ function App() {
       {filesVisible && <aside className="sidebar" aria-label="보기와 파일">
         <section aria-label="파일 목록" className="files">
           <h3 className="eyebrow">파일 {project.files.length}개</h3>
-          <label className="files__search">파일명 검색
-            <input className="search" type="search" aria-label="파일명 검색" placeholder="예: auth"
+          <label className="files__search">파일·함수 검색
+            <input className="search" type="search" aria-label="파일·함수 검색" placeholder="예: auth"
               value={search} onChange={event => setSearch(event.target.value)} />
           </label>
           <FileTreeList folder={visibleFileTree} expanded={expandedFolders} searching={search.length > 0}
@@ -656,6 +677,8 @@ function App() {
             // The flow view picks its function from the chosen file, so it stays where it is.
             onFile={fileId => { if (view !== 'function') setView('code'); void readFile(fileId, true); }} />
           {visibleFileTree.children.length === 0 && <p className="hint">검색과 일치하는 파일이 없어요.</p>}
+          <SymbolResults query={search} entry={map.entry} stale={map.entry !== null && map.entry.revision !== revision.current}
+            mapping={map.mapping} locked={busy} onBuild={() => void map.build()} onShow={item => void showSymbol(item)} />
         </section>
       </aside>}
 

@@ -1071,3 +1071,117 @@ it('withholds a reached import when its own Python file exceeds the node budget'
   expect(result.unresolved.filter(item => item.fromFileId === main.id))
     .toMatchObject([{ reason: 'ambiguous', candidates: ['pkg/model.py'], reasonText: expect.stringContaining('import 동작을 바꿀 수 있는 이름') }]);
 });
+
+describe('function and class search names', () => {
+  beforeEach(async () => {
+    await rm(root, { recursive: true });
+    await mkdir(root);
+  });
+
+  it('keeps named TS/JS functions and classes in source order, with analyzer ranges', async () => {
+    const text = [
+      'function declared() { function nested() {} }',
+      'const f = () => {};',
+      'class C { m() {} field = () => {}; }',
+      'const object = { prop: function () {}, method() {} };',
+      'const expression = class Named {};',
+      'abstract class Base {}',
+      'useEffect(() => {}); items.map(x => x);',
+      'export default () => {};',
+      'function broken() { const x = ; function hidden() {} class Hidden {} }',
+      'class Broken { good() {} bad() { const x = ; } }',
+    ].join('\n');
+    await put('names.ts', text);
+    const project = await scanProject(root, randomUUID());
+    const map = await mapOf(project);
+    expect(map.symbols.map(item => [item.name, item.kind])).toEqual([
+      ['declared', 'function'], ['nested', 'function'], ['f', 'function'], ['C', 'class'],
+      ['C.m', 'function'], ['C.field', 'function'], ['prop', 'function'], ['method', 'function'],
+      ['Named', 'class'], ['Base', 'class'], ['Broken.good', 'function'],
+    ]);
+    expect(map.symbols.map(item => item.startUtf16)).toEqual(map.symbols.map(item => item.startUtf16).toSorted((a, b) => a - b));
+    const file = project.files.find(file => file.relativePath === 'names.ts')!;
+    const hash = createHash('sha256').update(text).digest('hex');
+    const analysis = analyzeSource(text, file.relativePath, { projectId: project.id, fileId: file.id, fileHash: hash });
+    for (const item of map.symbols) {
+      expect(item).toMatchObject({ fileId: file.id, fileHash: hash });
+      if (item.kind !== 'function') continue;
+      expect(matchFunction({ projectId: project.id, fileId: file.id, relativePath: file.relativePath, hash, text, analysis, guide: null }, item).status).toBe('found');
+    }
+    expect(map.symbolsCut).toBe(false);
+  });
+
+  it('keeps Python nested names and decorator ranges, matching analyzer evidence', async () => {
+    const text = [
+      '@decorate', 'def f():', '    def nested():', '        pass', '    return nested',
+      '@decorate', 'class C:', '    @decorate', '    def method(self):', '        pass',
+      '    class Inner:', '        pass',
+      'def broken():', '    x =', '    def hidden():', '        pass', '    class Hidden:', '        pass',
+    ].join('\n');
+    await put('names.py', text);
+    const project = await scanProject(root, randomUUID());
+    const map = await mapOf(project);
+    expect(map.symbols.map(item => [item.name, item.kind, item.startLine])).toEqual([
+      ['f', 'function', 1], ['nested', 'function', 3], ['C', 'class', 6], ['C.method', 'function', 8], ['C.Inner', 'class', 11],
+    ]);
+    const file = project.files[0];
+    const hash = createHash('sha256').update(text).digest('hex');
+    const analysis = analyzeSource(text, file.relativePath, { projectId: project.id, fileId: file.id, fileHash: hash });
+    for (const item of map.symbols) {
+      expect(item).toMatchObject({ fileId: file.id, fileHash: hash });
+      if (item.kind === 'class') {
+        expect(analysis.classes?.find(value => value.name === item.name)?.evidence).toMatchObject({ startUtf16: item.startUtf16, endUtf16: item.endUtf16 });
+        continue;
+      }
+      expect(matchFunction({ projectId: project.id, fileId: file.id, relativePath: file.relativePath, hash, text, analysis, guide: null }, item).status).toBe('found');
+    }
+  });
+
+  it('leaves out a Python class with a syntax error but keeps its sound method, as the analyzer does', async () => {
+    const text = 'class Broken:\n    def bad(self):\n        value =\n    def good(self):\n        return 1\n';
+    await put('broken.py', text);
+    const project = await scanProject(root, randomUUID());
+    const map = await mapOf(project);
+    expect(map.symbols.map(item => [item.name, item.kind])).toEqual([['Broken.good', 'function']]);
+    const analysis = analyzeSource(text, 'broken.py', { projectId: project.id, fileId: project.files[0].id, fileHash: 'h' });
+    expect(analysis.classes).toEqual([]);
+    expect(analysis.symbols.map(item => item.name)).toEqual(['Broken.good']);
+  });
+
+  it.each(['ts', 'py'])('shares the name budget with %s first and stops before a later smaller name', async first => {
+    const second = first === 'ts' ? 'py' : 'ts';
+    await put(`a.${first}`, first === 'ts' ? 'function a() {}' : 'def a():\n    pass');
+    await put(`b.${second}`, second === 'ts' ? 'function longer() {}\nfunction b() {}' : 'def longer():\n    pass\ndef b():\n    pass');
+    const project = await scanProject(root, randomUUID());
+    const map = await mapOf(project, [], { ...MAP_LIMITS, symbols: 203 });
+    expect(map.symbols.map(item => item.name)).toEqual(['a']);
+    expect(map.symbols.reduce((sum, item) => sum + item.name.length + 100, 0)).toBeLessThanOrEqual(203);
+    expect(map.symbolsCut).toBe(true);
+    expect(map.notes.filter(note => note.includes('함수·클래스 이름이 너무 많아'))).toEqual([
+      '함수·클래스 이름이 너무 많아 일부만 모았어요. 검색에 나오지 않는 이름이 있을 수 있어요.',
+    ]);
+    expect(map.limited).toBe(false);
+    expect(map.files.every(file => file.checked === 'full')).toBe(true);
+    const fitting = await mapOf(project, [], { ...MAP_LIMITS, symbols: 308 });
+    expect(fitting.symbols.map(item => item.name)).toEqual(['a', 'longer', 'b']);
+    expect(fitting.symbols.map(item => item.fileId)).toEqual([project.files[0].id, project.files[1].id, project.files[1].id]);
+    expect(fitting.symbolsCut).toBe(false);
+    expect(fitting.notes.some(note => note.includes('함수·클래스 이름이 너무 많아'))).toBe(false);
+  });
+
+  it.each(['ts', 'py'])('counts clipped class and member names before storing them (%s)', async extension => {
+    const owner = 'C'.repeat(310), name = 'f'.repeat(310);
+    const text = extension === 'ts' ? `class ${owner} { ${name}() {} }\nfunction ${name}() {}`
+      : `class ${owner}:\n    def ${name}(self):\n        pass\ndef ${name}():\n    pass`;
+    await put(`names.${extension}`, text);
+    const project = await scanProject(root, randomUUID());
+    const map = await mapOf(project, [], { ...MAP_LIMITS, symbols: 1505 });
+    expect(map.symbols.map(item => item.name)).toEqual([`${'C'.repeat(300)}…`, `${'C'.repeat(300)}….${'f'.repeat(300)}…`, `${'f'.repeat(300)}…`]);
+    expect(map.symbolsCut).toBe(false);
+    const cut = await mapOf(project, [], { ...MAP_LIMITS, symbols: 400 });
+    expect(cut.symbols).toEqual([]);
+    expect(cut.symbolsCut).toBe(true);
+    const analysis = analyzeSource(text, `names.${extension}`, { projectId: project.id, fileId: project.files[0].id, fileHash: map.symbols[0].fileHash });
+    expect(analysis.symbols[0].name).toBe(extension === 'ts' ? `${owner}.${name}` : map.symbols[1].name);
+  });
+});

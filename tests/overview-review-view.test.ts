@@ -5,6 +5,7 @@ import { OverviewReview } from '../src/renderer/overview';
 import type { MapEntry } from '../src/renderer/project-map';
 
 const entry: MapEntry = { revision: 0, build: 1, map: {
+  symbols: [], symbolsCut: false,
   projectId: 'project', files: [], edges: [], external: [], exports: [], notes: [], limited: false,
   unused: { candidates: [{ fileId: 'unused', relativePath: 'unused.ts' }], unsure: [], excluded: [], notes: [],
     exports: { candidates: [], unsure: [], notes: [] } },
@@ -48,7 +49,7 @@ it.each([false, true])('shows three counts and the map button, limited=%s', limi
 });
 
 it('shows zero counts for an empty map', () => {
-  const html = render({ ...entry, map: { ...entry.map, complexFunctions: [], unresolved: [],
+  const html = render({ ...entry, map: { ...entry.map, complexFunctions: [], symbols: [], symbolsCut: false, unresolved: [],
     unused: { ...entry.map.unused, candidates: [] } } });
   expect(html.match(/<b>0<\/b>/g)).toHaveLength(3);
 });

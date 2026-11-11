@@ -250,7 +250,7 @@ try {
   const src = files.getByRole('button', { name: '폴더 api/src', exact: true });
   const main = files.getByRole('button', { name: 'api/src/main.ts', exact: true });
   const helper = files.getByRole('button', { name: 'api/test/helper.ts', exact: true });
-  const search = page.getByRole('searchbox', { name: '파일명 검색', exact: true });
+  const search = page.getByRole('searchbox', { name: '파일·함수 검색', exact: true });
   assert.equal(await files.getByRole('button', { name: 'root.ts', exact: true }).isVisible(), true);
   assert.equal(await api.getAttribute('aria-expanded'), 'false');
   assert.equal(await main.isVisible(), false);

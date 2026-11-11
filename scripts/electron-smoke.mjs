@@ -1844,7 +1844,7 @@ try {
     const src = files.getByRole('button', { name: '폴더 api/src', exact: true });
     const main = files.getByRole('button', { name: 'api/src/main.ts', exact: true });
     const helper = files.getByRole('button', { name: 'api/test/helper.ts', exact: true });
-    const search = page.getByRole('searchbox', { name: '파일명 검색', exact: true });
+    const search = page.getByRole('searchbox', { name: '파일·함수 검색', exact: true });
     assert.equal(await files.getByRole('button', { name: 'root.ts', exact: true }).isVisible(), true);
     assert.equal(await api.getAttribute('aria-expanded'), 'false');
     assert.equal(await main.isVisible(), false);
@@ -2727,7 +2727,7 @@ try {
       assert.equal(await app.evaluate(() => globalThis.screenFlowCalls), 0);
       await page.screenshot({ path: path.join(artifacts, 'screen-group-story.png') });
       await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
-      const fileSearch = page.getByRole('searchbox', { name: '파일명 검색', exact: true });
+      const fileSearch = page.getByRole('searchbox', { name: '파일·함수 검색', exact: true });
       await fileSearch.fill('web/lib/auth.ts');
       await page.getByRole('button', { name: 'web/lib/auth.ts', exact: true }).click();
       await openFileGuide();
@@ -3638,6 +3638,42 @@ try {
     await service.getByRole('button', { name: '코드 보기', exact: true }).click();
     await page.getByRole('heading', { name: 'app/service.py', exact: true }).waitFor();
     assert.match(await page.getByTestId('evidence-range').innerText(), /app\/service\.py · 1–1줄/);
+  });
+  await check('Symbol search: TS/Python functions, class ranges and changed-file rejection', async () => {
+    await dialogTo(pythonFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: 'Python 읽기 프로젝트', exact: true }).waitFor();
+    // A finishing scan returns to the overview and hides the search box, so a file is opened from the new tree first.
+    await openTreeFile('order.py');
+    const search = page.getByRole('searchbox', { name: '파일·함수 검색', exact: true });
+    const results = page.getByRole('region', { name: '함수·클래스 검색 결과', exact: true });
+    await search.fill('total');
+    await results.getByRole('heading', { name: '함수·클래스 · 3개', exact: true }).waitFor();
+    await page.screenshot({ path: path.join(artifacts, 'symbol-search.png') });
+    const tsRow = results.locator('li').filter({ hasText: 'reference.ts:1' });
+    await tsRow.getByRole('button', { name: 'total', exact: true }).click();
+    await page.getByRole('heading', { name: 'reference.ts', exact: true }).waitFor();
+    await until(async () => await page.getByTestId('evidence-range').innerText() === '근거: reference.ts · 1–1줄');
+    await results.getByRole('button', { name: 'Order.total', exact: true }).click();
+    await page.getByRole('heading', { name: 'order.py', exact: true }).waitFor();
+    await until(async () => await page.getByTestId('evidence-range').innerText() === '근거: order.py · 7–12줄');
+    await search.fill('Order');
+    await results.getByRole('button', { name: 'Order', exact: true }).click();
+    await until(async () => await page.getByTestId('evidence-range').innerText() === '근거: order.py · 6–12줄');
+    assert.equal(await page.locator('.symbols__item[aria-pressed="true"]').count(), 0);
+    const original = await readFile(path.join(pythonFixture, 'reference.ts'), 'utf8');
+    try {
+      await search.fill('total');
+      await writeFile(path.join(pythonFixture, 'reference.ts'), '\n' + original);
+      await results.getByText('지도를 만든 뒤 파일이 바뀌었어요. 이름과 위치가 지금과 다를 수 있어요.', { exact: true }).waitFor();
+      await tsRow.getByRole('button', { name: 'total', exact: true }).click();
+      await page.getByRole('heading', { name: 'reference.ts', exact: true }).waitFor();
+      await page.getByText('지도를 만든 뒤 이 파일이 바뀌어 위치를 강조하지 않았어요. 지도를 다시 만들어 주세요.', { exact: true }).waitFor();
+      assert.equal(await page.getByTestId('evidence-range').count(), 0);
+      assert.equal(await page.locator('.symbols__item[aria-pressed="true"]').count(), 0);
+    } finally {
+      await writeFile(path.join(pythonFixture, 'reference.ts'), original);
+    }
   });
   await check('Path aliases: map arrow, file guide and unused candidates agree', async () => {
     await dialogTo(aliasFixture);

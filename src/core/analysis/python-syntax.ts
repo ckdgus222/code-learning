@@ -117,7 +117,7 @@ function stepsFor(body: Parser.SyntaxNode, text: string, budget: AnalysisBudget)
 }
 
 /** `Class.name` for a function or class declared directly in a class body (through its decorators), otherwise its own name. */
-function declarationName(node: Parser.SyntaxNode, declaration: Parser.SyntaxNode): string {
+export function declarationName(node: Parser.SyntaxNode, declaration: Parser.SyntaxNode): string {
   const owner = declaration.parent?.type === 'block' ? declaration.parent.parent : null;
   const className = owner?.type === 'class_definition' ? owner.childForFieldName('name')?.text : null;
   // Names are shown, not matched: each part is cut short, since a class name repeats in every method's name.

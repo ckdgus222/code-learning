@@ -3,11 +3,11 @@ import type Parser from 'tree-sitter';
 import { COMPLEXITY_LIMITS, type MapExport, type MapFile, type MapImport, type ProjectFile, type ProjectMap } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 import { assertAllowedFile, MAX_FILE_BYTES, readAllowed, textExtensions } from '../project/files';
-import { functionName, functionTypes, importOf, measureFunction, parse } from './syntax';
+import { classTypes, functionName, functionTypes, importOf, measureFunction, namedFunction, parse } from './syntax';
 import { readPathAliases, resolveImport } from './path-aliases';
 import { scriptFilesOf, unusedFiles } from './unused-files';
 import { initFactsOf, mentionsMachinery, pythonImportsOf, resolvePythonImport, type InitFacts, type PythonImport } from './python-imports';
-import { measurePythonFunction, pythonFunction } from './python-syntax';
+import { declarationName, measurePythonFunction, pythonFunction } from './python-syntax';
 import { clip } from './syntax-tools';
 
 export const codeFile = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
@@ -30,13 +30,15 @@ export interface MapLimits {
   results: number;
   /** Characters of hard functions one map may list, all languages together. */
   functions: number;
+  /** Characters of function and class names one map may list for the search, all languages together. */
+  symbols: number;
 }
 // Files as many as the folder scan allows; 16 MiB confirmed by the user (2026-10-19) so a large project
 // still finishes inside the map worker's 30 seconds; the node budget keeps one huge file from taking it all.
 // The result sizes keep a folder of nothing but imports from making a map many times larger than the code it
 // was read from: 8,000,000 (confirmed by the user, 2026-11-11) is about five times what 1,000 files as
 // dense as this repository yield.
-export const MAP_LIMITS: MapLimits = { files: 1000, bytes: 16 * 1024 * 1024, nodesPerFile: 200_000, results: 8_000_000, functions: 500_000 };
+export const MAP_LIMITS: MapLimits = { files: 1000, bytes: 16 * 1024 * 1024, nodesPerFile: 200_000, results: 8_000_000, functions: 500_000, symbols: 4_000_000 };
 
 /** Binding names only: object keys and default-value expressions are not declarations. */
 function bindingNames(pattern: Parser.SyntaxNode | null): Parser.SyntaxNode[] {
@@ -63,6 +65,7 @@ function scanTree(text: string, relativePath: string, nodeBudget: number) {
   const root = parse(text, relativePath);
   const found: { node: Parser.SyntaxNode; kind: 'static' | 'not-static' | 'syntax'; specifier: string | null }[] = [];
   const functions: Parser.SyntaxNode[] = [];
+  const symbols: Parser.SyntaxNode[] = [];
   const declarations = new Map<string, ExportDeclaration>();
   const exported: (ExportDeclaration & { name: string })[] = [];
   const aliases: { local: string; name: string }[] = [];
@@ -121,7 +124,11 @@ function scanTree(text: string, relativePath: string, nodeBudget: number) {
       && !declarationNames.has(node.startIndex) && !exportNames && !defaultName) references.add(node.text);
     if (imported) found.push({ node, ...imported });
     const isFunction = functionTypes.has(node.type);
-    if (isFunction && !inBroken && !node.hasError && node.childForFieldName('body')) functions.push(node);
+    if (isFunction && !inBroken && !node.hasError && node.childForFieldName('body')) {
+      functions.push(node);
+      symbols.push(node);
+    }
+    if (!inBroken && !node.hasError && classTypes.has(node.type) && node.childForFieldName('name')) symbols.push(node);
     if (node.firstNamedChild) pending.push({ node: node.firstNamedChild, inBroken: inBroken || (isFunction && node.hasError),
       exportNames: exportNames || node.type === 'export_clause' });
   }
@@ -134,7 +141,7 @@ function scanTree(text: string, relativePath: string, nodeBudget: number) {
     kind: item.kind, startUtf16: item.node.startIndex, endUtf16: item.node.endIndex,
     ...linesOf(item.node), usedInFile: item.local !== null && references.has(item.local) }))
     .sort((a, b) => a.startUtf16 - b.startUtf16);
-  return { found, functions, exports, reason: reason ?? (root.hasError ? '구문 오류가 있어 오류 구역 안의 import와 함수는 놓쳤을 수 있어요.' : null) };
+  return { found, functions, symbols, exports, reason: reason ?? (root.hasError ? '구문 오류가 있어 오류 구역 안의 import와 함수는 놓쳤을 수 있어요.' : null) };
 }
 
 // Line numbers as the analyzer's evidence gives them: a range ending at a line start does not take that line.
@@ -143,19 +150,21 @@ const linesOf = (node: Parser.SyntaxNode) => ({ startLine: node.startPosition.ro
 
 const RESULT_NOTE = '지도에 담을 TS/JS import·export가 너무 많아 일부 파일만 읽었어요. 나머지 파일의 연결은 보지 않았어요.';
 const PYTHON_RESULT_NOTE = 'Python import 결과가 너무 많아 일부만 적었어요. 그 뒤의 Python import는 연결을 보지 않았어요.';
+const SYMBOLS_NOTE = '함수·클래스 이름이 너무 많아 일부만 모았어요. 검색에 나오지 않는 이름이 있을 수 있어요.';
 const FUNCTIONS_NOTE = '어려운 함수가 너무 많아 일부만 적었어요.';
 // Fixed fields of one kept entry (ids, hash, numbers) are counted as this many characters.
 const ENTRY_SIZE = 100;
 // A name inside an entry counts its own characters and these, for the list or set that holds it.
 const NAME_SIZE = 10;
 
-/** Characters still free for Python statements and all hard functions. Below zero: the rest was left out. */
-interface MapRoom { imports: number; functions: number }
+/** Characters still free for Python statements, hard functions and search names. Below zero: the rest was left out. */
+interface MapRoom { imports: number; functions: number; symbols: number }
 
 interface PythonScan {
   relativePath: string;
   statements: { evidence: MapImport; imports: PythonImport[]; syntax: boolean }[];
   functions: ProjectMap['complexFunctions'];
+  symbols: ProjectMap['symbols'];
   plain: boolean;
   init: InitFacts | null;
   reason: string | null;
@@ -164,7 +173,7 @@ interface PythonScan {
 /** Retain values, never tree nodes: package facts must be known before resolving any Python import. */
 function scanPython(text: string, hash: string, file: ProjectFile, nodeBudget: number, room: MapRoom): PythonScan {
   const root = parse(text, file.relativePath);
-  const scan: PythonScan = { relativePath: file.relativePath, statements: [], functions: [], plain: false, init: null, reason: null };
+  const scan: PythonScan = { relativePath: file.relativePath, statements: [], functions: [], symbols: [], plain: false, init: null, reason: null };
   const pending = [{ node: root, inBroken: false }];
   let visited = 0;
   let machinery = false;
@@ -189,6 +198,15 @@ function scanPython(text: string, hash: string, file: ProjectFile, nodeBudget: n
       }
     }
     const fn = inBroken ? null : pythonFunction(node);
+    const isClass = !inBroken && node.type === 'class_definition' && !node.hasError;
+    if (fn || isClass) {
+      const declaration = fn?.declaration ?? (node.parent?.type === 'decorated_definition' ? node.parent : node);
+      const name = fn?.name ?? declarationName(node, declaration);
+      room.symbols -= name.length + ENTRY_SIZE;
+      if (room.symbols >= 0) scan.symbols.push({ fileId: file.id, fileHash: hash,
+        startUtf16: declaration.startIndex, endUtf16: declaration.endIndex, ...linesOf(declaration),
+        name, kind: fn ? 'function' : 'class' });
+    }
     const size = fn && measurePythonFunction(fn.body, text);
     if (fn && size && (size.lines > COMPLEXITY_LIMITS.lines || size.depth > COMPLEXITY_LIMITS.depth)) {
       room.functions -= fn.name.length + ENTRY_SIZE;
@@ -311,7 +329,7 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
     placed.set(file.id, { id: file.id, relativePath: file.relativePath, folder: folder === '.' ? '' : folder,
       start: starts.has(file.id), entry: entries.has(file.id), checked, reason });
   };
-  const map: Omit<ProjectMap, 'unused'> = { projectId, files: [], edges: [], unresolved: [], external: [], complexFunctions: [], exports: [], limited: false, notes: [] };
+  const map: Omit<ProjectMap, 'unused'> = { projectId, files: [], edges: [], unresolved: [], external: [], complexFunctions: [], symbols: [], symbolsCut: false, exports: [], limited: false, notes: [] };
   // A target may have been deleted, excluded or swapped for a link since the folder was opened.
   const availability = new Map<string, Promise<boolean>>();
   const available = (relative: string): Promise<boolean> => {
@@ -320,7 +338,7 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
   };
 
   const python: PythonScan[] = [];
-  const room: MapRoom = { imports: limits.results, functions: limits.functions };
+  const room: MapRoom = { imports: limits.results, functions: limits.functions, symbols: limits.symbols };
   // The one gate every TS/JS export and import result passes before it is kept. Once it has failed it
   // keeps failing, so nothing smaller slips in after what was left out.
   let resultsLeft = limits.results;
@@ -364,10 +382,20 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
       python.push(scan);
       place(file, scan.reason ? 'partial' : 'full', scan.reason);
       map.complexFunctions.push(...scan.functions);
+      map.symbols.push(...scan.symbols);
       continue;
     }
-    const { found, functions, exports, reason } = scanTree(source.text, file.relativePath, limits.nodesPerFile);
+    const { found, functions, symbols, exports, reason } = scanTree(source.text, file.relativePath, limits.nodesPerFile);
     place(file, reason ? 'partial' : 'full', reason);
+    for (const node of symbols) {
+      const isFunction = functionTypes.has(node.type);
+      const name = isFunction ? namedFunction(node, clip) : clip(node.childForFieldName('name')!.text);
+      if (name === null) continue;
+      room.symbols -= name.length + ENTRY_SIZE;
+      if (room.symbols < 0) break;
+      map.symbols.push({ fileId: file.id, fileHash: source.hash, startUtf16: node.startIndex, endUtf16: node.endIndex,
+        ...linesOf(node), name, kind: isFunction ? 'function' : 'class' });
+    }
     for (const item of exports) {
       if (!keep(item.name.length + item.displayName.length + ENTRY_SIZE)) break;
       map.exports.push({ ...item, fileId: file.id, fileHash: source.hash });
@@ -435,6 +463,8 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
       place(file, 'partial', '지도의 결과 한도에 닿아 이 파일의 import와 export 일부는 적지 않았어요.');
     }
   }
+  map.symbolsCut = room.symbols < 0;
+  if (map.symbolsCut) map.notes.push(SYMBOLS_NOTE);
   if (resultsLeft < 0) map.notes.push(RESULT_NOTE);
   if (room.functions < 0) map.notes.push(FUNCTIONS_NOTE);
   const settled = await settlePythonImports(python, known, map, available, shouldStop, limits.results);
