@@ -243,6 +243,7 @@ await mkdir(path.join(gitFixture, 'src'), { recursive: true });
 const gitHere = (...args) => execFileSync('git', args, { cwd: gitFixture, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
 if (onMac) gitHere('init', '-q');
 for (const [name, text] of [['edit.ts', 'export const edit = 1;\n' + hiddenSource], ['deleted.ts', 'export const gone = 1;\n'], ['old-name.ts', 'export const moved = 1;\n'],
+  ['app.ts', "import { edit } from './edit';\nexport const twice = edit * 2;\n"],
   ['func.ts', 'export function run(x: number) {\n  if (x > 1) return x;\n  return 0;\n}\n']]) {
   await writeFile(path.join(gitFixture, 'src', name), text);
 }
@@ -5495,6 +5496,19 @@ try {
     for (const [name, kind] of [['added.ts', '추가'], ['new-name.ts', '이름 변경'], ['untracked.ts', '미추적']]) await box(name).getByText(kind, { exact: true }).waitFor();
     assert.equal(await page.getByRole('region', { name: '변경 목록' }).getByRole('list', { name: '바뀐 파일' }).locator('li').count(), 5);
     await page.screenshot({ path: path.join(artifacts, 'changes-map.png') });
+    const changeUsers = page.getByRole('region', { name: '바뀐 파일을 가져다 쓰는 파일', exact: true });
+    await changeUsers.getByRole('heading', { name: '바뀐 파일을 가져다 쓰는 파일 · 1개', exact: true }).waitFor();
+    const appRow = changeUsers.locator(':scope > ul > li').filter({ has: page.getByRole('button', { name: 'src/app.ts', exact: true }) });
+    await appRow.getByRole('button', { name: 'src/app.ts', exact: true }).waitFor();
+    await appRow.getByText('수정', { exact: true }).waitFor();
+    await appRow.getByText('1행 → src/edit.ts', { exact: true }).waitFor();
+    await box('app.ts').getByText('바뀐 파일을 씀', { exact: true }).waitFor();
+    await changeUsers.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(artifacts, 'change-users.png') });
+    await appRow.getByRole('button', { name: '코드 보기', exact: true }).click();
+    await page.getByRole('heading', { name: 'src/app.ts', exact: true }).waitFor();
+    await until(async () => await page.getByTestId('evidence-range').innerText() === '근거: src/app.ts · 1–1줄');
+    await openFileMap();
     // Comparing changed nothing in the repository; a file changed afterwards marks the comparison.
     assert.deepEqual(await gitState(path.join(gitFixture, '.git')), gitBefore);
     await writeFile(path.join(gitFixture, 'src/edit.ts'), 'export const edit = 3;\n');

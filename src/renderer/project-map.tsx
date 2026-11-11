@@ -8,6 +8,7 @@ import { arrowCounts, arrowLabel, guessedLinks, BIG_FOLDER_LIMIT, boxName, boxPl
 import { importPath, pathGraph } from './import-path';
 import { COMPLEXITY_NOTE, ComplexityTags } from './complexity';
 import { ChangeList, kindLabels } from './changes';
+import { changeUsers, type ChangeUser } from './change-users';
 
 // One file can hold thousands of imports, so each list shows this many rows and counts the rest.
 const LIST_LIMIT = 300;
@@ -32,9 +33,15 @@ export interface MapEntry { map: ProjectMap; revision: number; build: number }
 
 /** A comparison with a commit shown on the map (plan v2.3 C-2), and whether files changed after it. */
 export interface MapChanges { result: ProjectChanges; stale: boolean }
-interface BoxData { box: MapBox; change: ChangeKind | null; changed: number; focused: boolean; onFocus?(): void }
+interface BoxData {
+  box: MapBox; change: ChangeKind | null; changed: number; focused: boolean; onFocus?(): void;
+  /** A file's imports of changed files are settled, or only guessed. */
+  using: 'sure' | 'guessed' | null;
+  /** Distinct files in a folder that import changed files. */
+  users: { total: number; guessed: number };
+}
 
-function BoxLabel({ box, change, changed }: Pick<BoxData, 'box' | 'change' | 'changed'>) {
+function BoxLabel({ box, change, changed, using, users }: Pick<BoxData, 'box' | 'change' | 'changed' | 'using' | 'users'>) {
   const status = box.file && box.file.checked !== 'full' ? checkedLabels[box.file.checked] : null;
   const separator = box.kind === 'folder' ? box.label.lastIndexOf(' · ') : -1;
   return <span className="map-box__label" title={boxName(box)}>
@@ -46,6 +53,8 @@ function BoxLabel({ box, change, changed }: Pick<BoxData, 'box' | 'change' | 'ch
       {status && <span className="tag tag--unknown">{status}</span>}
       {change && <span className={`tag tag--change tag--${change}`}>{kindLabels[change]}</span>}
       {changed > 0 && <span className="tag tag--change">바뀐 파일 {changed}개</span>}
+      {using && <span className="tag tag--change tag--uses">바뀐 파일을 씀{using === 'guessed' && '(추정)'}</span>}
+      {users.total > 0 && <span className="tag tag--change tag--uses">바뀐 파일을 쓰는 파일 {users.total}개{users.guessed > 0 && `(추정 ${users.guessed}개)`}</span>}
     </span>
   </span>;
 }
@@ -59,7 +68,7 @@ function MapNode({ data }: NodeProps<Node<BoxData & Record<string, unknown>>>) {
     <Handle type="target" id="in-left" position={Position.Left} />
     <Handle type="target" id="in-top" position={Position.Top} />
     <Handle type="target" id="in-bottom" position={Position.Bottom} />
-    <BoxLabel box={data.box} change={data.change} changed={data.changed} />
+    <BoxLabel box={data.box} change={data.change} changed={data.changed} using={data.using} users={data.users} />
     {data.onFocus && <button className="btn btn--small nodrag" aria-pressed={data.focused} aria-label={`${data.box.label} 이어진 것만 보기`}
       onClick={event => { event.stopPropagation(); data.onFocus?.(); }}>이어진 것만</button>}
     <Handle type="source" id="out-right" position={Position.Right} />
@@ -172,11 +181,48 @@ export function ImportPathCard({ files, links, incomplete, locked, onShowImport 
   </section>;
 }
 
+// A file seldom imports more than a few changed files; a project made to (300 files importing 200 each) would draw 60,000 rows.
+export const USES_SHOWN = 5;
+
+/**
+ * The files that import changed files. Kept apart and memoized: MapBody is drawn again whenever a box is hovered,
+ * and this list can be long.
+ */
+export const ChangeUsersCard = React.memo(function ChangeUsersCard({ users, changeOf, changes, incomplete, locked, onOpenFile, onShowImport }: {
+  users: ChangeUser[]; changeOf: ReadonlyMap<string, ChangeKind>; changes: FileChange[]; incomplete: boolean; locked: boolean;
+  onOpenFile(fileId: string): void; onShowImport(item: MapImport): void;
+}) {
+  const hasGuesses = users.some(user => user.uses.some(use => use.links.some(link => link.guess !== undefined)));
+  return <section className="card" aria-label="바뀐 파일을 가져다 쓰는 파일">
+    <h3>바뀐 파일을 가져다 쓰는 파일 · {users.length}개</h3>
+    <p className="hint">바뀐 파일을 직접 import하는 파일이에요. 바뀐 내용에 따라 함께 확인해야 할 수 있어요. 한 걸음만 봐요: 이 파일들을 다시 가져다 쓰는 파일은 넣지 않았어요.</p>
+    {users.length ? <ul className="map-list">{firstRows(users).map(user => <li key={user.file.id}>
+      <button className="btn btn--small path" disabled={locked} onClick={() => onOpenFile(user.file.id)}>{user.file.relativePath}</button>
+      {changeOf.has(user.file.id) && <> <span className={`tag tag--change tag--${changeOf.get(user.file.id)!}`}>{kindLabels[changeOf.get(user.file.id)!]}</span></>}
+      {user.guessed && <> <span className="tag tag--unknown">추정</span></>}
+      <ul className="map-list">{user.uses.slice(0, USES_SHOWN).map(use => <li key={use.file.id}>
+        <span className={`tag tag--change tag--${use.kind}`}>{kindLabels[use.kind]}</span>{' '}
+        <span className="path">{use.links[0].startLine}행 → {use.file.relativePath}</span> <code>{use.links[0].text}</code>
+        {use.links[0].guess !== undefined && <> <span className="tag tag--unknown">추정</span> {use.links[0].guess}</>}
+        {use.links.length > 1 && <> <span className="hint">근거 {use.links.length}개 중 첫 번째</span></>}
+        {' '}<button className="btn btn--small" disabled={locked} onClick={() => onShowImport(use.links[0])}>코드 보기</button>
+      </li>)}</ul>
+      {user.uses.length > USES_SHOWN && <p className="hint">바뀐 파일 외 {user.uses.length - USES_SHOWN}개</p>}
+    </li>)}</ul> : <p className="hint">바뀐 파일을 가져다 쓰는 파일을 찾지 못했어요.</p>}
+    <Omitted count={users.length} />
+    {hasGuesses && <p className="hint">‘추정’은 확정하지 못한 Python import의 후보로 이은 것이에요. 틀릴 수 있어요.</p>}
+    {changes.some(change => change.fileId === null || change.oldPath !== null) && <p className="hint">삭제된 파일과 이름을 바꾸기 전 경로는 지금 지도에 없어서, 그것을 가져다 쓰던 곳은 여기에 나오지 않아요.</p>}
+    {incomplete && <p className="hint">지도가 다 보지 못한 import가 있어 빠진 파일이 있을 수 있어요.</p>}
+  </section>;
+});
+
 function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunction, onShowChange }: {
   map: ProjectMap; changes: MapChanges | null; locked: boolean; onOpenFile(fileId: string): void; onShowImport(item: MapImport): void;
   onShowFunction(item: MapFunction | MapExport): void; onShowChange(change: FileChange): void;
 }) {
   const drawn = useMemo(() => ({ ...map, edges: [...map.edges, ...guessedLinks(map)] }), [map]);
+  const users = useMemo(() => changeUsers(map.files, drawn.edges, changes?.result.changes ?? []), [map.files, drawn.edges, changes?.result]);
+  const userOf = useMemo(() => new Map(users.map(user => [user.file.id, user])), [users]);
   const expandable = useMemo(() => expandableIds(map), [map]);
   const folders = useMemo(() => foldersWithFiles(map), [map]);
   const cycles = useMemo(() => importCycles(map), [map]);
@@ -207,14 +253,20 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
   // A file now has a box; a deleted file and a rename's old path have none and are only in the list below.
   const changeOf = useMemo(() => new Map((changes?.result.changes ?? []).flatMap(change => change.fileId ? [[change.fileId, change.kind] as const] : [])),
     [changes]);
-  const changedIn = (box: MapBox) => map.files.filter(file => changeOf.has(file.id)
-    && (file.folder === box.folder || (box.id.startsWith('folder:') && file.folder.startsWith(`${box.folder}/`)))).length;
-  const nodes: Node[] = graph.boxes.map(box => ({ id: box.id, type: 'box', position: { x: box.x, y: box.y },
-    data: { box, change: box.file ? changeOf.get(box.file.id) ?? null : null, changed: box.kind === 'folder' ? changedIn(box) : 0,
-      focused: focused === box.id, onFocus: listMode ? undefined : () => setFocus(focused === box.id ? null : { id: box.id, opened }) },
-    ariaLabel: boxName(box),
-    className: `map-box map-box--${box.kind}${listMode ? ' map-box--neighbor' : ''}${focused === box.id ? ' map-box--focus' : ''}${lit && highlighted !== box.id && !lit.has(box.id) ? ' map-box--dim' : ''}`,
-    draggable: false, connectable: false }));
+  const inBox = (file: MapFile, box: MapBox) => file.folder === box.folder
+    || (box.id.startsWith('folder:') && file.folder.startsWith(`${box.folder}/`));
+  const changedIn = (box: MapBox) => map.files.filter(file => changeOf.has(file.id) && inBox(file, box)).length;
+  const nodes: Node[] = graph.boxes.map(box => {
+    const contained = box.kind === 'folder' ? users.filter(user => inBox(user.file, box)) : [];
+    return { id: box.id, type: 'box', position: { x: box.x, y: box.y },
+      data: { box, change: box.file ? changeOf.get(box.file.id) ?? null : null, changed: box.kind === 'folder' ? changedIn(box) : 0,
+        using: box.file && userOf.has(box.file.id) ? userOf.get(box.file.id)!.guessed ? 'guessed' : 'sure' : null,
+        users: { total: contained.length, guessed: contained.filter(user => user.guessed).length },
+        focused: focused === box.id, onFocus: listMode ? undefined : () => setFocus(focused === box.id ? null : { id: box.id, opened }) },
+      ariaLabel: boxName(box),
+      className: `map-box map-box--${box.kind}${listMode ? ' map-box--neighbor' : ''}${focused === box.id ? ' map-box--focus' : ''}${lit && highlighted !== box.id && !lit.has(box.id) ? ' map-box--dim' : ''}`,
+      draggable: false, connectable: false };
+  });
   const handlesFor = (arrow: MapArrow) => {
     const from = placeOf.get(arrow.source)!;
     const to = placeOf.get(arrow.target)!;
@@ -402,6 +454,8 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
         <ChangeList result={changes.result} locked={locked} onOpen={onShowChange} />
       </> : <p className="hint">달라진 내용에서 기준 커밋을 고르면 바뀐 파일이 여기와 지도 상자에 보여요.</p>}
     </section>
+    {changes && <ChangeUsersCard users={users} changeOf={changeOf} changes={changes.result.changes} incomplete={map.reading.incomplete}
+      locked={locked} onOpenFile={onOpenFile} onShowImport={onShowImport} />}
     {selected && <section className="card" aria-label="고른 화살표의 근거">
       <h3>고른 화살표의 근거{selectedCounts!.sure > 0 && ` · import ${selectedCounts!.sure}개`}{selectedCounts!.guessed > 0 && ` · 추정 ${selectedCounts!.guessed}개`}</h3>
       <ul className="map-list">{firstRows(selected.items).map((item, index) => <li key={`${item.fromFileId}:${item.startUtf16}:${index}`}>

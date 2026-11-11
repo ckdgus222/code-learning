@@ -580,6 +580,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 
 /* Plan v2.3 C-2: kinds of change, and the read-only comparison. */
 .tag--change { min-width: 52px; border: 1px solid currentColor; text-align: center; background: var(--accent-soft); color: var(--accent); }
+.tag--change.tag--uses { background: transparent; }
 .tag--change.tag--modified { background: var(--warn-soft); color: var(--warn); }
 .tag--change.tag--added, .tag--change.tag--untracked { background: var(--ok-soft); color: var(--ok); }
 .tag--change.tag--renamed { background: var(--accent-soft); color: var(--accent); }

@@ -4,7 +4,7 @@ import * as JSX from 'react/jsx-dev-runtime';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Background, BackgroundVariant, ReactFlow, ReactFlowProvider, useReactFlow, useStore, type Edge, type Node } from '@xyflow/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ARROW_MARKER, GUESS_MARKER, FitOnWidthChange, ImportPathCard, MapCanvas, ProjectMapView, type MapChanges } from '../src/renderer/project-map';
+import { ARROW_MARKER, GUESS_MARKER, ChangeUsersCard, FitOnWidthChange, ImportPathCard, MapCanvas, ProjectMapView, USES_SHOWN, type MapChanges } from '../src/renderer/project-map';
 import { guessedLinks, boxName, boxPlace, expandableIds, fileViewOf, visibleGraph, type MapArrow } from '../src/renderer/map-layout';
 import type { MapFile, ProjectMap, ProjectView } from '../src/shared/contracts';
 
@@ -50,6 +50,212 @@ function drawnEdges(): Edge[] {
   return vi.mocked(ReactFlow).mock.calls.at(-1)![0].edges!;
 }
 afterEach(() => vi.clearAllMocks());
+
+function cardButtons(label: string) {
+  const card = vi.mocked(JSX.jsxDEV).mock.results.map(result => result.value as React.ReactElement<Record<string, unknown>>)
+    .find(element => element.type === 'section' && element.props['aria-label'] === label)!;
+  const pending: React.ReactNode[] = [card];
+  const buttons: React.ReactElement<React.ButtonHTMLAttributes<HTMLButtonElement>>[] = [];
+  while (pending.length) {
+    for (const child of React.Children.toArray(pending.shift())) {
+      if (!React.isValidElement<{ children?: React.ReactNode }>(child)) continue;
+      if (child.type === 'button') buttons.push(child);
+      pending.push(child.props.children);
+    }
+  }
+  return buttons;
+}
+
+describe('files importing changed files on the map', () => {
+  const title = '바뀐 파일을 가져다 쓰는 파일';
+  const section = (html: string) => html.match(/<section class="card" aria-label="바뀐 파일을 가져다 쓰는 파일">(.*?)<\/section>/)![1];
+  const guessNote = '‘추정’은 확정하지 못한 Python import의 후보로 이은 것이에요. 틀릴 수 있어요.';
+  const absentNote = '삭제된 파일과 이름을 바꾸기 전 경로는 지금 지도에 없어서, 그것을 가져다 쓰던 곳은 여기에 나오지 않아요.';
+  const incompleteNote = '지도가 다 보지 못한 import가 있어 빠진 파일이 있을 수 있어요.';
+  const comparison: MapChanges = { ...changes, result: { ...changes.result, changes: [changes.result.changes[1]] } };
+  const python: ProjectMap = { ...map, files: map.files.map(item => ({ ...item, relativePath: item.relativePath.replace('.ts', '.py') })),
+    edges: [], unresolved: [{ ...map.edges[0], text: 'from web.lib import b', reason: 'ambiguous',
+      reasonText: '실행 환경에 따라 달라져요', candidates: ['web/lib/b.py'] }] };
+
+  function renderUsers(source = map, compared: MapChanges | null = comparison, locked = false, opened: ReadonlySet<string> = new Set(),
+    onOpenFile = vi.fn(), onShowImport = vi.fn(), picked: { fileId: string; opened: ReadonlySet<string> } | null = null) {
+    for (const state of [opened, null, null, null, picked]) vi.mocked(ReactHooks.useState).mockImplementationOnce(() => [state, vi.fn()]);
+    return renderToStaticMarkup(React.createElement(ProjectMapView, { project, entry: { map: source, revision: 0, build: 1 },
+      stale: false, mapping: false, locked, changes: compared, onBuild() {}, onCancel() {}, onOpenFile, onShowImport,
+      onShowFunction() {}, onShowChange() {} }));
+  }
+  function boxHtml(id: string) {
+    const node = drawnNodes().find(node => node.id === id)!;
+    const NodeType = vi.mocked(ReactFlow).mock.calls.at(-1)![0].nodeTypes!.box;
+    return renderToStaticMarkup(React.createElement(ReactFlowProvider, {
+      children: React.createElement(NodeType, { ...node, data: node.data } as never),
+    }));
+  }
+
+  it('hides the card and all box tags without a comparison', () => {
+    expect(renderUsers(map, null)).not.toContain(`aria-label="${title}"`);
+    for (const node of drawnNodes()) expect(boxHtml(node.id)).not.toContain('tag--uses');
+    renderUsers(map, null, false, expandableIds(map));
+    for (const node of drawnNodes()) expect(boxHtml(node.id)).not.toContain('tag--uses');
+  });
+
+  it.each([false, true])('sits directly after changes and shows the importing file change only when present (%s)', alsoChanged => {
+    const html = renderUsers(map, alsoChanged ? changes : comparison);
+    const end = html.indexOf('</section>', html.indexOf('aria-label="변경 목록"')) + '</section>'.length;
+    expect(html.slice(end)).toMatch(/^<section class="card" aria-label="바뀐 파일을 가져다 쓰는 파일">/);
+    const card = section(html);
+    expect(card).toContain(`<h3>${title} · 1개</h3>`);
+    expect(card).toContain('<button class="btn btn--small path">web/app/a.ts</button>');
+    expect(card).toContain('<span class="path">1행 → web/lib/b.ts</span> <code>import</code>');
+    expect(card.match(/class="tag tag--change tag--modified"/g)).toHaveLength(alsoChanged ? 2 : 1);
+    expect(card.includes('web/app/a.ts</button> <span class="tag tag--change tag--modified">수정</span>')).toBe(alsoChanged);
+    // A file that did not change gets no change tag of its own, and one import is not counted as several.
+    expect(card.includes('web/app/a.ts</button><ul')).toBe(!alsoChanged);
+    expect(card).not.toContain('근거 ');
+    expect(card).not.toContain('tag--unknown');
+    expect(card).not.toContain(guessNote);
+    expect(card).not.toContain(absentNote);
+    expect(card).not.toContain(incompleteNote);
+    expect(card).toContain('한 걸음만 봐요: 이 파일들을 다시 가져다 쓰는 파일은 넣지 않았어요.');
+  });
+
+  it.each([false, true])('opens the first import at its displayed source line and locks both buttons (%s)', locked => {
+    const first = { ...map.edges[0], startLine: 7, endLine: 7, text: "import '../lib/b'" };
+    const source = { ...map, edges: [first, { ...first, startLine: 9, endLine: 9 }] };
+    const onOpenFile = vi.fn();
+    const onShowImport = vi.fn();
+    const card = section(renderUsers(source, comparison, locked, new Set(), onOpenFile, onShowImport));
+    expect(card).toContain('7행 → web/lib/b.ts');
+    expect(card).toContain('<code>import &#x27;../lib/b&#x27;</code>');
+    expect(card).toContain('근거 2개 중 첫 번째');
+    const buttons = cardButtons(title);
+    expect(buttons).toHaveLength(2);
+    expect(buttons.map(button => button.props.children)).toEqual(['web/app/a.ts', '코드 보기']);
+    expect(buttons.map(button => button.props.disabled)).toEqual([locked, locked]);
+    expect(card.match(/disabled=""/g) ?? []).toHaveLength(locked ? 2 : 0);
+    if (locked) return;
+    for (const button of buttons) button.props.onClick!({} as React.MouseEvent<HTMLButtonElement>);
+    expect(onOpenFile.mock.calls).toEqual([['a']]);
+    expect(onShowImport.mock.calls).toEqual([[first]]);
+    expect(onShowImport.mock.calls[0][0]).toMatchObject({ fromFileId: 'a', startLine: 7 });
+  });
+
+  it.each([false, true])('labels guessed-only users and evidence, and explains even hidden guessed evidence (settled=%s)', settled => {
+    const source = { ...python, edges: settled ? map.edges : [] };
+    const onShowImport = vi.fn();
+    const card = section(renderUsers(source, comparison, false, expandableIds(source), vi.fn(), onShowImport));
+    expect(card.match(/class="tag tag--unknown">추정<\/span>/g) ?? []).toHaveLength(settled ? 0 : 2);
+    expect(card.includes('실행 환경에 따라 달라져요')).toBe(!settled);
+    expect(card).toContain(guessNote);
+    expect(card).toContain('1행 → web/lib/b.py');
+    expect(card.includes('근거 2개 중 첫 번째')).toBe(settled);
+    cardButtons(title).find(button => button.props.children === '코드 보기')!.props.onClick!({} as React.MouseEvent<HTMLButtonElement>);
+    expect(onShowImport.mock.calls).toEqual([[settled ? map.edges[0] : guessedLinks(source)[0]]]);
+    expect(boxHtml('a')).toContain(`바뀐 파일을 씀${settled ? '' : '(추정)'}</span>`);
+    expect(boxHtml('b')).not.toContain('tag--uses');
+  });
+
+  it('labels a guessed target even when the same user has another settled target', () => {
+    const source = { ...python, edges: [{ ...map.edges[0], toFileId: 'root' }] };
+    const card = section(renderUsers(source, changes));
+    expect(card).toContain('web/app/a.py</button> <span class="tag tag--change tag--modified">수정</span><ul');
+    expect(card.match(/class="tag tag--unknown">추정<\/span>/g)).toHaveLength(1);
+    expect(card).toContain('1행 → web/lib/b.py');
+    expect(card).toContain('실행 환경에 따라 달라져요');
+  });
+
+  it.each(['none', 'deleted', 'renamed'] as const)('shows an empty result and the missing-path note only for %s', kind => {
+    const changed = kind === 'none' ? [] : [{ kind, fileId: kind === 'deleted' ? null : 'b',
+      path: 'web/lib/b.ts', oldPath: kind === 'renamed' ? 'old.ts' : null }];
+    const compared: MapChanges = { ...comparison, result: { ...comparison.result, changes: changed } };
+    const card = section(renderUsers({ ...map, edges: [] }, compared));
+    expect(card).toContain(`${title} · 0개`);
+    expect(card).toContain('바뀐 파일을 가져다 쓰는 파일을 찾지 못했어요.');
+    expect(card).not.toContain('<ul');
+    expect(card.includes(absentNote)).toBe(kind !== 'none');
+  });
+
+  it.each([[true, false, 'full'], [false, true, 'partial']] as const)('uses reading.incomplete=%s alone despite limited=%s and checked=%s', (incomplete, limited, checked) => {
+    const source = { ...map, edges: [], limited, reading: { ...map.reading, incomplete },
+      files: map.files.map(file => ({ ...file, checked })) };
+    expect(section(renderUsers(source)).includes(incompleteNote)).toBe(incomplete);
+  });
+
+  it('keeps stale results and puts applicable notes in order without repeating the stale warning', () => {
+    const compared = { stale: true, result: { ...comparison.result, changes: [{ ...comparison.result.changes[0], oldPath: 'old.py' }] } };
+    const html = renderUsers({ ...python, reading: { ...map.reading, incomplete: true } }, compared);
+    const card = section(html);
+    expect(card).toContain(`${title} · 1개`);
+    expect(card.indexOf(guessNote)).toBeLessThan(card.indexOf(absentNote));
+    expect(card.indexOf(absentNote)).toBeLessThan(card.indexOf(incompleteNote));
+    expect(card).not.toContain('다시 확인 필요');
+    expect(html).toContain('다시 확인 필요');
+  });
+
+  const manyFiles = (count: number, mode: 'users' | 'uses') => {
+    const many = Array.from({ length: count }, (_, i) => file(`f${String(i).padStart(3, '0')}`, 'many'));
+    const source = { ...map, files: [...many, file('target', 'other')], edges: many.map(item => ({ ...map.edges[0],
+      fromFileId: mode === 'users' ? item.id : 'target', toFileId: mode === 'users' ? 'target' : item.id })) };
+    const compared: MapChanges = { ...comparison, result: { ...comparison.result, changes: source.files.map(item => ({
+      fileId: item.id, kind: 'modified', path: item.relativePath, oldPath: null })) } };
+    return section(renderUsers(source, compared));
+  };
+
+  it('limits the files to 300 rows and counts the omitted one', () => {
+    const card = manyFiles(301, 'users');
+    expect(card).toContain(`${title} · 301개`);
+    expect(card.match(/>코드 보기<\/button>/g)).toHaveLength(300);
+    expect(card.match(/class="btn btn--small path"/g)).toHaveLength(300);
+    expect(card).toContain('처음 300개만 보여요. 나머지 1개는 생략했어요.');
+    expect(card).not.toContain('many/f300.ts');
+    expect(card).not.toContain('바뀐 파일 외');
+  });
+
+  it.each([[USES_SHOWN, null], [USES_SHOWN + 1, 1], [301, 301 - USES_SHOWN]] as const)('shows five changed files under one file and counts the rest (%i changed)', (count, rest) => {
+    const card = manyFiles(count, 'uses');
+    expect(USES_SHOWN).toBe(5);
+    expect(card).toContain(`${title} · 1개`);
+    expect(card.match(/>코드 보기<\/button>/g)).toHaveLength(USES_SHOWN);
+    expect(card).toContain('1행 → many/f004.ts');
+    expect(card).not.toContain('1행 → many/f005.ts');
+    expect(card.includes('바뀐 파일 외')).toBe(rest !== null);
+    if (rest !== null) expect(card).toContain(`<p class="hint">바뀐 파일 외 ${rest}개</p>`);
+    expect(card).not.toContain('처음 300개만 보여요.');
+  });
+
+  it('is memoized, so hovering a box does not draw the list again', () => {
+    expect((ChangeUsersCard as unknown as { $$typeof: symbol }).$$typeof).toBe(Symbol.for('react.memo'));
+  });
+
+  it('counts distinct settled and guessed users with the same folder boundaries as changed files', () => {
+    const source = { ...python, edges: [{ ...map.edges[0], fromFileId: 'index' }, { ...map.edges[0], fromFileId: 'index', startLine: 3 }] };
+    renderUsers(source, changes);
+    expect(boxHtml('folder:web')).toContain('바뀐 파일을 쓰는 파일 2개(추정 1개)');
+    expect(boxHtml('folder:website')).not.toContain('tag--uses');
+    expect(boxHtml('files:')).not.toContain('tag--uses');
+    expect(drawnNodes().find(node => node.id === 'folder:web')!.data).toMatchObject({ changed: 3, users: { total: 2, guessed: 1 } });
+    renderUsers(source, changes, false, new Set(['folder:web']));
+    expect(boxHtml('files:web')).toContain('바뀐 파일을 쓰는 파일 1개</span>');
+    expect(boxHtml('folder:web/app')).toContain('바뀐 파일을 쓰는 파일 1개(추정 1개)');
+    expect(boxHtml('folder:web/lib')).not.toContain('tag--uses');
+    renderUsers(source, changes, false, expandableIds(source));
+    expect(boxHtml('index')).toContain('바뀐 파일을 씀</span>');
+    // The count of files belongs to folder boxes only.
+    expect(boxHtml('index')).not.toContain('바뀐 파일을 쓰는 파일');
+    expect(boxHtml('a')).toContain('바뀐 파일을 씀(추정)</span>');
+    expect(boxHtml('b')).not.toContain('tag--uses');
+    expect(boxHtml('index').indexOf('>수정</span>')).toBeLessThan(boxHtml('index').indexOf('tag--uses'));
+  });
+
+  it('keeps change-user tags on the large-folder neighborhood map', () => {
+    const source = { ...map, files: [...map.files, ...Array.from({ length: 81 }, (_, i) => file(`extra${i}`, 'web/app'))] };
+    const opened = fileViewOf('web/app', expandableIds(source));
+    const html = renderUsers(source, comparison, false, opened, vi.fn(), vi.fn(), { fileId: 'a', opened });
+    expect(html).toContain('data-testid="map-neighborhood"');
+    expect(boxHtml('a')).toContain('바뀐 파일을 씀</span>');
+    expect(boxHtml('b')).not.toContain('tag--uses');
+  });
+});
 
 describe('import path card integration', () => {
   const cardProps = () => vi.mocked(JSX.jsxDEV).mock.results
@@ -1025,9 +1231,7 @@ describe('guessed Python arrows', () => {
     expect(card).toContain(`<h3>고른 화살표의 근거 · ${title}</h3>`);
     expect(card.match(/class="tag tag--unknown">추정<\/span>/g) ?? []).toHaveLength(guessed);
     expect(card.match(/실행 환경에 따라 달라져요/g) ?? []).toHaveLength(guessed);
-    const evidenceButtons = vi.mocked(JSX.jsxDEV).mock.results
-      .map(result => result.value as React.ReactElement<Record<string, unknown>>)
-      .filter(element => element.type === 'button' && element.props.children === '코드 보기').slice(0, sure + guessed);
+    const evidenceButtons = cardButtons('고른 화살표의 근거').filter(element => element.props.children === '코드 보기');
     expect(evidenceButtons).toHaveLength(sure + guessed);
     for (const button of evidenceButtons) (button.props.onClick as () => void)();
     expect(onShowImport.mock.calls).toEqual(selected.items.map(item => [item]));
