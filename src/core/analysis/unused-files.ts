@@ -20,7 +20,15 @@ const nextAppFile = /^(?:page|layout|route|loading|error|global-error|not-found|
 // Apply the same cleanup to alias tails and file paths, including aliases that name an index file.
 const aliasPath = (name: string) => name.replace(codeFile, '').replace(/\/index$/, '');
 
-function isConfigFile(name: string): boolean {
+/** What this analysis counts as a test; the reading order starts from the same rule. */
+export function isTestPath(name: string): boolean {
+  // Playwright projects often name tests `*.e2e.ts` or keep them in an `e2e/` folder (dog-walk does both).
+  return isTestFile(name) || /[.-](?:spec|test|e2e)\.[^/]+$/.test(name) || /(?:^|\/)e2e\//.test(name);
+}
+
+export const typeDeclarationFile = /\.d\.(?:ts|mts|cts)$/i;
+
+export function isConfigFile(name: string): boolean {
   const basename = path.posix.basename(name);
   return codeFile.test(name) && (/\.config\./.test(basename) || /^\..*rc\./.test(basename) || isNextConfig(name));
 }
@@ -83,10 +91,9 @@ export function unusedFiles(map: Omit<ProjectMap, 'unused'>, scripts: ScriptFile
         || /^(?:middleware|instrumentation)\.[^.]+$/.test(local);
     });
     const kind: UnusedExcludeKind | null = file.entry ? 'start'
-      // Playwright projects often name tests `*.e2e.ts` or keep them in an `e2e/` folder (dog-walk does both).
-      : isTestFile(name) || /[.-](?:spec|test|e2e)\.[^/]+$/.test(name) || /(?:^|\/)e2e\//.test(name) ? 'test'
+      : isTestPath(name) ? 'test'
       : isConfigFile(name) ? 'config'
-      : /\.d\.(?:ts|mts|cts)$/i.test(name) ? 'types'
+      : typeDeclarationFile.test(name) ? 'types'
       : framework ? 'framework'
       : scripts.files.has(name) ? 'script'
       : scripts.references.has(name) ? 'reference' : null;

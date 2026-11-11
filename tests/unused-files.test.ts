@@ -11,11 +11,22 @@ const file = (relativePath: string, extra: Partial<MapFile> = {}): MapFile => ({
 const imported = (specifier: string | null, fromFileId = 'from.ts'): MapImport => ({ fromFileId, specifier,
   fileHash: 'hash', startUtf16: 0, endUtf16: 1, startLine: 1, endLine: 1, text: 'import' });
 const mapOf = (files: MapFile[], extra: Partial<Omit<ProjectMap, 'unused'>> = {}): Omit<ProjectMap, 'unused'> => ({
+  reading: { steps: [], total: 0, incomplete: false },
   projectId: 'project', files, edges: [], unresolved: [], external: [], complexFunctions: [], symbols: [], symbolsCut: false, exports: [], limited: false, notes: [], ...extra,
 });
 const scripts = (): ScriptFiles => ({ files: new Set(), failed: [], references: new Set(), referenceFailed: [] });
 
 describe('unused file candidates', () => {
+  it('keeps reading-only test folder and Python rules out of unused-file classification', () => {
+    const names = ['tests/helper.ts', 'test/helper.ts', 'test/helper.py', 'pkg/test_a.py', 'pkg/a_test.py', 'conftest.py'];
+    const result = unusedFiles(mapOf(names.map(name => file(name))), scripts());
+    expect(result.candidates).toEqual(['test/helper.ts', 'tests/helper.ts'].map(relativePath => ({ fileId: relativePath, relativePath })));
+    expect(result.excluded).toEqual([]);
+    expect(result.unsure).toEqual([]);
+    expect(result.notes).toContain('Python 파일은 이 후보 목록에서 다루지 않아요.');
+    expect(result.exports).toEqual({ candidates: [], unsure: [], notes: ['Python 파일의 함수·클래스는 이 후보 목록에서 다루지 않아요.'] });
+  });
+
   it('sorts candidates, ignores self imports and counts incoming edges even from tests or unused cycles', () => {
     const map = mapOf(['z.ts', 'a.ts', 'used.ts', 'a.test.ts', 'cycle-a.ts', 'cycle-b.ts'].map(name => file(name)), {
       edges: [

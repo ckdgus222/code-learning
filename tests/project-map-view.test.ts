@@ -25,7 +25,7 @@ const file = (id: string, folder: string): MapFile => ({ id, folder, relativePat
   start: false, entry: false, checked: 'full', reason: null });
 const map: ProjectMap = { projectId: 'p', files: [file('a', 'web/app'), file('b', 'web/lib'), file('index', 'web'), file('root', ''), file('sibling', 'website')],
   edges: [{ fromFileId: 'a', toFileId: 'b', names: [], fileHash: 'h', startUtf16: 0, endUtf16: 1, startLine: 1, endLine: 1, text: 'import', specifier: '../lib/b' }],
-  unresolved: [], external: [], complexFunctions: [], symbols: [], symbolsCut: false, exports: [], unused: { exports: { candidates: [], unsure: [], notes: [] }, candidates: [], unsure: [], excluded: [], notes: [] }, limited: false, notes: [] };
+  unresolved: [], external: [], complexFunctions: [], symbols: [], symbolsCut: false, exports: [], reading: { steps: [], total: 0, incomplete: false }, unused: { exports: { candidates: [], unsure: [], notes: [] }, candidates: [], unsure: [], excluded: [], notes: [] }, limited: false, notes: [] };
 const project: ProjectView = { id: 'p', name: 'project', files: [], excluded: {}, warnings: [],
   overview: { entryFileIds: [], intro: null, candidates: [], checkedFiles: 0, limited: false, notes: [] } };
 const changes: MapChanges = { stale: false, result: { projectId: 'p', commit: '1234567', notCompared: [], notes: [],

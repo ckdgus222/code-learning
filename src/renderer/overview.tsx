@@ -5,6 +5,54 @@ import type { LearningMode, LearningPhase, OverviewFeature, OverviewResult } fro
 import { SourceButtons, recipients } from './ai-panel';
 import type { MapEntry } from './project-map';
 
+export const READING_SHOWN = 10;
+
+export function ReadingOrderCard({ entry, stale, mapping, locked, onBuild, onOpenFile }: {
+  entry: MapEntry | null; stale: boolean; mapping: boolean; locked: boolean;
+  onBuild(): void; onOpenFile(fileId: string): void;
+}): React.ReactNode {
+  const titleId = useId();
+  const [showAll, setShowAll] = useState(false);
+  let content: React.ReactNode;
+  if (mapping) {
+    content = <p role="status">순서를 정하는 중…</p>;
+  } else if (!entry || stale) {
+    content = <>
+      <p className="hint">{entry ? '파일이 바뀌어 다시 정해야 해요.' : '아직 정하지 않았어요.'}</p>
+      <button className="btn btn--small" onClick={onBuild}>{entry ? '다시 정하기' : '순서 정하기'}</button>
+    </>;
+  } else {
+    const { reading, files } = entry.map;
+    const paths = new Map(files.map(file => [file.id, file.relativePath]));
+    // A step is listed by its path, so one whose file the map does not list is left out.
+    const steps = reading.steps.filter(step => paths.has(step.fileId));
+    const shown = showAll ? steps : steps.slice(0, READING_SHOWN);
+    // The map alone knows whether imports are missing (a cut of Python results leaves every file fully read).
+    const incomplete = reading.incomplete && <p className="hint">지도가 다 보지 못한 import가 있어 순서가 달라질 수 있어요.</p>;
+    content = steps.length === 0 ? <>
+      <p>import 연결로는 시작 파일을 정하지 못했어요. 위 ‘어디부터 읽을까요?’나 코드 읽기에서 파일을 골라 보세요.</p>
+      {incomplete}
+    </> : <>
+      <ol className="starts">{shown.map((step, index) => <li key={step.fileId}>
+        <button className="starts__item" disabled={locked} onClick={() => onOpenFile(step.fileId)}>
+          <b>{index + 1}.</b> <span className="path">{paths.get(step.fileId)}</span>
+        </button>
+        <span className="hint">{step.kind === 'start' ? `시작 파일 후보 · 파일 ${step.reaches}개로 이어져요`
+          : `시작에서 ${step.depth}걸음 · 파일 ${step.usedBy}개가 가져다 써요`}</span>
+      </li>)}</ol>
+      {shown.length < steps.length && <button className="btn btn--small" onClick={() => setShowAll(true)}>{steps.length - shown.length}개 더 보기</button>}
+      <p className="hint">시작 파일 후보는 다른 파일이 가져다 쓰지 않으면서 가장 많은 파일로 이어지는 파일이에요(최대 3개). 그다음은 시작 파일에서 import로 가까운 순, 같은 거리면 많이 쓰이는 순이에요.</p>
+      <p className="hint">시험·설정·타입 선언 파일은 뺐고, 확정된 import만 셌어요. 실제 실행 순서가 아니라 읽기 추천이에요.</p>
+      {reading.total > reading.steps.length && <p className="hint">시작 파일에서 이어지는 파일 {reading.total}개 중 앞의 {reading.steps.length}개예요.</p>}
+      {incomplete}
+    </>;
+  }
+  return <section className="card overview-starts" aria-labelledby={titleId}>
+    <h3 id={titleId}>이 순서로 읽어 보세요</h3>
+    {content}
+  </section>;
+}
+
 export function OverviewReview({ entry, stale, mapping, onBuild, onOpen }: {
   entry: MapEntry | null; stale: boolean; mapping: boolean; onBuild(): void; onOpen(): void;
 }) {

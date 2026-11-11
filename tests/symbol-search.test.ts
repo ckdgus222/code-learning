@@ -8,7 +8,7 @@ const symbol = (name: string, extra: Partial<MapSymbol> = {}): MapSymbol => ({ n
   startUtf16: 0, endUtf16: 15, startLine: 1, endLine: 1, ...extra });
 const map: ProjectMap = { projectId: 'p', files: [file('a', 'a.ts'), file('b', 'b.py')], symbols: [], symbolsCut: false,
   edges: [], external: [], unresolved: [], complexFunctions: [], exports: [], limited: false, notes: [],
-  unused: { candidates: [], unsure: [], excluded: [], notes: [], exports: { candidates: [], unsure: [], notes: [] } } };
+  reading: { steps: [], total: 0, incomplete: false }, unused: { candidates: [], unsure: [], excluded: [], notes: [], exports: { candidates: [], unsure: [], notes: [] } } };
 
 it.each(['', ' \t\n '])('has no matches for empty query %j', query => {
   expect(searchSymbols({ ...map, symbols: [symbol('f')] }, query)).toEqual({ hits: [], total: 0 });

@@ -6,6 +6,7 @@ import { assertAllowedFile, MAX_FILE_BYTES, readAllowed, textExtensions } from '
 import { classTypes, functionName, functionTypes, importOf, measureFunction, namedFunction, parse } from './syntax';
 import { readPathAliases, resolveImport } from './path-aliases';
 import { scriptFilesOf, unusedFiles } from './unused-files';
+import { readingOrder } from './reading-order';
 import { initFactsOf, mentionsMachinery, pythonImportsOf, resolvePythonImport, type InitFacts, type PythonImport } from './python-imports';
 import { declarationName, measurePythonFunction, pythonFunction } from './python-syntax';
 import { clip } from './syntax-tools';
@@ -329,7 +330,8 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
     placed.set(file.id, { id: file.id, relativePath: file.relativePath, folder: folder === '.' ? '' : folder,
       start: starts.has(file.id), entry: entries.has(file.id), checked, reason });
   };
-  const map: Omit<ProjectMap, 'unused'> = { projectId, files: [], edges: [], unresolved: [], external: [], complexFunctions: [], symbols: [], symbolsCut: false, exports: [], limited: false, notes: [] };
+  const map: Omit<ProjectMap, 'unused'> = { projectId, files: [], edges: [], unresolved: [], external: [], complexFunctions: [], symbols: [], symbolsCut: false, exports: [], limited: false, notes: [],
+    reading: { steps: [], total: 0, incomplete: false } };
   // A target may have been deleted, excluded or swapped for a link since the folder was opened.
   const availability = new Map<string, Promise<boolean>>();
   const available = (relative: string): Promise<boolean> => {
@@ -468,10 +470,13 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
   if (resultsLeft < 0) map.notes.push(RESULT_NOTE);
   if (room.functions < 0) map.notes.push(FUNCTIONS_NOTE);
   const settled = await settlePythonImports(python, known, map, available, shouldStop, limits.results);
-  if (!settled || room.imports < 0) map.notes.push(PYTHON_RESULT_NOTE);
+  const pythonLinksCut = !settled || room.imports < 0;
+  if (pythonLinksCut) map.notes.push(PYTHON_RESULT_NOTE);
   if (python.length) map.notes.push('Python import는 점으로 시작하는 상대 import와, 파일이 속한 최상위 패키지 이름으로 시작하는 import만 확실한 선으로 이었어요. 그 밖의 import는 실행 방법·Python 버전·설치된 패키지에 따라 달라져서, 후보 파일을 ‘확인 못 함’에 적고 지도에는 추정(촘촘한 점선)으로 이었어요. importlib처럼 실행 중에 정하는 import는 보지 않았어요.');
   if (readLimited) map.notes.push(`지도는 파일 ${limits.files}개·합계 ${limits.bytes / 1024 / 1024} MiB까지만 읽어요. 나머지 파일의 연결은 보지 않았어요.`);
   map.files = [...placed.values()].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  // The other limits mark the files they cut short; only this one leaves every file looking fully read.
+  map.reading = readingOrder(map.files, map.edges, pythonLinksCut);
   const scripts = await scriptFilesOf(root, files, known, limits.bytes - bytesRead, shouldStop);
   return { ...map, unused: unusedFiles(map, scripts, aliases) };
 }

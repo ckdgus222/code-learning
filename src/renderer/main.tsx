@@ -35,7 +35,7 @@ import { useAiJobs } from './use-ai-jobs';
 import { useLearning } from './use-learning';
 import { usePlanCompare } from './use-plan-compare';
 import { PlanCompare, PlanCompareEntry } from './plan-compare';
-import { ResumeCard, restoreSpot, OverviewAi, OverviewReview, TopicBar, type Place, type Topic } from './overview';
+import { ResumeCard, restoreSpot, OverviewAi, OverviewReview, ReadingOrderCard, TopicBar, type Place, type Topic } from './overview';
 import type { OverviewFeature, FileExplanationRange } from '../shared/ai';
 import { Welcome } from './welcome';
 import './styles.css';
@@ -711,7 +711,7 @@ function App() {
                 mode={ai.mode} running={planCompare.running || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'}
                 checking={ai.checking || ai.keyBusy} connections={ai.connections} onInspect={ai.inspectConnections} onEnsure={ai.ensureConnections} onRunning={ai.setFeatureGuideRunning}
                 revision={revision.current} locked={busy} onFollow={(index, start) => void followFeatureRoute(index, start)}
-                starts={
+                starts={<>
                   <section className="card overview-starts" aria-labelledby="overview-start">
                     <h3 id="overview-start">어디부터 읽을까요?</h3>
                     {project.overview.candidates.length > 0 ? <ul className="starts">{project.overview.candidates.map(item =>
@@ -725,7 +725,11 @@ function App() {
                     <p className="hint"><span className="tag tag--unknown">학습 시작점 후보</span>TS/JS 파일 {project.overview.checkedFiles}개를 살펴봤어요{project.overview.limited && '(전체 중 일부)'}. 코드 구조로 고른 후보이고, 실제 실행 시작점인지는 확인하지 않았어요.</p>
                     {project.overview.notes.map(note => <p key={note} className="hint">{note}</p>)}
                   </section>
-                } />
+                  <ReadingOrderCard key={map.entry?.build ?? 'empty'} entry={map.entry}
+                    stale={map.entry !== null && map.entry.revision !== revision.current} mapping={map.mapping}
+                    locked={busy} onBuild={() => void map.build()}
+                    onOpenFile={fileId => { if (busy) return; setView('code'); void readFile(fileId); }} />
+                </>} />
             </div>
             <aside className="overview-side">
               {learning.resume?.projectId === project.id && !learning.topic && <ResumeCard saved={learning.resume.saved} files={project.files} locked={busy}

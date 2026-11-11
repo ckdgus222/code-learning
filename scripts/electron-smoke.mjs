@@ -3639,6 +3639,28 @@ try {
     await page.getByRole('heading', { name: 'app/service.py', exact: true }).waitFor();
     assert.match(await page.getByTestId('evidence-range').innerText(), /app\/service\.py · 1–1줄/);
   });
+  await check('Reading order: settled Python imports, numbered steps and opening a file', async () => {
+    await dialogTo(pythonFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: 'Python 읽기 프로젝트', exact: true }).waitFor();
+    // The folder before this one was the same fixture: opening a file from the new tree first makes sure the card
+    // below belongs to this opening, not to the one a finishing scan is about to replace.
+    await openTreeFile('order.py');
+    await page.getByRole('button', { name: '한눈에 보기', exact: true }).click();
+    const card = page.getByRole('region', { name: '이 순서로 읽어 보세요', exact: true });
+    await until(async () => await card.locator('li').count() === 3);
+    assert.deepEqual(await card.locator('.path').allTextContents(), ['app/api.py', 'app/service.py', 'app/models.py']);
+    assert.deepEqual(await card.locator('li .hint').allTextContents(), [
+      '시작 파일 후보 · 파일 2개로 이어져요',
+      '시작에서 1걸음 · 파일 1개가 가져다 써요',
+      '시작에서 2걸음 · 파일 1개가 가져다 써요',
+    ]);
+    assert.deepEqual(await card.locator('li b').allTextContents(), ['1.', '2.', '3.']);
+    await card.screenshot({ path: path.join(artifacts, 'reading-order.png') });
+    await card.getByRole('button', { name: '2. app/service.py', exact: true }).click();
+    await page.getByRole('heading', { name: 'app/service.py', exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: '코드 읽기', exact: true }).getAttribute('aria-current'), 'page');
+  });
   await check('Symbol search: TS/Python functions, class ranges and changed-file rejection', async () => {
     await dialogTo(pythonFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();

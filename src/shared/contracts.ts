@@ -286,6 +286,22 @@ export interface UnusedFiles {
   excluded: { kind: UnusedExcludeKind; count: number }[];
   notes: string[];
 }
+/** One file of the suggested reading order: start files first, then the files their imports lead to. */
+export type ReadingStep =
+  /** `reaches`: how many other files this file's imports lead to. */
+  | { kind: 'start'; fileId: string; reaches: number }
+  /** `depth`: imports followed from the nearest listed start file. `usedBy`: files that import this one. */
+  | { kind: 'next'; fileId: string; depth: number; usedBy: number };
+
+export interface ReadingOrder {
+  /** The first files of the order, at most READING_STEPS. */
+  steps: ReadingStep[];
+  /** Every file of the order, including the listed starts and all files they lead to. */
+  total: number;
+  /** Imports may be missing because files were not fully read or results were cut at a limit. */
+  incomplete: boolean;
+}
+
 export interface ProjectMap {
   projectId: string;
   files: MapFile[];
@@ -302,6 +318,8 @@ export interface ProjectMap {
   symbolsCut: boolean;
   exports: MapExport[];
   unused: UnusedFiles;
+  /** A suggested reading order from settled imports only; a suggestion, not an execution order. */
+  reading: ReadingOrder;
   limited: boolean;
   notes: string[];
 }

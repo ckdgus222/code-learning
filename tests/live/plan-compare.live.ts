@@ -72,7 +72,7 @@ describe('Plan comparison through the app runtime (real account, non-secret fixt
           startUtf16: 0, endUtf16: orderImport.length, startLine: 1, endLine: 1, text: orderImport,
           specifier: './settings', reason: 'not-found', candidates: [] }],
         external: [], complexFunctions: [], symbols: [], symbolsCut: false, exports: [], limited: false, notes: [],
-        unused: { exports: { candidates: [], unsure: [], notes: [] }, candidates: [], unsure: [], excluded: [], notes: [] },
+        reading: { steps: [], total: 0, incomplete: false }, unused: { exports: { candidates: [], unsure: [], notes: [] }, candidates: [], unsure: [], excluded: [], notes: [] },
       };
       const context = new ProjectAiContext(root, project);
       const source = { projectId: project.id, root, context, map: async () => map, restoreMap: async () => map, cancelMap() {} };

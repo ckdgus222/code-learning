@@ -28,6 +28,8 @@ Explore unfamiliar TypeScript and JavaScript projects with evidence from the cod
 
 README 소개와 코드에서 찾은 화면·요청·서버 기능 수를 보여 주고, 처음 따라갈 기능을 추천합니다. README 소개가 실제 코드와 맞는지는 확인하지 않습니다.
 
+지도의 import 연결로 AI 없이 읽는 순서를 추천합니다. 시작 파일 후보 최대 3개부터, import로 가까운 파일 순으로 읽을 수 있습니다.
+
 ![README 소개, 프로젝트 구성, 처음 따라갈 기능을 보여 주는 한눈에 보기](docs/images/overview.png)
 
 ### 기능 흐름 따라가기

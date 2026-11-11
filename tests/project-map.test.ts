@@ -59,6 +59,72 @@ beforeEach(async () => {
 });
 afterEach(async () => { await rm(sandbox, { recursive: true, force: true }); });
 
+describe('map reading order', () => {
+  beforeEach(async () => {
+    await rm(root, { recursive: true });
+    await mkdir(root);
+  });
+
+  it('orders settled TS and Python imports and excludes tests and guessed links', async () => {
+    await put('src/main.ts', "import './shared';\n");
+    await put('src/shared.ts', 'export const value = 1;\n');
+    await put('src/main.test.ts', "import './main';\nimport './shared';\n");
+    await put('app/api.py', 'from .service import run\n');
+    await put('app/service.py', 'def run():\n    pass\n');
+    await put('main.py', 'from app.api import run\n');
+    const project = await scanProject(root, randomUUID());
+    const map = await mapOf(project);
+    const id = (name: string) => project.files.find(file => file.relativePath === name)!.id;
+    expect(map.reading).toEqual({ steps: [
+      { kind: 'start', fileId: id('app/api.py'), reaches: 1 },
+      { kind: 'start', fileId: id('src/main.ts'), reaches: 1 },
+      { kind: 'next', fileId: id('app/service.py'), depth: 1, usedBy: 1 },
+      { kind: 'next', fileId: id('src/shared.ts'), depth: 1, usedBy: 1 },
+    ], total: 4, incomplete: false });
+    expect(map.unresolved.some(item => item.fromFileId === id('main.py'))).toBe(true);
+  });
+
+  it('reports cut Python results even when every file is full and the map is not limited', async () => {
+    for (let index = 0; index < 6; index++) await put(`lib${index}/a.py`, '');
+    await put('main.py', 'import a\n'.repeat(120));
+    const project = await scanProject(root, randomUUID());
+    const map = await mapOf(project, [], { ...MAP_LIMITS, results: 20_000 });
+    expect(map.files.every(file => file.checked === 'full')).toBe(true);
+    expect(map.limited).toBe(false);
+    expect(map.unresolved.length).toBeLessThan(120);
+    expect(map.notes).toContain('Python import 결과가 너무 많아 일부만 적었어요. 그 뒤의 Python import는 연결을 보지 않았어요.');
+    expect(map.reading).toEqual({ steps: [], total: 0, incomplete: true });
+    const fitting = await mapOf(project);
+    expect(fitting.unresolved).toHaveLength(120);
+    expect(fitting.reading.incomplete).toBe(false);
+  });
+
+  it('reports cut Python statements even when their resolved results would fit', async () => {
+    const source = `from . import ${Array.from({ length: 20 }, () => 'module_with_a_long_name').join(', ')}\n`;
+    await put('pkg/__init__.py', '');
+    await put('pkg/module_with_a_long_name.py', '');
+    for (let index = 0; index < 3; index++) await put(`pkg/a${index}.py`, source);
+    const project = await scanProject(root, randomUUID());
+    const map = await mapOf(project, [], { ...MAP_LIMITS, results: (source.trimEnd().length + 100 + 10 * 20) * 2 });
+    expect(map.files.every(file => file.checked === 'full')).toBe(true);
+    expect(map.limited).toBe(false);
+    expect(map.edges).toHaveLength(2);
+    expect(map.reading.incomplete).toBe(true);
+    expect((await mapOf(project)).reading.incomplete).toBe(false);
+  });
+
+  it.each(['results', 'files'] as const)('reports incomplete when the %s limit cuts TS imports', async limit => {
+    await put('a.ts', "import './b';\n");
+    await put('b.ts', "import './c';\n");
+    await put('c.ts', '');
+    const project = await scanProject(root, randomUUID());
+    const map = await mapOf(project, [], { ...MAP_LIMITS, [limit]: 1 });
+    expect(map.limited).toBe(true);
+    expect(map.reading.incomplete).toBe(true);
+    expect((await mapOf(project)).reading.incomplete).toBe(false);
+  });
+});
+
 async function mapOf(project: ProjectFiles, starts: string[] = [], limits = MAP_LIMITS): Promise<ProjectMap> {
   return buildProjectMap(root, project.id, project.files, starts, limits);
 }
