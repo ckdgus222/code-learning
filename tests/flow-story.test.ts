@@ -398,3 +398,10 @@ it('names FastAPI groups after the handler file', () => {
   expect(groupNameOf(route, 'routers/users.py')).toBe('users');
   expect(groupNameOf(route, 'routers/users.router.py')).toBe('users');
 });
+
+it('names Flask groups after the handler file', () => {
+  const route: Route = { method: 'GET', path: '/accounts/<int:id>', framework: 'flask', prefix: 'known', typed: true,
+    handler: { fileId: 'f', fileHash: 'h', name: 'read_user', startLine: 3, startUtf16: 0, endUtf16: 20 },
+    basis: { text: '@app.route', range: { fileId: 'f', fileHash: 'h', text: '@app.route', startLine: 3, endLine: 3, startUtf16: 0, endUtf16: 10 } } };
+  expect(groupNameOf(route, 'views/users.py')).toBe('users');
+});

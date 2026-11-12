@@ -373,11 +373,13 @@ export interface Route {
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'ALL';
   path: string | null;
   prefix: 'known' | 'unknown';
-  framework: 'nest' | 'next' | 'express' | 'fastapi';
+  framework: 'nest' | 'next' | 'express' | 'fastapi' | 'flask';
   handler: CallTarget;
   basis: { text: string; range: ValueSite };
-  /** Path parameters for matching requests: Next and FastAPI spell them differently from `:name`. */
+  /** Path parameters for matching requests: Next, FastAPI and Flask spell them differently from `:name`. */
   segments?: import('../core/analysis/next-routes').NextSegment[];
+  /** True when a path parameter takes only values of some form (`<int:id>`, `{id:int}`): its links are guesses. */
+  typed?: true;
   /** True when the path or method cannot be expressed by request matching. */
   unmatched?: true;
 }

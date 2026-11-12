@@ -1081,3 +1081,19 @@ it('builds mixed TypeScript and Python flows in one batch', async () => {
   expect(flows.every(flow => flow.edges.some(edge => edge.kind === 'route'))).toBe(true);
   expect(flows.every(flow => !flow.limited)).toBe(true);
 });
+
+it.each(['<id>', '<int:id>'])('ends a Flask flow at its handler and retains route certainty: %s', async param => {
+  await put('server/app.py', `from flask import Flask\napp = Flask(__name__)\n@app.route("/users/${param}")\ndef read_user(id):\n    return find_user(id)\ndef find_user(id):\n    return id\n`);
+  await put('web/app.ts', "export async function loadUser() { return fetch('/users/1'); }");
+  const { flow } = await analyze();
+  const back = flow.nodes.filter(node => node.side === 'back');
+  const request = flow.nodes.find(node => node.name === 'GET /users/1')!;
+  expect(back).toHaveLength(1);
+  expect(back[0]).toMatchObject({ name: 'read_user', relativePath: 'server/app.py', range: { startLine: 3, endLine: 5 } });
+  expect(flow.nodes.map(node => node.name)).toEqual(expect.arrayContaining(['read_user', 'GET /users/1', 'loadUser']));
+  expect(flow.nodes.some(node => node.name === 'find_user')).toBe(false);
+  expect(flow.edges.find(edge => edge.kind === 'route')).toMatchObject({ from: request.id, to: back[0].id,
+    sure: param === '<id>', reasons: param === '<id>' ? [] : ['값 모양 모름'] });
+  expect(flow.notes.filter(note => note === 'Python 처리 함수 안에서 부르는 함수는 아직 따라가지 않아요.')).toHaveLength(1);
+  expect(flow.limited).toBe(false);
+});

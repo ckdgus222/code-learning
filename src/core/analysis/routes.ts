@@ -5,7 +5,7 @@ import { readPathAliases, resolveImport } from './path-aliases';
 import { AppError } from '../../shared/errors';
 import { MAX_FILE_BYTES, readAllowed } from '../project/files';
 import { codeFile, pythonFile, MAP_LIMITS, type MapLimits } from './project-map';
-import { fastapiRoutes } from './python-routes';
+import { pythonRoutes } from './python-routes';
 import { pythonTestFile } from './reading-order';
 import { formatNextPath, nextRouteOf } from './next-routes';
 import { firstLine, hasUnsupportedCertainty, lineRange, nearest, readFacts, reassigned, sameRange, simpleProperties, type CallFact, type FileFacts, type Scope } from './names';
@@ -478,13 +478,21 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
   }
   if (wrapperSearchCut) { result.limited = true; result.notes.push('감싼 요청 함수가 너무 많아 일부만 찾았어요.'); }
   // Only listed Python files can shadow the installed package; documentation and virtual environments cannot.
-  const shadow = files.filter(file => pythonFile.test(file.relativePath)).map(file => file.relativePath).sort().find(name => {
-    const parts = name.normalize('NFKC').toLowerCase().split('/');
-    const moduleIndex = parts.findIndex((part, index) => part === 'fastapi' || index === parts.length - 1 && part === 'fastapi.py');
-    return moduleIndex >= 0 && !parts.slice(0, moduleIndex).some(part => part === 'site-packages' || part === 'dist-packages');
-  });
-  if (shadow) result.notes.push(`프로젝트 안에 fastapi라는 이름의 Python 모듈이 있어(${shadow}), FastAPI 주소를 요청과 잇지 않았어요.`);
-  let usesRouter = false;
+  const shadows = new Map<Route['framework'], string>();
+  const paths = files.map(file => file.relativePath).sort();
+  for (const framework of ['fastapi', 'flask'] as const) {
+    const shadow = paths.find(name => {
+      const parts = name.normalize('NFKC').toLowerCase().split('/');
+      const last = parts.at(-1);
+      const moduleIndex = last === `${framework}.py` ? parts.length - 1
+        : last === '__init__.py' && parts.at(-2) === framework ? parts.length - 2 : -1;
+      return moduleIndex >= 0 && !parts.slice(0, moduleIndex).some(part => part === 'site-packages' || part === 'dist-packages');
+    });
+    if (!shadow) continue;
+    shadows.set(framework, shadow);
+    result.notes.push(`프로젝트 안에 ${framework}라는 이름의 Python 모듈이 있어(${shadow}), ${framework === 'fastapi' ? 'FastAPI' : 'Flask'} 주소를 요청과 잇지 않았어요.`);
+  }
+  const routers = new Set<'fastapi' | 'flask'>();
   let unmatched = false;
   for (const file of files.filter(file => pythonFile.test(file.relativePath) && !isTestFile(file.relativePath) && !pythonTestFile(file.relativePath))
     .sort((a, b) => a.relativePath.localeCompare(b.relativePath))) {
@@ -500,15 +508,16 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
     try {
       const source = await readAllowed(root, file.relativePath, Math.min(MAX_FILE_BYTES, left));
       bytes += Buffer.byteLength(source.text);
-      const found = fastapiRoutes(file, source.text, source.hash, limits.nodesPerFile, ROUTE_LIMITS.routes - result.routes.length);
+      const found = pythonRoutes(file, source.text, source.hash, limits.nodesPerFile, ROUTE_LIMITS.routes - result.routes.length);
       if (!found.complete) { result.limited = true; result.notes.push(`${file.relativePath}: 일부만 확인했어요.`); }
       omitted ||= found.cut;
-      usesRouter ||= found.usesRouter;
-      if (!shadow && found.odd && found.routes.length) result.notes.push(`${file.relativePath}: 실행 중에 이름이나 속성을 바꿀 수 있는 코드가 있어, 이 파일의 FastAPI 주소는 요청과 잇지 않았어요.`);
-      if (!shadow && !found.odd && found.routes.some(route => route.unmatched)) unmatched = true;
+      for (const framework of found.routers) routers.add(framework);
+      const visible = found.routes.filter(route => !shadows.has(route.framework));
+      if (found.odd && visible.length) result.notes.push(`${file.relativePath}: 실행 중에 이름·속성이나 주소 규칙을 바꿀 수 있는 코드가 있어, 이 파일의 Python 서버 주소는 요청과 잇지 않았어요.`);
+      if (!found.odd && visible.some(route => route.unmatched)) unmatched = true;
       for (const route of found.routes) {
         if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
-        if (shadow) { route.unmatched = true; delete route.segments; }
+        if (shadows.has(route.framework)) { route.unmatched = true; delete route.segments; delete route.typed; }
         result.routes.push(route);
       }
     } catch (error) {
@@ -517,8 +526,9 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
       result.notes.push(`${file.relativePath}: ${error instanceof AppError ? error.message : '파일을 읽지 못했어요.'}`);
     }
   }
-  if (unmatched) result.notes.push('FastAPI 주소 가운데 정확히 맞춰 볼 수 없는 모양({id:int}, 특수 글자가 든 주소 등)과 방식을 읽지 못한 것은 요청과 잇지 않았어요.');
-  if (usesRouter) result.notes.push('FastAPI의 APIRouter는 include_router로 붙이는 앞 경로를 따라가지 않아, 그 주소는 앞부분을 모르는 것으로 봤어요.');
+  if (unmatched) result.notes.push('Python 서버 주소 가운데 정확히 맞춰 볼 수 없는 것(특수 글자나 글이 섞인 칸, 읽지 못한 방식, 받는 요청을 바꾸는 설정)은 요청과 잇지 않았어요.');
+  if (routers.has('fastapi')) result.notes.push('FastAPI의 APIRouter는 include_router로 붙이는 앞 경로를 따라가지 않아, 그 주소는 앞부분을 모르는 것으로 봤어요.');
+  if (routers.has('flask')) result.notes.push('Flask의 Blueprint는 register_blueprint로 붙이거나 바꾸는 앞 경로를 따라가지 않아, 그 주소는 앞부분을 모르는 것으로 봤어요.');
   result.links = linkRoutes(result.routes, result.requests, shouldStop);
   if (result.links.length >= ROUTE_LIMITS.links) omitted = true;
   if (omitted) {
@@ -573,7 +583,7 @@ export function linkRoutes(routes: Route[], requests: Request[], shouldStop: () 
         if (request.prefix === 'unknown') for (let i = 1; i < routeParts.length && !matched.matched; i++) matched = matches(i, 0);
       }
       if (!matched.matched) return;
-      const reasons = [...(unknownPrefix ? ['앞부분 모름'] : []), ...(matched.dynamic ? ['경로 값 모름'] : []),
+      const reasons = [...(unknownPrefix ? ['앞부분 모름'] : []), ...(matched.dynamic ? ['경로 값 모름'] : []), ...(route.typed ? ['값 모양 모름'] : []),
         ...(!request.methods ? ['방식 모름'] : request.methods.length > 1 ? ['방식 후보 둘'] : [])];
       candidates.push({ requestIndex, routeIndex, sure: !reasons.length, reasons });
     });

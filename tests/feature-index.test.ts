@@ -170,3 +170,9 @@ it('groups FastAPI routes by the handler file instead of the address', () => {
   const result = featureIndex({ ...routes, routes: [python] }, [flow], () => 'routers/users.py');
   expect(result[0].key).toBe('users');
 });
+
+it('groups Flask routes by the handler file instead of the address', () => {
+  const python = { ...route, framework: 'flask' as const, path: '/accounts/<int:id>', typed: true as const };
+  const result = featureIndex({ ...routes, routes: [python] }, [flow], () => 'views/users.py');
+  expect(result[0].key).toBe('users');
+});
