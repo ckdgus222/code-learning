@@ -7,7 +7,7 @@ const file = (id: string, relativePath: string): MapFile => ({ id, relativePath,
 const symbol = (name: string, extra: Partial<MapSymbol> = {}): MapSymbol => ({ name, kind: 'function', fileId: 'a', fileHash: 'hash',
   startUtf16: 0, endUtf16: 15, startLine: 1, endLine: 1, ...extra });
 const map: ProjectMap = { projectId: 'p', files: [file('a', 'a.ts'), file('b', 'b.py')], symbols: [], symbolsCut: false,
-  edges: [], external: [], unresolved: [], complexFunctions: [], exports: [], limited: false, notes: [],
+  edges: [], external: [], missing: [], missingCut: false, unresolved: [], complexFunctions: [], exports: [], limited: false, notes: [],
   reading: { steps: [], total: 0, incomplete: false }, unused: { candidates: [], unsure: [], excluded: [], notes: [], exports: { candidates: [], unsure: [], notes: [] } } };
 
 it.each(['', ' \t\n '])('has no matches for empty query %j', query => {

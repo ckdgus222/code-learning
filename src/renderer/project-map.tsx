@@ -8,7 +8,7 @@ import { arrowCounts, arrowLabel, guessedLinks, BIG_FOLDER_LIMIT, boxName, boxPl
 import { importPath, pathGraph } from './import-path';
 import { COMPLEXITY_NOTE, ComplexityTags } from './complexity';
 import { ChangeList, kindLabels } from './changes';
-import { changeUsers, type ChangeUser } from './change-users';
+import { changeUsers, gonePaths, staleImports, type ChangeUser, type StaleImport } from './change-users';
 
 // One file can hold thousands of imports, so each list shows this many rows and counts the rest.
 const LIST_LIMIT = 300;
@@ -211,8 +211,32 @@ export const ChangeUsersCard = React.memo(function ChangeUsersCard({ users, chan
     </li>)}</ul> : <p className="hint">바뀐 파일을 가져다 쓰는 파일을 찾지 못했어요.</p>}
     <Omitted count={users.length} />
     {hasGuesses && <p className="hint">‘추정’은 확정하지 못한 Python import의 후보로 이은 것이에요. 틀릴 수 있어요.</p>}
-    {changes.some(change => change.fileId === null || change.oldPath !== null) && <p className="hint">삭제된 파일과 이름을 바꾸기 전 경로는 지금 지도에 없어서, 그것을 가져다 쓰던 곳은 여기에 나오지 않아요.</p>}
+    {changes.some(change => change.fileId === null || change.oldPath !== null) && <p className="hint">삭제된 파일과 이름을 바꾸기 전 경로는 지금 지도에 없어서, 그것을 가져다 쓰던 곳은 여기에 나오지 않아요. 아래 ‘없어진 파일을 아직 가져다 쓰는 곳’에서 찾아요.</p>}
     {incomplete && <p className="hint">지도가 다 보지 못한 import가 있어 빠진 파일이 있을 수 있어요.</p>}
+  </section>;
+});
+
+/** Memoized because hovering a map box does not change missing import evidence. */
+export const StaleImportsCard = React.memo(function StaleImportsCard({ imports, gone, incomplete, locked, onShowImport }: {
+  imports: StaleImport[]; gone: ReturnType<typeof gonePaths>; incomplete: boolean; locked: boolean;
+  onShowImport(item: MapImport): void;
+}) {
+  const paths = [...gone.values()].map(item => item.path);
+  return <section className="card" aria-label="없어진 파일을 아직 가져다 쓰는 곳">
+    <h3>없어진 파일을 아직 가져다 쓰는 곳 · {imports.length}개</h3>
+    <p className="hint">삭제됐거나 이름이 바뀐 파일을, 옛 경로 그대로 가져다 쓰는 import예요. 실행하거나 빌드하면 깨질 수 있어요.</p>
+    {imports.length ? <ul className="map-list">{firstRows(imports).map(({ from, link, gone }) => <li key={`${from.id}:${link.startUtf16}`}>
+      {gone.map((item, index) => <React.Fragment key={item.path}>
+        {index > 0 && ', '}<span className="path">{index === 0 && `${from.relativePath} ${link.startLine}행 → `}{item.path}</span>{' '}
+        <span className={`tag tag--change tag--${item.kind}`}>{item.kind === 'deleted' ? '삭제' : '이름 변경 전'}</span>
+      </React.Fragment>)} <code>{link.text}</code>{' '}
+      <button className="btn btn--small" disabled={locked} onClick={() => onShowImport(link)}>코드 보기</button>
+    </li>)}</ul> : <p className="hint">삭제됐거나 이름이 바뀐 파일을 아직 가져다 쓰는 import를 찾지 못했어요.</p>}
+    <Omitted count={imports.length} />
+    <p className="hint">TS/JS의 상대 경로 import와 tsconfig의 paths 별칭 import만 확인해요. baseUrl만으로 찾는 import는 확인하지 않아요.</p>
+    {paths.some(name => /\.py$/i.test(name)) && <p className="hint">Python import는 아직 확인하지 않아요.</p>}
+    {paths.some(name => /\.d\.(?:ts|mts|cts)$/i.test(name)) && <p className="hint">타입 선언 파일(.d.ts)을 가져다 쓰는 import는 확인하지 않아요.</p>}
+    {incomplete && <p className="hint">지도가 다 보지 못한 import가 있어 빠진 곳이 있을 수 있어요.</p>}
   </section>;
 });
 
@@ -222,6 +246,8 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
 }) {
   const drawn = useMemo(() => ({ ...map, edges: [...map.edges, ...guessedLinks(map)] }), [map]);
   const users = useMemo(() => changeUsers(map.files, drawn.edges, changes?.result.changes ?? []), [map.files, drawn.edges, changes?.result]);
+  const gone = useMemo(() => gonePaths(changes?.result.changes ?? []), [changes?.result]);
+  const stale = useMemo(() => staleImports(map.files, map.missing, changes?.result.changes ?? []), [map.files, map.missing, changes?.result]);
   const userOf = useMemo(() => new Map(users.map(user => [user.file.id, user])), [users]);
   const expandable = useMemo(() => expandableIds(map), [map]);
   const folders = useMemo(() => foldersWithFiles(map), [map]);
@@ -449,13 +475,15 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
     <section className="card" aria-label="변경 목록">
       <h3>변경 목록{changes && ` · ${changes.result.changes.length}개`}</h3>
       {changes ? <>
-        <p className="hint">기준 커밋 {changes.result.commit.slice(0, 7)} ↔ 지금 파일. 상자가 없는 삭제·이름 변경 전 경로는 이 목록에만 있어요.</p>
+        <p className="hint">기준 커밋 {changes.result.commit.slice(0, 7)} ↔ 지금 파일. 상자가 없는 삭제·이름 변경 전 경로는 지도에 없고 이 목록에 있어요.</p>
         {changes.stale && <p className="notice notice--warn"><b>다시 확인 필요:</b> 비교한 뒤 파일이 바뀌었거나 잠자기에서 돌아왔어요. 달라진 내용에서 다시 비교해 주세요.</p>}
         <ChangeList result={changes.result} locked={locked} onOpen={onShowChange} />
       </> : <p className="hint">달라진 내용에서 기준 커밋을 고르면 바뀐 파일이 여기와 지도 상자에 보여요.</p>}
     </section>
     {changes && <ChangeUsersCard users={users} changeOf={changeOf} changes={changes.result.changes} incomplete={map.reading.incomplete}
       locked={locked} onOpenFile={onOpenFile} onShowImport={onShowImport} />}
+    {changes && gone.size > 0 && <StaleImportsCard imports={stale} gone={gone} incomplete={map.reading.incomplete || map.missingCut}
+      locked={locked} onShowImport={onShowImport} />}
     {selected && <section className="card" aria-label="고른 화살표의 근거">
       <h3>고른 화살표의 근거{selectedCounts!.sure > 0 && ` · import ${selectedCounts!.sure}개`}{selectedCounts!.guessed > 0 && ` · 추정 ${selectedCounts!.guessed}개`}</h3>
       <ul className="map-list">{firstRows(selected.items).map((item, index) => <li key={`${item.fromFileId}:${item.startUtf16}:${index}`}>

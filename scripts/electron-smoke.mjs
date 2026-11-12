@@ -244,6 +244,8 @@ const gitHere = (...args) => execFileSync('git', args, { cwd: gitFixture, env: {
 if (onMac) gitHere('init', '-q');
 for (const [name, text] of [['edit.ts', 'export const edit = 1;\n' + hiddenSource], ['deleted.ts', 'export const gone = 1;\n'], ['old-name.ts', 'export const moved = 1;\n'],
   ['app.ts', "import { edit } from './edit';\nexport const twice = edit * 2;\n"],
+  ['uses-deleted.ts', "import { gone } from './deleted';\nexport const kept = gone;\n"],
+  ['uses-old.ts', "import { moved } from './old-name';\nexport const same = moved;\n"],
   ['func.ts', 'export function run(x: number) {\n  if (x > 1) return x;\n  return 0;\n}\n']]) {
   await writeFile(path.join(gitFixture, 'src', name), text);
 }
@@ -5508,6 +5510,20 @@ try {
     await appRow.getByRole('button', { name: '코드 보기', exact: true }).click();
     await page.getByRole('heading', { name: 'src/app.ts', exact: true }).waitFor();
     await until(async () => await page.getByTestId('evidence-range').innerText() === '근거: src/app.ts · 1–1줄');
+    await openFileMap();
+    const staleImports = page.getByRole('region', { name: '없어진 파일을 아직 가져다 쓰는 곳', exact: true });
+    await staleImports.getByRole('heading', { name: '없어진 파일을 아직 가져다 쓰는 곳 · 2개', exact: true }).waitFor();
+    const deletedUse = staleImports.locator('li').filter({ hasText: 'src/uses-deleted.ts 1행 → src/deleted.ts' });
+    await deletedUse.getByText('src/uses-deleted.ts 1행 → src/deleted.ts', { exact: true }).waitFor();
+    await deletedUse.getByText('삭제', { exact: true }).waitFor();
+    const renamedUse = staleImports.locator('li').filter({ hasText: 'src/uses-old.ts 1행 → src/old-name.ts' });
+    await renamedUse.getByText('src/uses-old.ts 1행 → src/old-name.ts', { exact: true }).waitFor();
+    await renamedUse.getByText('이름 변경 전', { exact: true }).waitFor();
+    await staleImports.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(artifacts, 'stale-imports.png') });
+    await deletedUse.getByRole('button', { name: '코드 보기', exact: true }).click();
+    await page.getByRole('heading', { name: 'src/uses-deleted.ts', exact: true }).waitFor();
+    await until(async () => await page.getByTestId('evidence-range').innerText() === '근거: src/uses-deleted.ts · 1–1줄');
     await openFileMap();
     // Comparing changed nothing in the repository; a file changed afterwards marks the comparison.
     assert.deepEqual(await gitState(path.join(gitFixture, '.git')), gitBefore);

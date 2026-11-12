@@ -232,6 +232,9 @@ export interface MapImport {
   text: string;
   specifier: string | null;
 }
+/** An import whose target file is not there, with the project paths it is looked for at. */
+export interface MissingImport extends MapImport { names: string[] }
+
 export interface MapFile {
   id: string;
   relativePath: string;
@@ -308,6 +311,10 @@ export interface ProjectMap {
   /** Static imports that lead to exactly one file. An arrow means "uses", not an execution order. */
   edges: (MapImport & { toFileId: string; names: string[] | 'all' })[];
   unresolved: (MapImport & { reason: MapUnresolvedReason; reasonText?: string; candidates: string[] })[];
+  /** TS/JS imports that found no file, in encounter order; unresolved keeps the same imports. */
+  missing: MissingImport[];
+  /** True when later missing imports were left out at their separate size limit. */
+  missingCut: boolean;
   /** Non-relative specifiers: a package and a path alias cannot be told apart from the import alone. */
   external: MapImport[];
   /** Functions over a complexity limit in the files the map read, in path and then source order. */

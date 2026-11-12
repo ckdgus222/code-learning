@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appendFile, mkdtemp, realpath, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { scanProject } from '../src/core/project/files';
+import * as pathAliases from '../src/core/analysis/path-aliases';
 import { buildProjectMap, MAP_LIMITS } from '../src/core/analysis/project-map';
 import { buildOverview } from '../src/core/analysis/overview';
 import { analyzeSource } from '../src/core/analysis/syntax';
@@ -1249,5 +1250,130 @@ describe('function and class search names', () => {
     expect(cut.symbolsCut).toBe(true);
     const analysis = analyzeSource(text, `names.${extension}`, { projectId: project.id, fileId: project.files[0].id, fileHash: map.symbols[0].fileHash });
     expect(analysis.symbols[0].name).toBe(extension === 'ts' ? `${owner}.${name}` : map.symbols[1].name);
+  });
+});
+
+describe('missing TS/JS imports and their separate budget', () => {
+  beforeEach(async () => {
+    await rm(root, { recursive: true });
+    await mkdir(root);
+  });
+  const names = ['src/gone', 'src/gone.ts', 'src/gone.tsx', 'src/gone.js', 'src/gone.jsx', 'src/gone.mjs', 'src/gone.cjs',
+    'src/gone/index.ts', 'src/gone/index.tsx', 'src/gone/index.js', 'src/gone/index.jsx', 'src/gone/index.mjs', 'src/gone/index.cjs'];
+
+  it('keeps missing evidence and every runtime name without changing unresolved entries', async () => {
+    await put('src/main.ts', "import './gone';\nimport './other.js';\n");
+    const project = await scanProject(root, randomUUID());
+    const map = await mapOf(project);
+    const first = { fromFileId: project.files[0].id, fileHash: createHash('sha256').update("import './gone';\nimport './other.js';\n").digest('hex'),
+      startUtf16: 0, endUtf16: 16, startLine: 1, endLine: 1, text: "import './gone';", specifier: './gone' };
+    const second = { ...first, startUtf16: 17, endUtf16: 37, startLine: 2, endLine: 2, text: "import './other.js';", specifier: './other.js' };
+    expect(map.missing).toEqual([{ ...first, names },
+      { ...second, names: ['src/other.js', 'src/other.ts', 'src/other.tsx'] }]);
+    expect(map.unresolved[0]).toEqual({ ...first, reason: 'not-found', candidates: [] });
+    expect(map.unresolved.every(item => !('names' in item))).toBe(true);
+    expect(map.missingCut).toBe(false);
+  });
+
+  it('omits found files, packages, outside, dynamic, ambiguous and declaration-only imports', async () => {
+    await put('src/main.ts', ["import './present';", "import 'react';", "import '../../outside';", "import('/absolute');",
+      "import('./dynamic');", "import './two';", "import './api.d.ts';", "import './moved';"].join('\n'));
+    for (const name of ['present.ts', 'two.ts', 'two.tsx', 'moved/index.ts']) await put(`src/${name}`, '');
+    const map = await mapOf(await scanProject(root, randomUUID()));
+    expect(map.edges).toHaveLength(2);
+    expect(map.external).toHaveLength(1);
+    expect(map.unresolved.map(item => item.reason)).toEqual(['outside', 'not-static', 'not-static', 'ambiguous', 'not-found']);
+    expect(map.missing).toEqual([]);
+    expect(map.missingCut).toBe(false);
+  });
+
+  it('keeps all paths targets in target order with duplicates removed', async () => {
+    await put('tsconfig.json', JSON.stringify({ compilerOptions: { paths: { '@/*': ['first/*', 'second/*', 'first/*'] } } }));
+    await put('src/main.ts', "import '@/gone';");
+    const map = await mapOf(await scanProject(root, randomUUID()));
+    const target = (base: string) => [base, ...['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'].map(ext => base + ext),
+      ...['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'].map(ext => `${base}/index${ext}`)];
+    expect(map.missing).toHaveLength(1);
+    expect(map.missing[0].names).toEqual([...target('first/gone'), ...target('second/gone')]);
+    expect(map.unresolved[0]).toMatchObject({ reason: 'not-found', candidates: [] });
+  });
+
+  it('keeps all searched names when the sole listed tsx target disappears after scanning', async () => {
+    await put('src/main.ts', "import './gone';");
+    await put('src/gone.tsx', '');
+    const project = await scanProject(root, randomUUID());
+    await rm(path.join(root, 'src/gone.tsx'));
+    const map = await mapOf(project);
+    expect(map.unresolved[0]).toMatchObject({ reason: 'unavailable', candidates: ['src/gone.tsx'] });
+    expect(map.missing[0].names).toEqual(names);
+    expect(map.missing[0].names).toContain('src/gone.ts');
+  });
+
+  it.each([false, true])('never stores Python imports (target removed after scan: %s)', async removed => {
+    await put('pkg/main.py', 'from .gone import value\n');
+    if (removed) await put('pkg/gone.py', 'value = 1\n');
+    const project = await scanProject(root, randomUUID());
+    if (removed) await rm(path.join(root, 'pkg/gone.py'));
+    const map = await mapOf(project);
+    expect(map.unresolved.length).toBeGreaterThan(0);
+    expect(map.missing).toEqual([]);
+  });
+
+  it.each([false, true])('never stores baseUrl-only imports (target removed after scan: %s)', async removed => {
+    await put('tsconfig.json', '{"compilerOptions":{"baseUrl":"src"}}');
+    await put('src/main.ts', "import 'api';");
+    if (removed) await put('src/api.ts', '');
+    const project = await scanProject(root, randomUUID());
+    if (removed) await rm(path.join(root, 'src/api.ts'));
+    const map = await mapOf(project);
+    expect(map.missing).toEqual([]);
+    expect(map.missingCut).toBe(false);
+    if (removed) expect(map.unresolved[0]).toMatchObject({ reason: 'unavailable', candidates: ['src/api.ts'] });
+    if (!removed) expect(map.external[0]).toMatchObject({ specifier: 'api' });
+  });
+
+  it('accepts the exact cost and cuts one below without changing any existing map result', async () => {
+    await put('src/main.ts', "import './gone';\nimport './present';\nimport 'react';\n");
+    await put('src/present.ts', '');
+    const project = await scanProject(root, randomUUID());
+    const full = await mapOf(project);
+    const entry = full.missing[0];
+    const cost = entry.text.length + entry.specifier!.length + 100 + entry.names.reduce((sum, name) => sum + name.length + 10, 0);
+    const exact = await mapOf(project, [], { ...MAP_LIMITS, results: cost });
+    const short = await mapOf(project, [], { ...MAP_LIMITS, results: cost - 1 });
+    expect(exact).toEqual(full);
+    expect(short.missing).toEqual([]);
+    expect(short.missingCut).toBe(true);
+    expect({ ...short, missing: full.missing, missingCut: false }).toEqual(full);
+    expect(full.edges).toHaveLength(1);
+    expect(full.external).toHaveLength(1);
+    expect(full.unresolved).toHaveLength(1);
+  });
+
+  it('stops generating names after overflowing and never admits a later smaller import', async () => {
+    await put('main.ts', `import './${'long'.repeat(30)}';\nimport './x';`);
+    const project = await scanProject(root, randomUUID());
+    const spy = vi.spyOn(pathAliases, 'lookedFor');
+    try {
+      const map = await mapOf(project, [], { ...MAP_LIMITS, results: 500 });
+      expect(map.unresolved).toHaveLength(2);
+      expect(map.missing).toEqual([]);
+      expect(map.missingCut).toBe(true);
+      expect(map.limited).toBe(false);
+      expect(map.reading.incomplete).toBe(false);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('never stores an import rejected by the existing result budget', async () => {
+    const text = "import './gone';";
+    await put('src/main.ts', text);
+    const map = await mapOf(await scanProject(root, randomUUID()), [], { ...MAP_LIMITS, results: text.length + './gone'.length + 99 });
+    expect(map.unresolved).toEqual([]);
+    expect(map.missing).toEqual([]);
+    expect(map.missingCut).toBe(false);
+    expect(map.limited).toBe(true);
   });
 });

@@ -25,7 +25,7 @@ import { useMap } from '../src/renderer/use-map';
 
 const project: ProjectView = { id: 'project', name: 'project', files: [], excluded: {}, warnings: [],
   overview: { entryFileIds: [], intro: null, candidates: [], checkedFiles: 0, limited: false, notes: [] } };
-const map: ProjectMap = { projectId: project.id, files: [], edges: [], unresolved: [], external: [], complexFunctions: [], symbols: [], symbolsCut: false,
+const map: ProjectMap = { projectId: project.id, files: [], edges: [], unresolved: [], external: [], missing: [], missingCut: false, complexFunctions: [], symbols: [], symbolsCut: false,
   exports: [], reading: { steps: [], total: 0, incomplete: false }, unused: { candidates: [], unsure: [], excluded: [], notes: [], exports: { candidates: [], unsure: [], notes: [] } },
   limited: false, notes: [] };
 const revision = { current: 0 };

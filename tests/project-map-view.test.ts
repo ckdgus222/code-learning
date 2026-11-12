@@ -4,7 +4,7 @@ import * as JSX from 'react/jsx-dev-runtime';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Background, BackgroundVariant, ReactFlow, ReactFlowProvider, useReactFlow, useStore, type Edge, type Node } from '@xyflow/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ARROW_MARKER, GUESS_MARKER, ChangeUsersCard, FitOnWidthChange, ImportPathCard, MapCanvas, ProjectMapView, USES_SHOWN, type MapChanges } from '../src/renderer/project-map';
+import { ARROW_MARKER, GUESS_MARKER, ChangeUsersCard, StaleImportsCard, FitOnWidthChange, ImportPathCard, MapCanvas, ProjectMapView, USES_SHOWN, type MapChanges } from '../src/renderer/project-map';
 import { guessedLinks, boxName, boxPlace, expandableIds, fileViewOf, visibleGraph, type MapArrow } from '../src/renderer/map-layout';
 import type { MapFile, ProjectMap, ProjectView } from '../src/shared/contracts';
 
@@ -25,7 +25,7 @@ const file = (id: string, folder: string): MapFile => ({ id, folder, relativePat
   start: false, entry: false, checked: 'full', reason: null });
 const map: ProjectMap = { projectId: 'p', files: [file('a', 'web/app'), file('b', 'web/lib'), file('index', 'web'), file('root', ''), file('sibling', 'website')],
   edges: [{ fromFileId: 'a', toFileId: 'b', names: [], fileHash: 'h', startUtf16: 0, endUtf16: 1, startLine: 1, endLine: 1, text: 'import', specifier: '../lib/b' }],
-  unresolved: [], external: [], complexFunctions: [], symbols: [], symbolsCut: false, exports: [], reading: { steps: [], total: 0, incomplete: false }, unused: { exports: { candidates: [], unsure: [], notes: [] }, candidates: [], unsure: [], excluded: [], notes: [] }, limited: false, notes: [] };
+  unresolved: [], external: [], missing: [], missingCut: false, complexFunctions: [], symbols: [], symbolsCut: false, exports: [], reading: { steps: [], total: 0, incomplete: false }, unused: { exports: { candidates: [], unsure: [], notes: [] }, candidates: [], unsure: [], excluded: [], notes: [] }, limited: false, notes: [] };
 const project: ProjectView = { id: 'p', name: 'project', files: [], excluded: {}, warnings: [],
   overview: { entryFileIds: [], intro: null, candidates: [], checkedFiles: 0, limited: false, notes: [] } };
 const changes: MapChanges = { stale: false, result: { projectId: 'p', commit: '1234567', notCompared: [], notes: [],
@@ -70,7 +70,7 @@ describe('files importing changed files on the map', () => {
   const title = '바뀐 파일을 가져다 쓰는 파일';
   const section = (html: string) => html.match(/<section class="card" aria-label="바뀐 파일을 가져다 쓰는 파일">(.*?)<\/section>/)![1];
   const guessNote = '‘추정’은 확정하지 못한 Python import의 후보로 이은 것이에요. 틀릴 수 있어요.';
-  const absentNote = '삭제된 파일과 이름을 바꾸기 전 경로는 지금 지도에 없어서, 그것을 가져다 쓰던 곳은 여기에 나오지 않아요.';
+  const absentNote = '삭제된 파일과 이름을 바꾸기 전 경로는 지금 지도에 없어서, 그것을 가져다 쓰던 곳은 여기에 나오지 않아요. 아래 ‘없어진 파일을 아직 가져다 쓰는 곳’에서 찾아요.';
   const incompleteNote = '지도가 다 보지 못한 import가 있어 빠진 파일이 있을 수 있어요.';
   const comparison: MapChanges = { ...changes, result: { ...changes.result, changes: [changes.result.changes[1]] } };
   const python: ProjectMap = { ...map, files: map.files.map(item => ({ ...item, relativePath: item.relativePath.replace('.ts', '.py') })),
@@ -1304,5 +1304,111 @@ describe('guessed Python arrows', () => {
     const hidden = render(new Set(), null, null, { ...source, unresolved: [{ ...candidate, candidates: ['app/b.py'] }] });
     expect(drawnEdges()).toEqual([]);
     expect(hidden).not.toContain('추정으로 이은 곳은');
+  });
+});
+
+describe('stale imports on the map', () => {
+  const title = '없어진 파일을 아직 가져다 쓰는 곳';
+  const section = (html: string) => html.match(/<section class="card" aria-label="없어진 파일을 아직 가져다 쓰는 곳">(.*?)<\/section>/)![1];
+  const scopeNote = 'TS/JS의 상대 경로 import와 tsconfig의 paths 별칭 import만 확인해요. baseUrl만으로 찾는 import는 확인하지 않아요.';
+  const pythonNote = 'Python import는 아직 확인하지 않아요.';
+  const declarationNote = '타입 선언 파일(.d.ts)을 가져다 쓰는 import는 확인하지 않아요.';
+  const incompleteNote = '지도가 다 보지 못한 import가 있어 빠진 곳이 있을 수 있어요.';
+  const compared: MapChanges = { ...changes, result: { ...changes.result, changes: [
+    { path: 'gone.ts', kind: 'deleted', fileId: null, oldPath: null },
+    { path: 'new.ts', kind: 'renamed', fileId: 'b', oldPath: 'old.ts' },
+  ] } };
+  const missing = { fromFileId: 'a', fileHash: 'hash', startUtf16: 3, endUtf16: 19, startLine: 7, endLine: 7,
+    text: "import './gone';", specifier: './gone', names: ['gone.ts', 'old.ts'] };
+  const source: ProjectMap = { ...map, missing: [missing] };
+  function renderStale(current = source, comparison: MapChanges | null = compared, locked = false, onShowImport = vi.fn()) {
+    return renderToStaticMarkup(React.createElement(ProjectMapView, { project, entry: { map: current, revision: 0, build: 1 },
+      stale: false, mapping: false, locked, changes: comparison, onBuild() {}, onCancel() {}, onOpenFile() {}, onShowImport,
+      onShowFunction() {}, onShowChange() {} }));
+  }
+
+  it('is absent without a comparison or any gone paths', () => {
+    expect(renderStale(source, null)).not.toContain(`aria-label="${title}"`);
+    expect(renderStale(source, changes)).not.toContain(`aria-label="${title}"`);
+    const replaced = { ...compared, result: { ...compared.result, changes: [...compared.result.changes,
+      { path: 'gone.ts', kind: 'added' as const, fileId: 'new1', oldPath: null },
+      { path: 'old.ts', kind: 'added' as const, fileId: 'new2', oldPath: null }] } };
+    expect(renderStale(source, replaced)).not.toContain(`aria-label="${title}"`);
+  });
+
+  it('sits directly after changed users and lists every gone path with its kind', () => {
+    const html = renderStale();
+    const end = html.indexOf('</section>', html.indexOf('aria-label="바뀐 파일을 가져다 쓰는 파일"')) + '</section>'.length;
+    expect(html.slice(end)).toMatch(/^<section class="card" aria-label="없어진 파일을 아직 가져다 쓰는 곳">/);
+    const card = section(html);
+    expect(card).toContain(`<h3>${title} · 1개</h3>`);
+    expect(card).toContain('삭제됐거나 이름이 바뀐 파일을, 옛 경로 그대로 가져다 쓰는 import예요. 실행하거나 빌드하면 깨질 수 있어요.');
+    expect(card).toContain('<span class="path">web/app/a.ts 7행 → gone.ts</span> <span class="tag tag--change tag--deleted">삭제</span>');
+    expect(card).toContain(', <span class="path">old.ts</span> <span class="tag tag--change tag--renamed">이름 변경 전</span>');
+    expect(card).toContain('<code>import &#x27;./gone&#x27;;</code>');
+    expect(card).toContain(scopeNote);
+    expect(card).not.toContain(pythonNote);
+    expect(card).not.toContain(declarationNote);
+    expect(card).not.toContain(incompleteNote);
+    expect(html).toContain('상자가 없는 삭제·이름 변경 전 경로는 지도에 없고 이 목록에 있어요.');
+    expect(html).not.toContain('이 목록에만');
+    expect(html).toContain('삭제된 파일과 이름을 바꾸기 전 경로는 지금 지도에 없어서, 그것을 가져다 쓰던 곳은 여기에 나오지 않아요. 아래 ‘없어진 파일을 아직 가져다 쓰는 곳’에서 찾아요.');
+  });
+
+  it.each([false, true])('passes the same evidence to code view and honors locked=%s', locked => {
+    const onShowImport = vi.fn();
+    const card = section(renderStale(source, compared, locked, onShowImport));
+    const buttons = cardButtons(title);
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].props.children).toBe('코드 보기');
+    expect(buttons[0].props.disabled).toBe(locked);
+    expect(card.includes('disabled=""')).toBe(locked);
+    if (locked) return;
+    buttons[0].props.onClick!({} as React.MouseEvent<HTMLButtonElement>);
+    expect(onShowImport.mock.calls).toEqual([[missing]]);
+    expect(onShowImport.mock.calls[0][0]).toBe(missing);
+  });
+
+  it('explains an empty result while retaining scope information', () => {
+    const card = section(renderStale(map));
+    expect(card).toContain(`${title} · 0개`);
+    expect(card).toContain('삭제됐거나 이름이 바뀐 파일을 아직 가져다 쓰는 import를 찾지 못했어요.');
+    expect(card).toContain(scopeNote);
+    expect(card).not.toContain('<ul');
+  });
+
+  it.each(['old.PY', 'old.D.TS', 'old.D.MTS', 'old.D.CTS'])('explains excluded gone file types, including rename paths: %s', oldPath => {
+    const comparison = { ...compared, result: { ...compared.result, changes: [
+      { path: 'new.ts', kind: 'renamed' as const, fileId: 'b', oldPath },
+    ] } };
+    const card = section(renderStale(map, comparison));
+    expect(card.includes(pythonNote)).toBe(oldPath === 'old.PY');
+    expect(card.includes(declarationNote)).toBe(oldPath !== 'old.PY');
+  });
+
+  it.each([[true, false], [false, true], [false, false]] as const)('shows incomplete advice for reading=%s or missingCut=%s only', (incomplete, missingCut) => {
+    const card = section(renderStale({ ...source, missingCut, limited: true, reading: { ...source.reading, incomplete } }));
+    expect(card.includes(incompleteNote)).toBe(incomplete || missingCut);
+  });
+
+  it('orders the applicable advice after the results', () => {
+    const comparison = { ...compared, result: { ...compared.result, changes: [...compared.result.changes,
+      { path: 'gone.PY', kind: 'deleted' as const, fileId: null, oldPath: null },
+      { path: 'gone.d.ts', kind: 'deleted' as const, fileId: null, oldPath: null }] } };
+    const card = section(renderStale({ ...source, missingCut: true }, comparison));
+    expect(card.indexOf(scopeNote)).toBeGreaterThan(card.indexOf('</ul>'));
+    expect(card.indexOf(pythonNote)).toBeGreaterThan(card.indexOf(scopeNote));
+    expect(card.indexOf(declarationNote)).toBeGreaterThan(card.indexOf(pythonNote));
+    expect(card.indexOf(incompleteNote)).toBeGreaterThan(card.indexOf(declarationNote));
+  });
+
+  it('shows at most 300 imports, counts the rest and stays memoized', () => {
+    const many = { ...source, missing: Array.from({ length: 301 }, (_, index) => ({ ...missing, startUtf16: index, startLine: index + 1 })) };
+    const card = section(renderStale(many));
+    expect(card).toContain(`${title} · 301개`);
+    expect(card.match(/>코드 보기<\/button>/g)).toHaveLength(300);
+    expect(card).not.toContain('301행');
+    expect(card).toContain('처음 300개만 보여요. 나머지 1개는 생략했어요.');
+    expect((StaleImportsCard as unknown as { $$typeof: symbol }).$$typeof).toBe(Symbol.for('react.memo'));
   });
 });

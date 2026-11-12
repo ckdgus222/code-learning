@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import os from 'node:os';
 import path from 'node:path';
 import { scanProject } from '../src/core/project/files';
-import { NO_ALIASES, readPathAliases, resolveImport, type PathAliases } from '../src/core/analysis/path-aliases';
+import { NO_ALIASES, lookedFor, readPathAliases, resolveImport, type PathAliases } from '../src/core/analysis/path-aliases';
 import { candidatesFor } from '../src/core/analysis/project-map';
 import type { ProjectFile } from '../src/shared/contracts';
 
@@ -308,4 +308,74 @@ it('skips a config extending more files or packages than any real one, with a si
   const found = await read();
   expect(found.configs).toEqual([{ folder: '', readable: false, baseUrl: null, paths: [] }]);
   expect(found.notes).toEqual(['tsconfig tsconfig.json를 읽지 못해 경로 별칭을 확인하지 못했어요(extends가 10개를 넘음).']);
+});
+
+describe('paths looked for by missing imports', () => {
+  const relative = ['src/gone', 'src/gone.ts', 'src/gone.tsx', 'src/gone.js', 'src/gone.jsx', 'src/gone.mjs', 'src/gone.cjs',
+    'src/gone/index.ts', 'src/gone/index.tsx', 'src/gone/index.js', 'src/gone/index.jsx', 'src/gone/index.mjs', 'src/gone/index.cjs'];
+  const alias = (base: string) => [base, ...['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'].map(ext => base + ext),
+    ...['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'].map(ext => `${base}/index${ext}`)];
+
+  it('lists relative names in resolution order, including long paths that normalize to a short name', () => {
+    expect(lookedFor('src/main.ts', './gone', NO_ALIASES)).toEqual(relative);
+    expect(lookedFor('src/main.ts', './'.repeat(513) + 'gone', NO_ALIASES)).toEqual(relative);
+    expect(lookedFor('src/main.ts', './gone/', NO_ALIASES)).toEqual(relative.slice(7));
+    expect(lookedFor('src/main.ts', './gone.js', NO_ALIASES)).toEqual(['src/gone.js', 'src/gone.ts', 'src/gone.tsx']);
+    expect(lookedFor('src/main.js', './gone.js', NO_ALIASES)).toEqual(['src/gone.js']);
+  });
+
+  it.each(['../../gone', '/gone', './api.d.ts', './api.d.mts', './api.d.cts'])('omits outside or declaration names: %s', specifier => {
+    expect(lookedFor('src/main.ts', specifier, NO_ALIASES)).toEqual([]);
+  });
+
+  it('includes every matched target in order, skipping outside targets and duplicates', () => {
+    const config = aliases({ '@/*/end': ['../outside/*', 'first/*', 'second/*', 'first/*', '/absolute/*'] });
+    expect(lookedFor('main.ts', '@/gone/end', config)).toEqual([...alias('first/gone'), ...alias('second/gone')]);
+    expect(lookedFor('main.ts', '@/gone/no', config)).toEqual([]);
+  });
+
+  it('selects exact patterns first and then the longest matching prefix', () => {
+    const config = aliases({ '@/*': ['general/*'], '@/g*': ['specific/g*'], '@/gone': ['exact/gone'] });
+    expect(lookedFor('main.ts', '@/gone', config)).toEqual(alias('exact/gone'));
+    expect(lookedFor('main.ts', '@/go', config)).toEqual(alias('specific/go'));
+  });
+
+  it('uses the nearest config, including an unreadable boundary', () => {
+    const config = aliases({ '@/*': ['root/*'] });
+    config.configs.push({ folder: 'src', readable: true, baseUrl: null, paths: [{ pattern: '@/*', targets: ['src/lib/*'] }] });
+    expect(lookedFor('src/main.ts', '@/gone', config)).toEqual(alias('src/lib/gone'));
+    config.configs[1].readable = false;
+    expect(lookedFor('src/main.ts', '@/gone', config)).toEqual([]);
+  });
+
+  it('leaves packages, baseUrl-only imports, absent configs and oversized alias names out', () => {
+    expect(lookedFor('main.ts', 'react', aliases({ '@/*': ['src/*'] }))).toEqual([]);
+    expect(lookedFor('main.ts', 'api', aliases({}, 'src'))).toEqual([]);
+    expect(lookedFor('main.ts', '@/api', NO_ALIASES)).toEqual([]);
+    expect(lookedFor('main.ts', '@/'+ 'a'.repeat(1024), aliases({ '@/*': ['src/*'] }))).toEqual([]);
+  });
+
+  it('leaves an absolute specifier out even when a pattern would match it', () => {
+    expect(lookedFor('main.ts', '/gone', aliases({ '*': ['src/*'], '/*': ['src/*'] }))).toEqual([]);
+  });
+
+  it('leaves the declaration file itself out of an alias target naming one', () => {
+    expect(lookedFor('main.ts', '@/api.d.ts', aliases({ '@/*': ['src/*'] }))).toEqual(alias('src/api.d.ts').slice(1));
+  });
+
+  it.each([
+    ['src/main.ts', './gone', NO_ALIASES],
+    ['src/main.ts', './gone.js', NO_ALIASES],
+    ['src/main.ts', './gone/', NO_ALIASES],
+    ['main.ts', '@/gone', aliases({ '@/*': ['src/*', 'fallback/*'] })],
+    ['main.ts', '@/gone.js', aliases({ '@/*': ['src/*'] })],
+  ] as const)('contains every runtime candidate for %s importing %s', (from, specifier, config) => {
+    const names = [...relative, ...alias('src/gone'), 'src/gone.d.ts', 'src/gone.mts', 'src/gone.cts', 'src/gone.js.ts'];
+    const result = resolveImport(from, specifier, known(names), config);
+    expect(result.kind).toBe('project');
+    if (result.kind !== 'project') throw new Error('Expected project resolution');
+    const looked = lookedFor(from, specifier, config);
+    for (const name of result.candidates.filter(name => !/\.d\.(ts|mts|cts)$/i.test(name))) expect(looked).toContain(name);
+    expect(looked.some(name => /\.d\.(ts|mts|cts)$/i.test(name))).toBe(false);
+  });
 });

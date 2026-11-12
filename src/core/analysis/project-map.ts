@@ -4,7 +4,7 @@ import { COMPLEXITY_LIMITS, type MapExport, type MapFile, type MapImport, type P
 import { AppError } from '../../shared/errors';
 import { assertAllowedFile, MAX_FILE_BYTES, readAllowed, textExtensions } from '../project/files';
 import { classTypes, functionName, functionTypes, importOf, measureFunction, namedFunction, parse } from './syntax';
-import { readPathAliases, resolveImport } from './path-aliases';
+import { lookedFor, readPathAliases, resolveImport } from './path-aliases';
 import { scriptFilesOf, unusedFiles } from './unused-files';
 import { readingOrder } from './reading-order';
 import { initFactsOf, mentionsMachinery, pythonImportsOf, resolvePythonImport, type InitFacts, type PythonImport } from './python-imports';
@@ -26,7 +26,7 @@ export interface MapLimits {
   nodesPerFile: number;
   /**
    * Characters of import material one map may keep. Counted separately, each against this number, for:
-   * TS/JS results (imports and exports), the Python statements kept while files are read, and Python results.
+   * TS/JS results (imports and exports), the Python statements kept while files are read, Python results, and missing imports with their paths.
    */
   results: number;
   /** Characters of hard functions one map may list, all languages together. */
@@ -293,12 +293,12 @@ export const isRelative = (specifier: string) =>
   specifier === '.' || specifier === '..' || specifier.startsWith('./') || specifier.startsWith('../');
 
 /**
- * The allowed files a relative specifier may name, or null when it leaves the project folder. A path
+ * The runtime paths a relative specifier may name, or null when it leaves the project folder. A path
  * ending in `/`, `.` or `..` (`./foo/`, `./foo/.`, `./a/..`) names a folder, so only its index file fits. A path ending in a listed
  * file type (`./b.js`, `./s.css`) names only itself; any other name, including a dotted one like
  * `./vite.config`, may also name a code file or its folder's index file.
  */
-export function candidatesFor(fromPath: string, specifier: string, known: Map<string, ProjectFile>): string[] | null {
+export function relativeNames(fromPath: string, specifier: string): string[] | null {
   const last = specifier.split('/').at(-1);
   const folderOnly = last === '' || last === '.' || last === '..';
   const joined = path.posix.normalize(path.posix.join(path.posix.dirname(fromPath), specifier)).replace(/\/$/, '');
@@ -312,7 +312,12 @@ export function candidatesFor(fromPath: string, specifier: string, known: Map<st
     const counterparts: Record<string, string[]> = { '.js': ['.ts', '.tsx'], '.jsx': ['.tsx'], '.mjs': ['.mts'], '.cjs': ['.cts'] };
     for (const replacement of counterparts[extension] ?? []) names.push(base.slice(0, -extension.length) + replacement);
   }
-  return [...new Set(names)].filter(name => !/\.d\.(?:ts|mts|cts)$/i.test(name) && known.has(name));
+  return [...new Set(names)].filter(name => !/\.d\.(?:ts|mts|cts)$/i.test(name));
+}
+
+/** The listed files among the names a relative import may refer to. */
+export function candidatesFor(fromPath: string, specifier: string, known: Map<string, ProjectFile>): string[] | null {
+  return relativeNames(fromPath, specifier)?.filter(name => known.has(name)) ?? null;
 }
 
 /**
@@ -330,7 +335,7 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
     placed.set(file.id, { id: file.id, relativePath: file.relativePath, folder: folder === '.' ? '' : folder,
       start: starts.has(file.id), entry: entries.has(file.id), checked, reason });
   };
-  const map: Omit<ProjectMap, 'unused'> = { projectId, files: [], edges: [], unresolved: [], external: [], complexFunctions: [], symbols: [], symbolsCut: false, exports: [], limited: false, notes: [],
+  const map: Omit<ProjectMap, 'unused'> = { projectId, files: [], edges: [], unresolved: [], missing: [], missingCut: false, external: [], complexFunctions: [], symbols: [], symbolsCut: false, exports: [], limited: false, notes: [],
     reading: { steps: [], total: 0, incomplete: false } };
   // A target may have been deleted, excluded or swapped for a link since the folder was opened.
   const availability = new Map<string, Promise<boolean>>();
@@ -341,6 +346,9 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
 
   const python: PythonScan[] = [];
   const room: MapRoom = { imports: limits.results, functions: limits.functions, symbols: limits.symbols };
+  // The looked-for paths of imports that found no file are counted on their own, so they never take room
+  // from the results below; once it is used up `missingCut` says so.
+  let missingLeft = limits.results;
   // The one gate every TS/JS export and import result passes before it is kept. Once it has failed it
   // keeps failing, so nothing smaller slips in after what was left out.
   let resultsLeft = limits.results;
@@ -459,6 +467,12 @@ export async function buildProjectMap(root: string, projectId: string, files: Pr
       const candidates = usable.length ? usable : named;
       if (!keep(size + lengthOf(candidates))) break;
       map.unresolved.push({ ...item, reason: !named.length ? 'not-found' : !usable.length ? 'unavailable' : 'ambiguous', candidates });
+      if (usable.length || map.missingCut) continue;
+      const names = lookedFor(file.relativePath, specifier, aliases);
+      if (!names.length) continue;
+      missingLeft -= size + lengthOf(names) + NAME_SIZE * names.length;
+      if (missingLeft < 0) { map.missingCut = true; continue; }
+      map.missing.push({ ...item, names });
     }
     if (resultsLeft < 0) {
       map.limited = true;

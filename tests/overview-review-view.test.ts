@@ -6,7 +6,7 @@ import type { MapEntry } from '../src/renderer/project-map';
 
 const entry: MapEntry = { revision: 0, build: 1, map: {
   symbols: [], symbolsCut: false,
-  projectId: 'project', files: [], edges: [], external: [], exports: [], notes: [], limited: false,
+  projectId: 'project', files: [], edges: [], external: [], missing: [], missingCut: false, exports: [], notes: [], limited: false,
   reading: { steps: [], total: 0, incomplete: false }, unused: { candidates: [{ fileId: 'unused', relativePath: 'unused.ts' }], unsure: [], excluded: [], notes: [],
     exports: { candidates: [], unsure: [], notes: [] } },
   complexFunctions: Array.from({ length: 2 }, (_, index) => ({ fileId: `complex-${index}`, fileHash: 'hash',

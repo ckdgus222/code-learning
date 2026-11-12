@@ -10,7 +10,7 @@ const entry: MapEntry = { revision: 0, build: 1, map: {
   symbols: [
     { fileId: 'a', fileHash: 'hash', name: 'C.f', kind: 'function', startUtf16: 20, endUtf16: 40, startLine: 3, endLine: 4 },
     { fileId: 'a', fileHash: 'hash', name: 'C', kind: 'class', startUtf16: 0, endUtf16: 40, startLine: 1, endLine: 4 },
-  ], symbolsCut: false, edges: [], external: [], unresolved: [], complexFunctions: [], exports: [], limited: false, notes: [],
+  ], symbolsCut: false, edges: [], external: [], missing: [], missingCut: false, unresolved: [], complexFunctions: [], exports: [], limited: false, notes: [],
   reading: { steps: [], total: 0, incomplete: false }, unused: { candidates: [], unsure: [], excluded: [], notes: [], exports: { candidates: [], unsure: [], notes: [] } },
 } };
 function render(props: Partial<React.ComponentProps<typeof SymbolResults>> = {}) {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { FileChange, MapFile } from '../src/shared/contracts';
+import type { FileChange, MapFile, MissingImport } from '../src/shared/contracts';
 import type { MapLink } from '../src/renderer/map-layout';
-import { changeUsers } from '../src/renderer/change-users';
+import { changeUsers, gonePaths, staleImports } from '../src/renderer/change-users';
 
 const file = (id: string): MapFile => ({ id, relativePath: `${id}.ts`, folder: '', start: false, entry: false, checked: 'full', reason: null });
 const link = (fromFileId: string, toFileId: string, guess?: string): MapLink => ({ fromFileId, toFileId, guess,
@@ -84,5 +84,73 @@ describe('files importing changed files', () => {
     expect(changeUsers(files, [link('a', 'b')], [])).toEqual([]);
     expect(changeUsers(files, [], [change('b')])).toEqual([]);
     expect(changeUsers([], [link('a', 'b')], [change('b')])).toEqual([]);
+  });
+});
+
+describe('imports still naming gone paths', () => {
+  const missing = (fromFileId: string, names: string[], startUtf16 = 0): MissingImport => ({
+    fromFileId, names, startUtf16, endUtf16: startUtf16 + 10, startLine: 1, endLine: 1,
+    fileHash: 'hash', text: "import './gone'", specifier: './gone',
+  });
+  const deleted = (path: string): FileChange => ({ path, kind: 'deleted', fileId: null, oldPath: null });
+  const renamed = (oldPath: string, path = 'new.ts'): FileChange => ({ path, oldPath, kind: 'renamed', fileId: 'new' });
+
+  it('matches deleted and renamed paths in name order, retaining evidence and displayed paths', () => {
+    const item = missing('a', ['old.ts', 'gone.ts', 'old.ts', 'other.ts']);
+    const changes = [deleted('gone.ts'), renamed('old.ts')];
+    const before = structuredClone({ files, item, changes });
+    const result = staleImports(files, [item], changes);
+    expect(result).toEqual([{ from: files[0], link: item, gone: [
+      { path: 'old.ts', kind: 'renamed' }, { path: 'gone.ts', kind: 'deleted' },
+    ] }]);
+    expect(result[0].link).toBe(item);
+    expect(result[0].from).toBe(files[0]);
+    expect({ files, item, changes }).toEqual(before);
+  });
+
+  it('omits unrelated names and importers absent from the map', () => {
+    expect(staleImports(files, [missing('a', ['other.ts']), missing('unknown', ['gone.ts'])], [deleted('gone.ts')])).toEqual([]);
+  });
+
+  it('does not match a deleted or renamed path now occupied by another change', () => {
+    const changes = [deleted('gone.ts'), renamed('old.ts'),
+      { ...change('replacement', 'added'), path: 'gone.ts' }, { ...change('replacement', 'untracked'), path: 'old.ts' }];
+    expect(gonePaths(changes).size).toBe(0);
+    expect(gonePaths([...changes].reverse()).size).toBe(0);
+    expect(staleImports(files, [missing('a', ['gone.ts', 'old.ts'])], changes)).toEqual([]);
+  });
+
+  it('sorts by importer path and then source position independently of input order', () => {
+    const imports = [missing('b', ['gone.ts']), missing('a', ['gone.ts'], 20), missing('a', ['gone.ts'], 3)];
+    const expected = [imports[2], imports[1], imports[0]];
+    expect(staleImports(files, imports, [deleted('gone.ts')]).map(item => item.link)).toEqual(expected);
+    expect(staleImports([...files].reverse(), [...imports].reverse(), [deleted('gone.ts')]).map(item => item.link)).toEqual(expected);
+  });
+
+  it('collects only deletions and old rename paths', () => {
+    expect([...gonePaths([deleted('gone.ts'), renamed('old.ts')])]).toEqual([
+      ['gone.ts', { path: 'gone.ts', kind: 'deleted' }], ['old.ts', { path: 'old.ts', kind: 'renamed' }],
+    ]);
+    expect(gonePaths([change('a'), change('b', 'added')]).size).toBe(0);
+    expect(gonePaths([]).size).toBe(0);
+  });
+
+  it.each(['NFC', 'NFD'] as const)('matches both Unicode forms, deduplicates by NFC, and preserves Git spelling (%s)', form => {
+    const path = '한글.ts'.normalize(form);
+    const other = path.normalize(form === 'NFC' ? 'NFD' : 'NFC');
+    for (const changed of [deleted(path), renamed(path)]) {
+      const result = staleImports(files, [missing('a', [other, path])], [changed]);
+      expect(result[0].gone).toEqual([{ path, kind: changed.kind }]);
+      // The import names the path in the other form only.
+      expect(staleImports(files, [missing('a', [other])], [changed])[0].gone).toEqual([{ path, kind: changed.kind }]);
+      expect([...gonePaths([changed]).keys()]).toEqual([path.normalize('NFC')]);
+      const replacement = { ...change('replacement', 'added'), path: other };
+      expect(staleImports(files, [missing('a', [path])], [changed, replacement])).toEqual([]);
+    }
+  });
+
+  it('keeps case distinctions', () => {
+    expect(staleImports(files, [missing('a', ['Gone.ts'])], [deleted('gone.ts')])).toEqual([]);
+    expect(gonePaths([deleted('Gone.ts'), { ...change('replacement', 'added'), path: 'gone.ts' }]).size).toBe(1);
   });
 });

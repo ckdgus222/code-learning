@@ -2,7 +2,7 @@ import path from 'node:path';
 import type { ProjectFile } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 import { MAX_FILE_BYTES, readAllowed, textExtensions } from '../project/files';
-import { candidatesFor, EXTENSIONS, isRelative } from './project-map';
+import { candidatesFor, EXTENSIONS, isRelative, relativeNames } from './project-map';
 
 /** One config's folder boundary, including configs that could not be read. */
 export interface AliasConfig {
@@ -215,15 +215,23 @@ export async function readPathAliases(root: string, files: ProjectFile[], bytesL
   return result;
 }
 
-/** Alias candidates deliberately include competing runtime and declaration files. */
-function aliasTarget(target: string, specifier: string, known: Map<string, ProjectFile>): Resolved | null {
+/** The runtime files one alias target may name, listed or not; null when the target leaves the project. */
+function aliasNames(target: string): { base: string; names: string[] } | null {
   const normalized = path.posix.normalize(target);
-  if (outside(normalized)) return { kind: 'outside' };
+  if (outside(normalized)) return null;
   const base = normalized === '.' ? '' : normalized.replace(/\/$/, '');
   const extensions = [...EXTENSIONS, '.mts', '.cts'];
   const names = [base, ...extensions.map(extension => base + extension),
     ...extensions.map(extension => `${base ? `${base}/` : ''}index${extension}`)];
   if (/\.(js|jsx|mjs|cjs)$/i.test(base)) names.push(...['.ts', '.tsx', '.mts', '.cts'].map(extension => base.replace(/\.[^.]+$/, extension)));
+  return { base, names };
+}
+
+/** Alias candidates deliberately include competing runtime and declaration files. */
+function aliasTarget(target: string, specifier: string, known: Map<string, ProjectFile>): Resolved | null {
+  const targetNames = aliasNames(target);
+  if (!targetNames) return { kind: 'outside' };
+  const { base, names } = targetNames;
   const declarations = names.flatMap(name => {
     const extension = path.posix.extname(name).toLowerCase();
     const stem = textExtensions.has(extension) ? name.slice(0, -extension.length) : name;
@@ -238,6 +246,43 @@ function aliasTarget(target: string, specifier: string, known: Map<string, Proje
   return { kind: 'project', candidates, via: 'alias', sure };
 }
 
+/** The config of the nearest folder above the importing file. */
+function configFor(fromPath: string, aliases: PathAliases): AliasConfig | undefined {
+  return aliases.configs.filter(item => !item.folder || fromPath.startsWith(`${item.folder}/`))
+    .sort((a, b) => b.folder.length - a.folder.length)[0];
+}
+
+/** The targets of the `paths` pattern a specifier matches, `*` filled in: an exact pattern first, then the longest prefix. Null when none matches. */
+function matchedTargets(specifier: string, config: AliasConfig): string[] | null {
+  const exact = config.paths.find(item => !item.pattern.includes('*') && item.pattern === specifier);
+  const matched = exact ?? config.paths.filter(({ pattern }) => {
+    const star = pattern.indexOf('*');
+    return star >= 0 && specifier.length >= pattern.length - 1 && specifier.startsWith(pattern.slice(0, star)) && specifier.endsWith(pattern.slice(star + 1));
+  }).sort((a, b) => b.pattern.indexOf('*') - a.pattern.indexOf('*'))[0];
+  if (!matched) return null;
+  const star = matched.pattern.indexOf('*');
+  const capture = star < 0 ? '' : specifier.slice(star, specifier.length - (matched.pattern.length - star - 1));
+  return matched.targets.map(target => target.replace('*', () => capture));
+}
+
+/**
+ * The project paths an import is looked for at: every runtime file a relative specifier, or the targets of the
+ * `paths` pattern it matches, may name, whether or not such a file is listed. Every target counts, because
+ * TypeScript tries the next one when a target has no file. Empty for any other import (a package, one found
+ * through `baseUrl` alone), so those are never matched against deleted files.
+ */
+export function lookedFor(fromPath: string, specifier: string, aliases: PathAliases): string[] {
+  if (specifier.startsWith('/')) return [];
+  if (isRelative(specifier)) return relativeNames(fromPath, specifier) ?? [];
+  if (specifier.length > MAX_ALIAS_PATH) return [];
+  const config = configFor(fromPath, aliases);
+  if (!config?.readable) return [];
+  const targets = matchedTargets(specifier, config);
+  if (!targets) return [];
+  const names = targets.flatMap(target => aliasNames(target)?.names ?? []);
+  return [...new Set(names)].filter(name => !/\.d\.(?:ts|mts|cts)$/i.test(name));
+}
+
 export function resolveImport(fromPath: string, specifier: string, known: Map<string, ProjectFile>, aliases: PathAliases): Resolved {
   if (specifier.startsWith('/')) return { kind: 'outside' };
   // A name longer than any real path is copied into every target's names; it is left unresolved as before aliases.
@@ -246,19 +291,12 @@ export function resolveImport(fromPath: string, specifier: string, known: Map<st
     const candidates = candidatesFor(fromPath, specifier, known);
     return candidates === null ? { kind: 'outside' } : { kind: 'project', candidates, via: 'relative', sure: true };
   }
-  const config = aliases.configs.filter(item => !item.folder || fromPath.startsWith(`${item.folder}/`))
-    .sort((a, b) => b.folder.length - a.folder.length)[0];
+  const config = configFor(fromPath, aliases);
   if (!config?.readable) return { kind: 'external' };
-  const exact = config.paths.find(item => !item.pattern.includes('*') && item.pattern === specifier);
-  const matched = exact ?? config.paths.filter(({ pattern }) => {
-    const star = pattern.indexOf('*');
-    return star >= 0 && specifier.length >= pattern.length - 1 && specifier.startsWith(pattern.slice(0, star)) && specifier.endsWith(pattern.slice(star + 1));
-  }).sort((a, b) => b.pattern.indexOf('*') - a.pattern.indexOf('*'))[0];
-  if (matched) {
-    const star = matched.pattern.indexOf('*');
-    const capture = star < 0 ? '' : specifier.slice(star, specifier.length - (matched.pattern.length - star - 1));
-    for (const target of matched.targets) {
-      const resolved = aliasTarget(target.replace('*', () => capture), specifier, known);
+  const targets = matchedTargets(specifier, config);
+  if (targets) {
+    for (const target of targets) {
+      const resolved = aliasTarget(target, specifier, known);
       if (resolved) return resolved;
     }
     return { kind: 'project', candidates: [], via: 'alias', sure: true };

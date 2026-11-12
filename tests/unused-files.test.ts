@@ -12,7 +12,7 @@ const imported = (specifier: string | null, fromFileId = 'from.ts'): MapImport =
   fileHash: 'hash', startUtf16: 0, endUtf16: 1, startLine: 1, endLine: 1, text: 'import' });
 const mapOf = (files: MapFile[], extra: Partial<Omit<ProjectMap, 'unused'>> = {}): Omit<ProjectMap, 'unused'> => ({
   reading: { steps: [], total: 0, incomplete: false },
-  projectId: 'project', files, edges: [], unresolved: [], external: [], complexFunctions: [], symbols: [], symbolsCut: false, exports: [], limited: false, notes: [], ...extra,
+  projectId: 'project', files, edges: [], unresolved: [], external: [], missing: [], missingCut: false, complexFunctions: [], symbols: [], symbolsCut: false, exports: [], limited: false, notes: [], ...extra,
 });
 const scripts = (): ScriptFiles => ({ files: new Set(), failed: [], references: new Set(), referenceFailed: [] });
 

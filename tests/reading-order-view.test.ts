@@ -23,7 +23,7 @@ const steps: ReadingStep[] = Array.from({ length: 12 }, (_, index) => index === 
 const entry: MapEntry = { revision: 0, build: 1, map: {
   projectId: 'project', files: steps.map(step => ({ id: step.fileId, relativePath: `src/nested/${step.fileId}.ts`, folder: 'src/nested',
     start: false, entry: false, checked: 'full', reason: null })),
-  edges: [], unresolved: [], external: [], complexFunctions: [], symbols: [], symbolsCut: false, exports: [], limited: false, notes: [],
+  edges: [], unresolved: [], external: [], missing: [], missingCut: false, complexFunctions: [], symbols: [], symbolsCut: false, exports: [], limited: false, notes: [],
   unused: { candidates: [], unsure: [], excluded: [], notes: [], exports: { candidates: [], unsure: [], notes: [] } },
   reading: { steps, total: 12, incomplete: false },
 } };
