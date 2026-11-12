@@ -171,7 +171,7 @@ function App() {
   useEffect(() => setView('overview'), [project, setView]);
   const callSearch = useCalls({ project, revision, view, source, symbol, setError });
   const git = useChanges({ project, revision, view, setView, setError });
-  const map = useMap({ project, revision, view, tab: mapTab, setError });
+  const map = useMap({ project, revision, view, tab: mapTab, setError, openedAt, setNotice });
   const importers = useMemo(() => source && map.entry ? importersOf(source.fileId, source.relativePath, map.entry.map) : null,
     [source?.fileId, map.entry]);
 
@@ -837,6 +837,7 @@ function App() {
             <FlowLimits project={project} routes={features.routes} flow={features.flow} locked={busy} onCode={site => void showValueSite(site)} />
           </>}
           {mapTab === 'file' && <ProjectMapView project={project} entry={map.entry}
+            onExport={to => void map.export(to)} exportable={map.entry !== null && map.entry.revision === revision.current && !watchError}
             stale={map.entry !== null && map.entry.revision !== revision.current} mapping={map.mapping}
             changes={git.changes?.state.status === 'done' ? { result: git.changes.state.value, stale: git.changes.revision !== revision.current } : null}
             onShowChange={change => void git.openChange(change)}

@@ -22,12 +22,16 @@ vi.mock('react', () => ({
   },
 }));
 import { useMap } from '../src/renderer/use-map';
+import { mapMarkdown } from '../src/renderer/map-export';
 
 const project: ProjectView = { id: 'project', name: 'project', files: [], excluded: {}, warnings: [],
   overview: { entryFileIds: [], intro: null, candidates: [], checkedFiles: 0, limited: false, notes: [] } };
 const map: ProjectMap = { projectId: project.id, files: [], edges: [], unresolved: [], external: [], missing: [], missingCut: false, complexFunctions: [], symbols: [], symbolsCut: false,
   exports: [], reading: { steps: [], total: 0, incomplete: false }, unused: { candidates: [], unsure: [], excluded: [], notes: [], exports: { candidates: [], unsure: [], notes: [] } },
   limited: false, notes: [] };
+const openedAt = { current: 0 };
+const setNotice = vi.fn();
+const exportMap = vi.fn<LearningApi['exportMap']>();
 const revision = { current: 0 };
 const setError = vi.fn();
 const projectMap = vi.fn<LearningApi['projectMap']>();
@@ -36,18 +40,18 @@ let finish: (result: Awaited<ReturnType<LearningApi['projectMap']>>) => void;
 
 function render(view: View = 'overview', currentProject: ProjectView | null = project, tab: 'feature' | 'file' = 'file') {
   hooks.stateIndex = 0; hooks.refIndex = 0; hooks.effectIndex = 0; hooks.effects = [];
-  const result = useMap({ project: currentProject, revision, view, tab, setError });
+  const result = useMap({ project: currentProject, revision, view, tab, setError, openedAt, setNotice });
   hooks.effects.forEach(effect => effect());
   return result;
 }
 
 beforeEach(() => {
   hooks.state = []; hooks.refs = []; hooks.dependencies = [];
-  revision.current = 0;
+  revision.current = 0; openedAt.current = 0; setNotice.mockReset(); exportMap.mockReset();
   setError.mockReset(); projectMap.mockReset(); cancelProjectMap.mockReset();
   projectMap.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
   cancelProjectMap.mockResolvedValue({ ok: true, value: null });
-  vi.stubGlobal('window', { learning: { projectMap, cancelProjectMap } });
+  vi.stubGlobal('window', { learning: { projectMap, cancelProjectMap, exportMap } });
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -121,4 +125,47 @@ it('leaves the file map tab able to retry after an overview failure', async () =
   render();
   render('map');
   expect(projectMap).toHaveBeenCalledTimes(2);
+});
+
+it.each(['file', 'clipboard'] as const)('exports the current map to %s and shows the result', async to => {
+  render(); finish({ ok: true, value: map }); await Promise.resolve();
+  exportMap.mockResolvedValue({ ok: true, value: { done: true, name: to === 'file' ? 'project-map.md' : null } });
+  await render().export(to);
+  expect(exportMap).toHaveBeenCalledExactlyOnceWith({ projectId: project.id, to,
+    text: expect.stringContaining('# `project` 프로젝트 지도\n') });
+  expect(exportMap.mock.calls[0][0].text).toBe(mapMarkdown(project, map, new Date()));
+  expect(setNotice).toHaveBeenCalledExactlyOnceWith(to === 'file' ? '지도를 저장했어요: project-map.md' : '지도를 클립보드에 복사했어요.');
+});
+
+it('does not export without both the project and map', async () => {
+  await render('code').export('file');
+  render(); finish({ ok: true, value: map }); await Promise.resolve();
+  await render('code', null).export('clipboard');
+  expect(exportMap).not.toHaveBeenCalled();
+});
+
+it('leaves notices alone on cancellation and shows errors on failure', async () => {
+  render(); finish({ ok: true, value: map }); await Promise.resolve();
+  setError.mockClear();
+  exportMap.mockResolvedValueOnce({ ok: true, value: { done: false, name: null } });
+  await render().export('file');
+  expect(setNotice).not.toHaveBeenCalled(); expect(setError).not.toHaveBeenCalled();
+  exportMap.mockResolvedValueOnce({ ok: false, code: 'IO', message: '저장 실패' });
+  await render().export('file');
+  expect(setNotice).not.toHaveBeenCalled(); expect(setError).toHaveBeenCalledExactlyOnceWith('저장 실패');
+});
+
+it.each(['success', 'failure'] as const)('discards a late %s after closing or reopening the same project', async outcome => {
+  for (const reopen of [false, true]) {
+    render(); finish({ ok: true, value: map }); await Promise.resolve();
+    let reply!: (result: Awaited<ReturnType<LearningApi['exportMap']>>) => void;
+    exportMap.mockImplementationOnce(() => new Promise(resolve => { reply = resolve; }));
+    const pending = render().export('file');
+    render().forget(); openedAt.current++;
+    if (reopen) { render('overview', { ...project }); finish({ ok: true, value: map }); await Promise.resolve(); }
+    setError.mockClear(); setNotice.mockClear();
+    reply(outcome === 'success' ? { ok: true, value: { done: true, name: 'old.md' } } : { ok: false, code: 'IO', message: 'old error' });
+    await pending;
+    expect(setNotice).not.toHaveBeenCalled(); expect(setError).not.toHaveBeenCalled();
+  }
 });

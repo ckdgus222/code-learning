@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import type { ProjectView } from '../shared/contracts';
 import type { MapEntry } from './project-map';
+import { mapMarkdown } from './map-export';
 import type { View } from './selection';
 
 // Keeps the file map and its pending build together so other views can share the same map.
-export function useMap({ project, revision, view, tab, setError }: {
+export function useMap({ project, revision, view, tab, setError, openedAt, setNotice }: {
   project: ProjectView | null; revision: RefObject<number>; view: View; tab: 'feature' | 'file';
+  openedAt: RefObject<number>; setNotice(message: string): void;
   setError(message: string): void;
 }) {
   // The map is drawn by its own worker, so it has its own request counter: reads may go on meanwhile.
@@ -45,5 +47,16 @@ export function useMap({ project, revision, view, tab, setError }: {
     if (!result.ok) setError(result.message);
   }
 
-  return { entry: projectMap, mapping, forget: forgetMap, build: buildMap, cancel: cancelMap };
+  async function exportMap(to: 'file' | 'clipboard') {
+    if (!project || !projectMap) return;
+    const opened = openedAt.current;
+    const text = mapMarkdown(project, projectMap.map, new Date());
+    const result = await window.learning.exportMap({ projectId: project.id, text, to });
+    if (openedAt.current !== opened) return;
+    if (!result.ok) { setError(result.message); return; }
+    if (!result.value.done) return;
+    setNotice(to === 'file' ? `지도를 저장했어요: ${result.value.name}` : '지도를 클립보드에 복사했어요.');
+  }
+
+  return { export: exportMap, entry: projectMap, mapping, forget: forgetMap, build: buildMap, cancel: cancelMap };
 }

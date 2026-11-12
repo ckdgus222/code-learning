@@ -2,8 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Background, BackgroundVariant, Controls, Handle, MarkerType, Position, ReactFlow, useReactFlow, useStore, type Dimensions, type Edge,
   type FitViewOptions, type Node, type NodeChange, type NodeProps, type NodeTypes } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import type { ChangeKind, FileChange, MapExport, MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectChanges, ProjectMap, ProjectView, UnusedExcludeKind } from '../shared/contracts';
-import { arrowCounts, arrowLabel, guessedLinks, BIG_FOLDER_LIMIT, boxName, boxPlace, closeArea, expandableIds, FILE_VIEW_LIMIT, fileViewFolder, fileViewOf, folderArrows, folderFileList, folderName,
+import type { ChangeKind, FileChange, MapExport, MapFile, MapFunction, MapImport, ProjectChanges, ProjectMap, ProjectView, UnusedExcludeKind } from '../shared/contracts';
+import { unresolvedLabels, arrowCounts, arrowLabel, guessedLinks, BIG_FOLDER_LIMIT, boxName, boxPlace, closeArea, expandableIds, FILE_VIEW_LIMIT, fileViewFolder, fileViewOf, folderArrows, folderFileList, folderName,
   foldersWithFiles, importCycles, linkedArrows, NEIGHBOR_LIMIT, NEIGHBOR_ROW_HEIGHT, neighborhoodGraph, shownBigFolder, visibleGraph, type MapArrow, type MapBox, type MapLink } from './map-layout';
 import { importPath, pathGraph } from './import-path';
 import { COMPLEXITY_NOTE, ComplexityTags } from './complexity';
@@ -22,12 +22,6 @@ const checkedLabels: Record<Exclude<MapFile['checked'], 'full'>, string> = {
 const unusedExcludeLabels: Record<UnusedExcludeKind, string> = {
   start: '시작 파일(main·bin·index 등)', test: '시험 파일', config: '설정 파일', types: '타입 선언',
   framework: '프레임워크가 부르는 파일', script: '실행 명령에 적힌 파일', reference: '설정·HTML에 적힌 파일',
-};
-const unresolvedLabels: Record<MapUnresolvedReason, string> = {
-  'not-found': '찾지 못함(파일이 없거나 탐색 목록에서 제외됨)', ambiguous: '후보 여럿', outside: '프로젝트 밖',
-  'not-static': '정적 import 아님(동적 import·require)', syntax: 'import 문에 구문 오류',
-  unavailable: '대상을 지금 확인할 수 없음(삭제·제외·링크)',
-  unreadable: '경로 글을 그대로 읽을 수 없음(빈 경로·이스케이프 문자)',
 };
 export interface MapEntry { map: ProjectMap; revision: number; build: number }
 
@@ -589,7 +583,8 @@ function MapBody({ map, changes, locked, onOpenFile, onShowImport, onShowFunctio
 }
 
 export function ProjectMapView({ project, entry, stale, mapping, locked, changes, onBuild, onCancel, onOpenFile, onShowImport, onShowFunction,
-  onShowChange }: {
+  onShowChange, onExport, exportable }: {
+  onExport(to: 'file' | 'clipboard'): void; exportable: boolean;
   project: ProjectView; entry: MapEntry | null; stale: boolean; mapping: boolean; changes: MapChanges | null; onShowChange(change: FileChange): void;
   /** A folder is opening or a file is being read, so moving to code would drop that work. */
   locked: boolean;
@@ -604,6 +599,10 @@ export function ProjectMapView({ project, entry, stale, mapping, locked, changes
         <span role="status" className="busy"><span className="spinner" aria-hidden="true" />지도를 만드는 중…</span>
         <button className="btn btn--small" onClick={onCancel}>지도 만들기 취소</button>
       </> : <button className="btn btn--small" onClick={onBuild}>{entry ? '지도 다시 만들기' : '지도 만들기'}</button>}
+      {entry && !mapping && <>
+        <button className="btn btn--small" disabled={!exportable} onClick={() => onExport('file')}>Markdown으로 저장</button>
+        <button className="btn btn--small" disabled={!exportable} onClick={() => onExport('clipboard')}>Markdown 복사</button>
+      </>}
     </div>
     {entry && <MapBody key={entry.build} map={entry.map} changes={changes} locked={locked} onOpenFile={onOpenFile} onShowImport={onShowImport}
       onShowFunction={onShowFunction} onShowChange={onShowChange} />}

@@ -1,10 +1,11 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, nativeTheme, powerMonitor, shell, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, clipboard, ipcMain, safeStorage, nativeTheme, powerMonitor, shell, type IpcMainInvokeEvent } from 'electron';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { mkdir, realpath, stat } from 'node:fs/promises';
 import { z } from 'zod';
-import { channels, learningSpotSchema, saveLearningSpotSchema, saveLearningMarkSchema, storedLearningMarkSchema, featureFlowsRequestSchema, featureFlowRequestSchema, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, shapesRequestSchema, changesRequestSchema, diffRequestSchema, saveGeminiKeySchema, type Result, type Evidence } from '../shared/contracts';
+import { channels, mapExportRequestSchema, learningSpotSchema, saveLearningSpotSchema, saveLearningMarkSchema, storedLearningMarkSchema, featureFlowsRequestSchema, featureFlowRequestSchema, sourceRequestSchema, evidenceRequestSchema, projectRequestSchema, callsRequestSchema, shapesRequestSchema, changesRequestSchema, diffRequestSchema, saveGeminiKeySchema, type Result, type Evidence } from '../shared/contracts';
+import { saveExport } from './export-file';
 import { AppError, failure } from '../shared/errors';
 import { ProjectStorage } from '../core/storage/projects';
 import { MAP_TIMEOUT_MS, ProjectSession, workersStopped } from './project-session';
@@ -41,6 +42,11 @@ let aiContext: ProjectAiContext | undefined;
 export let planDocument: (PlanDocument & { path: string; text: string; hash: string }) | null = null;
 let finishedPlanCompare: { result: PlanCompareResult; planPath: string } | null = null;
 let pickingPlan = false;
+// One save window at a time, and the file write quitting waits for so no temporary file is left behind.
+let savingMap = false;
+let exportWriting: Promise<string> | null = null;
+// A project whose file watch failed may have changed unseen: its map is not exported until the folder is reopened.
+const failedWatchers = new WeakSet<ProjectSession>();
 // App-only Codex and Antigravity folders keep the user's own AI settings out of app runs.
 const geminiKey = createGeminiKeyStore(path.join(app.getPath('userData'), 'gemini-api-key.bin'), safeStorage);
 const aiRuntime = new LocalAiRuntime(path.join(app.getPath('userData'), 'codex-home'), path.join(app.getPath('userData'), 'agy-home'), process.platform, geminiKey);
@@ -246,6 +252,7 @@ async function openFolder(selectRoot: (requestedAt: number) => Promise<string | 
     const id = storage.recordOpen(root, path.basename(root));
     const next = new ProjectSession(id, root, path.join(__dirname, 'analysis.cjs'), event => {
       if (session === next) {
+        if (event.kind === 'watch-error') failedWatchers.add(next);
         projectRevision++;
         aiContext?.clear();
         void learning.close();
@@ -342,6 +349,39 @@ app.whenReady().then(async () => {
       if (selected.canceled || !selected.filePaths[0]) return null;
       return realpath(selected.filePaths[0]);
     });
+  });
+  handle(channels.exportMap, async argument => {
+    const input = mapExportRequestSchema.parse(argument);
+    const active = current(input.projectId);
+    const watchMessage = '파일 변경을 감지하지 못하는 상태예요. 폴더를 다시 연 뒤 내보내 주세요.';
+    if (failedWatchers.has(active)) throw new AppError('CHANGED', watchMessage);
+    if (input.to === 'clipboard') {
+      clipboard.writeText(input.text);
+      return { done: true, name: null };
+    }
+    if (quitting || opening || pickingPlan || savingMap) throw new AppError('INVALID_REQUEST', '다른 선택 작업이 끝난 뒤 다시 눌러 주세요.');
+    const requestedAt = generation;
+    const revision = projectRevision;
+    const stopped = (): AppError | null => {
+      if (generation !== requestedAt) return new AppError('CANCELLED', '프로젝트가 바뀌어 저장을 취소했어요.');
+      if (failedWatchers.has(active)) return new AppError('CHANGED', watchMessage);
+      if (projectRevision !== revision) return new AppError('CHANGED', '저장하는 동안 파일이 바뀌었어요. 지도를 다시 만든 뒤 내보내 주세요.');
+      return null;
+    };
+    savingMap = true;
+    try {
+      const name = path.basename(active.root).replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_');
+      const selected = await dialog.showSaveDialog(window!, { title: '프로젝트 지도 저장', defaultPath: `${name}-map.md`,
+        filters: [{ name: 'Markdown', extensions: ['md'] }] });
+      const ended = stopped();
+      if (ended) throw ended;
+      if (selected.canceled || !selected.filePath) return { done: false, name: null };
+      exportWriting = saveExport(active.root, selected.filePath, input.text, stopped);
+      return { done: true, name: await exportWriting };
+    } finally {
+      exportWriting = null;
+      savingMap = false;
+    }
   });
   handle(channels.pickPlanDocument, async argument => {
     z.undefined().parse(argument);
@@ -791,5 +831,5 @@ app.on('before-quit', event => {
   quitting = true;
   // Workers end only after replying (ending one mid-parse aborts the app), so quitting waits for them all,
   // including ones a window close or a cancel started closing before this.
-  void dispose().then(() => workersStopped()).finally(() => { storage?.close(); quitReady = true; app.quit(); });
+  void Promise.allSettled([dispose().then(() => workersStopped()), exportWriting]).finally(() => { storage?.close(); quitReady = true; app.quit(); });
 });

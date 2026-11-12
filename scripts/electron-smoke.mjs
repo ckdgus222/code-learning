@@ -3744,6 +3744,70 @@ try {
     const candidates = page.getByRole('region', { name: '아무도 가져다 쓰지 않는 파일 후보', exact: true });
     assert.equal(await candidates.getByRole('button', { name: 'src/api.ts', exact: true }).count(), 0);
   });
+  await check('Map export: Markdown save, project protection, cancellation and clipboard stub', async () => {
+    const destination = path.join(temporary, 'map.md');
+    const forbidden = path.join(aliasFixture, 'export-map.md');
+    const cancelled = path.join(temporary, 'cancelled-map.md');
+    await app.evaluate(({ dialog, clipboard }, destination) => {
+      globalThis.testMapExport = { save: dialog.showSaveDialog, copy: clipboard.writeText, text: null, saves: 0 };
+      dialog.showSaveDialog = async () => {
+        globalThis.testMapExport.saves++;
+        return { canceled: false, filePath: destination };
+      };
+      clipboard.writeText = text => { globalThis.testMapExport.text = text; };
+    }, destination);
+    try {
+      await dialogTo(aliasFixture);
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      await page.getByRole('heading', { name: '경로 별칭 프로젝트', exact: true }).waitFor();
+      await openTreeFile('main.ts');
+      await openFileMap();
+      const save = page.getByRole('button', { name: 'Markdown으로 저장', exact: true });
+      const copy = page.getByRole('button', { name: 'Markdown 복사', exact: true });
+      await save.click();
+      await page.getByText('지도를 저장했어요: map.md', { exact: true }).waitFor();
+      const saved = await readFile(destination, 'utf8');
+      assert.ok(saved.startsWith('# `경로 별칭 프로젝트` 프로젝트 지도\n'));
+      assert.ok(saved.includes('flowchart LR'));
+      assert.ok(saved.includes('## 이 순서로 읽어 보세요'));
+      await page.screenshot({ path: path.join(artifacts, 'map-export.png') });
+
+      await app.evaluate(({ dialog }, forbidden) => {
+        dialog.showSaveDialog = async () => ({ canceled: false, filePath: forbidden });
+      }, forbidden);
+      await save.click();
+      await page.getByText('열어 둔 프로젝트 폴더 안에는 저장하지 않아요. 프로젝트 밖의 위치를 골라 주세요.', { exact: true }).waitFor();
+      await assert.rejects(lstat(forbidden), { code: 'ENOENT' });
+
+      const notices = await page.locator('.notices').innerText();
+      await app.evaluate(({ dialog }, cancelled) => {
+        dialog.showSaveDialog = async () => {
+          globalThis.testMapExport.saves++;
+          return { canceled: true, filePath: cancelled };
+        };
+      }, cancelled);
+      await save.click();
+      await until(() => app.evaluate(() => globalThis.testMapExport.saves === 2));
+      // A following IPC reply lets the renderer process the cancelled save before checking its notices.
+      await page.evaluate(() => window.learning.getViewSettings());
+      assert.equal(await page.locator('.notices').innerText(), notices);
+      await assert.rejects(lstat(cancelled), { code: 'ENOENT' });
+      await copy.click();
+      await page.getByText('지도를 클립보드에 복사했어요.', { exact: true }).waitFor();
+      assert.equal(await app.evaluate(() => globalThis.testMapExport.text), saved);
+      // Waking from sleep makes the map old: both buttons stay off until the map is drawn again.
+      await app.evaluate(({ powerMonitor }) => { powerMonitor.emit('resume'); });
+      await until(async () => await save.isDisabled() && await copy.isDisabled());
+      await page.getByRole('button', { name: '지도 다시 만들기', exact: true }).click();
+      await until(async () => await save.isEnabled() && await copy.isEnabled());
+    } finally {
+      await app.evaluate(({ dialog, clipboard }) => {
+        dialog.showSaveDialog = globalThis.testMapExport.save;
+        clipboard.writeText = globalThis.testMapExport.copy;
+        delete globalThis.testMapExport;
+      });
+    }
+  });
   await check('Project map: an unused candidate opens its file in the code reader', async () => {
     await dialogTo(unusedMapFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();

@@ -3,7 +3,7 @@ import { lstat, open, realpath, opendir } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import ignore, { type Ignore } from 'ignore';
-import { MAX_FILE_BYTES, type ProjectFiles } from '../../shared/contracts';
+import { MAX_FILE_BYTES, SCAN_LIMIT_WARNING, type ProjectFiles } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 
 export { MAX_FILE_BYTES } from '../../shared/contracts';
@@ -303,7 +303,7 @@ export async function scanProject(root: string, projectId: string, shouldStop?: 
   }
   await walk('', [], 0);
   result.files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
-  if (limited) result.warnings.push('초기 탐색 제한(파일 1,000개·항목 5,000개·깊이 20)에 도달했습니다. 더 작은 폴더를 선택해 주세요.');
+  if (limited) result.warnings.push(SCAN_LIMIT_WARNING);
   result.warnings.push('파일별 최대 256 KiB. UTF-8 텍스트만 읽으며 소스·설정·스크립트를 실행하지 않습니다.');
   return result;
 }

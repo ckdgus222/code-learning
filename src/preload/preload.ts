@@ -17,6 +17,7 @@ if (document.documentElement) {
 }
 
 const api: LearningApi = {
+  exportMap: input => ipcRenderer.invoke(channels.exportMap, input),
   geminiKeyStatus: () => ipcRenderer.invoke(channels.geminiKeyStatus),
   saveGeminiKey: input => ipcRenderer.invoke(channels.saveGeminiKey, input),
   clearGeminiKey: () => ipcRenderer.invoke(channels.clearGeminiKey),

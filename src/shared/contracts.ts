@@ -3,6 +3,14 @@ import type { SourceLanguage } from './languages';
 import type { PlanCompareCheck, PlanCompareRequest, PlanCompareResult, SavePlanCompare, PlanDocument } from './plan-compare';
 import type { CheckConnectionsRequest, ConnectionReport, ExplainRequest, LearningEvent, OverviewRequest, FileExplanationRequest, FeatureGuideRequest, FeatureGuideResult, FileChunk, FileExplanationRange, FileExplanationResult, OverviewResult, LearningResult } from './ai';
 
+/** The most characters one exported document may have. */
+export const MAP_EXPORT_MAX = 2_000_000;
+/** The folder scan's warning when it stopped at its limits: the one warning that means files are missing. */
+export const SCAN_LIMIT_WARNING = '초기 탐색 제한(파일 1,000개·항목 5,000개·깊이 20)에 도달했습니다. 더 작은 폴더를 선택해 주세요.';
+export interface MapExportRequest { projectId: string; text: string; to: 'file' | 'clipboard' }
+/** Only the file name, never its folder; null for clipboard or cancellation. */
+export interface MapExportResult { done: boolean; name: string | null }
+
 export const MAX_FILE_BYTES = 256 * 1024;
 export const viewSettingsSchema = z.object({
   screen: z.enum(['system', 'light', 'dark']),
@@ -12,6 +20,7 @@ export type ViewSettings = z.infer<typeof viewSettingsSchema>;
 export type UpdateCheck = { current: string; latest: string | null; status: 'newer' | 'latest' | 'none' };
 export const defaultViewSettings: ViewSettings = { screen: 'system', codeColors: 'default' };
 export const idSchema = z.string().uuid();
+export const mapExportRequestSchema = z.object({ projectId: idSchema, text: z.string().min(1).max(MAP_EXPORT_MAX), to: z.enum(['file', 'clipboard']) }).strict();
 export const sourceRequestSchema = z.object({ projectId: idSchema, fileId: idSchema }).strict();
 export const evidenceRequestSchema = z.object({ projectId: idSchema, evidenceId: idSchema }).strict();
 export const projectRequestSchema = z.object({ projectId: idSchema }).strict();
@@ -559,6 +568,7 @@ export interface GeminiKeyStatus { saved: boolean; readable: boolean; canEncrypt
 export const saveGeminiKeySchema = z.object({ key: z.string().min(1).max(512) }).strict();
 
 export interface LearningApi {
+  exportMap(input: MapExportRequest): Promise<Result<MapExportResult>>;
   geminiKeyStatus(): Promise<Result<GeminiKeyStatus>>;
   saveGeminiKey(input: z.infer<typeof saveGeminiKeySchema>): Promise<Result<GeminiKeyStatus>>;
   clearGeminiKey(): Promise<Result<GeminiKeyStatus>>;
@@ -634,7 +644,7 @@ export const channels = {
   learningSpot: 'learning:spot', saveLearningSpot: 'learning:save-spot',
   learningMarks: 'learning:marks', saveLearningMark: 'learning:save-mark',
   open: 'learning:open', read: 'learning:read', evidence: 'learning:evidence',
-  cancel: 'learning:cancel', event: 'learning:project-event', routes: 'learning:routes', cancelRoutes: 'learning:cancel-routes', featureFlows: 'learning:feature-flows', cancelFeatureFlows: 'learning:cancel-feature-flows', featureFlow: 'learning:feature-flow', cancelFeatureFlow: 'learning:cancel-feature-flow', map: 'learning:map', cancelMap: 'learning:cancel-map',
+  cancel: 'learning:cancel', event: 'learning:project-event', routes: 'learning:routes', cancelRoutes: 'learning:cancel-routes', featureFlows: 'learning:feature-flows', cancelFeatureFlows: 'learning:cancel-feature-flows', featureFlow: 'learning:feature-flow', cancelFeatureFlow: 'learning:cancel-feature-flow', map: 'learning:map', exportMap: 'learning:export-map', cancelMap: 'learning:cancel-map',
   calls: 'learning:calls', cancelCalls: 'learning:cancel-calls', shapes: 'learning:shapes', cancelShapes: 'learning:cancel-shapes',
   history: 'learning:history', changes: 'learning:changes', diff: 'learning:diff', cancelChanges: 'learning:cancel-changes',
   connections: 'learning:connections', explain: 'learning:explain', overview: 'learning:overview',

@@ -1,5 +1,12 @@
 import { languageOf } from '../shared/languages';
-import type { CallSite, CodeStep, CodeSymbol, Evidence, MapFile, MapFunction, MapImport, ProjectMap, SourceView } from '../shared/contracts';
+import type { CallSite, CodeStep, CodeSymbol, Evidence, MapFile, MapFunction, MapImport, MapUnresolvedReason, ProjectMap, SourceView } from '../shared/contracts';
+
+export const unresolvedLabels: Record<MapUnresolvedReason, string> = {
+  'not-found': '찾지 못함(파일이 없거나 탐색 목록에서 제외됨)', ambiguous: '후보 여럿', outside: '프로젝트 밖',
+  'not-static': '정적 import 아님(동적 import·require)', syntax: 'import 문에 구문 오류',
+  unavailable: '대상을 지금 확인할 수 없음(삭제·제외·링크)',
+  unreadable: '경로 글을 그대로 읽을 수 없음(빈 경로·이스케이프 문자)',
+};
 
 export interface ImportCycle {
   /** The files in the loop, sorted by relativePath. */

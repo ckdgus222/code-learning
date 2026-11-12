@@ -39,7 +39,7 @@ function render(opened: ReadonlySet<string> = new Set(), focus: { id: string; op
   vi.mocked(ReactHooks.useState).mockImplementationOnce(() => [focus, vi.fn()]);
   vi.mocked(ReactHooks.useState).mockImplementationOnce(() => [hovered, vi.fn()]);
   vi.mocked(ReactHooks.useState).mockImplementationOnce(() => [picked, vi.fn()]);
-  return renderToStaticMarkup(React.createElement(ProjectMapView, { project, entry: { map: source, revision: 0, build: 1 },
+  return renderToStaticMarkup(React.createElement(ProjectMapView, { onExport() {}, exportable: true, project, entry: { map: source, revision: 0, build: 1 },
     stale: false, mapping: false, locked: false, changes,
     onBuild() {}, onCancel() {}, onOpenFile, onShowImport, onShowFunction() {}, onShowChange() {} }));
 }
@@ -80,7 +80,7 @@ describe('files importing changed files on the map', () => {
   function renderUsers(source = map, compared: MapChanges | null = comparison, locked = false, opened: ReadonlySet<string> = new Set(),
     onOpenFile = vi.fn(), onShowImport = vi.fn(), picked: { fileId: string; opened: ReadonlySet<string> } | null = null) {
     for (const state of [opened, null, null, null, picked]) vi.mocked(ReactHooks.useState).mockImplementationOnce(() => [state, vi.fn()]);
-    return renderToStaticMarkup(React.createElement(ProjectMapView, { project, entry: { map: source, revision: 0, build: 1 },
+    return renderToStaticMarkup(React.createElement(ProjectMapView, { onExport() {}, exportable: true, project, entry: { map: source, revision: 0, build: 1 },
       stale: false, mapping: false, locked, changes: compared, onBuild() {}, onCancel() {}, onOpenFile, onShowImport,
       onShowFunction() {}, onShowChange() {} }));
   }
@@ -303,7 +303,7 @@ describe('import path card integration', () => {
   });
 
   it.each([false, true])('locks the card together with the map (locked=%s)', locked => {
-    renderToStaticMarkup(React.createElement(ProjectMapView, { project, entry: { map, revision: 0, build: 1 },
+    renderToStaticMarkup(React.createElement(ProjectMapView, { onExport() {}, exportable: true, project, entry: { map, revision: 0, build: 1 },
       stale: false, mapping: false, locked, changes: null,
       onBuild() {}, onCancel() {}, onOpenFile() {}, onShowImport() {}, onShowFunction() {}, onShowChange() {} }));
     expect(cardProps().locked).toBe(locked);
@@ -876,7 +876,7 @@ describe('import cycles card', () => {
   it.each([false, true])('shows evidence and file actions before unused files with locked=%s', locked => {
     const onOpenFile = vi.fn();
     const onShowImport = vi.fn();
-    const html = renderToStaticMarkup(React.createElement(ProjectMapView, { project, entry: { map: cycleMap, revision: 0, build: 1 },
+    const html = renderToStaticMarkup(React.createElement(ProjectMapView, { onExport() {}, exportable: true, project, entry: { map: cycleMap, revision: 0, build: 1 },
       stale: false, mapping: false, locked, changes: null, onBuild() {}, onCancel() {}, onOpenFile, onShowImport,
       onShowFunction() {}, onShowChange() {} }));
     const card = section(html);
@@ -1322,7 +1322,7 @@ describe('stale imports on the map', () => {
     text: "import './gone';", specifier: './gone', names: ['gone.ts', 'old.ts'] };
   const source: ProjectMap = { ...map, missing: [missing] };
   function renderStale(current = source, comparison: MapChanges | null = compared, locked = false, onShowImport = vi.fn()) {
-    return renderToStaticMarkup(React.createElement(ProjectMapView, { project, entry: { map: current, revision: 0, build: 1 },
+    return renderToStaticMarkup(React.createElement(ProjectMapView, { onExport() {}, exportable: true, project, entry: { map: current, revision: 0, build: 1 },
       stale: false, mapping: false, locked, changes: comparison, onBuild() {}, onCancel() {}, onOpenFile() {}, onShowImport,
       onShowFunction() {}, onShowChange() {} }));
   }
@@ -1411,4 +1411,31 @@ describe('stale imports on the map', () => {
     expect(card).toContain('처음 300개만 보여요. 나머지 1개는 생략했어요.');
     expect((StaleImportsCard as unknown as { $$typeof: symbol }).$$typeof).toBe(Symbol.for('react.memo'));
   });
+});
+
+it.each([
+  { present: false, mapping: false, exportable: false },
+  { present: true, mapping: true, exportable: true },
+  { present: true, mapping: false, exportable: false },
+  { present: true, mapping: false, exportable: true },
+])('shows export actions only for an idle map and obeys availability: %j', ({ present, mapping, exportable }) => {
+  const onExport = vi.fn();
+  const html = renderToStaticMarkup(React.createElement(ProjectMapView, { project, entry: present ? { map, revision: 0, build: 1 } : null,
+    stale: !exportable, mapping, exportable, onExport, locked: false, changes: null,
+    onBuild() {}, onCancel() {}, onOpenFile() {}, onShowImport() {}, onShowFunction() {}, onShowChange() {} }));
+  const names = ['Markdown으로 저장', 'Markdown 복사'];
+  if (!present || mapping) {
+    for (const name of names) expect(html).not.toContain(name);
+    return;
+  }
+  expect(html.indexOf('지도 다시 만들기')).toBeLessThan(html.indexOf(names[0]));
+  expect(html.indexOf(names[0])).toBeLessThan(html.indexOf(names[1]));
+  const buttons = vi.mocked(JSX.jsxDEV).mock.results.map(result => result.value as React.ReactElement<React.ButtonHTMLAttributes<HTMLButtonElement>>)
+    .filter(element => element.type === 'button' && names.includes(element.props.children as string));
+  expect(buttons).toHaveLength(2);
+  for (const button of buttons) expect(button.props.disabled).toBe(!exportable);
+  if (!exportable) return;
+  buttons[0].props.onClick!({} as React.MouseEvent<HTMLButtonElement>);
+  buttons[1].props.onClick!({} as React.MouseEvent<HTMLButtonElement>);
+  expect(onExport.mock.calls).toEqual([['file'], ['clipboard']]);
 });
