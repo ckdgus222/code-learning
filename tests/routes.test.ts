@@ -6,6 +6,7 @@ import path from 'node:path';
 import { scanProject } from '../src/core/project/files';
 import { assertResultSize, findProjectRoutes, linkRoutes } from '../src/core/analysis/routes';
 import { MAP_LIMITS } from '../src/core/analysis/project-map';
+import type { Route } from '../src/shared/contracts';
 
 let root: string;
 beforeEach(async () => { root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-routes-'))); });
@@ -696,6 +697,100 @@ describe('FastAPI project routes', () => {
 });
 
 const flask = 'from flask import Flask\napp = Flask(__name__)\n@app.route("/users/<user_id>")\ndef read_user(user_id):\n    return user_id\n';
+
+describe('unknown route prefixes without literal segments', () => {
+  const note = '앞부분을 모르고 글자 칸도 없는 주소(/, /:id 등)는 맞춰 볼 근거가 없어 요청과 잇지 않았어요.';
+
+  it('keeps Flask app links certain when a Blueprint root is present', async () => {
+    await put('app.py', flask + '\n@app.route("/health")\ndef health(): pass');
+    await put('blog.py', 'from flask import Blueprint\nbp = Blueprint("blog", __name__)\n@bp.route("/")\ndef index(): pass');
+    await put('web.ts', "fetch('/users/1'); fetch('/health'); fetch('/a/b/c');");
+    const result = await find();
+    expect(result.routes.map(route => route.path)).toEqual(['/users/<user_id>', '/health', '/']);
+    expect(result.routes[2]).toMatchObject({ prefix: 'unknown', framework: 'flask' });
+    expect(result.links).toEqual([
+      { requestIndex: 0, routeIndex: 0, sure: true, reasons: [] },
+      { requestIndex: 1, routeIndex: 1, sure: true, reasons: [] },
+    ]);
+    expect(result.notes.filter(value => value === note)).toHaveLength(1);
+  });
+
+  it('skips Express router roots and parameters but keeps literal suffixes', async () => {
+    await put('server.ts', "import { Router } from 'express'; const router = Router(); router.get('/', () => {}); router.get('/:id', () => {}); router.get('/dogs/:id', () => {});");
+    await put('web.ts', "fetch('/dogs'); fetch('/dogs/1'); fetch('/'); fetch('/api/dogs/1');");
+    const result = await find();
+    expect(result.routes.map(route => route.path)).toEqual(['/', '/:id', '/dogs/:id']);
+    expect(result.routes.every(route => route.prefix === 'unknown')).toBe(true);
+    expect(result.links).toEqual([1, 3].map(requestIndex => ({ requestIndex, routeIndex: 2, sure: false, reasons: ['앞부분 모름'] })));
+    expect(result.notes).toEqual([note]);
+  });
+
+  it.each([
+    ['server.ts', "import express from 'express'; const app = express(); app.get('/', () => {});"],
+    ['main.py', fastapi.replace('/users/{user_id}', '/')],
+    ['main.py', flask.replace('/users/<user_id>', '/')],
+    ['app/route.ts', 'export function GET() {}'],
+  ])('preserves known app roots without a note: %s %s', async (file, source) => {
+    await put('next.config.ts', 'export default {}');
+    await put(file, source);
+    await put('web.ts', "fetch('/');");
+    const result = await find();
+    expect(result.routes[0]).toMatchObject({ path: '/', prefix: 'known' });
+    expect(result.links).toEqual([{ requestIndex: 0, routeIndex: 0, sure: true, reasons: [] }]);
+    expect(result.notes).toEqual([]);
+  });
+
+  it.each([
+    ['from fastapi import APIRouter\nrouter = APIRouter()', 'router.get', ['/{id}', '/{id}/{sub}', '/{p:path}'], '/{id}/edit', '/x/1/edit', ['앞부분 모름']],
+    ['from flask import Blueprint\nrouter = Blueprint("blog", __name__)', 'router.route', ['/<int:id>', '/<path:p>'], '/<int:id>/update', '/blog/1/update', ['앞부분 모름', '값 모양 모름']],
+  ])('requires a literal segment in Python router paths: %s', async (setup, decorator, paths, literal, request, reasons) => {
+    await put('main.py', setup + '\n' + [...paths, literal].map((address, index) => `@${decorator}("${address}")\ndef h${index}(): pass`).join('\n'));
+    await put('web.ts', `fetch('/'); fetch('/1'); fetch('/1/2'); fetch('/a/b/c'); fetch('${request}');`);
+    const result = await find();
+    expect(result.routes.map(route => route.path)).toEqual([...paths, literal]);
+    expect(result.routes.every(route => route.prefix === 'unknown')).toBe(true);
+    expect(result.links).toEqual([{ requestIndex: 4, routeIndex: paths.length, sure: false, reasons }]);
+    expect(result.notes.filter(value => value === note)).toHaveLength(1);
+  });
+
+  it.each([
+    "import { Router } from 'express'; const router = Router(); router.get('/dogs/:id', () => {});",
+    'from fastapi import APIRouter\nrouter = APIRouter()\n@router.get(address)\ndef h(): pass',
+    "import { Router } from 'express'; const router = Router(); router.get('/" + 'x'.repeat(400) + "', () => {});",
+    'from fastapi import APIRouter\nrouter = APIRouter()\n@router.api_route("/", methods=unknown)\ndef h(): pass',
+    'from flask import Blueprint\nbp = Blueprint("blog", __name__)\n@bp.route("/", subdomain="api")\ndef h(): pass',
+  ])('does not warn for literal, unreadable or unmatched routes: %s', async source => {
+    await put(source.startsWith('import ') ? 'server.ts' : 'main.py', source);
+    const result = await find();
+    expect(result.routes).toHaveLength(1);
+    expect(result.routes[0].prefix).toBe('unknown');
+    expect(result.routes[0].path === null || result.routes[0].unmatched || result.routes[0].path === '/dogs/:id').toBe(true);
+    expect(result.notes).not.toContain(note);
+  });
+
+  it.each<Pick<Route, 'path' | 'segments'>>([
+    { path: '/' }, { path: '/:id' }, { path: '/:id/:sub' }, { path: '/*' }, { path: '/rest*' },
+    { path: '/:id/*' }, { path: '/literal', segments: [] },
+    { path: '/literal', segments: [{ param: 'id' }] },
+    { path: '/literal', segments: [{ catchAll: 'rest', optional: true }] },
+  ])('excludes unsupported evidence before ambiguity and link limits: %j', async shape => {
+    await put('server.ts', "import express from 'express'; const app = express(); app.get('/health', () => {});");
+    await put('web.ts', "fetch('/health'); fetch('/health');");
+    const result = await find();
+    const routes: Route[] = [{ ...result.routes[0], ...shape, prefix: 'unknown' }, result.routes[0]];
+    expect(linkRoutes(routes, result.requests, undefined, 2)).toEqual([0, 1].map(requestIndex => ({ requestIndex, routeIndex: 1, sure: true, reasons: [] })));
+  });
+
+  it('uses structured text segments and preserves unknown request prefixes', async () => {
+    await put('server.ts', "import express from 'express'; const app = express(); app.get('/', () => {});");
+    await put('web.ts', "fetch('/api/health'); fetch(`${base}/`);");
+    const result = await find();
+    expect(linkRoutes([{ ...result.routes[0], prefix: 'unknown', segments: [{ text: 'health' }] }], result.requests))
+      .toEqual([{ requestIndex: 0, routeIndex: 0, sure: false, reasons: ['앞부분 모름'] }]);
+    expect(result.links).toEqual([{ requestIndex: 1, routeIndex: 0, sure: false, reasons: ['앞부분 모름'] }]);
+    expect(result.notes).toEqual([]);
+  });
+});
 
 describe('Flask project routes and typed links', () => {
   it('links requests with supported methods and handles Python-only projects', async () => {

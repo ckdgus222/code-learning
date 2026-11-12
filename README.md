@@ -221,6 +221,7 @@ $env:CODEX_HOME="$env:APPDATA\Code Learning\codex-home"; codex login
 - 코드 분석은 TypeScript·JavaScript가 중심입니다. Python은 코드 읽기, 프로젝트 지도의 import 연결과 FastAPI·Flask 처리 함수까지의 기능 흐름을 지원하고, Java·Go·Rust 등 다른 언어 파일과 문서 같은 일부 텍스트 파일은 원문으로만 읽을 수 있습니다.
 - Python 지도는 점으로 시작하는 상대 import와 자기 패키지 이름으로 시작하는 import만 확실한 선으로 잇습니다. 그 밖의 import는 실행 방법·Python 버전·설치된 패키지에 따라 달라져 후보 파일로 가는 추정 선(촘촘한 점선)으로 그리며 틀릴 수 있습니다. importlib처럼 실행할 때 정해지는 import는 따라가지 못합니다. 소스 파일 옆의 컴파일된 모듈, sys.modules를 직접 바꾸는 코드처럼 코드에 적힌 import 문 밖에서 정해지는 것도 보지 못합니다. 표준 라이브러리 이름은 Python 3.10~3.14를 기준으로 합니다.
 - FastAPI·Flask는 모듈 맨 위에서 만든 앱·라우터·Blueprint의 주소 데코레이터만 읽습니다. `APIRouter`의 `prefix`와 `Blueprint`의 `url_prefix`는 같은 파일의 글자만 붙이며 `include_router`·`register_blueprint`에서 붙이거나 바꾸는 앞 경로는 몰라 추정으로 잇습니다. 값 모양 주소(`<int:id>`, `{id:int}` 등)도 `값 모양 모름` 추정으로 잇고 확실한 연결 수에서 뺍니다. 실제 값이 맞는지는 검사하지 않습니다. 특수하거나 글이 섞인 주소 칸, 읽지 못한 방식·요청을 바꾸는 설정, 동적 이름·속성·주소 규칙 변경이 있는 파일은 목록에만 남깁니다. 목록의 Python 파일 가운데 `fastapi.py`·`flask.py` 또는 `fastapi/__init__.py`·`flask/__init__.py`가 있으면 해당 프레임워크만 연결을 막습니다(가상 환경의 `site-packages`·`dist-packages` 제외). 이름만 같은 폴더는 막지 않습니다. Python 처리 함수 안의 호출, Django, `app.mount`, 함수 안에서 만든 앱, 다른 파일에서 가져온 앱·라우터, Flask·Blueprint를 상속한 클래스의 인스턴스, `add_url_rule`·클래스 뷰·중첩 Blueprint 연결은 따라가지 않습니다.
+- 앞부분을 모르는 주소는 글자 칸이 하나라도 있어야 요청과 잇고, 글자 칸이 없는 `/`·`/:id` 같은 주소는 목록에만 남기며 알림으로 안내합니다.
 - 기능 흐름의 요청 경로는 기존 규칙대로 연속된 `/`와 끝의 `/`를 정리합니다. 실제 서버가 두 요청을 같게 처리하는지는 확인하지 않습니다.
 - Python 문법 검사는 하지 않습니다. 들여쓰기가 어긋난 코드처럼 Python이 실행을 거부하는 코드도 일부는 오류 표시 없이 보일 수 있습니다.
 - 연결은 주소 문자열과 코드 모양으로 찾습니다. 실제로 실행해서 확인한 결과가 아닙니다.

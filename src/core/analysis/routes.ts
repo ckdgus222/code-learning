@@ -529,6 +529,7 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
   if (unmatched) result.notes.push('Python 서버 주소 가운데 정확히 맞춰 볼 수 없는 것(특수 글자나 글이 섞인 칸, 읽지 못한 방식, 받는 요청을 바꾸는 설정)은 요청과 잇지 않았어요.');
   if (routers.has('fastapi')) result.notes.push('FastAPI의 APIRouter는 include_router로 붙이는 앞 경로를 따라가지 않아, 그 주소는 앞부분을 모르는 것으로 봤어요.');
   if (routers.has('flask')) result.notes.push('Flask의 Blueprint는 register_blueprint로 붙이거나 바꾸는 앞 경로를 따라가지 않아, 그 주소는 앞부분을 모르는 것으로 봤어요.');
+  if (result.routes.some(lacksRouteEvidence)) result.notes.push('앞부분을 모르고 글자 칸도 없는 주소(/, /:id 등)는 맞춰 볼 근거가 없어 요청과 잇지 않았어요.');
   result.links = linkRoutes(result.routes, result.requests, shouldStop);
   if (result.links.length >= ROUTE_LIMITS.links) omitted = true;
   if (omitted) {
@@ -539,13 +540,23 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
   return result;
 }
 
+/**
+ * A route whose prefix is unknown is matched against the end of a request. Without one literal segment
+ * (`/`, `/:id`) it would match every request, and that one guess would turn every other link into a guess.
+ */
+function lacksRouteEvidence(route: Route): boolean {
+  if (route.path === null || route.unmatched || route.prefix !== 'unknown') return false;
+  if (route.segments) return !route.segments.some(segment => 'text' in segment);
+  return !route.path.split('/').some(part => part && !part.startsWith(':') && !part.endsWith('*'));
+}
+
 /** Compare segments, retaining every possible candidate and its uncertainty. */
 export function linkRoutes(routes: Route[], requests: Request[], shouldStop: () => boolean = () => false,
   maxLinks: number = ROUTE_LIMITS.links): ProjectRoutes['links'] {
   const links: ProjectRoutes['links'] = [];
   // Split once; paths are already bounded, and matching compares from an offset instead of copying.
   const routeShapes = routes.map(route => {
-    if (route.path === null || route.unmatched) return null;
+    if (route.path === null || route.unmatched || lacksRouteEvidence(route)) return null;
     const parts = route.segments?.map(segment => 'text' in segment ? segment.text : 'param' in segment ? `:${segment.param}` : '*')
       ?? route.path.split('/').filter(Boolean);
     const catchAll = parts.at(-1) === '*' || !!parts.at(-1)?.endsWith('*');
