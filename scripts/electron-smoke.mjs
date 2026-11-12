@@ -54,6 +54,11 @@ await writeFile(path.join(pythonFixture, 'app/service.py'), 'from .models import
 await writeFile(path.join(pythonFixture, 'app/api.py'), 'from app.service import total\ndef run(item):\n    return total(item)\n');
 await writeFile(path.join(pythonFixture, 'main.py'), 'from app.api import run\n');
 await writeFile(path.join(pythonFixture, 'reference.ts'), 'export function total(value: number) { return value; }\n');
+const fastapiFixture = path.join(temporary, 'FastAPI 흐름 프로젝트');
+await mkdir(path.join(fastapiFixture, 'web'), { recursive: true });
+await mkdir(path.join(fastapiFixture, 'server'), { recursive: true });
+await writeFile(path.join(fastapiFixture, 'web/app.ts'), "export async function loadUser() { return fetch('/users/1'); }");
+await writeFile(path.join(fastapiFixture, 'server/main.py'), 'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/users/{user_id}")\nasync def read_user(user_id: int):\n    return find_user(user_id)\ndef find_user(user_id):\n    return user_id\n');
 const aliasFixture = path.join(temporary, '경로 별칭 프로젝트');
 await mkdir(path.join(aliasFixture, 'src'), { recursive: true });
 await writeFile(path.join(aliasFixture, 'tsconfig.json'), '{"compilerOptions":{"paths":{"@/*":["src/*"]}}}');
@@ -3575,6 +3580,51 @@ try {
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
   });
+  await check('FastAPI flow: frontend request, Python handler, function navigation and question preparation', async () => {
+    await dialogTo(fastapiFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: 'FastAPI 흐름 프로젝트', exact: true }).waitFor();
+    await openServerFeatures();
+    await page.getByRole('region', { name: '기능 목록', exact: true }).getByRole('listitem')
+      .filter({ hasText: '보기 · /users/{user_id}' }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+    const story = page.getByRole('region', { name: '기능 따라가기', exact: true });
+    const disclosure = page.locator('details').filter({ has: page.locator('summary', { hasText: /^전체 그림과 단계 보기$/ }) });
+    await disclosure.waitFor();
+    if (await disclosure.getAttribute('open') === null) await disclosure.locator(':scope > summary').click();
+    const diagram = page.getByTestId('feature-flow-canvas');
+    await diagram.getByRole('group', { name: 'server/main.py · read_user', exact: true }).waitFor();
+    await diagram.getByRole('group', { name: 'web/app.ts · GET /users/1', exact: true }).waitFor();
+    assert.equal(await diagram.getByText('find_user', { exact: true }).count(), 0);
+    const limits = page.locator('details').filter({ has: page.locator('summary', { hasText: /^이 흐름을 찾은 방법과 한계$/ }) });
+    if (await limits.getAttribute('open') === null) await limits.locator(':scope > summary').click();
+    await limits.getByText('Python 처리 함수 안에서 부르는 함수는 아직 따라가지 않아요.', { exact: true }).waitFor();
+    const step = page.getByRole('region', { name: '기능 흐름 단계', exact: true }).getByTestId('feature-step')
+      .filter({ has: page.locator('b', { hasText: /^read_user$/ }) });
+    await step.getByRole('button', { name: '코드 보기', exact: true }).click();
+    await page.getByRole('heading', { name: 'server/main.py', exact: true }).waitFor();
+    assert.match(await page.getByTestId('evidence-range').innerText(), /server\/main.py · 3–5줄/);
+    await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    await step.getByRole('button', { name: '이 함수 흐름', exact: true }).click();
+    await page.getByRole('heading', { name: '함수 안 순서', exact: true }).waitFor();
+    assert.equal(await page.getByRole('navigation', { name: '함수와 단계', exact: true })
+      .getByRole('button', { name: 'read_user', exact: true }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.getByText('함수를 찾지 못했어요', { exact: false }).count(), 0);
+    await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    await story.getByRole('button', { name: /단계 서버 받는 곳$/ }).click();
+    await story.getByRole('button', { name: '이 함수 안 순서', exact: true }).click();
+    await page.getByRole('heading', { name: '함수 안 순서', exact: true }).waitFor();
+    assert.equal(await page.getByRole('navigation', { name: '함수와 단계', exact: true })
+      .getByRole('button', { name: 'read_user', exact: true }).getAttribute('aria-pressed'), 'true');
+    await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    const ask = story.getByRole('button', { name: 'AI에게 쉽게 물어보기', exact: true });
+    await until(() => ask.isEnabled());
+    // Preparing a question selects evidence; no consent or send button is pressed.
+    await ask.click();
+    await page.getByRole('textbox', { name: '선택한 코드에 질문', exact: true }).waitFor();
+    assert.equal(await page.getByTestId('question-scope').innerText(), 'server/main.py · 3–5행');
+    assert.match(await story.getByTestId('story-function-location').innerText(), /read_user/);
+    await page.screenshot({ path: path.join(artifacts, 'fastapi-flow.png') });
+  });
   await check('Python reader: methods, steps, colours, limits and function flow; TS keeps its AI card and hint', async () => {
     await dialogTo(pythonFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
@@ -3596,7 +3646,7 @@ try {
     await page.getByRole('button', { name: '다른 조건 확인', exact: true }).click();
     await page.waitForFunction(() => [...document.querySelectorAll('.cm-content .cm-line span')].some(span =>
       getComputedStyle(span).color !== getComputedStyle(span.closest('.cm-content')).color));
-    await page.getByText('Python은 함수·클래스·import 목록, 구문 단계와 프로젝트 지도의 import 연결까지만 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 기능 흐름은 아직 TypeScript·JavaScript만 지원해요.', { exact: true }).waitFor();
+    await page.getByText('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도의 import 연결과 FastAPI 주소의 기능 흐름(처리 함수까지)을 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 처리 함수 안의 호출 따라가기는 아직 TypeScript·JavaScript만 지원해요.', { exact: true }).waitFor();
     assert.equal(await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).count(), 0);
     await page.getByText('부르는 곳·값 찾기는 아직 TypeScript·JavaScript만 지원해요. 단계는 ‘이 함수 흐름으로 보기’에서 하나씩 볼 수 있어요.', { exact: true }).waitFor();
     await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();

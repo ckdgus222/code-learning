@@ -390,3 +390,11 @@ it('breaks shortest-path ties by sure edge count then edge order, excluding cycl
   graph.edges[0].sure = true;
   expect(storyOf(graph, screen.id).flatMap(step => step.nodes)).toEqual([screen, a, request]);
 });
+
+it('names FastAPI groups after the handler file', () => {
+  const route: Route = { method: 'GET', path: '/accounts/{id}', framework: 'fastapi', prefix: 'known',
+    handler: { fileId: 'f', fileHash: 'h', name: 'read_user', startLine: 3, startUtf16: 0, endUtf16: 20 },
+    basis: { text: '@app.get', range: { fileId: 'f', fileHash: 'h', text: '@app.get', startLine: 3, endLine: 3, startUtf16: 0, endUtf16: 10 } } };
+  expect(groupNameOf(route, 'routers/users.py')).toBe('users');
+  expect(groupNameOf(route, 'routers/users.router.py')).toBe('users');
+});

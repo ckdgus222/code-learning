@@ -4,7 +4,9 @@ import type { CallSite, ProjectFile, ProjectRoutes, Request, Route, ValueSite } 
 import { readPathAliases, resolveImport } from './path-aliases';
 import { AppError } from '../../shared/errors';
 import { MAX_FILE_BYTES, readAllowed } from '../project/files';
-import { codeFile, MAP_LIMITS, type MapLimits } from './project-map';
+import { codeFile, pythonFile, MAP_LIMITS, type MapLimits } from './project-map';
+import { fastapiRoutes } from './python-routes';
+import { pythonTestFile } from './reading-order';
 import { formatNextPath, nextRouteOf } from './next-routes';
 import { firstLine, hasUnsupportedCertainty, lineRange, nearest, readFacts, reassigned, sameRange, simpleProperties, type CallFact, type FileFacts, type Scope } from './names';
 import { functionName, functionTypes } from './syntax';
@@ -32,7 +34,7 @@ export function assertResultSize(value: unknown): void {
   }
 }
 // A longer path is treated as unreadable: it would multiply the result's size and the matching work.
-const bounded = (path: string): string | null =>
+export const bounded = (path: string): string | null =>
   path.length <= ROUTE_LIMITS.pathLength && path.split('/').length - 1 <= ROUTE_LIMITS.segments ? path : null;
 export const isTestFile = (name: string) => /(^|\/)__tests__\//.test(name) || /\.(test|spec)\.[^/]+$/.test(name);
 const children = (node: Node | null | undefined) => node?.namedChildren.filter(child => child.type !== 'comment') ?? [];
@@ -475,6 +477,48 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
     }
   }
   if (wrapperSearchCut) { result.limited = true; result.notes.push('감싼 요청 함수가 너무 많아 일부만 찾았어요.'); }
+  // Only listed Python files can shadow the installed package; documentation and virtual environments cannot.
+  const shadow = files.filter(file => pythonFile.test(file.relativePath)).map(file => file.relativePath).sort().find(name => {
+    const parts = name.normalize('NFKC').toLowerCase().split('/');
+    const moduleIndex = parts.findIndex((part, index) => part === 'fastapi' || index === parts.length - 1 && part === 'fastapi.py');
+    return moduleIndex >= 0 && !parts.slice(0, moduleIndex).some(part => part === 'site-packages' || part === 'dist-packages');
+  });
+  if (shadow) result.notes.push(`프로젝트 안에 fastapi라는 이름의 Python 모듈이 있어(${shadow}), FastAPI 주소를 요청과 잇지 않았어요.`);
+  let usesRouter = false;
+  let unmatched = false;
+  for (const file of files.filter(file => pythonFile.test(file.relativePath) && !isTestFile(file.relativePath) && !pythonTestFile(file.relativePath))
+    .sort((a, b) => a.relativePath.localeCompare(b.relativePath))) {
+    if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
+    const left = limits.bytes - bytes;
+    if (count >= limits.files || left <= 0) {
+      result.limited = true;
+      result.notes.push('읽기 한도에 닿아 Python 파일 일부는 확인하지 못했어요.');
+      break;
+    }
+    if (!room(result.routes, ROUTE_LIMITS.routes)) break;
+    count++;
+    try {
+      const source = await readAllowed(root, file.relativePath, Math.min(MAX_FILE_BYTES, left));
+      bytes += Buffer.byteLength(source.text);
+      const found = fastapiRoutes(file, source.text, source.hash, limits.nodesPerFile, ROUTE_LIMITS.routes - result.routes.length);
+      if (!found.complete) { result.limited = true; result.notes.push(`${file.relativePath}: 일부만 확인했어요.`); }
+      omitted ||= found.cut;
+      usesRouter ||= found.usesRouter;
+      if (!shadow && found.odd && found.routes.length) result.notes.push(`${file.relativePath}: 실행 중에 이름이나 속성을 바꿀 수 있는 코드가 있어, 이 파일의 FastAPI 주소는 요청과 잇지 않았어요.`);
+      if (!shadow && !found.odd && found.routes.some(route => route.unmatched)) unmatched = true;
+      for (const route of found.routes) {
+        if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
+        if (shadow) { route.unmatched = true; delete route.segments; }
+        result.routes.push(route);
+      }
+    } catch (error) {
+      if (error instanceof AppError && error.code === 'CANCELLED') throw error;
+      result.limited = true;
+      result.notes.push(`${file.relativePath}: ${error instanceof AppError ? error.message : '파일을 읽지 못했어요.'}`);
+    }
+  }
+  if (unmatched) result.notes.push('FastAPI 주소 가운데 정확히 맞춰 볼 수 없는 모양({id:int}, 특수 글자가 든 주소 등)과 방식을 읽지 못한 것은 요청과 잇지 않았어요.');
+  if (usesRouter) result.notes.push('FastAPI의 APIRouter는 include_router로 붙이는 앞 경로를 따라가지 않아, 그 주소는 앞부분을 모르는 것으로 봤어요.');
   result.links = linkRoutes(result.routes, result.requests, shouldStop);
   if (result.links.length >= ROUTE_LIMITS.links) omitted = true;
   if (omitted) {
@@ -491,7 +535,7 @@ export function linkRoutes(routes: Route[], requests: Request[], shouldStop: () 
   const links: ProjectRoutes['links'] = [];
   // Split once; paths are already bounded, and matching compares from an offset instead of copying.
   const routeShapes = routes.map(route => {
-    if (route.path === null) return null;
+    if (route.path === null || route.unmatched) return null;
     const parts = route.segments?.map(segment => 'text' in segment ? segment.text : 'param' in segment ? `:${segment.param}` : '*')
       ?? route.path.split('/').filter(Boolean);
     const catchAll = parts.at(-1) === '*' || !!parts.at(-1)?.endsWith('*');

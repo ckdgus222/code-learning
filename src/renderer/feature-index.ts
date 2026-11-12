@@ -46,7 +46,7 @@ export function featureIndex(routes: ProjectRoutes, flows: FeatureFlow[], pathOf
     seen.add(routeIndex);
     const route = routes.routes[routeIndex];
     const parts = route.path?.split('/').filter(Boolean) ?? [];
-    const key = route.framework === 'nest' ? groupNameOf(route, pathOf(route.handler.fileId))
+    const key = route.framework === 'nest' || route.framework === 'fastapi' ? groupNameOf(route, pathOf(route.handler.fileId))
       : parts[0] === 'api' ? parts[1] ?? 'api' : parts[0] ?? '주소 모름';
     let group = groups.get(key);
     if (!group) {

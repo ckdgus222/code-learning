@@ -373,11 +373,13 @@ export interface Route {
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'ALL';
   path: string | null;
   prefix: 'known' | 'unknown';
-  framework: 'nest' | 'next' | 'express';
+  framework: 'nest' | 'next' | 'express' | 'fastapi';
   handler: CallTarget;
   basis: { text: string; range: ValueSite };
-  /** Next catch-all parameters retain their optional/required distinction. */
+  /** Path parameters for matching requests: Next and FastAPI spell them differently from `:name`. */
   segments?: import('../core/analysis/next-routes').NextSegment[];
+  /** True when the path or method cannot be expressed by request matching. */
+  unmatched?: true;
 }
 export interface Request extends CallSite {
   branch?: 'consequence' | 'alternative';

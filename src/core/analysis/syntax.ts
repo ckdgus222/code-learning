@@ -186,7 +186,7 @@ export function analyzeSource(
   const root = parse(text, relativePath);
   result.warnings.push(STRUCTURE_NOTE);
   if (language === 'python') {
-    result.warnings.push('Python은 함수·클래스·import 목록, 구문 단계와 프로젝트 지도의 import 연결까지만 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 기능 흐름은 아직 TypeScript·JavaScript만 지원해요.');
+    result.warnings.push('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도의 import 연결과 FastAPI 주소의 기능 흐름(처리 함수까지)을 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 처리 함수 안의 호출 따라가기는 아직 TypeScript·JavaScript만 지원해요.');
   }
   if (root.hasError) {
     result.warnings.push(language === 'python'

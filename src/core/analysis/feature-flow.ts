@@ -3,7 +3,8 @@ import type { CallTarget, FeatureFlow, FlowEdge, FlowAfter, FlowAsk, FlowControl
 import { readPathAliases, resolveImport, type PathAliases } from './path-aliases';
 import { AppError } from '../../shared/errors';
 import { findFunctionCalls, type CallsCache } from './calls';
-import { MAP_LIMITS, type MapLimits } from './project-map';
+import { readAllowed, MAX_FILE_BYTES } from '../project/files';
+import { pythonFile, MAP_LIMITS, type MapLimits } from './project-map';
 import { formatNextPath, nextRouteOf } from './next-routes';
 import { firstCode, firstLine, hasToken, hasUnsupportedCertainty, lineRange, nearest, reassigned, sameRange, simpleProperties, unwrapped, propertyName, type CallFact, type Declaration, type FileFacts } from './names';
 import { functionName, functionTypes } from './syntax';
@@ -553,6 +554,17 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
     const node = backQueue.shift()!;
     if (backSeen.has(node.id)) continue;
     backSeen.add(node.id);
+    if (pythonFile.test(node.relativePath)) {
+      stop();
+      // A batch builds one flow per route; a file with many routes is read once, like the TS/JS files.
+      const source = cache.texts.get(node.fileId) ?? await readAllowed(root, node.relativePath, Math.min(MAX_FILE_BYTES, limits.bytes));
+      cache.texts.set(node.fileId, source);
+      stop();
+      if (source.hash !== node.fileHash) throw new AppError('CHANGED', '함수를 고른 뒤 파일이 바뀌었어요. 파일을 다시 읽어 주세요.');
+      node.range.endLine = node.range.startLine + source.text.slice(node.range.startUtf16, node.range.endUtf16).split('\n').length - 1;
+      flow.notes.push('Python 처리 함수 안에서 부르는 함수는 아직 따라가지 않아요.');
+      continue;
+    }
     const { found, facts, fn } = await inspect(node);
     Object.assign(node, serverFacts(fn, facts));
     const outside = found.calls.filter(call => call.status === 'external' || call.status === 'unknown').map(call => call.text);

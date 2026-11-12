@@ -531,3 +531,164 @@ it('does not recognize internal aliases named axios or express as packages', asy
   expect(after.requests).toEqual([]);
   expect(after.routes).toEqual([]);
 });
+
+const fastapi = 'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/users/{user_id}")\nasync def read_user(user_id: int):\n    return user_id\n';
+
+describe('FastAPI project routes', () => {
+  it('connects literal and template requests, preserving methods and Python-only projects', async () => {
+    await put('server/main.py', fastapi);
+    let result = await find();
+    expect(result.routes).toHaveLength(1);
+    expect(result.requests).toEqual([]);
+    expect(result.limited).toBe(false);
+    await put('web/app.ts', "fetch('/users/1'); fetch(`/users/${id}`); fetch('/users/1', {method:'DELETE'});");
+    result = await find();
+    expect(result.links).toEqual([
+      { requestIndex: 0, routeIndex: 0, sure: true, reasons: [] },
+      { requestIndex: 1, routeIndex: 0, sure: true, reasons: [] },
+    ]);
+    expect(result.notes).toEqual([]);
+  });
+  it('infers router prefixes and emits the router note once', async () => {
+    await put('server/users.py', 'from fastapi import APIRouter\nrouter = APIRouter(prefix="/users")\n@router.get("/{id}")\n@router.post("/{id}")\ndef h(): pass');
+    await put('web/app.ts', "fetch('/api/users/1');");
+    const result = await find();
+    expect(result.links).toEqual([{ requestIndex: 0, routeIndex: 0, sure: false, reasons: ['앞부분 모름'] }]);
+    expect(result.notes.filter(note => note.includes('APIRouter'))).toHaveLength(1);
+  });
+  it.each([
+    ['/files/{p:path}', '/files/a/b', true], ['/files/{p:path}', '/files/', true], ['/files/{p:path}', '/files', true],
+    ['/files/{p:path}/meta', '/files/a/b/meta', false], ['/files/{p:path}/', '/files', false],
+    ['/v{n}', '/unrelated', false], ['/users/{id:int}', '/users/alice', false],
+    ['/files/:name', '/files/alice', false], ['/files/report*', '/files/unrelated/a', false],
+    ['/users//me', '/users/me', false], ['/users/{사용자}', '/users/alice', false], ['', '/', false], ['/', '/', true],
+  ])('links only expressible route paths: %s -> %s', async (address, request, linked) => {
+    await put('main.py', fastapi.replace('/users/{user_id}', address));
+    await put('web.ts', `fetch('${request}')`);
+    const result = await find();
+    expect(result.routes[0].path).toBe(address);
+    expect(result.links).toHaveLength(linked ? 1 : 0);
+    expect(result.notes.filter(note => note.includes('정확히 맞춰'))).toHaveLength(linked ? 0 : 1);
+  });
+  it.each([
+    ['FastAPI(redirect_slashes=False)', '@app.get("/users/")', '/users'],
+    ['FastAPI(redirect_slashes=False)', '@app.get("/files/{p:path}")', '/files'],
+    ['FastAPI()', '@app.api_route("/users", **options)', '/users'],
+    ['FastAPI()', '@app.api_route("/users", methods=unknown)', '/users'],
+  ])('does not confirm unknown methods or slash behavior: %s %s', async (create, decorator, request) => {
+    await put('main.py', `from fastapi import FastAPI\napp = ${create}\n${decorator}\ndef h(): pass`);
+    await put('web.ts', `fetch('${request}'); fetch('${request}', {method:'DELETE'});`);
+    const result = await find();
+    expect(result.routes).toHaveLength(1);
+    expect(result.links).toEqual([]);
+  });
+  it('does not link unusual files, while ordinary Python files still link', async () => {
+    await put('odd.py', fastapi + '\nimport fastapi as f\nf.FastAPI = other_factory');
+    await put('web.ts', "fetch('/users/1'); fetch('/normal/1');");
+    let result = await find();
+    expect(result.routes).toHaveLength(1);
+    expect(result.links).toEqual([]);
+    expect(result.notes.filter(note => note.includes('실행 중에 이름'))).toHaveLength(1);
+    expect(result.notes.some(note => note.includes('정확히 맞춰'))).toBe(false);
+    await put('tool.py', 'exec(code)');
+    expect((await find()).notes.filter(note => note.includes('실행 중에 이름'))).toEqual(['odd.py: 실행 중에 이름이나 속성을 바꿀 수 있는 코드가 있어, 이 파일의 FastAPI 주소는 요청과 잇지 않았어요.']);
+    await put('normal.py', fastapi.replace('/users/', '/normal/'));
+    result = await find();
+    expect(result.links).toEqual([{ requestIndex: 1, routeIndex: 0, sure: true, reasons: [] }]);
+  });
+  it.each([
+    ['fastapi.py', true], ['libs/fastapi/__init__.py', true], ['FastAPI/x.py', true], ['ｆａｓｔａｐｉ.py', true],
+    ['docs/fastapi.md', false], ['fastapi.json', false], ['fastapi/README.md', false],
+    ['env/lib/python3.12/site-packages/fastapi/__init__.py', false], ['env/dist-packages/fastapi.py', false],
+    ['fastapi_utils.py', false], ['my_fastapi/x.py', false],
+  ])('uses only Python paths from scanProject to detect package shadowing: %s', async (name, shadow) => {
+    await put(name, 'from flask import Flask as FastAPI');
+    await put('main.py', fastapi.replace('FastAPI()', 'FastAPI(__name__)'));
+    await put('web.ts', "fetch('/users/1');");
+    const project = await scanProject(root, randomUUID());
+    expect(project.files.some(file => file.relativePath === name)).toBe(true);
+    const result = await findProjectRoutes(root, project.id, project.files);
+    expect(result.routes).toHaveLength(1);
+    expect(result.links).toHaveLength(shadow ? 0 : 1);
+    expect(result.notes.filter(note => note.includes('Python 모듈이 있어'))).toEqual(shadow
+      ? [`프로젝트 안에 fastapi라는 이름의 Python 모듈이 있어(${name}), FastAPI 주소를 요청과 잇지 않았어요.`] : []);
+    expect(result.notes.some(note => note.includes('정확히 맞춰'))).toBe(false);
+    if (shadow) { expect(result.routes[0].unmatched).toBe(true); expect(result.routes[0].segments).toBeUndefined(); }
+  });
+  it('reports the first shadow path once and suppresses per-file warnings', async () => {
+    await put('a/fastapi.py', ''); await put('z/fastapi.py', '');
+    await put('main.py', fastapi + '\napp.get = other');
+    await put('typed.py', fastapi.replace('{user_id}', '{user_id:int}'));
+    const note = '프로젝트 안에 fastapi라는 이름의 Python 모듈이 있어(a/fastapi.py), FastAPI 주소를 요청과 잇지 않았어요.';
+    expect((await find()).notes).toEqual([note]);
+    const project = await scanProject(root, randomUUID());
+    expect((await findProjectRoutes(root, project.id, project.files.toReversed())).notes).toEqual([note]);
+  });
+  it('preserves TS/JS lists and nonoverlapping links and keeps Nest prefixes off Python routes', async () => {
+    await put('server.ts', "@Controller('dogs') class Dogs { @Get() list() {} }");
+    await put('setup.ts', "app.setGlobalPrefix('api');");
+    await put('web.ts', "fetch('/api/dogs'); fetch('/users/1');");
+    await put('main.py', fastapi);
+    const project = await scanProject(root, randomUUID());
+    const before = await findProjectRoutes(root, project.id, project.files.filter(file => !file.relativePath.endsWith('.py')));
+    const after = await findProjectRoutes(root, project.id, project.files);
+    expect(after.routes.filter(route => route.framework !== 'fastapi')).toEqual(before.routes);
+    expect(after.requests).toEqual(before.requests);
+    expect(after.links.filter(link => link.requestIndex === 0)).toEqual(before.links);
+    expect(after.routes.at(-1)?.path).toBe('/users/{user_id}');
+    expect(after.links.at(-1)).toMatchObject({ requestIndex: 1, sure: true });
+  });
+  it('retains every overlapping server as an uncertain candidate', async () => {
+    await put('server.ts', "@Controller('users') class Users { @Get(':id') read() {} }");
+    await put('main.py', fastapi);
+    await put('web.ts', "fetch('/users/1');");
+    const result = await find();
+    expect(result.links).toHaveLength(2);
+    expect(result.links.every(link => !link.sure && link.reasons.includes('후보 여럿'))).toBe(true);
+  });
+  it('shares the link limit in request order and reports omitted later TS links', async () => {
+    await put('server.ts', "@Controller('health') class Health { @Get() read() {} }");
+    await put('web.ts', "fetch('/users/1');\n".repeat(6) + "fetch('/health');");
+    const before = await find();
+    const many = 'from fastapi import FastAPI\napp = FastAPI()\n' + Array.from({ length: 900 }, (_, i) => `@app.get('/users/{id}')\ndef h${i}(): pass`).join('\n');
+    await put('main.py', many);
+    const full = await find();
+    expect(full.links).toHaveLength(5000);
+    expect(full.links.some(link => link.requestIndex === 6)).toBe(false);
+    expect(full.notes).toContainEqual(expect.stringContaining('연결 5000개'));
+    await put('main.py', fastapi);
+    const small = await find();
+    expect(small.links.filter(link => link.requestIndex === 6)).toEqual(before.links);
+  });
+  it('excludes Python test helpers and collects normal files', async () => {
+    for (const name of ['tests/test_api.py', 'test_main.py', 'conftest.py', 'test/helper.py', 'other_test.py', '__tests__/api.py']) await put(name, fastapi);
+    await put('main.py', fastapi);
+    expect((await find()).routes).toHaveLength(1);
+  });
+  it('shares file and byte budgets, reports unreadable files and incomplete syntax walks', async () => {
+    await put('client.ts', "fetch('/users/1');");
+    await put('main.py', fastapi);
+    expect((await find({ ...MAP_LIMITS, files: 1 }))).toMatchObject({ limited: true, routes: [] });
+    expect((await find({ ...MAP_LIMITS, bytes: Buffer.byteLength("fetch('/users/1');") })))
+      .toMatchObject({ limited: true, routes: [], notes: ['읽기 한도에 닿아 Python 파일 일부는 확인하지 못했어요.'] });
+    await put('main.py', fastapi + '\nx = 1\n'.repeat(30));
+    const partial = await find({ ...MAP_LIMITS, nodesPerFile: 40 });
+    expect(partial.limited).toBe(true);
+    expect(partial.notes).toContain('main.py: 일부만 확인했어요.');
+    expect(partial.routes).toHaveLength(1);
+    expect(partial.routes.every(route => route.unmatched)).toBe(true);
+    const project = await scanProject(root, randomUUID());
+    project.files.push({ id: 'missing', relativePath: 'missing.py', size: 1 });
+    const missing = await findProjectRoutes(root, project.id, project.files);
+    expect(missing.notes).toContainEqual(expect.stringMatching(/^missing.py:/));
+  });
+  it('caps Python routes and notices cancellation during Python processing', async () => {
+    await put('main.py', 'from fastapi import FastAPI\napp = FastAPI()\n' + Array.from({ length: 1005 }, (_, i) => `@app.get('/x${i}')\ndef h${i}(): pass`).join('\n'));
+    const result = await find();
+    expect(result.routes).toHaveLength(1000);
+    expect(result.notes).toContainEqual(expect.stringContaining('받는 곳 1000개'));
+    const project = await scanProject(root, randomUUID());
+    let checks = 0;
+    await expect(findProjectRoutes(root, project.id, project.files, MAP_LIMITS, () => ++checks > 5)).rejects.toMatchObject({ code: 'CANCELLED' });
+  });
+});

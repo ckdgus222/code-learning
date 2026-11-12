@@ -1051,3 +1051,33 @@ it('reads alias configs once across all routes and nested call searches', async 
     expect(read.mock.calls.filter(([, name]) => name === 'web/tsconfig.json')).toHaveLength(1);
   } finally { read.mockRestore(); }
 });
+
+it('ends a FastAPI flow at the decorated handler, keeping its request and frontend caller', async () => {
+  const python = 'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/users/{user_id}")\nasync def read_user(user_id: int):\n    return find_user(user_id)\ndef find_user(user_id):\n    return user_id\n';
+  await put('server/main.py', python);
+  await put('web/app.ts', "export async function loadUser() { return fetch('/users/1'); }");
+  const { project, routes, flow } = await analyze();
+  const back = flow.nodes.filter(node => node.side === 'back');
+  expect(back).toHaveLength(1);
+  expect(back[0]).toMatchObject({ name: 'read_user', relativePath: 'server/main.py', range: { startLine: 3, endLine: 5 }, outside: [], stores: [], stops: [] });
+  expect(flow.nodes.map(node => node.name)).toEqual(expect.arrayContaining(['read_user', 'GET /users/1', 'loadUser']));
+  expect(flow.nodes.some(node => node.name === 'find_user')).toBe(false);
+  expect(flow.edges.find(edge => edge.kind === 'route')).toMatchObject({ to: back[0].id, sure: true });
+  expect(flow.notes.filter(note => note === 'Python 처리 함수 안에서 부르는 함수는 아직 따라가지 않아요.')).toHaveLength(1);
+  expect(flow.limited).toBe(false);
+  await put('server/main.py', python + '\n# changed');
+  await expect(buildFeatureFlow(root, project.id, project.files, routes, 0)).rejects.toMatchObject({ code: 'CHANGED' });
+});
+
+it('builds mixed TypeScript and Python flows in one batch', async () => {
+  await put('server/main.py', 'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/users/{id}")\ndef read_user(id): return id');
+  await put('server/health.ts', "@Controller('health') class Health { @Get() read() { return 'ok'; } }");
+  await put('web/app.ts', "export function loadUser() { fetch('/users/1'); } export function loadHealth() { fetch('/health'); }");
+  const project = await scanProject(root, randomUUID());
+  const routes = await findProjectRoutes(root, project.id, project.files);
+  const flows = await buildFeatureFlows(root, project.id, project.files, routes);
+  expect(flows).toHaveLength(2);
+  expect(flows.map(flow => flow.nodes.filter(node => node.side === 'back').map(node => node.name))).toEqual([['Health.read'], ['read_user']]);
+  expect(flows.every(flow => flow.edges.some(edge => edge.kind === 'route'))).toBe(true);
+  expect(flows.every(flow => !flow.limited)).toBe(true);
+});

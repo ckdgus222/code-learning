@@ -27,7 +27,8 @@ export interface PythonFacts {
   plain(path: string): boolean;
 }
 
-const normalize = (name: string) => name.normalize('NFKC');
+/** Python compares identifiers after NFKC: `ａｐｐ` and `app` are one name. */
+export const normalize = (name: string) => name.normalize('NFKC');
 const importedName = (node: Parser.SyntaxNode) => node.type === 'aliased_import' ? node.childForFieldName('name')! : node;
 const partsOf = (node: Parser.SyntaxNode) => node.namedChildren.filter(child => child.type === 'identifier').map(child => child.text);
 

@@ -164,3 +164,9 @@ it('deduplicates features and screens, sorts keys and route indexes and includes
     expect(index[1].features[0].haystack).toContain(word);
   }
 });
+
+it('groups FastAPI routes by the handler file instead of the address', () => {
+  const python = { ...route, framework: 'fastapi' as const, path: '/accounts/{id}' };
+  const result = featureIndex({ ...routes, routes: [python] }, [flow], () => 'routers/users.py');
+  expect(result[0].key).toBe('users');
+});

@@ -1,6 +1,10 @@
 import type { MapFile, ProjectMap, ReadingOrder, ReadingStep } from '../../shared/contracts';
 import { isConfigFile, isTestPath, typeDeclarationFile } from './unused-files';
 
+// Helpers kept beside tests, and the names pytest collects by default.
+export const pythonTestFile = (relativePath: string) => /(?:^|\/)tests?\//.test(relativePath)
+  || /(?:^|\/)(?:test_[^/]*|[^/]*_test|conftest)\.py$/.test(relativePath);
+
 export const READING_STARTS = 3;
 export const READING_STEPS = 30;
 
@@ -10,9 +14,7 @@ export const READING_STEPS = 30;
  */
 export function supportFile(relativePath: string): boolean {
   return isTestPath(relativePath) || isConfigFile(relativePath) || typeDeclarationFile.test(relativePath)
-    // Helpers kept beside tests, and the names pytest collects by default.
-    || /(?:^|\/)tests?\//.test(relativePath)
-    || /(?:^|\/)(?:test_[^/]*|[^/]*_test|conftest)\.py$/.test(relativePath);
+    || pythonTestFile(relativePath);
 }
 
 /**
