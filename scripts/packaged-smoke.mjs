@@ -9,6 +9,7 @@ import path from 'node:path';
 import { checkPlanCompare } from './plan-compare-smoke.mjs';
 import { checkViewSettings, checkCodeColors } from './view-settings-smoke.mjs';
 import { checkPlainLaunch, createInspectableCopy } from './fuse-check.mjs';
+import { checkPythonFileExplanation } from './python-file-explanation-smoke.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const packagedApp = {
@@ -364,7 +365,7 @@ try {
   const pythonGuide = page.getByRole('region', { name: '이 파일 안내', exact: true }).locator('.file-guide');
   if (!await pythonGuide.evaluate(element => element.open)) await pythonGuide.locator(':scope > summary').click();
   await pythonGuide.getByText('이 파일의 함수 3개', { exact: true }).waitFor();
-  assert.equal(await pythonGuide.getByText('AI로 이 파일 설명 만들기', { exact: false }).count(), 0);
+  assert.equal(await pythonGuide.getByText('AI로 이 파일 설명 만들기', { exact: false }).count(), 2);
   await pythonGuide.getByRole('button', { name: 'worker.py 열기', exact: true }).click();
   await page.getByRole('heading', { name: 'worker.py', exact: true }).waitFor();
   await page.getByRole('button', { name: 'order.py', exact: true }).click();
@@ -496,6 +497,7 @@ try {
   await writeFile(path.join(pythonFixture, 'settings.py'), '# changed\nLIMIT: int = 9\n');
   await importedValue.getByRole('button', { name: '코드 보기', exact: true }).last().click();
   await page.getByText('값을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 다시 찾아 주세요.', { exact: true }).waitFor();
+  await checkPythonFileExplanation(app, page, path.join(temp, 'Python 파일 설명'));
   await app.close(); app = undefined;
   await testCopy.cleanup(); testCopy = undefined;
   const report = { passed: true, checks: ['Python native grammar, method outline and conditional step', 'screen groups and cached flow selection without flow IPC', 'system light and dark themes, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', onMac ? 'changes from git inside its sandbox' : 'Windows changes unavailable notice', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel', 'release fuses and plain startup', 'UI uses an inspect-enabled temporary copy', 'entire distributed app unchanged'], state };
@@ -509,6 +511,7 @@ try {
   report.checks.push('Python same-file typed method candidates, reverse-only candidate callers and no incoming examples');
   report.checks.push('Python imported class and annotated method candidates, original-file navigation and no duplicate import value');
   report.checks.push('Python static file guide, safe import opening, function and class evidence, caller search and function selection');
+  report.checks.push('Python fake AI file explanation, consent, real chunks and storage, decorator evidence, reopen and stale locking');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

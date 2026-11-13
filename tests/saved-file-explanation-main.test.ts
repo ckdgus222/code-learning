@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { channels, type ProjectView, type Result } from '../src/shared/contracts';
 import type { FileExplanationResult } from '../src/shared/ai';
+import { splitFileChunks } from '../src/core/analysis/file-chunks';
 
 // Real IPC actions and SQLite, with the Electron window, scanning and AI runtime replaced. No AI process runs.
 const host = vi.hoisted(() => ({
@@ -35,7 +36,7 @@ vi.mock('../src/main/project-session', async () => {
   const { randomUUID } = await import('node:crypto');
   const { AppError } = await import('../src/shared/errors');
   return { workersStopped: async () => {}, ProjectSession: class {
-    files = [{ id: randomUUID(), relativePath: 'saved.ts', size: 20 }, { id: randomUUID(), relativePath: 'other.ts', size: 20 }];
+    files = [{ id: randomUUID(), relativePath: 'saved.ts', size: 20 }, { id: randomUUID(), relativePath: 'other.ts', size: 20 }, { id: randomUUID(), relativePath: 'saved.py', size: 100 }];
     constructor(readonly id: string) {}
     async open() { return { id: this.id, name: 'test', files: this.files }; }
     relativePathOf(fileId: string) {
@@ -144,4 +145,26 @@ it.each(['broken JSON', 'old schema', 'wrong path'])('leaves a saved %s row unto
     expect(await invoke(channels.savedFileExplanation, { projectId: project.id, fileId: result.range.fileId })).toEqual({ ok: true, value: null });
     expect(writer.prepare('SELECT result FROM ai_file_explanations WHERE project_id = ? AND relative_path = ?').get(project.id, 'saved.ts')).toEqual({ result: stored });
   } finally { writer.close(); }
+});
+
+it('rebinds a saved Python file and every chunk while retaining original function ranges and hashes', async () => {
+  const file = project.files.find(file => file.relativePath === 'saved.py')!;
+  const text = '# 😀\n@decorate\nasync def run():\n    return 1\nclass C:\n    def method(self):\n        return 2\n';
+  const fileHash = 'b'.repeat(64);
+  const chunks = splitFileChunks(text, 'saved.py', file.id, fileHash).chunks;
+  expect(chunks.filter(chunk => chunk.functionRange)).toHaveLength(2);
+  const savedResult: FileExplanationResult = { ...result, relativePath: 'saved.py',
+    range: { fileId: file.id, fileHash, startUtf16: 0, endUtf16: text.length, startLine: 1, endLine: text.trimEnd().split('\n').length },
+    chunks, explanation: { summary: 'Python 파일 설명', chunks: chunks.map(chunk => ({ chunkId: chunk.id, summary: '코드 설명' })), unknowns: [] } };
+  expect(await invoke(channels.saveFileExplanation, { projectId: project.id, result: savedResult })).toMatchObject({ ok: true });
+  const reopened = await invoke<ProjectView>(channels.open);
+  if (!reopened.ok) throw new Error(reopened.message);
+  const current = reopened.value.files.find(file => file.relativePath === 'saved.py')!;
+  expect(current.id).not.toBe(file.id);
+  const loaded = await invoke<{ result: FileExplanationResult }>(channels.savedFileExplanation, { projectId: project.id, fileId: current.id });
+  expect(loaded).toMatchObject({ ok: true });
+  if (!loaded.ok) throw new Error(loaded.message);
+  expect(loaded.value.result).toEqual({ ...savedResult, range: { ...savedResult.range, fileId: current.id },
+    chunks: chunks.map(chunk => ({ ...chunk, range: { ...chunk.range, fileId: current.id } })) });
+  expect(await invoke(channels.deleteFileExplanation, { projectId: project.id, fileId: current.id })).toMatchObject({ ok: true });
 });

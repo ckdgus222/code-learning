@@ -113,13 +113,16 @@ export class ProjectAiContext {
     checkCancelled(signal);
     if (hash !== request.expectedFileHash) throw new AppError('CHANGED', '파일이 바뀌어 다시 만들어 주세요');
     if (Buffer.byteLength(text) > MAX_CONTEXT_FILE_BYTES) throw new AppError('LIMIT', '파일이 32 KiB를 넘어 설명을 만들지 않았어요.');
-    const { chunks, limitations } = splitFileChunks(text, file.relativePath, file.id, hash);
+    const split = splitFileChunks(text, file.relativePath, file.id, hash, undefined, () => signal.aborted);
+    checkCancelled(signal);
+    // Keep room for the workflow's masked-source notice in the saved result's three-note contract.
+    const limitations = split.limitations.length > 2 ? [split.limitations[0], split.limitations.slice(1).join(' · ')] : split.limitations;
     // This range is returned with the result. It is never registered in the bounded evidence cache.
     const evidence: Evidence = { id: randomUUID(), projectId: this.project.id, fileId: file.id, fileHash: hash,
       startUtf16: 0, endUtf16: text.length, startLine: 1,
       endLine: lastLine(text) };
     return { projectId: this.project.id, revision, files: [{ evidence, relativePath: file.relativePath, code: text }],
-      availableFiles: [], chunks, limitations };
+      availableFiles: [], chunks: split.chunks, limitations };
   }
 
   private listFiles(snapshot: ContextSnapshot): void {

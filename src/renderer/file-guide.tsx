@@ -127,7 +127,7 @@ export function FileGuideCard({ open, onToggle, guide, analysis, busy, stale, us
       근거: {basis.text} ({basis.range.startLine}행)
     </button>}
     <p className="hint">{python ? '코드에 적힌 함수와 import를 정리했어요. 코드를 실행하지 않았어요.'
-      : '코드 모양으로 짐작했어요. 자세한 문장 설명은 AI 칸의 ‘AI로 이 파일 설명 만들기’에서 만들 수 있어요.'}</p>
+      : '코드 모양으로 짐작했어요.'} 자세한 문장 설명은 AI 칸의 ‘AI로 이 파일 설명 만들기’에서 만들 수 있어요.</p>
     {guide.notes.map(note => <p key={note} className="hint">{note}</p>)}
     {guide.limitations.map(message => <p key={message} className="notice notice--warn">{message}</p>)}
     <h4>가져다 쓰는 파일 {guide.imports.length + guide.importsOmitted}개</h4>
@@ -151,7 +151,7 @@ export function FileGuideCard({ open, onToggle, guide, analysis, busy, stale, us
       <ul className="map-list">{notes.slice(0, FIRST_ROWS).map(note => <li key={note}>{note}</li>)}</ul>
       {notes.length > FIRST_ROWS && <p className="hint">외 {notes.length - FIRST_ROWS}개</p>}
     </details>}
-    {!python && analysis.language !== 'text' && ai.state === 'none' && <p className="hint">AI 칸의 ‘AI로 이 파일 설명 만들기’를 쓰면, AI가 요약한 함수 카드에 AI 해석을 보여 줘요.</p>}
+    {analysis.language !== 'text' && ai.state === 'none' && <p className="hint">AI 칸의 ‘AI로 이 파일 설명 만들기’를 쓰면, AI가 요약한 함수 카드에 AI 해석을 보여 줘요.</p>}
     {analysis.language !== 'text' && ai.state === 'stale' && <p className="hint">파일이 바뀌어 AI 요약을 숨겼어요. 다시 만들어 주세요.</p>}
     <h4>이 파일의 함수 {analysis.symbols.length}개</h4>
     <p className="hint">종류 표시는 코드 모양으로 판단했어요. 실제로 요청이 이어지는지는 흐름 따라가기에서 확인해요.</p>

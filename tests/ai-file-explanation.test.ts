@@ -9,6 +9,7 @@ import { scanProject, readAllowed } from '../src/core/project/files';
 import { SECRET_MASK } from '../src/core/ai/secrets';
 import { GEMINI_MODEL, fileExplanationSchema, fileExplanationResultSchema, type FileExplanation, type FileExplanationRequest, type LearningEvent } from '../src/shared/ai';
 import { AppError } from '../src/shared/errors';
+import { analyzeSource } from '../src/core/analysis/syntax';
 
 // Fake runners only. No installed AI program, account or network is used.
 const roots: string[] = [];
@@ -49,6 +50,169 @@ async function fixture(text = 'export function run() { return 1; }\n', relativeP
 function material(request: StageRequest): { relativePath: string; code: string; chunks: { id: string; kind: string; name: string; startLine: number; endLine: number }[] } {
   return JSON.parse(request.prompt.split('자료:\n')[1].split('\n과제:\n')[0]);
 }
+
+describe('Python file explanation', () => {
+  it.each([
+    ['triple quoted', 'password = """python-secret-marker"""\n'],
+    ['raw prefixed', 'api_key = r"python-secret-marker"\n'],
+    ['annotated', 'password: str = "python-secret-marker"\n'],
+    ['implicit concatenation', 'password = "python-secret-" "marker"\n'],
+    ['uppercase binding and prefix', 'PASSWORD = R"python-secret-marker"\n'],
+    ['bytes prefix', 'api_key = b"python-secret-marker"\n'],
+    ['multiline CRLF', 'password = """python-secret-\r\nmarker"""\r\n'],
+    ['parenthesized concatenation', 'password = (\n    "python-secret-"\n    "marker"\n)\n'],
+    ['augmented assignment', 'password += r"python-secret-marker"\n'],
+    ['dictionary secret entry', 'settings = {"password": r"python-secret-marker"}\n'],
+    ['parameter default', 'def connect(password=r"python-secret-marker"):\n    pass\n'],
+    ['typed parameter default', 'def connect(password: str = r"python-secret-marker"):\n    pass\n'],
+    ['keyword argument', 'connect(password=r"python-secret-marker")\n'],
+  ])('masks Python %s secrets in the actual workflow while preserving source navigation', async (_, assignment) => {
+    const newline = assignment.includes('\r\n') ? '\r\n' : '\n';
+    const text = assignment + `def run():${newline}    return 1${newline}`;
+    const f = await fixture(text, 'app.py');
+    const event = await f.finish();
+    expect(event.kind).toBe('file-explanation-completed');
+    expect(f.run).toHaveBeenCalledOnce();
+    const input = f.run.mock.calls[0][0];
+    const sent = material(input);
+    expect(sent.code).toContain(SECRET_MASK);
+    expect(sent.code.split('\n')).toHaveLength(text.split('\n').length);
+    for (const fragment of ['python-secret-', 'marker']) {
+      expect(sent.code).not.toContain(fragment);
+      expect(input.prompt).not.toContain(fragment);
+    }
+    expect(f.expand).not.toHaveBeenCalled();
+    if (event.kind !== 'file-explanation-completed') throw new Error('Expected Python completion');
+    expect(fileExplanationResultSchema.parse(event.result)).toEqual(event.result);
+    expect(event.result.range).toMatchObject({ fileId: f.file.id, fileHash: f.request.expectedFileHash, startUtf16: 0, endUtf16: text.length });
+    const analysis = analyzeSource(text, 'app.py', { projectId: f.project.id, fileId: f.file.id, fileHash: f.request.expectedFileHash });
+    const fn = analysis.symbols.find(symbol => symbol.name === 'run')!;
+    const chunk = event.result.chunks.find(chunk => chunk.functionRange?.startUtf16 === fn.evidence.startUtf16)!;
+    expect(chunk).toBeDefined();
+    expect(chunk.functionRange).toEqual({ startUtf16: fn.evidence.startUtf16, endUtf16: fn.evidence.endUtf16 });
+    expect(text.slice(chunk.range.startUtf16, chunk.range.endUtf16)).toContain('def run():');
+  });
+
+  it('blocks an unterminated Python secret string before calling the runner', async () => {
+    const f = await fixture('password = """python-secret-marker\n', 'app.py');
+    expect(await f.finish()).toMatchObject({ kind: 'failed', error: { code: 'LIMIT' } });
+    expect(f.run).not.toHaveBeenCalled();
+    expect(f.events.some(event => event.kind === 'file-explanation-completed')).toBe(false);
+  });
+
+  it('captures decorated async functions and methods with exact Unicode evidence and accepts the complete result schema', async () => {
+    const text = '# 😀\n@decorate\nasync def run():\n    return 1\nclass C:\n    @decorate\n    def method(self):\n        return 2\n';
+    const f = await fixture(text, 'app.py');
+    const snapshot = await f.context.captureFile(f.request, 1, new AbortController().signal);
+    expect(snapshot.files.map(file => file.relativePath)).toEqual(['app.py']);
+    const analysis = analyzeSource(text, 'app.py', { projectId: f.project.id, fileId: f.file.id, fileHash: f.request.expectedFileHash });
+    for (const symbol of analysis.symbols) {
+      const chunk = snapshot.chunks.find(chunk => chunk.functionRange?.startUtf16 === symbol.evidence.startUtf16 && chunk.functionRange.endUtf16 === symbol.evidence.endUtf16);
+      expect(chunk, symbol.name).toBeDefined();
+      expect(chunk!.range).toMatchObject({ fileId: f.file.id, fileHash: f.request.expectedFileHash });
+      expect(text.slice(chunk!.range.startUtf16, chunk!.range.endUtf16)).toContain('@decorate');
+    }
+    const event = await f.finish();
+    expect(event.kind).toBe('file-explanation-completed');
+    if (event.kind !== 'file-explanation-completed') throw new Error('Expected Python completion');
+    expect(fileExplanationResultSchema.parse(event.result)).toEqual(event.result);
+    expect(event.result.range).toMatchObject({ fileId: f.file.id, fileHash: f.request.expectedFileHash, startUtf16: 0, endUtf16: text.length });
+    expect(f.expand).not.toHaveBeenCalled();
+  });
+
+  it.each(['', '#' + 'x'.repeat(MAX_CONTEXT_FILE_BYTES - 1)])('accepts Python empty and exact UTF-8 byte boundaries %#', async text => {
+    const f = await fixture(text, 'app.py');
+    const event = await f.finish();
+    expect(event.kind).toBe('file-explanation-completed');
+    if (event.kind !== 'file-explanation-completed') throw new Error('Expected Python completion');
+    expect(fileExplanationResultSchema.parse(event.result)).toEqual(event.result);
+    expect(event.result.chunks).toEqual([]);
+    expect(f.expand).not.toHaveBeenCalled();
+  });
+
+  it('rejects oversized Korean Python source before any runner call', async () => {
+    const f = await fixture('#' + '한'.repeat(Math.ceil(MAX_CONTEXT_FILE_BYTES / 3)), 'app.py');
+    expect(await f.finish()).toMatchObject({ kind: 'failed', error: { code: 'LIMIT' } });
+    expect(f.run).not.toHaveBeenCalled();
+  });
+
+  it('sends only masked selected Python source without expanding dependencies', async () => {
+    const f = await fixture('password = "python-test-only-secret"\nfrom other import hidden\ndef run():\n    return password\n', 'app.py');
+    const event = await f.finish();
+    expect(event.kind).toBe('file-explanation-completed');
+    expect(f.run).toHaveBeenCalledOnce();
+    const input = f.run.mock.calls[0][0];
+    expect(material(input)).toMatchObject({ relativePath: 'app.py', code: expect.stringContaining(SECRET_MASK) });
+    expect(input.prompt).not.toContain('python-test-only-secret');
+    expect(input.prompt).not.toContain('NEVER_SEND_OTHER_FILE');
+    expect(input.prompt).not.toContain('other.ts');
+    expect(f.expand).not.toHaveBeenCalled();
+    if (event.kind !== 'file-explanation-completed') throw new Error('Expected Python completion');
+    expect(fileExplanationResultSchema.parse(event.result)).toEqual(event.result);
+  });
+
+  it('keeps good Python neighbors and caps chunks plus masking limitations within the storage schema', async () => {
+    const text = 'password = "python-test-only-secret"\n)\n' + Array.from({ length: 85 }, (_, index) => `value${index} = ${index}`).join('\n');
+    const f = await fixture(text, 'app.py');
+    const event = await f.finish();
+    expect(event.kind).toBe('file-explanation-completed');
+    if (event.kind !== 'file-explanation-completed') throw new Error('Expected Python completion');
+    expect(event.result.chunks).toHaveLength(80);
+    expect(event.result.chunks.some(chunk => text.slice(chunk.range.startUtf16, chunk.range.endUtf16) === 'value0 = 0')).toBe(true);
+    expect(event.result.chunks.some(chunk => text.slice(chunk.range.startUtf16, chunk.range.endUtf16).includes(')'))).toBe(false);
+    expect(event.result.limitations.length).toBeGreaterThan(0);
+    expect(event.result.limitations.length).toBeLessThanOrEqual(3);
+    expect(fileExplanationResultSchema.parse(event.result)).toEqual(event.result);
+  });
+
+  it.each(['before-stage', 'before-display'] as const)('discards Python source changed %s', async when => {
+    const f = await fixture('def run():\n    return 1\n', 'app.py');
+    const normal = f.run.getMockImplementation()!;
+    if (when === 'before-stage') f.captureFile.mockImplementationOnce(async (request, signal) => {
+      const snapshot = await f.context.captureFile(request, 1, signal);
+      await writeFile(path.join(f.root, 'app.py'), 'changed = 1\n');
+      return snapshot;
+    });
+    else f.run.mockImplementation(async input => {
+      const response = await normal(input);
+      await writeFile(path.join(f.root, 'app.py'), 'changed = 1\n');
+      return response;
+    });
+    expect(await f.finish()).toMatchObject({ kind: 'failed', error: { code: 'CHANGED' } });
+    expect(f.run).toHaveBeenCalledTimes(when === 'before-stage' ? 0 : 1);
+    expect(f.events.some(event => event.kind === 'file-explanation-completed')).toBe(false);
+  });
+
+  it.each(['unknown', 'duplicate'] as const)('rejects a Python response with %s chunk identity', async kind => {
+    const f = await fixture('@decorate\ndef run():\n    pass\n', 'app.py');
+    const normal = f.run.getMockImplementation()!;
+    f.run.mockImplementation(async input => {
+      const response = await normal(input);
+      const answer = response.value as FileExplanation;
+      if (kind === 'unknown') answer.chunks[0].chunkId = randomUUID();
+      else answer.chunks.push(answer.chunks[0]);
+      return response;
+    });
+    expect(await f.finish()).toMatchObject({ kind: 'failed', error: { code: 'AI_RESPONSE' } });
+    expect(f.events.some(event => event.kind === 'file-explanation-completed')).toBe(false);
+  });
+
+  it('discards a late Python runner response after cancellation', async () => {
+    const f = await fixture('def run():\n    return 1\n', 'app.py');
+    const normal = f.run.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.run.mockImplementation(async input => { await gate; return normal(input); });
+    const { jobId } = f.workflow.startFileExplanation(f.request);
+    await vi.waitFor(() => expect(f.run).toHaveBeenCalledOnce());
+    const cancellation = f.workflow.cancel(jobId);
+    release();
+    await cancellation;
+    await vi.waitFor(() => expect(f.events.some(event => event.kind === 'failed')).toBe(true));
+    expect(f.events.some(event => event.kind === 'file-explanation-completed')).toBe(false);
+    expect(f.events.at(-1)).toMatchObject({ kind: 'failed', error: { code: 'CANCELLED' } });
+  });
+});
 
 describe('file explanation material', () => {
   it('reads exactly the approved file, without the file list or evidence registration', async () => {

@@ -983,7 +983,7 @@ function App() {
           mode={ai.mode} onMode={ai.setMode} onRunning={ai.setQuestionRunning}
           relativePath={project.files.find(file => file.id === questionEvidence?.fileId)?.relativePath ?? ''}
           onEvidence={next => { setView('code'); void showEvidence(next, null, 'answer'); }} />
-        {view === 'code' && source && (source.analysis.language === 'typescript' || source.analysis.language === 'javascript') && <details className="card"
+        {view === 'code' && source && ['typescript', 'javascript', 'python'].includes(source.analysis.language) && <details className="card"
           key={`${source.fileId}:${source.hash}`}
           open={ai.fileExplanationOpen}>
           <summary onClick={event => {

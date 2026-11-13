@@ -63,8 +63,10 @@ describe('Python static file chunks', () => {
     }
     expect(text.slice(result.chunks[0].range.startUtf16, result.chunks[0].range.endUtf16)).toBe('name = "한글"');
   });
-  it('keeps the existing AI chunk entry point unavailable for Python', () => {
-    expect(() => splitFileChunks('x = 1\n', 'sample.py', id, hash)).toThrow(expect.objectContaining({ code: 'UNSUPPORTED' }));
+  it('uses the same Python chunk ranges through the AI entry point', () => {
+    const text = 'x = 1\n@deco\ndef run():\n    return x\n';
+    const withoutIds = (result: ReturnType<typeof split>) => result.chunks.map(({ id: _id, ...chunk }) => chunk);
+    expect(withoutIds(splitFileChunks(text, 'sample.py', id, hash))).toEqual(withoutIds(split(text)));
   });
   it('honors cancellation during static Python chunk traversal', () => {
     expect(() => splitPythonFileChunks('x = 1\n', 'sample.py', id, hash, undefined, () => true))

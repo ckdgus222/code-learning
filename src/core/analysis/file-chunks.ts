@@ -7,9 +7,10 @@ import { functionName, functionTypes, NESTED_NOTE, parse } from './syntax';
 import { declarationName, pythonFunction, stringOnly } from './python-syntax';
 import { clip, MAX_VISITED_NODES } from './syntax-tools';
 
-/** Python guidance uses the same ranges without enabling AI file explanations yet. */
+/** Python top-level statements and direct class members share exact source ranges. */
 export function splitPythonFileChunks(text: string, relativePath: string, fileId: string, fileHash: string,
   parsedRoot?: Parser.SyntaxNode, shouldStop: () => boolean = () => false) {
+  if (shouldStop()) throw new AppError('CANCELLED', '작업을 취소했습니다.');
   const root = parsedRoot ?? parse(text, relativePath);
   if (!root) throw new AppError('LIMIT', NESTED_NOTE);
   const chunks: FileChunk[] = [];
@@ -81,8 +82,11 @@ export function splitPythonFileChunks(text: string, relativePath: string, fileId
 }
 
 /** Only top-level statements and direct class members; nested callbacks stay inside their chunk. */
-export function splitFileChunks(text: string, relativePath: string, fileId: string, fileHash: string, parsedRoot?: Parser.SyntaxNode) {
-  if (!codeFile.test(relativePath)) throw new AppError('UNSUPPORTED', 'TS/JS 파일만 설명할 수 있어요.');
+export function splitFileChunks(text: string, relativePath: string, fileId: string, fileHash: string,
+  parsedRoot?: Parser.SyntaxNode, shouldStop: () => boolean = () => false) {
+  if (shouldStop()) throw new AppError('CANCELLED', '작업을 취소했습니다.');
+  if (/\.py$/i.test(relativePath)) return splitPythonFileChunks(text, relativePath, fileId, fileHash, parsedRoot, shouldStop);
+  if (!codeFile.test(relativePath)) throw new AppError('UNSUPPORTED', 'TS/JS·Python 파일만 설명할 수 있어요.');
   const root = parsedRoot ?? parse(text, relativePath);
   if (!root) throw new AppError('LIMIT', NESTED_NOTE);
   const chunks: FileChunk[] = [];

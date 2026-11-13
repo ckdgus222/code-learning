@@ -36,7 +36,7 @@ it.each([{ busy: false, stale: false }, { busy: true, stale: false }, { busy: fa
   expect(html).toContain('표준 라이브러리 또는 외부 패키지');
   expect(html).toContain('helper.py 열기');
   expect(html).toContain('Controller.useState');
-  expect(html).not.toContain('AI로 이 파일 설명 만들기');
+  expect(html).toContain('AI로 이 파일 설명 만들기');
   expect(html).not.toContain('경로 별칭');
   expect(html).not.toContain('React');
   expect(html).toContain('적힌 타입: `int`');

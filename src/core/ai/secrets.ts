@@ -24,7 +24,7 @@ const tokens = [
 // The password part of `scheme://user:password@host`.
 const connection = /((?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^\s:/@'"`]+:)([^\s@/'"`]+)(@)/gi;
 // The key name is matched as one plain identifier and checked for a secret word separately.
-const secretWord = /password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key/i;
+export const secretWord = /password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key/i;
 // `password = "hunter22"`, `apiKey: 'abc…'`, `"client_secret": "…"`: only the string's content is masked.
 // A string ends at its own quote; other quote kinds, escapes and backslash line continuations
 // (`\` then LF or CRLF) inside it are content.
