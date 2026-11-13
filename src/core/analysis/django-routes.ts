@@ -73,6 +73,7 @@ export interface DjangoFile {
   inheritance: Map<string, DjangoInheritance>;
   inheritanceInvalid: Set<string>;
   inheritanceMutationImports: Map<string, PythonImport>;
+  convertersUnsafe: boolean;
   plain: boolean;
   init: InitFacts | null;
   odd: boolean;
@@ -360,6 +361,8 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
   for (let at = text.indexOf('ROOT_URLCONF'); at !== -1; at = text.indexOf('ROOT_URLCONF', at + 'ROOT_URLCONF'.length)) mentions++;
   const result: DjangoFile = { entries: [], includes: [], staticAdditions: [], unfollowed: 0, imports: new Map(), views: new Map(), viewAliases: new Map(), viewsetInvalid: new Set(), routers: [], drfMutationImports: new Map(), drfMutationsCut: false, drfFrameworkUnsafe: false,
     inheritance: new Map(), inheritanceInvalid: new Set(), inheritanceMutationImports: new Map(), plain: complete && !root.hasError,
+    // Include comments and strings: aliases and reflective reads must not silently retain the default int rule.
+    convertersUnsafe: /\b(?:register_converter|converters|DEFAULT_CONVERTERS|REGISTERED_CONVERTERS|IntConverter|get_converters|importlib|getattr|setattr|delattr|vars|dir)\b/.test(text),
     init: null, odd: false, root: null, rootUnclear: false, listFinal: false,
     reachesList: (!complete || root.hasError) && text.includes('urlpatterns') };
   // 1. Bound names are normalized once, after rejecting text too long to be a route name.
@@ -879,6 +882,7 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
   let skipped = 0, cut = false, unfollowed = 0, staticAdditions = 0, staticUnresolved = 0;
   const facts = { init: (path: string) => files.get(path)?.init ?? null, plain: (path: string) => files.get(path)?.plain ?? false };
   const ordered = [...files].sort(([a], [b]) => a.localeCompare(b));
+  const convertersUnsafe = !allRead || ordered.some(([, file]) => file.convertersUnsafe || !file.plain || file.odd);
   const mutationsCut = ordered.some(([, file]) => file.drfMutationsCut);
   const importCache = new Map<string, Map<string, ReturnType<typeof resolvePythonImport>>>();
   const importTargets = (path: string, name: string, item: PythonImport) => {
@@ -1209,9 +1213,10 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
       if (files.get(viewPath)!.odd) oddFiles.add(viewPath);
       if (originPath && files.get(originPath)!.odd) oddFiles.add(originPath);
       const shape = entry.written === null || !prefix.written ? entry.shape : joined === null ? {} : { ...djangoShape(joined), ...(entry.router && entry.shape.typed ? { typed: true as const } : {}) };
+      const blockedInteger = convertersUnsafe && !!joined?.includes('<int:');
       // A bracket left open in the entry needs its other half in a prefix fragment, which is then incomplete too.
       routes.push({ framework: 'django', prefix: !drf && !inherited && prefix.known && entry.written !== null ? 'known' : 'unknown', method, handler, path: joined, basis: entry.basis,
-        ...(odd || prefix.incomplete ? { unmatched: true as const } : shape) });
+        ...(odd || prefix.incomplete || blockedInteger ? { unmatched: true as const } : shape) });
     }
   }
   return { routes, unresolvedRoutes, skipped, cut, oddFiles: [...oddFiles], unfollowed, staticAdditions, staticUnresolved, drfDefaults: defaultRouters.size };

@@ -20,6 +20,7 @@ export async function checkPythonFeatureFlow(app, page, folder) {
     'foreign/routerurls.py': 'from django.urls import path, include\nfrom rest_framework.routers import DefaultRouter\nfrom .routerviews import RouterRecords\nrouter = DefaultRouter()\nrouter.register("records", RouterRecords, basename="records")\nurlpatterns = [path("routed/", include(router.urls))]\n',
     'foreign/parents.py': 'from django.views import View\nclass ParentView(View):\n    def get(self, request):\n        return []\n',
     'foreign/inheritedurls.py': 'from django.urls import path\nfrom .parents import ParentView\nclass InheritedPage(ParentView):\n    pass\nurlpatterns = [path("inherited-page/", InheritedPage.as_view())]\n',
+    'integerurls.py': 'from django.urls import path\nfrom django.views.decorators.http import require_GET\n@require_GET\ndef number(request, id):\n    return []\nurlpatterns = [path("integer/<int:id>/", number)]\n',
     'modulefactory.py': 'from fastapi import FastAPI, APIRouter\nmodule_router = APIRouter(prefix="/v5")\n@module_router.get("/records")\ndef module_records():\n    return []\ndef create_app():\n    app = FastAPI()\n    app.include_router(module_router, prefix="/factory-module")\n    return app\n',
     'flaskviews.py': 'from flask import Flask\nfrom flask.views import MethodView, View\napp = Flask(__name__)\nclass ClassUsers(MethodView):\n    def get(self):\n        return []\nclass ClassPage(View):\n    def dispatch_request(self):\n        return "page"\nusers_view = ClassUsers.as_view("class_users")\napp.add_url_rule("/class-users", view_func=users_view)\napp.add_url_rule("/class-page", view_func=ClassPage.as_view("class_page"))\n',
     'flaskrules.py': 'from flask import Flask\napp = Flask(__name__)\ndef rule_users():\n    return []\napp.add_url_rule("/direct-rules", view_func=rule_users, methods=["GET"])\n',
@@ -45,6 +46,7 @@ export async function checkPythonFeatureFlow(app, page, folder) {
   sources['client.ts'] += 'export function drfRecords() { return fetch("/drf-records/"); }\nexport function drfAlias() { return fetch("/drf-alias/"); }\n';
   sources['client.ts'] += 'export function routedRecords() { return fetch("/routed/records/"); }\nexport function routedRecord() { return fetch("/routed/records/1/"); }\nexport function routedSummary() { return fetch("/routed/records/summary/"); }\n';
   sources['client.ts'] += 'export function inheritedPage() { return fetch("/inherited-page/"); }\n';
+  sources['client.ts'] += 'export function integerPage() { return fetch("/integer/007/"); }\nexport function invalidInteger() { return fetch("/integer/alice/"); }\n';
   for (const [name, source] of Object.entries(sources)) {
     await mkdir(path.dirname(path.join(folder, name)), { recursive: true });
     await writeFile(path.join(folder, name), source);
@@ -118,6 +120,7 @@ export async function checkPythonFeatureFlow(app, page, folder) {
       ['/routed/records/', 'RouterRecords.list', '4–5', 'foreign/routerviews.py', true],
       ['/routed/records/<pk>/', 'RouterRecords.retrieve', '6–7', 'foreign/routerviews.py', true, '/routed/records/1/'],
       ['/routed/records/summary/', 'RouterRecords.summary', '8–10', 'foreign/routerviews.py', true],
+      ['/integer/<int:id>/', 'number', '3–5', 'integerurls.py', true, '/integer/007/'],
       ['/inherited-page/', 'ParentView.get', '3–4', 'foreign/parents.py', true],
       ['/app/v2/books', 'factory_books', '6–8', 'factoryrouters.py', true], ['/shelf/pages', 'factory_pages', '14–16', 'factoryrouters.py', true],
     ]) {
@@ -137,6 +140,11 @@ export async function checkPythonFeatureFlow(app, page, folder) {
       await request.waitFor();
       if (uncertain) await request.getByText('추정', { exact: true }).waitFor();
       assert.equal(await request.getByText('추정', { exact: true }).count(), uncertain ? 1 : 0);
+      if (file === 'integerurls.py') {
+        assert.match(await request.innerText(), /목록 밖 주소 가능/);
+        assert.doesNotMatch(await request.innerText(), /값 모양 모름/);
+        assert.equal(await steps.filter({ has: page.locator('b', { hasText: 'GET /integer/alice/' }) }).count(), 0);
+      }
       await steps.filter({ has: page.locator('b', { hasText: new RegExp(`^${name}$`) }) })
         .first().getByRole('button', { name: '코드 보기', exact: true }).click();
       await page.getByTestId('evidence-range').getByText(`근거: ${file} · ${lines}줄`, { exact: true }).waitFor();

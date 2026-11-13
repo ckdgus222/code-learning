@@ -103,8 +103,9 @@ describe('Django urlconf entries', () => {
     const result = find(text);
     expect(result.entries).toHaveLength(1);
     expect(result.entries[0]).toMatchObject({ path: '/polls/<int:question_id>/results/', shape: {
-      segments: [{ text: 'polls' }, { param: 'question_id' }, { text: 'results' }], typed: true },
+      segments: [{ text: 'polls' }, { param: 'question_id' }, { text: 'results' }] },
       view: { local: 'views', attribute: 'results', asView: false }, basis: { text: "path('polls/<int:question_id>/results/', views.results)" } });
+    expect(result.entries[0].shape.typed).toBeUndefined();
     const basis = result.entries[0].basis;
     expect(text.slice(basis.range.startUtf16, basis.range.endUtf16)).toBe(basis.text);
     expect(basis.range).toMatchObject({ fileId: file.id, fileHash: 'hash', startLine: 3, endLine: 3 });
@@ -161,13 +162,13 @@ if True:
   });
   it.each([
     ['', []], ['users/', [{ text: 'users' }]], ['users', [{ text: 'users' }]],
-    ['<id>/', [{ param: 'id' }]], ['<str:id>/', [{ param: 'id' }]],
+    ['<id>/', [{ param: 'id' }]], ['<str:id>/', [{ param: 'id' }]], ['<int:id>/', [{ param: 'id' }]],
     ['files/<path:p>', [{ text: 'files' }, { catchAll: 'p', optional: false }]],
   ])('reads path %s', (path, segments) => {
     expect(find(setup + entry('views.x', `'${path}'`)).entries[0]).toMatchObject({ path: '/' + path, shape: { segments } });
     expect(find(setup + entry('views.x', `'${path}'`)).entries[0].shape.typed).toBeUndefined();
   });
-  it.each(['int:id', 'slug:s', 'uuid:u'])('marks converter %s typed', converter => {
+  it.each(['slug:s', 'uuid:u'])('marks converter %s typed', converter => {
     expect(find(setup + entry('views.x', `'<${converter}>/'`)).entries[0].shape).toEqual({ segments: [{ param: converter.split(':')[1] }], typed: true });
   });
   it.each(['/users/', 'users//x', 'v<int:n>/', '<a>-<b>/', 'files/<path:p>/meta', 'files/<path:p>/', '<regex:x>/', '<사용자>/', 'a b/'])('does not match path %s', path => {
@@ -396,7 +397,8 @@ describe('joining Django includes', () => {
       'polls/urls.py': setup + "urlpatterns = [path('<int:id>/results/', views.results)]",
       'polls/views.py': 'def results(): pass' });
     expect(result).toMatchObject({ cut: false, skipped: 0, unfollowed: 0, routes: [{ path: '/polls/<int:id>/results/',
-      typed: true, prefix: 'unknown', basis: { range: { fileId: 'polls/urls.py' } }, handler: { name: 'results' } }] });
+      prefix: 'unknown', basis: { range: { fileId: 'polls/urls.py' } }, handler: { name: 'results' } }] });
+    expect(result.routes[0].typed).toBeUndefined();
     expect(result.routes).toHaveLength(1);
   });
   it.each([
@@ -404,7 +406,7 @@ describe('joining Django includes', () => {
     ['<slug:team>/', 'users/', '/<slug:team>/users/', false, true], ['a/', '/b', '/a//b', true, false],
     ['api/<str:', 'id>/', '/api/<str:id>/', true, false], ['x>/', 'y/', '/x>/y/', true, false],
     ['<int:a>/', '<int:', '/<int:a>/<int:', true, false],
-    ['<int:a>/', '<int:b>/', '/<int:a>/<int:b>/', false, true], ['a<int:id>', 'b/', '/a<int:id>b/', true, false],
+    ['<int:a>/', '<int:b>/', '/<int:a>/<int:b>/', false, false], ['a<int:id>', 'b/', '/a<int:id>b/', true, false],
   ])('joins fragments %s and %s', (prefix, written, expected, unmatched, typed) => {
     const result = join({ 'manage.py': '', 'a.py': urlconf(`path('${prefix}', include('b'))`),
       'b.py': urlconf(`path('${written}', view)`) });

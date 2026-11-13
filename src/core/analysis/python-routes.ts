@@ -139,7 +139,7 @@ export function djangoShape(path: string): Shape {
     const [, converter, name] = param;
     if (converter !== 'path') {
       segments.push({ param: name });
-      typed ||= !!converter && converter !== 'str';
+      typed ||= converter === 'slug' || converter === 'uuid';
       continue;
     }
     if (index !== parts.length - 1 || path.endsWith('/')) return { unmatched: true };

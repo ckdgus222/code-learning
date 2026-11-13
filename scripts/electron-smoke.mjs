@@ -3710,7 +3710,7 @@ try {
     await requestStep.getByText('추정', { exact: true }).waitFor();
     assert.doesNotMatch(await requestStep.innerText(), /앞부분 모름/);
     assert.match(await requestStep.innerText(), /목록 밖 주소 가능/);
-    assert.match(await requestStep.innerText(), /값 모양 모름/);
+    assert.doesNotMatch(await requestStep.innerText(), /값 모양 모름/);
     const step = steps.getByTestId('feature-step')
       .filter({ has: page.locator('b', { hasText: /^results$/ }) });
     await step.getByRole('button', { name: '코드 보기', exact: true }).click();

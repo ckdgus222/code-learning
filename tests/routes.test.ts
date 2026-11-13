@@ -995,7 +995,7 @@ describe('Django routes across project files', () => {
       .toEqual([['django', 'unknown', '/<int:question_id>/results/', 'results', 'polls/views.py', 'polls/urls.py'], ['django', 'unknown', '/', 'index', 'polls/views.py', 'polls/urls.py']]);
     expect(result.links).toHaveLength(2);
     expect(result.links.every(link => !link.sure && link.routeIndex === 0)).toBe(true);
-    expect(result.links[0].reasons).toEqual(['앞부분 모름', '값 모양 모름', '목록 밖 주소 가능']);
+    expect(result.links[0].reasons).toEqual(['앞부분 모름', '목록 밖 주소 가능']);
     expect(result.notes.filter(note => note.startsWith('Django 주소의 앞 경로는 읽을 수 있는 include()'))).toHaveLength(1);
     expect(result.notes.some(note => note.startsWith('앞부분을 모르고 글자 칸도 없는 주소'))).toBe(true);
   });
@@ -1266,12 +1266,13 @@ describe('Django include paths in project routes', () => {
     await put('flask_app.py', 'from flask import Flask\napp = Flask(__name__)\n@app.get("/flask")\ndef flask_view(): pass');
     const result = await find();
     expect(result.routes.filter(route => route.framework === 'django')).toMatchObject([
-      { path: '/polls/<int:id>/results/', prefix: 'unknown', typed: true },
+      { path: '/polls/<int:id>/results/', prefix: 'unknown' },
     ]);
+    expect(result.routes.find(route => route.framework === 'django')!.typed).toBeUndefined();
     expect(result.routes.filter(route => route.framework !== 'django').map(route => [route.path, route.method, route.prefix, route.unmatched]))
       .toEqual([['/fast', 'GET', 'known', undefined], ['/flask', 'GET', 'known', undefined]]);
     expect(result.links).toHaveLength(1);
-    expect(result.links[0]).toMatchObject({ sure: false, reasons: ['앞부분 모름', '값 모양 모름', '목록 밖 주소 가능'] });
+    expect(result.links[0]).toMatchObject({ sure: false, reasons: ['앞부분 모름', '목록 밖 주소 가능'] });
     expect(result.notes).toContain(prefixNote);
     expect(result.notes.filter(note => note.startsWith('Django include'))).toEqual([]);
   });
@@ -1326,7 +1327,7 @@ describe('Django ROOT_URLCONF project links', () => {
   });
   it.each([
     ['<slug>/', ['목록 밖 주소 가능']],
-    ['<int:id>/', ['값 모양 모름', '목록 밖 주소 가능']],
+    ['<int:id>/', ['목록 밖 주소 가능']],
     ['<path:rest>', ['목록 밖 주소 가능']],
   ])('keeps a known-prefix value route uncertain: %s', async (route, reasons) => {
     await fixture(`path('${route}', view)`, "fetch('/polls/42/'); fetch('/polls/43/')");
@@ -1375,7 +1376,7 @@ describe('Django ROOT_URLCONF project links', () => {
     await rm(path.join(root, 'mysite/settings.py'));
     const result = await find();
     expect(result.links).toHaveLength(2);
-    expect(result.links[0].reasons).toEqual(['앞부분 모름', '경로 값 모름', '값 모양 모름', '목록 밖 주소 가능', '방식 모름', '후보 여럿']);
+    expect(result.links[0].reasons).toEqual(['앞부분 모름', '경로 값 모름', '목록 밖 주소 가능', '방식 모름', '후보 여럿']);
   });
   it('leaves FastAPI, Flask and Express value-route reasons unchanged', async () => {
     await put('fast.py', 'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/fast/{id}")\ndef view(): pass');

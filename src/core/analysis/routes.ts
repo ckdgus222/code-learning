@@ -647,7 +647,10 @@ export function linkRoutes(routes: Route[], requests: Request[], shouldStop: () 
     const catchAll = parts.at(-1) === '*' || !!parts.at(-1)?.endsWith('*');
     if (catchAll) parts[parts.length - 1] = '*';
     const last = route.segments?.at(-1);
-    return { parts, catchAll, minRest: last && 'catchAll' in last && !last.optional ? 1 : 0 };
+    const written = route.framework === 'django' ? route.path.split('/').filter(Boolean) : [];
+    const integers = route.segments?.map((segment, index) => written.length === parts.length
+      && 'param' in segment && written[index] === `<int:${segment.param}>`);
+    return { parts, catchAll, integers, minRest: last && 'catchAll' in last && !last.optional ? 1 : 0 };
   });
   requests.forEach((request, requestIndex) => {
     if (request.host || links.length >= maxLinks) return;
@@ -667,6 +670,10 @@ export function linkRoutes(routes: Route[], requests: Request[], shouldStop: () 
         let dynamic = false;
         for (let index = 0; index < fixed; index++) {
           const want = routeParts[a + index], got = requestParts[b + index];
+          if (shape.integers?.[a + index]) {
+            if (got === '*') { dynamic = true; continue; }
+            if (!/^[0-9]+$/.test(got)) return { matched: false, dynamic: false };
+          }
           if (got === '*' && !want.startsWith(':')) dynamic = true;
           else if (!want.startsWith(':') && want !== got) return { matched: false, dynamic: false };
         }

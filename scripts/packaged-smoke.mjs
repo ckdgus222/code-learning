@@ -533,6 +533,7 @@ try {
   report.checks.push('DRF explicit action maps and generated view aliases, uncertain request links and imported action evidence');
   report.checks.push('DRF DefaultRouter list/detail/extra-action paths with include prefix, uncertain requests and original method evidence');
   report.checks.push('Project-local inherited Django handler, uncertain request link and original parent-file method evidence');
+  report.checks.push('Django integer URL accepts ASCII digits, rejects text and keeps outside-route uncertainty with original evidence');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {
