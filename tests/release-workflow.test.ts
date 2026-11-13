@@ -79,12 +79,14 @@ describe('draft release configuration', () => {
 
   it('uses the CI checkout and Node versions in every job', () => {
     const ci = read('.github/workflows/ci.yml');
+    const ciJobs = [...ci.matchAll(/^  (test|electron|windows-installer):\n([\s\S]*?)(?=^  [\w-]+:\n|$(?![\s\S]))/gm)];
     expect(Object.keys(jobs)).toEqual(['version', 'mac', 'windows', 'draft']);
-    for (const job of Object.values(jobs)) {
-      for (const setting of ['actions/checkout@v7', 'actions/setup-node@v7', 'node-version: 24.18.0', 'cache: npm']) {
-        expect(ci).toContain(setting);
+    expect(ciJobs.map(match => match[1])).toEqual(['test', 'electron', 'windows-installer']);
+    for (const job of [...Object.values(jobs), ...ciJobs.map(match => match[2])]) {
+      for (const setting of ['actions/checkout@v7', 'actions/setup-node@v7', 'cache: npm']) {
         expect(job).toContain(setting);
       }
+      expect(job.match(/node-version: \S+/g)).toEqual(['node-version: 24.22.3']);
     }
     expect(workflow.match(/actions\/download-artifact@v8/g)).toHaveLength(2);
   });

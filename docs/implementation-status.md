@@ -2,6 +2,17 @@
 
 **0단계 일부와 1A의 로컬 탐색·구문 근거 이동·흐름 따라가기 화면을 구현했다.** AI 연결, 초기 이해도 관찰과 나머지 보호 검수는 끝나지 않았으므로 0단계 전체·1A 전체·개인용 시제품·범용 MVP 완료로 표시하지 않는다. 기획서는 v2.2와, 사용자가 2026-10-19 확정한 보완 v2.3(에이전트 작업 검사, v2.2와 다르면 v2.3 우선)이 기준이다. v2.3 2차 개정(사용자 확정)의 순서는 A 프로젝트 지도(완료) → 0 안정성(완료) → C-1 어려운 코드 표시(완료) → F 함수 호출 관계(완료) → V-1 값 따라가기 예시 값(완료) → V-2 값의 모양(완료) → C-2 변경 보기(완료)이고, B 기획 대조는 보류다. 사용자가 2026-10-20 C-2 뒤에 D ‘DB 구조(SQL 기준)’를 더했다(기획 v2.3 3차 개정, plan 리뷰 2차 통과).
 
+## 프로젝트 undici·빌드 Node 보안 패치 (2026-11-14)
+
+- 사용자 진행 요청에 따라 프로젝트의 npm `undici`를 **6.29.1·7.30.2**로 패치했다. `package-lock.json`의 두 항목에서 버전·다운로드 주소·무결성 값만 바꿨으며, 공식 npm 메타데이터와 실제 설치 결과를 대조했다. `node-gyp`의 `^6.25.0`과 `@electron/get` 선택 의존성의 `^7.24.4`를 만족한다. `package.json`, 다른 잠금 항목과 설치 스크립트 정책은 그대로다. 7.x는 기존 제안 7.30.1 이후의 공식 보안 패치까지 포함했다([6.29.1](https://github.com/nodejs/undici/releases/tag/v6.29.1), [7.30.2](https://github.com/nodejs/undici/releases/tag/v7.30.2)).
+- CI 3개·출시 4개 작업의 Node를 **24.22.3**으로 고정하고 개발 안내도 맞췄다. 워크플로 검사는 기존 Node 기대값을 의도적으로 변경하고 CI의 각 작업도 개별 확인하게 했다. 설정 변경 전 **1개 실패·8개 통과**, 변경 뒤 전체 단위 검사에서 통과했다. 권한·출시 초안·설치 파일 검사 흐름은 변경하지 않았다.
+- 검증 환경: 공식 macOS arm64 배포를 공식 SHA-256 목록과 대조하고, 별도 경로의 Node **24.22.3 / 내장 undici 7.30.2 / npm 11.19.1**을 PATH 맨 앞에 두어 `npm ci`와 검사를 실행했다. 이 컴퓨터의 기본 Homebrew Node **24.18.0 / 내장 undici 7.28.0**은 갱신하지 않았다. Homebrew 갱신에는 OpenSSL 3→4·ICU 78→79도 포함되므로 이번 저장소 패치와 구분했다. Electron의 버전·내장 Node는 변경하지 않았다.
+- 로컬 검증: 새 Node에서 `npm ci`, `npm run typecheck`, `npm test -- --maxWorkers=2` **5,033개 통과·6개 제외**, `npm run package`와 macOS 서명 검사 통과. 최초 기본 병렬 실행은 평균 부하 **54.46**에서 시간 제한 관련 **28개 실패·5,005개 통과·6개 제외**였다. 코드·시간 제한 변경 없이 동시 검사 수만 2개로 줄인 전체 재실행은 통과했다. 새 앱 ASAR·풀린 리소스 135개에서 테스트 캐시·현재 로컬 경로·npm undici/minimatch 파일은 0개이고, 버전 1.1.0과 실행 파일 4개를 확인했다.
+- 화면·패키지 검증: 같은 새 Node 환경에서 `npm run test:electron` **158개 PASS**, `npm run test:packaged` **20개 통과**. 모두 격리된 시험 프로필·가짜 AI 응답을 사용했으며 실제 AI 요청은 보내지 않았다. 최종 관련 변경 이후 결과를 확인하고 문서 diff 검사도 통과했다.
+- `npm audit --json`은 **종료 1**, 높음 0·보통 영향 패키지 3개(`@electron/asar`, `glob`, `minimatch`)이며 `undici` 항목은 없다. 실제 공지는 `glob`·`minimatch` **2건**이고 asar는 간접 영향이다. 이전 Dependabot 경고 10개와 집계 기준이 달라 단순 증감으로 표시하지 않는다. `glob`의 [취소 이후 탐색 지속 문제](https://github.com/isaacs/node-glob/security/advisories/GHSA-3g3m-2fjr-6pw4)는 현재 패키징에서 signal·timeout을 넘기는 경로를 찾지 못했다. `minimatch`의 공격자 제어 패턴도 현재 패키징 호출에서 발견하지 못했다. 큰 버전 갱신·강제 override는 적용하지 않았다.
+- 별도 남는 범위: [공식 Node에 포함된 npm 자체 undici 6.28.0](https://raw.githubusercontent.com/nodejs/node/v24.22.3/deps/npm/node_modules/undici/package.json)은 프로젝트 잠금파일로 바뀌지 않는다. npm 내부 node-gyp가 헤더를 내려받으면 악성 서버 응답에 의한 조건부 프로세스 종료 위험이 남는다. 이 프로젝트의 `node-gyp-build`는 패치된 프로젝트 node-gyp를 우선 선택하며, 지원 플랫폼의 미리 빌드된 파일을 우선 쓴다. 일반 shell의 기본 Node 갱신, 악성 서버·디렉터리 재현, 변경 후 Windows CI·설치 파일 내부 검사는 **미실행·미검증**이다.
+- tester의 설정 회귀 검사와 security·reviewer의 읽기 전용 검토에서 이번 변경의 새 차단 문제는 발견하지 못했다. 이번 단계에서는 푸시·태그·출시를 하지 않았다. GitHub 경고 해소와 양쪽 OS 실행 결과는 이 변경을 `main`에 푸시한 뒤 확인해야 한다.
+
 ## 1.1.0 main 푸시·CI 확인과 개발 도구 보안 경고 (2026-11-14)
 
 - 사용자 진행 요청에 따라 준비한 3개 커밋을 `main`에 푸시했다. 원격 `main`은 `a7764f6913fdd9b959d7e8f9ebef6cd87da0569e`이며, [CI 43450010643](https://github.com/ckdgus222/code-learning/actions/runs/43450010643)은 **5개 작업 모두 성공**으로 완료됐다. 태그와 GitHub 출시는 만들지 않았다.

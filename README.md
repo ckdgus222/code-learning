@@ -230,7 +230,7 @@ $env:CODEX_HOME="$env:APPDATA\Code Learning\codex-home"; codex login
 
 ## 개발
 
-macOS Apple silicon, Node.js 24 기준입니다. 저장소 폴더에서 실행합니다.
+macOS Apple silicon, Node.js 24.22.3 기준입니다(CI·출시 빌드와 같은 버전). 저장소 폴더에서 실행합니다.
 
 ```sh
 npm ci

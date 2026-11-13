@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 24.18.0
+          node-version: 24.22.3
           cache: npm
       - name: Install
         id: install
@@ -51,7 +51,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 24.18.0
+          node-version: 24.22.3
           cache: npm
       - name: Install
         run: npm ci
@@ -78,7 +78,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 24.18.0
+          node-version: 24.22.3
           cache: npm
       - name: Install
         run: npm ci

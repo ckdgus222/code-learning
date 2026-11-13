@@ -81,7 +81,7 @@ macOS의 AI 질문 단계와 Codex·Antigravity 설치 확인은 `sandbox-exec` 
 ## 알려진 한계
 
 - 지도 내보내기는 저장 직전에 다른 프로그램이 고른 폴더를 링크 등으로 바꿔치는 경우를 막지 않습니다.
-- 개발·CI 도구의 의존성 보안 경고(2026-11-14): `undici`·`minimatch` 경고 10개가 남아 있으며 npm 패치와 실행 Node 갱신을 권고합니다. 로컬 macOS 앱에는 이 npm 패키지가 없고 Electron 내장 undici는 패치된 `7.30.1`이지만, 개발·CI 다운로드 경로와 Windows 설치 파일 내부는 별도로 확인해야 합니다([검토 기록](implementation-status.md)).
+- 개발·CI 도구의 의존성 보안 경고(2026-11-14): 프로젝트의 npm `undici`는 6.29.1·7.30.2로 패치했고 CI·출시 Node는 24.22.3으로 고정했습니다. 로컬 `npm audit`에는 `undici` 없이 `glob`·`minimatch` 공지 2건의 영향을 받는 개발 패키지 3개(보통 등급)가 남습니다. npm 자체에 포함된 구버전 `undici`와 이 컴퓨터의 기본 Node 24.18.0은 별도이며, 새 검증은 독립 Node 24.22.3에서 실행합니다. Windows 설치 파일 내부 검사는 남아 있습니다([검토 기록](implementation-status.md)).
 
 질문을 보내기 전에 알아 둘 것입니다. macOS의 Codex·Gemini 단독은 앱 전용 홈·울타리를 쓰지만 아래 한계가 있습니다. Windows Codex는 앱 전용 홈을 쓰지만 이 울타리는 없습니다. 시험 기록은 [구현 상태](implementation-status.md)에 있습니다.
 
@@ -107,7 +107,7 @@ macOS arm64 패키지 경로:
 
 Windows 설치 프로그램은 Windows에서 `npm run make:win`으로 만듭니다. Squirrel 설치 파일 경로는 `out/make/squirrel.windows/x64/Code-Learning-win-x64-Setup.exe`입니다.
 
-개발 실행은 이 폴더에서 `npm start`입니다. 설치된 의존성 버전은 `package-lock.json`에 고정했습니다. 새 환경에서는 `npm ci` 후 아래 검증을 실행합니다.
+개발·검증은 CI·출시 빌드와 같은 Node.js 24.22.3을 사용하며, 개발 실행은 이 폴더에서 `npm start`입니다. 설치된 의존성 버전은 `package-lock.json`에 고정했습니다. 새 환경에서는 `npm ci` 후 아래 검증을 실행합니다.
 
 tree-sitter 패키지들은 macOS arm64·Windows x64용 N-API 미리 빌드 파일을 포함하므로 설치 스크립트가 필요 없어 `allowScripts`에서 차단하며, `.npmrc`의 `strict-allow-scripts=true`는 검토하지 않은 설치 스크립트가 추가되면 설치를 실패시킵니다.
 
