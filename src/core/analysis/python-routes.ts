@@ -196,6 +196,8 @@ function readRoute(app: App, args: Node[], method: string, rootPath: boolean, re
 type WrittenPrefix = { kind: 'missing' | 'none' | 'dynamic' } | { kind: 'literal'; text: string };
 type RouteOwner = { id: number; name: string; app: App; end: number; args: Node[]; lastRouteEnd: number };
 type RouteTemplate = { ownerId: number; writtenPath: string | null; base: Route; unsupported: boolean };
+type RegistrationScope = { bodyId: number; entries: ReturnType<typeof walkPython>['nodes']; returnedReadId?: number };
+type RegistrationWork = { left: number; cut: boolean };
 const writtenPrefix = (node: Node | null | undefined): WrittenPrefix => {
   if (!node) return { kind: 'missing' };
   if (node.type === 'none') return { kind: 'none' };
@@ -364,16 +366,19 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
         base: route, unsupported: !complete || odd || unsupported });
     }
   }
-  const registered = registeredRoutes(templates, owners, walk, maxRoutes, invalid, odd, rootPath, redirectSlashes);
-  const local = appFactoryRoutes(file, walk, hash, maxRoutes - registered.routes.length, factories, bindings, invalid, odd, rootPath, redirectSlashes);
+  const work = { left: ROUTE_LIMITS.work, cut: false };
+  const registered = registeredRoutes(templates, owners, walk, maxRoutes, invalid, odd, rootPath, redirectSlashes, work);
+  const local = appFactoryRoutes(file, walk, hash, maxRoutes - registered.routes.length, factories, bindings, invalid, odd, rootPath, redirectSlashes, work);
   registered.routes.push(...local.routes);
-  return { routes: registered.routes, routers: registered.routers, complete, cut: cut || registered.cut || local.cut, odd: complete && odd,
-    ...(local.routes.length ? { factoryRoutes: local.routes.length } : {}), ...(registered.uncertain ? { registrationUncertain: true } : {}) };
+  return { routes: registered.routes, routers: [...new Set([...registered.routers, ...local.routers])], complete,
+    cut: cut || registered.cut || local.cut, odd: complete && odd, ...(local.routes.length ? { factoryRoutes: local.routes.length } : {}),
+    ...(registered.uncertain || local.uncertain ? { registrationUncertain: true } : {}) };
 }
 
 /** Registration metadata stays inside this file snapshot; public routes retain the decorator evidence. */
 function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteOwner>, walk: ReturnType<typeof walkPython>,
-  maxRoutes: number, invalid: Set<string>, odd: boolean, rootPath: boolean, redirectSlashes: boolean):
+  maxRoutes: number, invalid: Set<string>, odd: boolean, rootPath: boolean, redirectSlashes: boolean, work: RegistrationWork,
+  scope: RegistrationScope = { bodyId: walk.root.id, entries: walk.nodes }):
   { routes: Route[]; routers: Framework[]; cut: boolean; uncertain: boolean } {
   const byId = new Map([...owners.values()].map(owner => [owner.id, owner]));
   const byOwner = new Map<number, RouteTemplate[]>();
@@ -427,7 +432,7 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
     blueprintNames.set(owner.id, name !== null && name.length <= ROUTE_LIMITS.name ? name : null);
     if (!constructorSafe(owner)) unsafe.add(owner.id);
   }
-  for (const { node, type } of walk.nodes) {
+  for (const { node, type } of scope.entries) {
     if (type !== 'call') continue;
     const called = pythonAttributeNames(node.childForFieldName('function'));
     const method = called?.at(-1);
@@ -447,7 +452,7 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
     const name = writtenName !== null && writtenName.length <= ROUTE_LIMITS.name ? writtenName : null;
     const settled = !!parent && !!child && !parent.app.router && child.app.router
       && parent.app.framework === framework && child.app.framework === framework
-      && node.parent?.type === 'expression_statement' && node.parent.parent?.id === walk.root.id
+      && node.parent?.type === 'expression_statement' && node.parent.parent?.id === scope.bodyId
       && parent.end < node.startIndex && child.end < node.startIndex
       && positions.length <= 1 && !(positions.length && keyword(args, childKey))
       && keywordsValid(args, framework === 'fastapi' ? fastOptions : flaskOptions)
@@ -456,7 +461,7 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
   }
   if (!registrations.length) return original();
   // Reads that hand mutable router state to other code cannot justify a complete registration list.
-  for (const { node, type } of walk.nodes) {
+  for (const { node, type } of scope.entries) {
     if (type === 'attribute') {
       const names = pythonAttributeNames(node);
       const owner = names && owners.get(names[0]);
@@ -467,11 +472,12 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
       const owner = names?.length === 2 ? owners.get(names[0]) : null;
       if (owner && !frameworks[owner.app.framework].attributes.has(names![1])) unsafe.add(owner.id);
       const routeMethod = owner && ['get', 'post', 'put', 'patch', 'delete', frameworks[owner.app.framework].route].includes(names![1]);
-      if (owner && routeMethod && (node.parent?.type !== 'decorator' || node.parent.parent?.parent?.id !== walk.root.id)) unsafe.add(owner.id);
+      if (owner && routeMethod && (node.parent?.type !== 'decorator' || node.parent.parent?.parent?.id !== scope.bodyId)) unsafe.add(owner.id);
     }
     if (type !== 'identifier' || labelPosition(node) || parameterPosition(node)) continue;
     const owner = owners.get(nameOf(node));
     if (!owner) continue;
+    if (node.id === scope.returnedReadId) continue;
     if (node.parent?.id === owner.id && node.parent.childForFieldName('left')?.id === node.id) continue;
     const access = pythonValueAccess(node), parent = access.node.parent;
     if (access.names.length === 1 && registrationArguments.has(access.node.id)) continue;
@@ -510,7 +516,6 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
   };
   const byChild = new Map<number, Registration[]>();
   // Bound validation before output as well: output limits alone do not cap templates × registrations.
-  let workLeft = ROUTE_LIMITS.work, workCut = false;
   const validations = new Map<number, Map<string, { settled: boolean; invalid: boolean }>>();
   const validate = (registration: Registration, templates: RouteTemplate[]) => {
     const child = registration.child!;
@@ -530,8 +535,8 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
       if (!result.settled) break;
       const cost = 1 + (template.writtenPath?.length ?? 0) + (prefix.kind === 'literal' ? Math.min(prefix.text.length, 301) : 0)
         + (own.kind === 'literal' ? Math.min(own.text.length, 301) : 0);
-      if (cost > workLeft) { workCut = true; result.settled = false; result.invalid = true; break; }
-      workLeft -= cost;
+      if (cost > work.left) { work.cut = true; result.settled = false; result.invalid = true; break; }
+      work.left -= cost;
       const joined = composition(registration, template);
       if (!joined) { result.settled = false; result.invalid = true; break; }
       result.invalid ||= template.unsupported || !joined.path || joined.invalid;
@@ -587,15 +592,17 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
       return { routes, routers: [...routers], cut: true, uncertain };
     }
   }
-  return { routes, routers: [...routers], cut: workCut, uncertain };
+  return { routes, routers: [...routers], cut: work.cut, uncertain };
 }
 
 /** Each factory owns its app names. Its existence is evidence of code, not of invocation or deployment. */
 function appFactoryRoutes(file: ProjectFile, walk: ReturnType<typeof walkPython>, hash: string, maxRoutes: number,
   factories: Map<string, Factory>, moduleBindings: Map<string, Set<number>>, moduleInvalid: Set<string>, fileOdd: boolean,
-  rootPath: boolean, redirectSlashes: boolean): { routes: Route[]; cut: boolean } {
+  rootPath: boolean, redirectSlashes: boolean, work: RegistrationWork): { routes: Route[]; routers: Framework[]; uncertain: boolean; cut: boolean } {
   const routes: Route[] = [];
-  if (!walk.complete || walk.root.hasError || !factories.size) return { routes, cut: false };
+  const routers = new Set<Framework>();
+  let uncertain = false;
+  if (!walk.complete || walk.root.hasError || !factories.size) return { routes, routers: [], uncertain, cut: false };
   type Entry = (typeof walk.nodes)[number];
   type Scope = { fn: Node; body: Node; name: Node; entries: Entry[] };
   const scopes: Scope[] = [];
@@ -619,7 +626,7 @@ function appFactoryRoutes(file: ProjectFile, walk: ReturnType<typeof walkPython>
     places.add(node.id);
     declarations.set(name, places);
   }
-  const fromScope = (scope: Scope, room: number): { routes: Route[]; cut: boolean } | null => {
+  const fromScope = (scope: Scope, room: number): { routes: Route[]; routers: Framework[]; uncertain: boolean; cut: boolean } | null => {
     const routes: Route[] = [];
     const { fn, body, name, entries } = scope;
     if (fn.firstChild?.type === 'async' || declarations.get(nameOf(name))?.size !== 1 || moduleBindings.has(nameOf(name))) return null;
@@ -644,75 +651,119 @@ function appFactoryRoutes(file: ProjectFile, walk: ReturnType<typeof walkPython>
     const kind = factory.kind === 'module' ? factoryKind(factory.framework, nameOf(callee?.childForFieldName('attribute')))
       : callee?.type === 'identifier' ? factory.kind : null;
     if (kind !== 'app') return null;
+    const app = readApp(factory.framework, constructor, false, argumentsOf(right));
+    const owners = new Map<string, RouteOwner>([[appName, { id: assignment.id, name: appName, app,
+      end: assignment.endIndex, args: argumentsOf(right), lastRouteEnd: 0 }]]);
+    const madeIds = new Set([left.id]);
+    const invalid = new Set<string>();
+    for (const { node, type } of own) {
+      if (type !== 'assignment' || node.hasError || node.parent?.parent?.id !== body.id) continue;
+      const left = node.childForFieldName('left'), right = node.childForFieldName('right');
+      if (left?.type !== 'identifier' || right?.type !== 'call') continue;
+      const callee = right.childForFieldName('function');
+      const receiver = callee?.type === 'attribute' ? callee.childForFieldName('object') : callee;
+      if (receiver?.type !== 'identifier') continue;
+      const constructor = nameOf(receiver), factory = factories.get(constructor);
+      if (!factory || moduleInvalid.has(constructor)) continue;
+      const kind = factory.kind === 'module' ? factoryKind(factory.framework, nameOf(callee?.childForFieldName('attribute')))
+        : callee?.type === 'identifier' ? factory.kind : null;
+      if (kind !== 'router') continue;
+      const name = nameOf(left), args = argumentsOf(right);
+      if (owners.has(name)) invalid.add(name);
+      owners.set(name, { id: node.id, name, app: readApp(factory.framework, constructor, true, args),
+        end: node.endIndex, args, lastRouteEnd: 0 });
+      madeIds.add(left.id);
+    }
+    const constructors = new Set([...owners.values()].map(owner => owner.app.factory));
+    const tracked = new Map([...owners.values()].flatMap(owner =>
+      [[owner.name, owner.app.framework], [owner.app.factory, owner.app.framework]] as [string, Framework][]));
     const parameters = fn.childForFieldName('parameters');
-    let invalid = false, odd = fileOdd;
+    let odd = fileOdd;
     for (const entry of entries) {
       const { node, type, scopeBodyId } = entry;
       if (type === 'identifier') {
         const name = nameOf(node), parent = node.parent;
         if (labelPosition(node)) continue;
         odd ||= pythonRouteMachinery.has(name);
-        if ([appName, constructor].includes(name) && ['global_statement', 'nonlocal_statement'].includes(parent?.type ?? '')) invalid = true;
+        if (tracked.has(name) && ['global_statement', 'nonlocal_statement'].includes(parent?.type ?? '')) invalid.add(name);
+        if (constructors.has(name) && !typePosition(node)) {
+          const access = pythonValueAccess(node), parent = access.node.parent, factory = factories.get(name)!;
+          const called = parent?.type === 'call' && parent.childForFieldName('function')?.id === access.node.id;
+          const constructing = factory.kind === 'module' ? access.names.length === 2 && !!factoryKind(factory.framework, access.names[1])
+            : access.names.length === 1;
+          if (!called || !constructing) invalid.add(name);
+        }
         const parameter = parameterPosition(node);
         const ownParameter = parameter && parameters && node.startIndex >= parameters.startIndex && node.endIndex <= parameters.endIndex;
         if (!ownParameter && (scopeBodyId !== body.id || parameter)) continue;
-        if (name !== appName && name !== constructor) continue;
-        const made = node.id === left.id || node.id === returned.id;
+        if (!tracked.has(name)) continue;
+        const made = madeIds.has(node.id) || node.id === returned.id;
         const reading = parent?.type === 'attribute' && parent.childForFieldName('object')?.id === node.id
           || parent?.type === 'argument_list' || parent?.type === 'keyword_argument' && parent.childForFieldName('value')?.id === node.id
-          || name === constructor && (parent?.type === 'call' && parent.childForFieldName('function')?.id === node.id || typePosition(node));
-        if (!made && (!reading || ownParameter)) invalid = true;
+          || constructors.has(name) && (parent?.type === 'call' && parent.childForFieldName('function')?.id === node.id || typePosition(node));
+        if (!made && (!reading || ownParameter)) invalid.add(name);
       }
       if (scopeBodyId === body.id && ['import_statement', 'import_from_statement'].includes(type)) {
-        if (node.namedChildren.some(child => child.type === 'wildcard_import')) invalid = true;
-        invalid ||= node.childrenForFieldName('name').some(imported => {
+        if (node.namedChildren.some(child => child.type === 'wildcard_import')) return null;
+        for (const imported of node.childrenForFieldName('name')) {
           const original = imported.childForFieldName('name') ?? imported;
           const binding = imported.childForFieldName('alias') ?? original.firstNamedChild ?? original;
-          return [appName, constructor].includes(nameOf(binding));
-        });
+          if (tracked.has(nameOf(binding))) invalid.add(nameOf(binding));
+        }
       }
       if (type === 'attribute') {
         const names = pythonAttributeNames(node);
-        if (names?.length !== 2 || ![appName, constructor].includes(names[0])) continue;
+        if (names?.length !== 2 || !tracked.has(names[0])) continue;
         const attribute = names[1];
         const called = node.parent?.type === 'call' && node.parent.childForFieldName('function')?.id === node.id;
-        odd ||= attribute.startsWith('__') || frameworks[factory.framework].attributes.has(attribute) && !called && !typePosition(node);
+        odd ||= attribute.startsWith('__') || frameworks[tracked.get(names[0])!].attributes.has(attribute) && !called && !typePosition(node);
       }
       if (type !== 'call') continue;
       const called = pythonAttributeNames(node.childForFieldName('function'));
       if (called?.length !== 1 || !['setattr', 'delattr', 'vars'].includes(called[0])) continue;
       const object = pythonAttributeNames(argumentsOf(node)[0]);
-      odd ||= !!object && [appName, constructor].includes(object[0]);
+      odd ||= !!object && tracked.has(object[0]);
     }
-    if (invalid) return null;
-    const app = readApp(factory.framework, constructor, false, argumentsOf(right));
+    if (invalid.has(appName) || invalid.has(constructor)) return null;
+    const templates: RouteTemplate[] = [];
+    let cut = false;
     for (const { node, type } of own) {
-      if (type !== 'decorator' || node.parent?.parent?.id !== body.id || node.startIndex < assignment.endIndex) continue;
+      if (type !== 'decorator' || node.parent?.parent?.id !== body.id) continue;
       const definition = node.parent.childForFieldName('definition'), handler = definition && pythonFunction(definition);
       const call = node.firstNamedChild, callee = call?.type === 'call' ? call.childForFieldName('function') : null;
       const object = callee?.type === 'attribute' ? callee.childForFieldName('object') : null;
-      if (!handler || object?.type !== 'identifier' || nameOf(object) !== appName) continue;
+      if (!handler || object?.type !== 'identifier') continue;
+      const owner = owners.get(nameOf(object));
+      if (!owner || node.startIndex < owner.end || invalid.has(owner.name) || invalid.has(owner.app.factory)) continue;
+      const app = owner.app;
       const method = nameOf(callee?.childForFieldName('attribute'));
       if (!['get', 'post', 'put', 'patch', 'delete', frameworks[app.framework].route].includes(method)) continue;
-      const { path, selected, shape } = readRoute(app, argumentsOf(call!), method, rootPath, redirectSlashes);
+      const { path, selected, shape, writtenPath, unsupported } = readRoute(app, argumentsOf(call!), method, rootPath, redirectSlashes);
+      owner.lastRouteEnd = Math.max(owner.lastRouteEnd, handler.declaration.endIndex);
       for (const selectedMethod of selected) {
-        if (routes.length >= room) return { routes, cut: true };
+        if (routes.length >= room) { cut = true; break; }
         const declaration = handler.declaration;
-        routes.push({ method: selectedMethod as Route['method'], path, framework: app.framework, prefix: 'unknown',
+        const route: Route = { method: selectedMethod as Route['method'], path, framework: app.framework, prefix: 'unknown',
           handler: { fileId: file.id, fileHash: hash, startUtf16: declaration.startIndex, endUtf16: declaration.endIndex,
             startLine: declaration.startPosition.row + 1, name: shortName(handler.name) },
           basis: { text: firstLine(node), range: { fileId: file.id, fileHash: hash, startUtf16: node.startIndex,
             endUtf16: node.endIndex, ...lineRange(node), text: firstLine(node) } },
-          ...(odd ? { unmatched: true as const } : shape) });
+          ...(odd ? { unmatched: true as const } : shape) };
+        routes.push(route);
+        templates.push({ ownerId: owner.id, writtenPath, base: route, unsupported: odd || unsupported });
       }
     }
-    return { routes, cut: false };
+    const result = registeredRoutes(templates, owners, walk, room, invalid, odd, rootPath, redirectSlashes, work,
+      { bodyId: body.id, entries, returnedReadId: returned.id });
+    return { ...result, routes: result.routes.map(route => ({ ...route, prefix: 'unknown' })), cut: cut || result.cut };
   };
   for (const scope of scopes) {
     const found = fromScope(scope, maxRoutes - routes.length);
     if (!found) continue;
     routes.push(...found.routes);
-    if (found.cut) return { routes, cut: true };
+    for (const framework of found.routers) routers.add(framework);
+    uncertain ||= found.uncertain;
+    if (found.cut) return { routes, routers: [...routers], uncertain, cut: true };
   }
-  return { routes, cut: false };
+  return { routes, routers: [...routers], uncertain, cut: false };
 }
