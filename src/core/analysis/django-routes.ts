@@ -15,6 +15,7 @@ interface ViewRef {
   actions?: { method: Route['method']; action: string }[] | null;
   drfOnly?: true;
   at?: number;
+  inheritanceUnsafe?: true;
 }
 interface DjangoEntry {
   kind: UnresolvedRoute['kind'];
@@ -47,6 +48,11 @@ interface DrfRouter {
   registrations: DrfRegistration[]; uses: DrfUse[];
 }
 interface DrfSymbol { root: string; end: number; name: string }
+interface DjangoInheritance {
+  start: number; end: number; safe: boolean; base: (ViewRef & { at: number }) | null;
+  /** Missing means inherited; null means an own binding prevents fallback. */
+  ownSlots: Map<Route['method'], CallTarget | null>;
+}
 type DjangoView = { kind: 'function'; handler: CallTarget; methods: Route['method'][] }
   | { kind: 'class'; methods: { method: Route['method']; handler: CallTarget }[] }
   | { kind: 'viewset'; definedAt: number; actions: Map<string, CallTarget | null>; base: string; extraActions: DrfAction[]; routerSafe: boolean; lookupSafe: boolean };
@@ -64,6 +70,9 @@ export interface DjangoFile {
   drfMutationImports: Map<string, PythonImport>;
   drfMutationsCut: boolean;
   drfFrameworkUnsafe: boolean;
+  inheritance: Map<string, DjangoInheritance>;
+  inheritanceInvalid: Set<string>;
+  inheritanceMutationImports: Map<string, PythonImport>;
   plain: boolean;
   init: InitFacts | null;
   odd: boolean;
@@ -86,6 +95,7 @@ const standardActions = new Set(['list', 'create', 'retrieve', 'update', 'partia
 const lookupSettings = new Set(['lookup_field', 'lookup_url_kwarg', 'lookup_value_regex', 'lookup_value_converter']);
 const viewsetDispatch = new Set([...changesDispatch, 'initialize_request', 'initial', '__init__', '__new__', '__getattribute__', '__getattr__', '__setattr__']);
 const replacedActions = new Set(['name', 'description', 'suffix', 'detail', 'basename', 'action_map']);
+const inheritanceHooks = new Set([...viewsetDispatch, '__init_subclass__', '__mro_entries__']);
 function originalActions(actions: ViewRef['actions']): boolean {
   if (!actions?.length) return false;
   const replaced = new Set<string>();
@@ -255,12 +265,57 @@ function drfActionOf(statement: Node, action: string, symbols: Map<string, DrfSy
     urlPath: written === '' ? action : written };
 }
 
+function inheritanceOf(cls: Node, nameOf: (node: Node | null | undefined) => string, target: (node: Node) => CallTarget): DjangoInheritance {
+  const bases = cls.childForFieldName('superclasses')?.namedChildren.filter(child => child.type !== 'comment') ?? [];
+  const base = bases.length === 1 ? viewRefOf(bases[0], nameOf) : null;
+  const result: DjangoInheritance = { start: cls.startIndex, end: cls.endIndex,
+    safe: !cls.hasError && cls.parent?.type !== 'decorated_definition' && (bases.length === 0 || !!base && !base.asView),
+    base: base && !base.asView ? { ...base, at: cls.startIndex } : null, ownSlots: new Map() };
+  const http = (name: string) => /^[a-z]+$/.test(name) && methods.has(name.toUpperCase());
+  const affect = (name: string) => {
+    if (inheritanceHooks.has(name) || pythonRouteMachinery.has(name)) result.safe = false;
+    if (http(name)) result.ownSlots.set(name.toUpperCase() as Route['method'], null);
+  };
+  let budget = 2_000;
+  for (const statement of cls.childForFieldName('body')?.namedChildren ?? []) {
+    if (--budget < 0) { result.safe = false; break; }
+    if (statement.type === 'function_definition') {
+      const name = nameOf(statement.childForFieldName('name'));
+      if (inheritanceHooks.has(name)) result.safe = false;
+      if (http(name)) {
+        const method = name.toUpperCase() as Route['method'];
+        result.ownSlots.set(method, result.ownSlots.has(method) ? null : target(statement));
+      }
+      continue;
+    }
+    const pending = [statement];
+    while (pending.length) {
+      if (--budget < 0) { result.safe = false; break; }
+      const node = pending.pop()!;
+      if (node.type === 'function_definition' || node.type === 'class_definition') {
+        affect(nameOf(node.childForFieldName('name'))); continue;
+      }
+      if (node.type === 'import_statement' || node.type === 'import_from_statement') {
+        for (const imported of node.childrenForFieldName('name')) {
+          const original = imported.type === 'aliased_import' ? imported.childForFieldName('name')! : imported;
+          affect(nameOf(imported.childForFieldName('alias') ?? original.firstNamedChild));
+        }
+      }
+      if (node.type === 'identifier') { if (!labelPosition(node)) affect(nameOf(node)); continue; }
+      pending.push(...node.namedChildren);
+    }
+  }
+  return result;
+}
+
 function viewRefOf(input: Node | null | undefined, nameOf: (node: Node | null | undefined) => string): ViewRef | null {
   let expression = input, asView = false;
-  let actions: ViewRef['actions'], drfOnly = false;
+  let actions: ViewRef['actions'], drfOnly = false, inheritanceUnsafe = false;
   if (expression?.type === 'call') {
     const fn = expression.childForFieldName('function'), args = argumentsOf(expression);
     const safe = args.every(arg => arg.type === 'keyword_argument' && !['dispatch', 'setup', 'http_method_names'].includes(nameOf(arg.childForFieldName('name'))));
+    inheritanceUnsafe = !registrationArgumentsValid(args, [], true, nameOf)
+      || args.some(arg => ['get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'trace'].includes(nameOf(arg.childForFieldName('name'))));
     const actionArg = args.find(positional) ?? args.find(arg => nameOf(arg.childForFieldName('name')) === 'actions')?.childForFieldName('value');
     if (actionArg) {
       actions = null;
@@ -283,7 +338,8 @@ function viewRefOf(input: Node | null | undefined, nameOf: (node: Node | null | 
   const local = expression?.type === 'attribute' ? expression.childForFieldName('object') : expression;
   const attribute = expression?.type === 'attribute' ? nameOf(expression.childForFieldName('attribute')) : null;
   return local?.type === 'identifier' && nameOf(local) && (attribute === null || attribute)
-    ? { local: nameOf(local), attribute, asView, ...(actions !== undefined ? { actions, at: input!.startIndex } : {}), ...(drfOnly ? { drfOnly: true as const } : {}) } : null;
+    ? { local: nameOf(local), attribute, asView, ...(actions !== undefined ? { actions, at: input!.startIndex } : {}),
+      ...(drfOnly ? { drfOnly: true as const } : {}), ...(inheritanceUnsafe ? { inheritanceUnsafe: true as const } : {}) } : null;
 }
 
 function staticAddition(call: Node, basis: Route['basis'], nameOf: (node: Node | null | undefined) => string): DjangoStaticAddition | null {
@@ -302,7 +358,8 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
   const text = root.text.normalize('NFKC');
   let mentions = 0;
   for (let at = text.indexOf('ROOT_URLCONF'); at !== -1; at = text.indexOf('ROOT_URLCONF', at + 'ROOT_URLCONF'.length)) mentions++;
-  const result: DjangoFile = { entries: [], includes: [], staticAdditions: [], unfollowed: 0, imports: new Map(), views: new Map(), viewAliases: new Map(), viewsetInvalid: new Set(), routers: [], drfMutationImports: new Map(), drfMutationsCut: false, drfFrameworkUnsafe: false, plain: complete && !root.hasError,
+  const result: DjangoFile = { entries: [], includes: [], staticAdditions: [], unfollowed: 0, imports: new Map(), views: new Map(), viewAliases: new Map(), viewsetInvalid: new Set(), routers: [], drfMutationImports: new Map(), drfMutationsCut: false, drfFrameworkUnsafe: false,
+    inheritance: new Map(), inheritanceInvalid: new Set(), inheritanceMutationImports: new Map(), plain: complete && !root.hasError,
     init: null, odd: false, root: null, rootUnclear: false, listFinal: false,
     reachesList: (!complete || root.hasError) && text.includes('urlpatterns') };
   // 1. Bound names are normalized once, after rejecting text too long to be a route name.
@@ -315,6 +372,11 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
     const name = text.length <= ROUTE_LIMITS.name ? normalize(text) : '';
     names.set(node.id, name.length <= ROUTE_LIMITS.name ? name : '');
     return names.get(node.id)!;
+  };
+  const target = (node: Node): CallTarget => {
+    const fn = pythonFunction(node)!;
+    return { fileId: file.id, fileHash: hash, startUtf16: fn.declaration.startIndex, endUtf16: fn.declaration.endIndex,
+      startLine: fn.declaration.startPosition.row + 1, name: shortName(fn.name) };
   };
   const bindings = new Map<string, Set<number>>();
   const bind = (node: Node) => {
@@ -400,6 +462,18 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
     if (read.type === 'identifier') baseReads.add(read.id);
   }
   const aliases = new Map<string, { view: ViewRef; end: number; binding: number; read: number }>();
+  const inheritanceDrafts = new Map<string, DjangoInheritance>(), inheritanceBaseReads = new Set<number>();
+  if (result.plain) for (const [name, node] of definitions) {
+    if (node.type !== 'class_definition' || drfClasses.has(name)) continue;
+    const info = inheritanceOf(node, nameOf, target), ref = info.base;
+    if (ref && ((importedAt.get(ref.local) ?? -1) >= info.start
+      || ref.attribute === null && (definitions.get(ref.local)?.endIndex ?? -1) >= info.start)) info.safe = false;
+    inheritanceDrafts.set(name, info);
+    if (!info.safe || !ref || drfRoots.has(ref.local) || drfClasses.has(ref.local)) continue;
+    const baseNode = node.childForFieldName('superclasses')!.namedChildren.find(child => child.type !== 'comment')!;
+    const read = receiverOf(baseNode);
+    if (read) inheritanceBaseReads.add(read.id);
+  }
   for (const { node, type } of nodes) {
     if (type !== 'assignment' || node.parent?.type !== 'expression_statement' || node.parent.parent?.id !== root.id) continue;
     const left = node.childForFieldName('left'), ref = viewRefOf(node.childForFieldName('right'), nameOf);
@@ -508,6 +582,7 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
       if (!baseReads.has(node.id) && !asView && !registration?.router.safe) invalid.add(name);
     }
     if (baseReads.has(node.id)) continue;
+    if (inheritanceBaseReads.has(node.id)) continue;
     if (!module || label || parameterPosition(node) || bindings.get(name)?.has(node.id)) continue;
     const called = parent?.type === 'call' && parent.childForFieldName('function')?.id === node.id;
     if (django.has(name)) { if (!called) invalid.add(name); continue; }
@@ -544,7 +619,7 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
   result.init = result.plain && file.relativePath.split('/').at(-1) === '__init__.py' ? initFactsOf(root) : null;
 
   // 3. Read literal list entries and static-list additions assigned directly to module-level urlpatterns.
-  const lists = new Set<number>(), staticCalls = new Set<number>(), aliasReads = new Set<number>(), viewsetReads = new Set<number>();
+  const lists = new Set<number>(), staticCalls = new Set<number>(), aliasReads = new Set<number>(), viewsetReads = new Set<number>(), inheritanceReads = new Set<number>();
   for (const { node, type } of nodes) {
     if (type !== 'assignment' && type !== 'augmented_assignment' || node.parent?.parent?.id !== root.id) continue;
     if (nameOf(node.childForFieldName('left')) !== 'urlpatterns') continue;
@@ -606,6 +681,7 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
       if (expression.type === 'identifier' && aliases.has(nameOf(expression))) aliasReads.add(expression.id);
       const receiver = receiverOf(expression);
       if (receiver) viewsetReads.add(receiver.id);
+      if (receiver) inheritanceReads.add(receiver.id);
     }
     // `bounded` looks at the length first, so an overlong route is never split or matched.
     const path = written === null ? null : bounded(regex ? written : '/' + written);
@@ -644,19 +720,31 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
     if (viewsetReads.has(node.id) && (importedAt.get(name) ?? -1) < node.startIndex) continue;
     result.viewsetInvalid.add(name);
   }
+  for (const { node, type } of nodes) {
+    if (type !== 'identifier') continue;
+    const name = nameOf(node);
+    if (!imports.has(name) && !definitions.has(name)) continue;
+    if (bindings.get(name)?.has(node.id) || labelPosition(node) || parameterPosition(node) || typePosition(node)) continue;
+    if ((inheritanceBaseReads.has(node.id) || inheritanceReads.has(node.id)) && (importedAt.get(name) ?? -1) < node.startIndex) continue;
+    result.inheritanceInvalid.add(name);
+  }
   for (const name of invalid) result.viewsetInvalid.add(name);
+  for (const name of invalid) result.inheritanceInvalid.add(name);
   result.drfFrameworkUnsafe = [...drfSymbols.values()].some(symbol => result.viewsetInvalid.has(symbol.root));
   const used = new Set([...result.entries, ...result.staticAdditions].map(entry => entry.view?.local));
   for (const alias of result.viewAliases.values()) used.add(alias.view.local);
   for (const router of result.routers) for (const registration of router.registrations) used.add(registration.view?.local);
+  for (const info of inheritanceDrafts.values()) if (info.base) used.add(info.base.local);
   for (const [name, item] of imports) if (used.has(name) && !invalid.has(name)) result.imports.set(name, item);
   const mutationRoom = mutationRooms.get(room) ?? { left: 5_000 };
   mutationRooms.set(room, mutationRoom);
   for (const [name, item] of imports) {
-    if (!result.viewsetInvalid.has(name)) continue;
+    if (!result.viewsetInvalid.has(name) && !result.inheritanceInvalid.has(name)) continue;
     if (item.level === 0 && ['django', 'rest_framework'].includes(normalize(item.module[0] ?? ''))) continue;
     if (mutationRoom.left <= 0) { room.mutationsCut = true; result.drfMutationsCut = true; break; }
-    result.drfMutationImports.set(name, item); mutationRoom.left--;
+    if (result.viewsetInvalid.has(name)) result.drfMutationImports.set(name, item);
+    if (result.inheritanceInvalid.has(name)) result.inheritanceMutationImports.set(name, item);
+    mutationRoom.left--;
   }
   if (!result.plain) return result;
 
@@ -689,11 +777,6 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
       }
     }
     return found;
-  };
-  const target = (node: Node): CallTarget => {
-    const fn = pythonFunction(node)!;
-    return { fileId: file.id, fileHash: hash, startUtf16: fn.declaration.startIndex, endUtf16: fn.declaration.endIndex,
-      startLine: fn.declaration.startPosition.row + 1, name: shortName(fn.name) };
   };
   for (const [name, node] of definitions) {
     if (room.views <= 0) { room.viewsCut = true; break; }
@@ -757,6 +840,8 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
       if (!handlers) continue;
       result.views.set(name, { kind: 'class', methods: [...handlers].filter(([, node]) => node !== null)
         .map(([method, node]) => ({ method: method.toUpperCase() as Route['method'], handler: target(node!) })) });
+      const inheritance = inheritanceDrafts.get(name);
+      if (inheritance) result.inheritance.set(name, inheritance);
       room.views--;
       continue;
     }
@@ -794,31 +879,41 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
   let skipped = 0, cut = false, unfollowed = 0, staticAdditions = 0, staticUnresolved = 0;
   const facts = { init: (path: string) => files.get(path)?.init ?? null, plain: (path: string) => files.get(path)?.plain ?? false };
   const ordered = [...files].sort(([a], [b]) => a.localeCompare(b));
-  const blockedDrfFiles = new Set<string>(), blockedDrfFolders = new Set<string>(), blockedDrfNames = new Map<string, Set<string>>();
   const mutationsCut = ordered.some(([, file]) => file.drfMutationsCut);
-  for (const [path, file] of ordered) for (const item of file.drfMutationImports.values()) {
+  const importCache = new Map<string, Map<string, ReturnType<typeof resolvePythonImport>>>();
+  const importTargets = (path: string, name: string, item: PythonImport) => {
     if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
-    for (const target of resolvePythonImport(path, item, known, facts)) {
-      if (target.kind === 'external') continue;
-      const targets = target.kind === 'file' ? [target.relativePath] : target.candidates;
-      for (const affected of targets) {
-        if (posix.basename(affected) === '__init__.py') { blockedDrfFolders.add(posix.dirname(affected)); continue; }
-        if (target.kind !== 'file' || target.names === 'all') { blockedDrfFiles.add(affected); continue; }
-        const names = blockedDrfNames.get(affected) ?? new Set<string>();
-        target.names.forEach(name => names.add(normalize(name)));
-        blockedDrfNames.set(affected, names);
+    const cached = importCache.get(path) ?? new Map<string, ReturnType<typeof resolvePythonImport>>();
+    importCache.set(path, cached);
+    if (!cached.has(name)) cached.set(name, resolvePythonImport(path, item, known, facts));
+    return cached.get(name)!;
+  };
+  const mutationBlocks = (kind: 'drfMutationImports' | 'inheritanceMutationImports') => {
+    const blockedFiles = new Set<string>(), blockedFolders = new Set<string>(), blockedNames = new Map<string, Set<string>>();
+    for (const [path, file] of ordered) for (const [name, item] of file[kind]) {
+      for (const target of importTargets(path, name, item)) {
+        if (target.kind === 'external') continue;
+        const targets = target.kind === 'file' ? [target.relativePath] : target.candidates;
+        for (const affected of targets) {
+          if (posix.basename(affected) === '__init__.py') { blockedFolders.add(posix.dirname(affected)); continue; }
+          if (target.kind !== 'file' || target.names === 'all') { blockedFiles.add(affected); continue; }
+          const names = blockedNames.get(affected) ?? new Set<string>();
+          target.names.forEach(name => names.add(normalize(name)));
+          blockedNames.set(affected, names);
+        }
       }
     }
-  }
-  const blockedDrf = (path: string, name: string) => {
-    if (mutationsCut || blockedDrfFiles.has(path) || blockedDrfNames.get(path)?.has(name)) return true;
-    let folder = posix.dirname(path);
-    while (true) {
-      if (blockedDrfFolders.has(folder)) return true;
-      if (folder === '.') return false;
-      folder = posix.dirname(folder);
-    }
+    return (path: string, name: string) => {
+      if (mutationsCut || blockedFiles.has(path) || blockedNames.get(path)?.has(name)) return true;
+      let folder = posix.dirname(path);
+      while (true) {
+        if (blockedFolders.has(folder)) return true;
+        if (folder === '.') return false;
+        folder = posix.dirname(folder);
+      }
+    };
   };
+  const blockedDrf = mutationBlocks('drfMutationImports'), blockedInheritance = mutationBlocks('inheritanceMutationImports');
   const projectFolder = (filePath: string): string | null => {
     let folder = posix.dirname(filePath);
     while (!known.has(posix.join(folder, 'manage.py'))) {
@@ -914,15 +1009,16 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
     resolved.set(path, imports);
     for (const [name, item] of file.imports) {
       if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
-      const targets = resolvePythonImport(path, item, known, facts);
+      const targets = importTargets(path, name, item);
       const found = targets.length === 1 && targets[0].kind === 'file' ? targets[0] : null;
       // A target that is not plain offers no views, so it needs no check here.
       if (!found) continue;
       imports.set(name, { path: found.relativePath, name: found.names === 'all' ? null : found.names[0] });
     }
   }
+  type Handler = { method: Route['method']; handler: CallTarget; inherited?: true; originPath?: string };
   const prepared: { path: string; file: DjangoFile; entry: DjangoEntry; viewPath: string;
-    drf: boolean; handlers: { method: Route['method']; handler: CallTarget }[] }[] = [];
+    drf: boolean; handlers: Handler[] }[] = [];
   const drfShadow = ordered.some(([, file]) => file.drfFrameworkUnsafe) || [...known].some(path => {
     const parts = path.normalize('NFKC').toLowerCase().split('/');
     const index = parts.at(-1) === 'rest_framework.py' ? parts.length - 1
@@ -935,6 +1031,30 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
     if (!imported) return null;
     const name = ref.attribute === null ? imported.name : imported.name === null ? ref.attribute : null;
     return name === null ? null : { path: imported.path, name };
+  };
+  type InheritedSlot = { handler: CallTarget; originPath: string } | null;
+  const inheritanceCache = new Map<string, Map<Route['method'], InheritedSlot> | null>();
+  let inheritanceWork = 200_000;
+  const inheritedSlots = (path: string, name: string, depth: number, seen: ReadonlySet<string>): Map<Route['method'], InheritedSlot> | null => {
+    if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
+    if (--inheritanceWork < 0 || inheritanceCache.size >= 20_000) { cut = true; return null; }
+    const identity = JSON.stringify([path, name]), key = JSON.stringify([path, name, depth]);
+    if (seen.has(identity)) return null;
+    if (inheritanceCache.has(key)) return inheritanceCache.get(key)!;
+    const file = files.get(path), info = file?.inheritance.get(name);
+    if (!file?.plain || !info?.safe || file.inheritanceInvalid.has(name) || blockedInheritance(path, name)) return null;
+    const slots = new Map<Route['method'], InheritedSlot>([...info.ownSlots].map(([method, handler]) => [method, handler ? { handler, originPath: path } : null]));
+    const base = info.base, parent = base && location(path, base);
+    if (!parent) { inheritanceCache.set(key, slots); return slots; }
+    const parentFile = files.get(parent.path), parentInfo = parentFile?.inheritance.get(parent.name);
+    if (file.inheritanceInvalid.has(base!.local) || parentFile?.views.get(parent.name)?.kind !== 'class'
+      || !parentInfo || parent.path === path && parentInfo.end >= info.start) { inheritanceCache.set(key, null); return null; }
+    if (depth <= 0) { cut = true; return null; }
+    const ancestors = inheritedSlots(parent.path, parent.name, depth - 1, new Set([...seen, identity]));
+    if (!ancestors) { inheritanceCache.set(key, null); return null; }
+    for (const [method, handler] of ancestors) if (!slots.has(method)) slots.set(method, handler);
+    inheritanceCache.set(key, slots);
+    return slots;
   };
   const unresolved = (filePath: string, file: DjangoFile, entry: DjangoEntry, reason: UnresolvedRoute['reason'], addition: DjangoStaticAddition | null) => {
     const collected = entry.kind === 'path' ? prefixes.get(filePath) ?? [bare(filePath, file)] : [bare(filePath, file)];
@@ -1051,16 +1171,26 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
       skipped += Number(!staticEntry); unresolved(path, file, entry, 'unresolved-handler', staticEntry); continue;
     }
     const drf = view.kind === 'viewset';
+    const inherited: Handler[] = [];
+    if (view.kind === 'class' && ref.asView && !ref.drfOnly && !ref.inheritanceUnsafe && !entry.invalidRegistration && found
+      && !file.inheritanceInvalid.has(entry.view!.local)) {
+      const info = files.get(found.path)!.inheritance.get(found.name);
+      const slots = info && (found.path !== path || info.end < entry.basis.range.startUtf16) ? inheritedSlots(found.path, found.name, 8, new Set()) : null;
+      for (const [method, source] of slots ?? []) {
+        if (!source || info?.ownSlots.has(method) || view.methods.some(own => own.method === method)) continue;
+        inherited.push({ method, ...source, inherited: true });
+      }
+    }
     const drfHandlers = drf && ref.asView && ref.actions && originalActions(ref.actions) && !drfShadow && !unsafeViewset && !entry.invalidRegistration
       && !!found && !blockedDrf(found.path, found.name)
       && (viewPath !== refPath || ref.at !== undefined && view.definedAt < ref.at)
       ? ref.actions.map(({ method, action }) => ({ method, handler: view.actions.get(action) })) : null;
     if (drf ? !drfHandlers?.length || drfHandlers.some(item => !item.handler)
-      : ref.drfOnly || ref.asView !== (view.kind === 'class') || view.kind === 'class' && !view.methods.length) {
+      : ref.drfOnly || ref.asView !== (view.kind === 'class') || view.kind === 'class' && !view.methods.length && !inherited.length) {
       skipped += Number(!staticEntry); unresolved(path, file, entry, 'unsupported-view', staticEntry); continue;
     }
-    const handlers = view.kind === 'viewset' ? drfHandlers!.map(item => ({ method: item.method, handler: item.handler! }))
-      : view.kind === 'function' ? view.methods.map(method => ({ method, handler: view.handler })) : view.methods;
+    const handlers: Handler[] = view.kind === 'viewset' ? drfHandlers!.map(item => ({ method: item.method, handler: item.handler! }))
+      : view.kind === 'function' ? view.methods.map(method => ({ method, handler: view.handler })) : [...view.methods, ...inherited];
     if (!handlers.length) continue;
     if (staticEntry) staticUnresolved--;
     prepared.push({ path, file, entry, viewPath, handlers, drf });
@@ -1072,14 +1202,15 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
       if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
       if (routes.length >= maxRoutes) { cut = true; break build; }
       const prefix = collected[Math.floor(index / handlers.length)];
-      const { method, handler } = handlers[index % handlers.length];
+      const { method, handler, inherited, originPath } = handlers[index % handlers.length];
       const joined = entry.written === null ? entry.path : bounded('/' + prefix.written + entry.written);
-      const odd = prefix.oddPaths.length > 0 || files.get(viewPath)!.odd;
+      const odd = prefix.oddPaths.length > 0 || files.get(viewPath)!.odd || !!originPath && files.get(originPath)!.odd;
       prefix.oddPaths.forEach(oddPath => oddFiles.add(oddPath));
       if (files.get(viewPath)!.odd) oddFiles.add(viewPath);
+      if (originPath && files.get(originPath)!.odd) oddFiles.add(originPath);
       const shape = entry.written === null || !prefix.written ? entry.shape : joined === null ? {} : { ...djangoShape(joined), ...(entry.router && entry.shape.typed ? { typed: true as const } : {}) };
       // A bracket left open in the entry needs its other half in a prefix fragment, which is then incomplete too.
-      routes.push({ framework: 'django', prefix: !drf && prefix.known && entry.written !== null ? 'known' : 'unknown', method, handler, path: joined, basis: entry.basis,
+      routes.push({ framework: 'django', prefix: !drf && !inherited && prefix.known && entry.written !== null ? 'known' : 'unknown', method, handler, path: joined, basis: entry.basis,
         ...(odd || prefix.incomplete ? { unmatched: true as const } : shape) });
     }
   }
