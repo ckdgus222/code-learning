@@ -859,7 +859,7 @@ function App() {
             <CallsFacts state={callSearch.calls.state} stale={callSearch.calls.revision !== revision.current} locked={busy} pathOf={pathOf}
               onRetry={() => void callSearch.find(source, symbol)} onCancel={() => void callSearch.cancel()}
               onShowSite={site => void showCallSite(site)} onShowFunction={target => void showCallFunction(target)} />
-            {callSearch.calls.state.status === 'done' && source.analysis.language !== 'python' && <ValuesFacts key={callSearch.calls.key} result={callSearch.calls.state.result} locked={busy} pathOf={pathOf}
+            {callSearch.calls.state.status === 'done' && <ValuesFacts key={callSearch.calls.key} result={callSearch.calls.state.result} locked={busy} pathOf={pathOf}
               shapes={callSearch.shapes?.key === callSearch.calls.key ? callSearch.shapes : null}
               onRetryShapes={() => { if (callSearch.calls?.state.status === 'done') void callSearch.findShapes(callSearch.calls.key, callSearch.calls.state.result); }}
               onShowSite={site => void showValueSite(site)} onShowFunction={target => void showCallFunction(target)} />}
@@ -907,7 +907,7 @@ function App() {
                 </>}
               </dl>
               <p className="hint">{source.analysis.language === 'python'
-                ? '직접 부르는 함수와 확정한 import의 함수는 ‘이 함수 흐름으로 보기’에서 찾아요. Python 값 추적은 아직 지원하지 않아요.'
+                ? '‘이 함수 흐름으로 보기’에서 직접·확정 import 호출과 같은 파일의 매개변수·타입 표기·대입 식을 따라가요.'
                 : '돌려주는 값의 모양과 이 함수를 부르는 곳은 ‘이 함수 흐름으로 보기’에서 찾아요.'}</p>
               <button className="btn btn--small" onClick={() => setView('function')}>이 함수 흐름으로 보기</button>
             </section>}

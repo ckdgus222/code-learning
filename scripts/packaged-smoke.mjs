@@ -355,6 +355,8 @@ try {
   await pythonCalls.getByRole('button', { name: '그 함수로', exact: true }).click();
   await page.getByRole('list', { name: '이 함수를 부르는 곳', exact: true })
     .getByText('helper(value)', { exact: true }).waitFor();
+  await page.getByRole('group', { name: '받는 값', exact: true }).getByRole('button', { name: 'value', exact: true }).click();
+  await page.getByRole('region', { name: 'value 값', exact: true }).getByText('적힌 타입 없음', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'imported', exact: true }).click();
   await pythonCalls.getByText('apply(9)', { exact: true }).waitFor();
   await pythonCalls.getByText('worker.py', { exact: true }).waitFor();
@@ -367,6 +369,7 @@ try {
   const report = { passed: true, checks: ['Python native grammar, method outline and conditional step', 'screen groups and cached flow selection without flow IPC', 'system light and dark themes, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', onMac ? 'changes from git inside its sandbox' : 'Windows changes unavailable notice', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel', 'release fuses and plain startup', 'UI uses an inspect-enabled temporary copy', 'entire distributed app unchanged'], state };
   report.checks.push('Python same-file calls, reverse callers and source unchanged');
   report.checks.push('Python import alias calls and reverse callers across files');
+  report.checks.push('Python parameter value card in the packaged worker');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

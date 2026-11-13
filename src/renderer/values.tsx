@@ -8,7 +8,7 @@ const groups: { id: NameValue['group']; label: string }[] = [
   { id: 'parameter', label: '받는 값' }, { id: 'inside', label: '안에서 만든 이름' }, { id: 'outside', label: '바깥 이름' },
 ];
 const roles: Record<NameValue['role'], string> = {
-  parameter: '매개변수', const: 'const', let: 'let', var: 'var', for: '반복문(for … of/in)의 이름', catch: 'catch로 받는 이름', import: '가져온 이름',
+  parameter: '매개변수', const: 'const', let: 'let', var: 'var', assignment: '대입으로 만든 이름', for: '반복문에서 받는 이름', catch: '오류 처리에서 받는 이름', import: '가져온 이름',
   function: '함수(다른 값을 대입함)', other: '클래스·enum·namespace 같은 선언',
 };
 const initialLabels: Record<NonNullable<NameValue['initial']>['kind'], string> = {

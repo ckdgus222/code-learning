@@ -3,6 +3,7 @@ import type { CallUnknownReason, ProjectFile } from '../../shared/contracts';
 import { NESTED_NOTE, parse } from './syntax';
 import { initFactsOf, mentionsMachinery, normalize, pythonImportsOf, type InitFacts, type PythonImport } from './python-imports';
 import { pythonFunction } from './python-syntax';
+import { newPythonValueFacts, pythonValueRead, type PythonValueBinding, type PythonValueFacts } from './python-values';
 
 export interface PythonImportBinding {
   kind: 'import';
@@ -50,6 +51,7 @@ export interface PythonFileFacts {
   initNames: InitFacts | null;
   attributeWrites: { node: Parser.SyntaxNode; scope: PythonScope }[];
   moduleEscapes: { node: Parser.SyntaxNode; scope: PythonScope }[];
+  values?: PythonValueFacts;
 }
 
 const scopeOf = (kind: PythonScope['kind'], parent: PythonScope | null, executionParent = parent,
@@ -73,11 +75,12 @@ function bind(scope: PythonScope, name: string, binding: PythonBinding): void {
 }
 
 /** Only assignment targets bind names; attribute receivers, keys and default values do not. */
-function bindPattern(scope: PythonScope, root: Parser.SyntaxNode | null, attribute?: (node: Parser.SyntaxNode) => void): void {
+function bindPattern(scope: PythonScope, root: Parser.SyntaxNode | null, attribute?: (node: Parser.SyntaxNode) => void,
+  record?: (node: Parser.SyntaxNode) => void): void {
   const pending = root ? [root] : [];
   while (pending.length) {
     const node = pending.pop()!;
-    if (node.type === 'identifier') { bind(scope, node.text, { kind: 'variable', node }); continue; }
+    if (node.type === 'identifier') { bind(scope, node.text, { kind: 'variable', node }); record?.(node); continue; }
     if (node.type === 'attribute') { attribute?.(node); continue; }
     if (node.type === 'subscript') {
       let value = node.childForFieldName('value');
@@ -90,24 +93,26 @@ function bindPattern(scope: PythonScope, root: Parser.SyntaxNode | null, attribu
   }
 }
 
-function bindParameters(scope: PythonScope, parameters: Parser.SyntaxNode | null): void {
+function bindParameters(scope: PythonScope, parameters: Parser.SyntaxNode | null,
+  record?: (name: Parser.SyntaxNode, parameter: Parser.SyntaxNode) => void): void {
   for (const parameter of parameters?.namedChildren ?? []) {
     if (parameter.type === 'typed_parameter') {
-      bindPattern(scope, parameter.namedChildren.find(child => child.id !== parameter.childForFieldName('type')?.id) ?? null);
+      bindPattern(scope, parameter.namedChildren.find(child => child.id !== parameter.childForFieldName('type')?.id) ?? null, undefined, name => record?.(name, parameter));
       continue;
     }
-    bindPattern(scope, parameter.childForFieldName('name') ?? parameter);
+    bindPattern(scope, parameter.childForFieldName('name') ?? parameter, undefined, name => record?.(name, parameter));
   }
 }
 
 /** Collect every binding before resolving any call: a later assignment also makes an earlier read local. */
-export function readPythonFacts(file: ProjectFile, text: string, hash: string, nodeBudget: number): PythonFileFacts {
+export function readPythonFacts(file: ProjectFile, text: string, hash: string, nodeBudget: number, withValues = false): PythonFileFacts {
   const root = parse(text, file.relativePath);
   const program = scopeOf('module', null);
   const facts: PythonFileFacts = { file, text, hash, program, functions: [], calls: [], unclear: null,
     importsPlain: false, initNames: null, attributeWrites: [], moduleEscapes: [],
     complete: !!root && !root.hasError,
-    incompleteReason: !root ? NESTED_NOTE : root.hasError ? '구문 오류가 있어 이 파일의 이름은 확정하지 않았어요.' : null };
+    incompleteReason: !root ? NESTED_NOTE : root.hasError ? '구문 오류가 있어 이 파일의 이름은 확정하지 않았어요.' : null,
+    ...(withValues ? { values: newPythonValueFacts() } : {}) };
   if (!root) return facts;
   type Frame = { node: Parser.SyntaxNode; scope: PythonScope; fn: PythonFunctionFact | null; conditional: boolean; calls: boolean; inClass: boolean; escapes: boolean };
   const pending: Frame[] = [{ node: root, scope: program, fn: null, conditional: false, calls: true, inClass: false, escapes: false }];
@@ -117,6 +122,16 @@ export function readPythonFacts(file: ProjectFile, text: string, hash: string, n
     const frame = pending.pop()!;
     const { node, scope, fn } = frame;
     const push = (child: Parser.SyntaxNode, changes: Partial<Frame> = {}) => pending.push({ ...frame, ...changes, node: child });
+    const record = (kind: PythonValueBinding['kind'], source: Parser.SyntaxNode, owner = scope, ownerFn = fn,
+      value: Parser.SyntaxNode | null = null, annotation: Parser.SyntaxNode | null = null, conditional = frame.conditional,
+      shape: PythonValueBinding['shape'] = 'plain') => (name: Parser.SyntaxNode) => {
+      if (!facts.values || !frame.calls && kind !== 'parameter') return;
+      facts.values.bindings.push({ name, kind, source, scope: owner, fn: ownerFn, value, annotation, conditional, shape, inClass: frame.inClass });
+      facts.values.targets.set(name.id, kind);
+    };
+    if (facts.values && node.type === 'identifier' && frame.calls && pythonValueRead(node, facts.values)) {
+      facts.values.references.push({ node, scope, fn, inClass: frame.inClass });
+    }
     if (node.type === 'identifier' && frame.escapes) {
       const parent = node.parent;
       const label = parent?.type === 'attribute' && parent.childForFieldName('attribute')?.id === node.id
@@ -126,10 +141,20 @@ export function readPythonFacts(file: ProjectFile, text: string, hash: string, n
       const invoked = chain.parent?.type === 'call' && chain.parent.childForFieldName('function')?.id === chain.id;
       if (!label && !invoked) facts.moduleEscapes.push({ node, scope });
     }
-    if (node.type === 'identifier' && dynamicNames.has(normalize(node.text))) facts.unclear = '동적으로 이름이나 함수 내용을 바꾸는 이름이 있어 이 파일의 연결은 확정하지 않았어요.';
+    if (node.type === 'identifier' && dynamicNames.has(normalize(node.text))) {
+      facts.unclear = '동적으로 이름이나 함수 내용을 바꾸는 이름이 있어 이 파일의 연결은 확정하지 않았어요.';
+      if (facts.values) facts.values.dynamic = true;
+    }
     if (['global_statement', 'nonlocal_statement', 'match_statement', 'type_alias_statement', 'type_parameter'].includes(node.type)) {
       facts.unclear = 'global·nonlocal·match·타입 매개변수의 이름 규칙은 아직 확정하지 않아요.';
     }
+    if (facts.values && (node.type === 'global_statement' || node.type === 'nonlocal_statement')) {
+      const names = facts.values.directives.get(scope) ?? new Map();
+      for (const name of node.namedChildren.filter(child => child.type === 'identifier')) names.set(normalize(name.text), node.type === 'global_statement' ? 'global' : 'nonlocal');
+      facts.values.directives.set(scope, names);
+    }
+    if (node.type === 'match_statement' || node.type === 'type_alias_statement'
+      || node.type === 'type_parameter' && node.parent?.childForFieldName('type_parameters')?.id === node.id) facts.values?.unresolved.add(scope);
     if (node.type === 'function_definition') {
       const found = pythonFunction(node);
       const name = node.childForFieldName('name');
@@ -141,7 +166,12 @@ export function readPythonFacts(file: ProjectFile, text: string, hash: string, n
         decorated: found.declaration.type === 'decorated_definition' };
       facts.functions.push(item);
       bind(scope, name.text, { kind: 'function', fn: item });
-      bindParameters(bodyScope, node.childForFieldName('parameters'));
+      bindParameters(bodyScope, node.childForFieldName('parameters'), (parameterName, parameter) => {
+        const pattern = parameter.childForFieldName('name') ?? parameter;
+        const rest = pattern.type.includes('splat') || parameter.namedChildren.some(child => child.type.includes('splat'));
+        record('parameter', parameter, bodyScope, item, parameter.childForFieldName('value'), parameter.childForFieldName('type'), false,
+          rest ? 'rest' : 'plain')(parameterName);
+      });
       for (const child of [...node.namedChildren].reverse()) {
         if (child.id === found.body.id) push(child, { scope: bodyScope, fn: item, conditional: false, calls: true, escapes: false });
         else push(child, { calls: false });
@@ -173,7 +203,9 @@ export function readPythonFacts(file: ProjectFile, text: string, hash: string, n
       const clauses = node.namedChildren.filter(child => child.type === 'for_in_clause');
       const first = clauses[0];
       for (const clause of clauses) bindPattern(comprehension, clause.childForFieldName('left'),
-        written => facts.attributeWrites.push({ node: written, scope: comprehension }));
+        written => facts.attributeWrites.push({ node: written, scope: comprehension }),
+        record('for', clause, comprehension, fn, clause.childForFieldName('right'), null, true,
+          clause.childForFieldName('left')?.type === 'identifier' ? 'plain' : 'destructured'));
       for (const child of [...node.namedChildren].reverse()) {
         if (child.id !== first?.id) { push(child, { scope: comprehension, escapes: true }); continue; }
         for (const part of [...child.namedChildren].reverse()) {
@@ -184,18 +216,33 @@ export function readPythonFacts(file: ProjectFile, text: string, hash: string, n
     }
     const attribute = (written: Parser.SyntaxNode) => facts.attributeWrites.push({ node: written, scope });
     if (node.type === 'assignment' || node.type === 'augmented_assignment') {
-      bindPattern(scope, node.childForFieldName('left'), node.childForFieldName('right') ? attribute : undefined);
+      let value = node.childForFieldName('right');
+      while (value?.type === 'assignment') value = value.childForFieldName('right');
+      const left = node.childForFieldName('left');
+      bindPattern(scope, left, value ? attribute : undefined,
+        record(node.type === 'augmented_assignment' ? 'augmented' : value ? 'assignment' : 'annotation', node, scope, fn,
+          value, node.childForFieldName('type'), frame.conditional || scope.kind === 'comprehension', left?.type === 'identifier' ? 'plain' : 'destructured'));
     }
     if (node.type === 'named_expression') {
       let owner = scope;
       while (owner.kind === 'comprehension' && owner.parent) owner = owner.parent;
-      bindPattern(owner, node.childForFieldName('name'));
+      bindPattern(owner, node.childForFieldName('name'), undefined,
+        record('assignment', node, owner, fn, node.childForFieldName('value'), null, frame.conditional || scope.kind === 'comprehension'));
     }
-    if (node.type === 'delete_statement') for (const child of node.namedChildren) bindPattern(scope, child, attribute);
-    if (node.type === 'for_statement') bindPattern(scope, node.childForFieldName('left'), attribute);
-    if (node.type === 'as_pattern') bindPattern(scope, node.childForFieldName('alias'), attribute);
+    if (node.type === 'delete_statement') for (const child of node.namedChildren) bindPattern(scope, child, attribute, record('delete', node));
+    if (node.type === 'for_statement') bindPattern(scope, node.childForFieldName('left'), attribute,
+      record('for', node, scope, fn, node.childForFieldName('right'), null, true, node.childForFieldName('left')?.type === 'identifier' ? 'plain' : 'destructured'));
+    if (node.type === 'as_pattern') {
+      let owner = node.parent;
+      while (owner && !['with_item', 'except_clause', 'except_group_clause', 'case_clause', 'block'].includes(owner.type)) owner = owner.parent;
+      const kind = owner?.type === 'with_item' ? 'with' : owner?.type === 'except_clause' || owner?.type === 'except_group_clause' ? 'except' : null;
+      bindPattern(scope, node.childForFieldName('alias'), attribute, kind ? record(kind, node, scope, fn, null, null, true) : undefined);
+    }
     if (node.type === 'import_statement' || node.type === 'import_from_statement') {
-      if (node.namedChildren.some(child => child.type === 'wildcard_import')) facts.unclear = '별표 import가 있어 이 파일의 이름을 확정하지 않았어요.';
+      if (node.namedChildren.some(child => child.type === 'wildcard_import')) {
+        facts.unclear = '별표 import가 있어 이 파일의 이름을 확정하지 않았어요.';
+        if (facts.values) facts.values.dynamic = true;
+      }
       const imports = pythonImportsOf(node);
       for (const [index, entry] of node.childrenForFieldName('name').entries()) {
         const name = entry.childForFieldName('alias') ?? (entry.type === 'aliased_import' ? entry.childForFieldName('name') : entry);
@@ -209,18 +256,27 @@ export function readPythonFacts(file: ProjectFile, text: string, hash: string, n
           conditional: frame.conditional,
           privateName: frame.inClass && original.split('.').some(part => part.startsWith('__') && !part.endsWith('__')),
         });
+        const identifier = name.type === 'identifier' ? name : name.namedChildren.find(child => child.type === 'identifier');
+        if (identifier) record('import', node)(identifier);
       }
     }
     if (node.type === 'call' && frame.calls) facts.calls.push({ node, scope, fn, inClass: frame.inClass });
     const conditional = frame.conditional || conditionalBlocks.has(node.type);
-    for (const child of [...node.namedChildren].reverse()) {
+    const children = node.namedChildren;
+    for (let index = children.length - 1; index >= 0; index--) {
+      const child = children[index];
       const value = ['assignment', 'augmented_assignment', 'named_expression', 'for_statement', 'for_in_clause'].includes(node.type)
         && (node.childForFieldName('right')?.id === child.id || node.childForFieldName('value')?.id === child.id);
       let escapes = frame.escapes || value || escapingValues.has(node.type);
       if (['parameters', 'lambda_parameters'].includes(node.type)) escapes = false;
       if (['default_parameter', 'typed_default_parameter'].includes(node.type)) escapes = node.childForFieldName('value')?.id === child.id;
       if (node.type === 'as_pattern' && node.childForFieldName('alias')?.id === child.id) escapes = false;
-      push(child, { conditional, calls: node.type === 'decorated_definition' ? false : frame.calls, escapes });
+      const annotation = node.childForFieldName('type')?.id === child.id;
+      const header = ['decorated_definition', 'import_statement', 'import_from_statement'].includes(node.type);
+      const branch = node.type === 'boolean_operator' && node.childForFieldName('right')?.id === child.id
+        || node.type === 'conditional_expression' && index !== 1
+        || node.type === 'comparison_operator' && index >= 2;
+      push(child, { conditional: conditional || branch, calls: header || annotation ? false : frame.calls, escapes });
     }
   }
   facts.importsPlain = facts.complete && !facts.unclear && !mentionsMachinery(root);

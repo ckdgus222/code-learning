@@ -61,6 +61,8 @@ await mkdir(path.join(pythonCallsFixture, 'pkg'));
 await writeFile(path.join(pythonCallsFixture, 'pkg/__init__.py'), '');
 await writeFile(path.join(pythonCallsFixture, 'pkg/worker.py'), 'def transform(value):\n    return value\n');
 await writeFile(path.join(pythonCallsFixture, 'pkg/main.py'), 'from .worker import transform as apply\ndef run_import():\n    return apply(9)\n');
+const pythonValuesSource = 'offset = 4\ndef calculate(amount: int = 2):\n    total: int = amount + offset\n    total += 1\n    return total\n';
+await writeFile(path.join(pythonCallsFixture, 'values.py'), pythonValuesSource);
 const fastapiFixture = path.join(temporary, 'FastAPI 흐름 프로젝트');
 await mkdir(path.join(fastapiFixture, 'web'), { recursive: true });
 await mkdir(path.join(fastapiFixture, 'server'), { recursive: true });
@@ -3745,12 +3747,12 @@ try {
     await page.getByRole('button', { name: '다른 조건 확인', exact: true }).click();
     await page.waitForFunction(() => [...document.querySelectorAll('.cm-content .cm-line span')].some(span =>
       getComputedStyle(span).color !== getComputedStyle(span.closest('.cm-content')).color));
-    await page.getByText('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도, 직접 호출·확정 import 호출과 FastAPI·Flask·Django 주소의 기능 흐름(처리 함수까지)을 보여 줘요. 파일 안내, 값 추적, 객체 메서드와 처리 함수 안의 기능 흐름 확장은 아직 지원하지 않아요.', { exact: true }).waitFor();
+    await page.getByText('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도, 직접·확정 import 호출, 같은 파일의 값 출처와 FastAPI·Flask·Django 주소의 기능 흐름(처리 함수까지)을 보여 줘요. 파일 안내, 가져온 값, 객체 메서드와 처리 함수 안의 기능 흐름 확장은 아직 지원하지 않아요.', { exact: true }).waitFor();
     assert.equal(await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).count(), 0);
-    await page.getByText('직접 부르는 함수와 확정한 import의 함수는 ‘이 함수 흐름으로 보기’에서 찾아요. Python 값 추적은 아직 지원하지 않아요.', { exact: true }).waitFor();
+    await page.getByText('‘이 함수 흐름으로 보기’에서 직접·확정 import 호출과 같은 파일의 매개변수·타입 표기·대입 식을 따라가요.', { exact: true }).waitFor();
     await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
     await page.getByRole('button', { name: 'Order.total', exact: true }).click();
-    await page.getByText('Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 객체 메서드·다시 가져온 이름·람다 안·함수 정의 헤더의 호출과 값 추적은 아직 지원하지 않아요.', { exact: true }).waitFor();
+    await page.getByText('Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 값은 같은 파일의 매개변수·적힌 타입·기본값·대입 식을 보여 줘요. 객체 메서드·다시 가져온 이름·람다 안·함수 정의 헤더의 호출, 가져온 값과 호출 인자의 대응은 아직 지원하지 않아요.', { exact: true }).waitFor();
     await page.getByRole('banner').getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
   });
   await check('Python map: relative and own-package arrows, external modules and unsettled candidates', async () => {
@@ -3827,6 +3829,27 @@ try {
         delete globalThis.pythonCallsShapes;
       });
     }
+  });
+  await check('Python values: parameter, annotation, assignment, outside origin and source evidence', async () => {
+    await page.getByRole('button', { name: '코드 읽기로 돌아가기', exact: true }).click();
+    await openTreeFile('values.py');
+    await page.getByRole('button', { name: 'calculate', exact: true }).click();
+    await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+    await page.getByRole('group', { name: '받는 값', exact: true }).getByRole('button', { name: 'amount', exact: true }).click();
+    const parameter = page.getByRole('region', { name: 'amount 값', exact: true });
+    await parameter.getByText('int', { exact: true }).waitFor();
+    await parameter.getByText('2', { exact: true }).waitFor();
+    await page.getByRole('group', { name: '안에서 만든 이름', exact: true }).getByRole('button', { name: 'total', exact: true }).click();
+    const local = page.getByRole('region', { name: 'total 값', exact: true });
+    await local.getByText('amount + offset', { exact: true }).waitFor();
+    await local.getByRole('list', { name: 'total에 대입하는 곳', exact: true }).getByText('total += 1', { exact: true }).waitFor();
+    assert.equal(await local.getByText('고정 값', { exact: true }).count(), 0);
+    await page.getByRole('group', { name: '바깥 이름', exact: true }).getByRole('button', { name: 'offset', exact: true }).click();
+    const outside = page.getByRole('region', { name: 'offset 값', exact: true });
+    await outside.getByText('4', { exact: true }).waitFor();
+    await outside.getByRole('button', { name: '코드 보기', exact: true }).last().click();
+    await until(async () => await page.getByTestId('evidence-range').innerText() === '근거: values.py · 1–1줄');
+    assert.equal(await readFile(path.join(pythonCallsFixture, 'values.py'), 'utf8'), pythonValuesSource);
   });
   await check('Python import calls: alias targets, reverse navigation and changed target rejection', async () => {
     await dialogTo(pythonCallsFixture);

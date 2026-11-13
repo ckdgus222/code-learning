@@ -1,10 +1,11 @@
-import type { CallLink, CallSite, FunctionCalls, ProjectFile } from '../../shared/contracts';
+import type { CallLink, CallSite, FunctionCalls, NameValue, ProjectFile } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 import { MAX_FILE_BYTES, readAllowed } from '../project/files';
 import type { MapLimits } from './project-map';
 import { firstLine, lineRange } from './names';
 import { readPythonFacts, type PythonCallFact, type PythonFileFacts, type PythonFunctionFact } from './python-names';
 import { pythonCallResolver } from './python-call-imports';
+import { pythonValuesOf } from './python-values';
 
 export interface PythonCallsCache {
   texts: Map<string, { text: string; hash: string }>;
@@ -52,7 +53,9 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
       bytesRead += Buffer.byteLength(source.text);
       cache?.texts.set(file.id, source);
       const cached = cache?.pythonParsed?.get(file.id);
-      const facts = cached?.hash === source.hash ? cached : readPythonFacts(file, source.text, source.hash, limits.nodesPerFile);
+      const withValues = file.id === chosenFile!.id;
+      const facts = cached?.hash === source.hash && (!withValues || cached.values) ? cached
+        : readPythonFacts(file, source.text, source.hash, limits.nodesPerFile, withValues);
       if (cache) { cache.pythonParsed ??= new Map(); cache.pythonParsed.set(file.id, facts); cache.parsedFiles?.add(file.id); }
       parsed.set(file.id, facts);
       if (facts.incompleteReason) skip(file, facts.incompleteReason);
@@ -65,11 +68,12 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
       return null;
     }
   }
-  function keep<T>(rows: T[], row: T): void {
+  function keep<T>(rows: T[], row: T): boolean {
     const size = JSON.stringify(row).length;
-    if (resultSize + size > limits.results) { limited = true; return; }
+    if (resultSize + size > limits.results) { limited = true; return false; }
     resultSize += size;
     rows.push(row);
+    return true;
   }
 
   const chosen = await read(chosenFile);
@@ -79,12 +83,18 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
   if (!fn) throw new AppError('CHANGED', '고른 함수를 지금 파일에서 찾지 못했어요. 파일을 다시 읽어 주세요.');
   const calls: CallLink[] = [], callers: CallSite[] = [];
   const maybeCallers: FunctionCalls['maybeCallers'] = [];
+  const functionReferences = new Set<number>();
   for (const file of files.filter(file => pythonFile.test(file.relativePath)).sort((a, b) => a.relativePath.localeCompare(b.relativePath))) await read(file);
   const resolver = pythonCallResolver(files, parsed, stop);
   for (const call of chosen.calls) {
     if (call.fn !== fn) continue;
     stop();
     const found = resolver.resolve(chosen, call);
+    if (found.kind !== 'unknown') {
+      let callee = call.node.childForFieldName('function');
+      while (callee?.type === 'attribute') callee = callee.childForFieldName('object');
+      if (callee?.type === 'identifier') functionReferences.add(callee.id);
+    }
     keep(calls, found.kind === 'linked' ? { ...site(call, chosen), status: 'linked', target: { fileId: found.facts.file.id, fileHash: found.facts.hash, ...functionAt(found.fn) } }
       : found.kind === 'external' ? { ...site(call, chosen), status: 'external', specifier: found.specifier }
       : { ...site(call, chosen), status: 'unknown', reason: found.reason, detail: found.detail });
@@ -101,10 +111,12 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
       }
     }
   }
+  const values: NameValue[] = [];
+  await pythonValuesOf(chosen, fn, functionReferences, value => keep(values, value), stop);
   stop();
-  const notes = ['Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 객체 메서드·다시 가져온 이름·람다 안·함수 정의 헤더의 호출과 값 추적은 아직 지원하지 않아요.'];
-  if (limited) notes.push('파일·읽기 크기·결과 크기 한도에 닿아 일부 호출은 보이지 않아요.');
+  const notes = ['Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 값은 같은 파일의 매개변수·적힌 타입·기본값·대입 식을 보여 줘요. 객체 메서드·다시 가져온 이름·람다 안·함수 정의 헤더의 호출, 가져온 값과 호출 인자의 대응은 아직 지원하지 않아요.'];
+  if (limited) notes.push('파일·읽기 크기·결과 크기 한도에 닿아 일부 호출과 값은 보이지 않아요.');
   return { projectId, fileId: chosenFile.id, fileHash: chosen.hash, startUtf16: fn.declaration.startIndex,
     endUtf16: fn.declaration.endIndex, name: fn.displayName, calls, callers, typedCallers: [], maybeCallers,
-    names: { local: [fn.displayName], exported: [], property: [] }, values: [], limited, unexamined: [...unexamined.values()], notes };
+    names: { local: [fn.displayName], exported: [], property: [] }, values, limited, unexamined: [...unexamined.values()], notes };
 }

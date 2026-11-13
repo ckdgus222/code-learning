@@ -51,7 +51,7 @@ describe('Python function calls', () => {
     const incoming = await callsOf('helper');
     expect(incoming.callers).toHaveLength(1);
     expect(incoming.callers![0]).toMatchObject({ text: 'helper(7)', inFunction: { name: 'run' } });
-    expect(incoming.values).toEqual([]);
+    expect(incoming.values).toMatchObject([{ name: 'value', role: 'parameter', fixed: null, index: null }]);
     expect(run.callers).toHaveLength(1);
     expect(run.callers![0]).toMatchObject({ text: 'run()', inFunction: null });
   });
@@ -73,7 +73,7 @@ describe('Python function calls', () => {
     const result = await callsOf('run');
     expect(result.calls.map(call => call.status)).toEqual(['linked', 'linked', 'linked', 'linked']);
     expect(result.calls.map(call => call.args)).toEqual([[{ text: '1', spread: false }, { text: '"two"', spread: false }], null, null, null]);
-    expect(result.values).toEqual([]);
+    expect(result.values).toMatchObject([{ name: 'args', role: 'parameter', index: null }, { name: 'kwargs', role: 'parameter', index: null }]);
   });
 
   it('does not split an unparenthesized generator argument into separate positional arguments', async () => {

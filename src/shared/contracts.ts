@@ -480,7 +480,7 @@ export interface NameValue {
   group: 'parameter' | 'inside' | 'outside';
   name: string;
   /** How it is declared; for a followed import, how the exporting file declares it. */
-  role: 'parameter' | 'const' | 'let' | 'var' | 'for' | 'catch' | 'import' | 'function' | 'other';
+  role: 'parameter' | 'const' | 'let' | 'var' | 'assignment' | 'for' | 'catch' | 'import' | 'function' | 'other';
   shape: 'plain' | 'rest' | 'destructured';
   declaredAt: ValueSite | null;
   /** The type written for it. */
