@@ -134,11 +134,11 @@ describe('Python same-file direct router registration', () => {
     expect(result.routes.every(route => route.prefix === 'unknown' || route.unmatched)).toBe(true);
   });
 
-  it('does not promote unsupported nested-router registrations into known parent routes', () => {
+  it('preserves direct app routes alongside supported nested FastAPI registrations', () => {
     const text = fast + 'parent = APIRouter()\nparent.include_router(router)\n@app.get("/direct")\ndef direct():\n    pass\napp.include_router(parent)\n';
     const result = find(text);
-    expect(result.routes.find(route => route.handler.name === 'direct')).toMatchObject({ prefix: 'unknown' });
-    expect(result.routes.every(route => route.prefix === 'unknown' || route.unmatched)).toBe(true);
+    expect(result.routes.find(route => route.handler.name === 'direct')).toMatchObject({ path: '/direct', prefix: 'known' });
+    expect(result.routes.find(route => route.handler.name === 'users')).toMatchObject({ path: '/v1/users', prefix: 'known' });
   });
 
   it.each([
