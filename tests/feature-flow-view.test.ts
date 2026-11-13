@@ -3,8 +3,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { ReactFlow, ReactFlowProvider } from '@xyflow/react';
 import { expect, it, vi } from 'vitest';
 import * as ReactHooks from 'react';
-import { edgeLabel, FlowPicture, FlowBoxNode, FlowDiagram, SIDE_HANDLE_TOP, pickNode, evidenceView, FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowLimits, FlowSteps, FlowWalk, hasFlowCode, hintSteps, stepQuestion, summaryKey, RoutesStatus, useFeatureFlows, walkSelection } from '../src/renderer/feature-flow';
-import type { FlowEdge, SourceView, Evidence, FeatureFlow, FlowNode, ProjectRoutes, ProjectView } from '../src/shared/contracts';
+import { edgeLabel, FlowPicture, FlowBoxNode, FlowDiagram, SIDE_HANDLE_TOP, pickNode, evidenceView, FeatureChooser, featureGroups, FeatureList, FeatureOverview, recommendedFeature, FlowLimits, FlowSteps, FlowWalk, hasFlowCode, hintSteps, stepQuestion, summaryKey, RoutesStatus, UnresolvedAddressList, useFeatureFlows, walkSelection } from '../src/renderer/feature-flow';
+import type { FlowEdge, SourceView, Evidence, FeatureFlow, FlowNode, ProjectRoutes, ProjectView, UnresolvedRoute } from '../src/shared/contracts';
 import { Snippet } from '../src/renderer/flow';
 import { storyOf } from '../src/core/analysis/flow-story';
 import type { FeatureGuide } from '../src/shared/ai';
@@ -635,8 +635,105 @@ const chooserProps: Parameters<typeof FeatureChooser>[0] = {
     setSearch() {}, setGuideResult() {}, find() {}, cancelFind() {},
   } as unknown as Parameters<typeof FeatureChooser>[0]['state'],
   revision: 0, locked: false, mode: 'codex', running: false, checking: false, connections: null,
-  onFollow() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onRunning() {},
+  onFollow() {}, onCode() {}, async onInspect() { return null; }, async onEnsure() { return null; }, onRunning() {},
 };
+
+const unresolvedAddress: UnresolvedRoute = {
+  framework: 'django', kind: 'path', path: '/users/<id>/', prefix: 'unknown', reason: 'unresolved-handler',
+  basis: { text: 'path("users/<id>/", external)', range: { fileId: 'server', fileHash: 'snapshot', startUtf16: 15, endUtf16: 42,
+    startLine: 3, endLine: 4, text: 'path("users/<id>/", external)' } },
+};
+it.each([undefined, []])('omits an absent or empty unresolved address list: %j', entries => {
+  expect(renderToStaticMarkup(React.createElement(UnresolvedAddressList, { project, entries, disabled: false, limited: false, onCode() {} }))).toBe('');
+});
+it.each([
+  { kind: 'path', path: null, label: '주소 모름' },
+  { kind: 'path', path: '', label: '주소 (빈 문자열)' },
+  { kind: 'regex', path: '^legacy/$', label: '정규식 ^legacy/$' },
+  { kind: 'regex', path: null, label: '정규식 모름' },
+  { kind: 'static', path: '/media/', label: '정적 파일 앞 경로 /media/' },
+  { kind: 'static', path: null, label: '정적 파일 앞 경로 모름' },
+] as const)('keeps the unresolved $kind display honest for $path', ({ kind, path, label }) => {
+  const entry: UnresolvedRoute = { ...unresolvedAddress, kind, path, ...(kind === 'static' ? { conditional: true } : {}) };
+  const html = renderToStaticMarkup(React.createElement(UnresolvedAddressList, { project, entries: [entry], disabled: false, limited: false, onCode() {} }));
+  expect(html).toContain(`<code>${label}</code>`);
+  expect(html).not.toContain('이 기능 따라가기');
+  expect(html).not.toContain('AI로');
+  expect(html).not.toContain('GET');
+  if (kind === 'static') {
+    expect(html).toContain('설정에 따라 등록 여부가 달라짐');
+    expect(html).not.toContain('앞 경로 미확인');
+  }
+});
+it('shows escaped registration text, source and a reason without treating it as a handler', () => {
+  const entries: UnresolvedRoute[] = [
+    { ...unresolvedAddress, path: '<script>alert(1)</script>', reason: 'unreadable-view' },
+    { ...unresolvedAddress, reason: 'unsupported-view' },
+    { ...unresolvedAddress, kind: 'static', reason: 'static-handler', conditional: true },
+  ];
+  const html = renderToStaticMarkup(React.createElement(UnresolvedAddressList, { project, entries, disabled: false, limited: false, onCode() {} }));
+  expect(html).toContain('처리 함수를 확인하지 못한 주소 · 3개');
+  expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+  expect(html).not.toContain('<script>');
+  expect(html).toContain('api/dogs.controller.ts · 3행');
+  expect(html).toContain('처리 함수 표현을 읽지 못했어요.');
+  expect(html).toContain('이 방식의 처리 함수는 아직 따라가지 못해요.');
+  expect(html).toContain('정적 파일 처리 함수의 프로젝트 코드를 확인하지 못했어요.');
+});
+it.each([
+  { disabled: false, present: true, opens: true },
+  { disabled: true, present: true, opens: false },
+  { disabled: false, present: false, opens: false },
+])('opens only the recorded declaration while available: %o', ({ disabled, present, opens }) => {
+  const onCode = vi.fn(), entry = present ? unresolvedAddress : { ...unresolvedAddress,
+    basis: { ...unresolvedAddress.basis, range: { ...unresolvedAddress.basis.range, fileId: 'removed-file' } } };
+  const tree = UnresolvedAddressList({ project, entries: [entry], disabled, limited: false, onCode });
+  const pending: React.ReactNode[] = [tree];
+  let button: React.ReactElement<{ onClick(): void; disabled: boolean }> | undefined;
+  while (pending.length) {
+    const item = pending.pop();
+    if (Array.isArray(item)) { pending.push(...item); continue; }
+    if (!React.isValidElement<{ children?: React.ReactNode; onClick(): void; disabled: boolean }>(item)) continue;
+    if (item.type === 'button') button = item;
+    pending.push(item.props.children);
+  }
+  expect(button).toBeDefined();
+  expect(button!.props.disabled).toBe(!opens);
+  button!.props.onClick();
+  expect(onCode.mock.calls).toEqual(opens ? [[entry.basis.range]] : []);
+});
+it('applies the existing visible row limit and keeps analysis limitation distinct', () => {
+  const entries = Array.from({ length: 301 }, (_, index) => ({ ...unresolvedAddress, path: `/users/${index}` }));
+  const html = renderToStaticMarkup(React.createElement(UnresolvedAddressList, { project, entries, disabled: false, limited: true, onCode() {} }));
+  expect(html).toContain('처리 함수를 확인하지 못한 주소 · 301개');
+  expect(html.match(/>주소 선언 코드 보기<\/button>/g)).toHaveLength(300);
+  expect(html).toContain('처음 300개만 보여요. 나머지 1개는 생략했어요.');
+  expect(html).toContain('일부 주소만 확인했어요.');
+});
+it('shows declarations outside the feature gate without inventing features or AI actions', () => {
+  const state = { ...chooserProps.state, routes: { ...routes, routes: [], links: [], unresolvedRoutes: [unresolvedAddress] }, groups: [] };
+  const html = renderToStaticMarkup(React.createElement(FeatureChooser, { ...chooserProps, state }));
+  expect(html).toContain('주소 선언은 찾았지만 처리 함수를 확인하지 못해 기능 흐름을 만들지 않았어요.');
+  expect(html).toContain('처리 함수를 확인하지 못한 주소 · 1개');
+  expect(html).toContain('주소 선언 코드 보기');
+  expect(html).not.toContain('서버 코드(요청을 받는 곳)를 찾지 못해서');
+  expect(html).not.toContain('기능 고르기');
+  expect(html).not.toContain('이 기능 따라가기');
+  expect(html).not.toContain('AI로 기능 정리하기');
+});
+it.each([{ locked: true, stale: false }, { locked: false, stale: true }])('locks unresolved declarations with the chooser: %o', ({ locked, stale }) => {
+  const state = { ...chooserProps.state, stale, routes: { ...routes, routes: [], links: [], unresolvedRoutes: [unresolvedAddress] }, groups: [] };
+  const html = renderToStaticMarkup(React.createElement(FeatureChooser, { ...chooserProps, locked, state }));
+  expect(html).toMatch(/<button[^>]*disabled=""[^>]*>주소 선언 코드 보기<\/button>/);
+});
+it('keeps resolved feature and request counts unchanged beside unresolved addresses', () => {
+  const addresses = { ...routes, unresolvedRoutes: [unresolvedAddress, { ...unresolvedAddress, path: '/other/' }] };
+  const html = renderToStaticMarkup(React.createElement(FeatureChooser, { ...chooserProps, state: { ...chooserProps.state, routes: addresses } }));
+  expect(html).toContain('<b>기능 2개</b>');
+  expect(html).toContain('확실히 이어짐 1개 · 추정 1개');
+  expect(html).toContain('처리 함수를 확인하지 못한 주소 · 2개');
+  expect(html.indexOf('기능 고르기')).toBeLessThan(html.indexOf('처리 함수를 확인하지 못한 주소'));
+});
 it.each([
   { grouped: false, deleteLinks: 1, expected: 2 },
   { grouped: false, deleteLinks: 2, expected: 0 },

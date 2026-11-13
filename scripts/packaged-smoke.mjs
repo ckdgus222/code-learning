@@ -11,6 +11,7 @@ import { checkViewSettings, checkCodeColors } from './view-settings-smoke.mjs';
 import { checkPlainLaunch, createInspectableCopy } from './fuse-check.mjs';
 import { checkPythonFileExplanation } from './python-file-explanation-smoke.mjs';
 import { checkPythonFeatureFlow } from './python-feature-flow-smoke.mjs';
+import { checkPythonUnresolvedRoutes } from './python-unresolved-routes-smoke.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const packagedApp = {
@@ -500,6 +501,7 @@ try {
   await page.getByText('값을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 다시 찾아 주세요.', { exact: true }).waitFor();
   await checkPythonFileExplanation(app, page, path.join(temp, 'Python 파일 설명'));
   await checkPythonFeatureFlow(app, page, path.join(temp, 'Python 내부 기능 흐름'));
+  await checkPythonUnresolvedRoutes(app, page, path.join(temp, 'Python 미확인 주소'));
   await app.close(); app = undefined;
   await testCopy.cleanup(); testCopy = undefined;
   const report = { passed: true, checks: ['Python native grammar, method outline and conditional step', 'screen groups and cached flow selection without flow IPC', 'system light and dark themes, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', onMac ? 'changes from git inside its sandbox' : 'Windows changes unavailable notice', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel', 'release fuses and plain startup', 'UI uses an inspect-enabled temporary copy', 'entire distributed app unchanged'], state };
@@ -525,6 +527,7 @@ try {
   report.checks.push('Imported router and Blueprint registrations, prefix override and third-file decorator evidence');
   report.checks.push('App factory registration of same-file and imported module routers with uncertain original handler evidence');
   report.checks.push('Django legacy regex and static registrations with unlinked requests, source handlers and default-serving note');
+  report.checks.push('Unresolved-only Django addresses, declaration navigation, changed-file lock and refreshed evidence');
   report.checks.push('Flask View and MethodView registrations, uncertain requests and original class method evidence');
   report.checks.push('Flask add_url_rule direct function registration with uncertain request and original function evidence');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));

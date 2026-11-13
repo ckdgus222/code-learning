@@ -19,7 +19,7 @@ import { markKeysOf, sameMarkKey } from './marks';
 import { LearningMarksCard } from './learning-marks';
 import { ViewSettingsButton } from './view-settings';
 import { ProjectMapView } from './project-map';
-import { FeatureChooser, FeatureList, FlowLimits, FlowPicture, FlowWalk, hasFlowCode, RoutesStatus, siteOf, useFeatureFlows, type FlowStart } from './feature-flow';
+import { FeatureChooser, FeatureList, FlowLimits, FlowPicture, FlowWalk, hasFlowCode, RoutesStatus, siteOf, UnresolvedAddressList, useFeatureFlows, type FlowStart } from './feature-flow';
 import { codeNameOf, routeLabel } from '../core/analysis/flow-story';
 import { matchCallStep, matchFunction, matchImport } from './map-layout';
 import { CallsFacts, type CallFunction } from './calls';
@@ -512,6 +512,11 @@ function App() {
     setView('code');
     await readSiteRange(site, '값을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 다시 찾아 주세요.');
   }
+  async function showRouteDeclaration(site: ValueSite) {
+    if (currentBusy.current || features.stale) return;
+    setView('code');
+    await readSiteRange(site, '주소를 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 주소를 다시 찾아 주세요.');
+  }
   async function readSiteRange(site: ValueSite | CallSite, changedMessage: string) {
     if (currentBusy.current) return;
     const atRevision = revision.current;
@@ -710,7 +715,7 @@ function App() {
               <FeatureChooser key={project.files[0]?.id ?? project.id} project={project} state={features}
                 mode={ai.mode} running={planCompare.running || ai.questionRunning || ai.fileExplanationRunning || ai.featureGuideRunning || ai.overview?.status === 'running'}
                 checking={ai.checking || ai.keyBusy} connections={ai.connections} onInspect={ai.inspectConnections} onEnsure={ai.ensureConnections} onRunning={ai.setFeatureGuideRunning}
-                revision={revision.current} locked={busy} onFollow={(index, start) => void followFeatureRoute(index, start)}
+                revision={revision.current} locked={busy} onFollow={(index, start) => void followFeatureRoute(index, start)} onCode={site => void showRouteDeclaration(site)}
                 starts={<>
                   <section className="card overview-starts" aria-labelledby="overview-start">
                     <h3 id="overview-start">어디부터 읽을까요?</h3>
@@ -777,9 +782,13 @@ function App() {
             retry={features.selected !== null ? () => void followFeatureRoute(features.selected!) : undefined} />
           {features.following && <p role="status">기능 흐름을 찾는 중… <button className="btn" onClick={features.cancelFollow}>기능 흐름 취소</button></p>}
           {!features.flow && !features.following && <>
-            <p>한눈에 보기에서 기능을 고르거나, 아래 목록에서 골라 주세요</p>
-            {features.routes && <FeatureList {...features.groupingProps} search={features.search} setSearch={features.setSearch} groups={features.groups} routes={features.routes} selected={features.selected}
+            <p>{features.routes?.routes.length === 0 && features.routes.unresolvedRoutes?.length
+              ? '주소 선언은 찾았지만 처리 함수를 확인하지 못했어요. 아래 목록에서 주소를 등록한 코드를 확인해 보세요.'
+              : '한눈에 보기에서 기능을 고르거나, 아래 목록에서 골라 주세요'}</p>
+            {features.routes && (features.routes.routes.length > 0 || !features.routes.unresolvedRoutes?.length) && <FeatureList {...features.groupingProps} search={features.search} setSearch={features.setSearch} groups={features.groups} routes={features.routes} selected={features.selected}
               disabled={busy || features.stale} onFollow={(index, start) => void followFeatureRoute(index, start)} />}
+            {features.routes && <UnresolvedAddressList project={project} entries={features.routes.unresolvedRoutes}
+              disabled={busy || features.stale} limited={features.routes.limited} onCode={site => void showRouteDeclaration(site)} />}
           </>}
           {features.flow && features.routes && <FlowWalk flow={features.flow}
             title={flowTitle} route={flowRoute}

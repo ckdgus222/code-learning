@@ -1,6 +1,6 @@
 import type Parser from 'tree-sitter';
 import { posix } from 'node:path';
-import type { CallTarget, ProjectFile, Route } from '../../shared/contracts';
+import type { CallTarget, ProjectFile, Route, UnresolvedRoute } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 import { firstLine, lineRange } from './names';
 import { initFactsOf, mentionsMachinery, moduleFile, normalize, pythonImportsOf, resolvePythonImport, type InitFacts, type PythonImport } from './python-imports';
@@ -12,7 +12,10 @@ type Node = Parser.SyntaxNode;
 /** A view expression in urlpatterns, optionally followed by .as_view(). */
 interface ViewRef { local: string; attribute: string | null; asView: boolean }
 interface DjangoEntry {
+  kind: UnresolvedRoute['kind'];
   path: string | null;
+  /** Raw regex literals are displayed only, never handed to request matching. */
+  displayPath?: string | null;
   /** Original path text; null for unreadable, regex or spread entries that cannot be prefixed. */
   written: string | null;
   shape: Pick<Route, 'segments' | 'typed' | 'unmatched'>;
@@ -55,6 +58,13 @@ const methods = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const changesDispatch = new Set(['as_view', 'dispatch', 'http_method_names', 'setup']);
 const argumentsOf = (node: Node) => node.childForFieldName('arguments')?.namedChildren.filter(child => child.type !== 'comment') ?? [];
 const positional = (node: Node) => !['keyword_argument', 'list_splat', 'dictionary_splat'].includes(node.type);
+function displayedRegex(node: Node | null | undefined): string | null {
+  const plain = plainString(node);
+  if (plain !== null) return bounded(plain);
+  if (node?.type !== 'string' || node.hasError) return null;
+  const start = node.firstNamedChild?.text, quote = start?.match(/^[rR]("""|'''|"|')$/)?.[1];
+  return start && quote ? bounded(node.text.slice(start.length, -quote.length)) : null;
+}
 function registrationArgumentsValid(args: Node[], positionNames: string[], extraKeywords: boolean,
   nameOf: (node: Node | null | undefined) => string): boolean {
   const written = new Set<string>();
@@ -342,7 +352,8 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
     // `bounded` looks at the length first, so an overlong route is never split or matched.
     const path = written === null ? null : bounded(regex ? written : '/' + written);
     const shape = regex || spread ? { unmatched: true as const } : path === null ? {} : djangoShape(path);
-    result.entries.push({ path, written: regex || spread || written === null || written.length > ROUTE_LIMITS.pathLength ? null : written,
+    result.entries.push({ kind: regex ? 'regex' : 'path', path, ...(regex ? { displayPath: displayedRegex(pathNode) } : {}),
+      written: regex || spread || written === null || written.length > ROUTE_LIMITS.pathLength ? null : written,
       shape, view, basis: basisOf(call) });
     room.entries--;
   }
@@ -423,8 +434,9 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
 
 /** Join literal includes from manage.py folders; resolve views with the existing import rules. */
 export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: ReadonlySet<string>, maxRoutes: number, shouldStop: () => boolean, allRead: boolean):
-  { routes: Route[]; skipped: number; cut: boolean; oddFiles: string[]; unfollowed: number; staticAdditions: number; staticUnresolved: number } {
+  { routes: Route[]; unresolvedRoutes: UnresolvedRoute[]; skipped: number; cut: boolean; oddFiles: string[]; unfollowed: number; staticAdditions: number; staticUnresolved: number } {
   const routes: Route[] = [];
+  const unresolvedRoutes: UnresolvedRoute[] = [];
   const oddFiles = new Set<string>();
   let skipped = 0, cut = false, unfollowed = 0, staticAdditions = 0, staticUnresolved = 0;
   const facts = { init: (path: string) => files.get(path)?.init ?? null, plain: (path: string) => files.get(path)?.plain ?? false };
@@ -533,21 +545,37 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
   }
   const prepared: { path: string; file: DjangoFile; entry: DjangoEntry; viewPath: string;
     handlers: { method: Route['method']; handler: CallTarget }[] }[] = [];
+  const unresolved = (filePath: string, file: DjangoFile, entry: DjangoEntry, reason: UnresolvedRoute['reason'], addition: DjangoStaticAddition | null) => {
+    const collected = entry.kind === 'path' ? prefixes.get(filePath) ?? [bare(filePath, file)] : [bare(filePath, file)];
+    for (const prefix of collected) {
+      if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
+      if (unresolvedRoutes.length >= ROUTE_LIMITS.unresolvedRoutes) { cut = true; return; }
+      const path = addition ? addition.prefix : entry.kind === 'regex' ? entry.displayPath ?? null
+        : entry.written === null ? entry.path : bounded('/' + prefix.written + entry.written);
+      unresolvedRoutes.push({ framework: 'django', kind: entry.kind, path,
+        prefix: entry.kind === 'path' && prefix.known && entry.written !== null ? 'known' : 'unknown',
+        reason: addition && !addition.defaultView ? 'unresolved-handler' : reason, basis: entry.basis,
+        ...(addition ? { conditional: true as const } : {}) });
+    }
+  };
   const entries = ordered.flatMap(([path, file]) => {
-    const entries: { path: string; file: DjangoFile; entry: DjangoEntry; static: boolean }[] = file.entries.map(entry => ({ path, file, entry, static: false }));
+    const entries: { path: string; file: DjangoFile; entry: DjangoEntry; static: DjangoStaticAddition | null }[] = file.entries.map(entry => ({ path, file, entry, static: null }));
     for (const addition of file.staticAdditions) {
       if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
       staticAdditions++; staticUnresolved++;
-      if (addition.defaultView) continue;
-      entries.push({ path, file, static: true, entry: { path: null, written: null, shape: { unmatched: true }, view: addition.view, basis: addition.basis } });
+      const entry: DjangoEntry = { kind: 'static', path: null, written: null, shape: { unmatched: true }, view: addition.view, basis: addition.basis };
+      entries.push({ path, file, static: addition, entry });
     }
     return entries.sort((a, b) => a.entry.basis.range.startUtf16 - b.entry.basis.range.startUtf16);
   });
   for (const { path, file, entry, static: staticEntry } of entries) {
     if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
+    if (staticEntry?.defaultView) { unresolved(path, file, entry, 'static-handler', staticEntry); continue; }
     const ref = entry.view;
     // A urlconf that is not plain has no views of its own and no resolved imports, so its entries fall out below.
-    if (!ref) { if (!staticEntry) skipped++; continue; }
+    if (!ref) {
+      skipped += Number(!staticEntry); unresolved(path, file, entry, 'unreadable-view', staticEntry); continue;
+    }
     let view = ref.attribute === null ? file.views.get(ref.local) : undefined;
     let viewPath = path;
     const imported = resolved.get(path)?.get(ref.local);
@@ -556,8 +584,12 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
       const name = ref.attribute === null ? imported.name : imported.name === null ? ref.attribute : null;
       view = name === null ? undefined : files.get(viewPath)?.views.get(name);
     }
-    if (!view || ref.asView !== (view.kind === 'class')) { if (!staticEntry) skipped++; continue; }
-    if (view.kind === 'class' && !view.methods.length) { if (!staticEntry) skipped++; continue; }
+    if (!view) {
+      skipped += Number(!staticEntry); unresolved(path, file, entry, 'unresolved-handler', staticEntry); continue;
+    }
+    if (ref.asView !== (view.kind === 'class') || view.kind === 'class' && !view.methods.length) {
+      skipped += Number(!staticEntry); unresolved(path, file, entry, 'unsupported-view', staticEntry); continue;
+    }
     const handlers = view.kind === 'function' ? view.methods.map(method => ({ method, handler: view.handler })) : view.methods;
     if (!handlers.length) continue;
     if (staticEntry) staticUnresolved--;
@@ -581,5 +613,5 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
         ...(odd || prefix.incomplete ? { unmatched: true as const } : shape) });
     }
   }
-  return { routes, skipped, cut, oddFiles: [...oddFiles], unfollowed, staticAdditions, staticUnresolved };
+  return { routes, unresolvedRoutes, skipped, cut, oddFiles: [...oddFiles], unfollowed, staticAdditions, staticUnresolved };
 }

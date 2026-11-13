@@ -390,10 +390,21 @@ export interface Request extends CallSite {
   prefix: 'known' | 'unknown';
   methods: string[] | null;
 }
+/** A source registration without a resolved handler; never a flow or request-matching target. */
+export interface UnresolvedRoute {
+  framework: 'django';
+  kind: 'path' | 'regex' | 'static';
+  path: string | null;
+  prefix: 'known' | 'unknown';
+  basis: Route['basis'];
+  reason: 'unreadable-view' | 'unresolved-handler' | 'unsupported-view' | 'static-handler';
+  conditional?: true;
+}
 export interface ProjectRoutes {
   projectId: string;
   routesId: string;
   routes: Route[];
+  unresolvedRoutes?: UnresolvedRoute[];
   requests: Request[];
   links: { requestIndex: number; routeIndex: number; sure: boolean; reasons: string[] }[];
   prefix: { text: string; site: ValueSite } | null;

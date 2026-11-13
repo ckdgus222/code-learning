@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Handle, Position, type Edge, type Node, type NodeProps } from '@xyflow/react';
-import type { Result, Evidence, SourceView, CallTarget, FeatureFlow, FlowEdge, FlowNode, ProjectRoutes, ProjectView, Request, ValueSite } from '../shared/contracts';
+import type { Result, Evidence, SourceView, CallTarget, FeatureFlow, FlowEdge, FlowNode, ProjectRoutes, ProjectView, Request, UnresolvedRoute, ValueSite } from '../shared/contracts';
 import { ARROW_MARKER, firstRows, MapCanvas, Omitted } from './project-map';
 import { screenGroups, type RouteRow } from './screen-groups';
 import { featureIndex, type IndexFeature, type IndexGroup } from './feature-index';
@@ -936,8 +936,47 @@ export function FeatureList({ groups, routes, selected, disabled, onFollow, sear
   </section>;
 }
 
-export function FeatureChooser({ project, state, starts, revision, locked, onFollow, mode, running, checking, connections, onInspect, onEnsure, onRunning }: {
+const unresolvedReasons: Record<UnresolvedRoute['reason'], string> = {
+  'unreadable-view': '처리 함수 표현을 읽지 못했어요.',
+  'unresolved-handler': '처리 함수의 원본 코드를 찾지 못했어요.',
+  'unsupported-view': '이 방식의 처리 함수는 아직 따라가지 못해요.',
+  'static-handler': '정적 파일 처리 함수의 프로젝트 코드를 확인하지 못했어요.',
+};
+
+export function UnresolvedAddressList({ project, entries = [], disabled, limited, onCode }: {
+  project: ProjectView; entries?: UnresolvedRoute[]; disabled: boolean; limited: boolean; onCode(site: ValueSite): void;
+}) {
+  const paths = new Map(project.files.map(file => [file.id, file.relativePath]));
+  if (!entries.length) return null;
+  const titleOf = (entry: UnresolvedRoute) => {
+    const label = entry.kind === 'static' ? '정적 파일 앞 경로' : entry.kind === 'regex' ? '정규식' : '주소';
+    if (entry.path === null) return `${label} 모름`;
+    return `${label} ${entry.path === '' ? '(빈 문자열)' : entry.path}`;
+  };
+  return <section className="card" aria-label="처리 함수를 확인하지 못한 주소">
+    <h3>처리 함수를 확인하지 못한 주소 · {entries.length}개</h3>
+    <p className="hint">주소 선언만 확인했어요. 요청이나 처리 흐름과 연결하지 않았어요.</p>
+    {limited && <p className="hint">일부 주소만 확인했어요.</p>}
+    <ul className="map-list">{firstRows(entries).map((entry, index) => {
+      const site = entry.basis.range, file = paths.get(site.fileId);
+      const unavailable = disabled || !file;
+      return <li key={`${site.fileId}:${site.startUtf16}:${index}`}>
+        <div className="map-actions"><code>{titleOf(entry)}</code>
+          {entry.kind !== 'static' && entry.path !== null && entry.prefix === 'unknown' && <span className="tag tag--unknown">앞 경로 미확인</span>}
+          {entry.conditional && <span className="tag tag--unknown">설정에 따라 등록 여부가 달라짐</span>}
+        </div>
+        <p className="hint">{unresolvedReasons[entry.reason]}</p>
+        <div className="map-actions"><span className="path">{file ? `${file} · ${site.startLine}행` : '원본 파일을 확인하지 못했어요.'}</span>
+          <button className="btn btn--small" disabled={unavailable} onClick={() => { if (!unavailable) onCode(site); }}>주소 선언 코드 보기</button>
+        </div>
+      </li>;
+    })}</ul><Omitted count={entries.length} />
+  </section>;
+}
+
+export function FeatureChooser({ project, state, starts, revision, locked, onFollow, onCode, mode, running, checking, connections, onInspect, onEnsure, onRunning }: {
   project: ProjectView; state: FeatureFlows; starts: React.ReactNode; revision: number; locked: boolean; onFollow(routeIndex: number, start?: FlowStart): void;
+  onCode(site: ValueSite): void;
   mode: LearningMode; running: boolean; checking: boolean; connections: ConnectionReport | null;
   onInspect(): Promise<string | null>; onEnsure(): Promise<string | null>; onRunning(value: boolean): void;
 }) {
@@ -959,7 +998,9 @@ export function FeatureChooser({ project, state, starts, revision, locked, onFol
     {routes && <>
       <FeatureOverview project={project} routes={routes} guide={guide?.changed ? undefined : guide?.guide} />
       {routes.routes.length === 0 && guide && guideCard}
-      {routes.routes.length === 0 ? <p className="notice">서버 코드(요청을 받는 곳)를 찾지 못해서 기능별로 따라갈 수 없어요. 아래 ‘어디부터 읽을까요?’에서 시작 파일을 골라 읽어 보세요.</p> : <>
+      {routes.routes.length === 0 ? <p className="notice">{routes.unresolvedRoutes?.length
+        ? '주소 선언은 찾았지만 처리 함수를 확인하지 못해 기능 흐름을 만들지 않았어요. 아래 목록에서 주소를 등록한 코드를 확인해 보세요.'
+        : '서버 코드(요청을 받는 곳)를 찾지 못해서 기능별로 따라갈 수 없어요. 아래 ‘어디부터 읽을까요?’에서 시작 파일을 골라 읽어 보세요.'}</p> : <>
         {feature && <section className="card overview-recommendation" aria-label="처음 따라갈 기능">
           <h3>처음이라면 이 기능부터 따라가 보세요</h3>
           <div className="overview-recommendation__heading"><b>{indexed?.name ?? feature.name}</b>
@@ -989,6 +1030,7 @@ export function FeatureChooser({ project, state, starts, revision, locked, onFol
     {routes && routes.routes.length > 0 && <FeatureList {...state.groupingProps} headingRef={listHeading} search={state.search} setSearch={state.setSearch} groups={state.groups} routes={routes} selected={state.selected} disabled={disabled} onFollow={onFollow}>
       {guideCard}
     </FeatureList>}
+    {routes && <UnresolvedAddressList project={project} entries={routes.unresolvedRoutes} disabled={disabled} limited={routes.limited} onCode={onCode} />}
   </div>;
 }
 

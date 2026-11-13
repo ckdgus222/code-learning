@@ -1,6 +1,7 @@
 import { _electron as electron } from 'playwright';
 import { checkPythonFileExplanation } from './python-file-explanation-smoke.mjs';
 import { checkPythonFeatureFlow } from './python-feature-flow-smoke.mjs';
+import { checkPythonUnresolvedRoutes } from './python-unresolved-routes-smoke.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm, rename, symlink, realpath, readdir, lstat } from 'node:fs/promises';
 import os from 'node:os';
@@ -6162,6 +6163,9 @@ try {
   });
   await check('Python feature flow: Django candidates, factory routes, registration prefixes and original evidence', async () => {
     await checkPythonFeatureFlow(app, page, path.join(temporary, 'Python 내부 기능 흐름'));
+  });
+  await check('Unresolved Django addresses: declarations, no fake flows, stale locking and refreshed evidence', async () => {
+    await checkPythonUnresolvedRoutes(app, page, path.join(temporary, 'Python 미확인 주소'));
   });
   await check('File explanation (fake AI): consent, selected mode, early result, independent code ranges and direct function summaries', async () => {
     await app.evaluate(({ ipcMain }) => {
