@@ -588,6 +588,11 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
     result.limited = true;
     result.notes.push('Django 주소 항목이 너무 많아 처음 5,000개만 봤어요.');
   }
+  if (djangoRoom.mutationsCut) {
+    result.limited = true;
+    result.notes.push('Python import의 전달·변경이 너무 많아 DRF 처리 함수 연결을 보류했어요.');
+  }
+  if (django.drfDefaults) result.notes.push(`DRF DefaultRouter ${django.drfDefaults}개를 찾았어요. 기본 API 루트와 형식 접미사 주소는 외부 처리 함수·설정에 따라 달라 따로 만들지 않았어요.`);
   if (django.routes.length) result.notes.push('Django 주소의 앞 경로는 읽을 수 있는 include()만 manage.py가 있는 폴더 기준으로 따라가요. '
     + (django.routes.some(route => route.prefix === 'known')
       ? '시작 설정(ROOT_URLCONF)이 가리키는 파일에서 이어진 주소만 앞부분을 아는 것으로 봤어요.'

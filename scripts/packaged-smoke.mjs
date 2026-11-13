@@ -531,6 +531,7 @@ try {
   report.checks.push('Flask View and MethodView registrations, uncertain requests and original class method evidence');
   report.checks.push('Flask add_url_rule direct function registration with uncertain request and original function evidence');
   report.checks.push('DRF explicit action maps and generated view aliases, uncertain request links and imported action evidence');
+  report.checks.push('DRF DefaultRouter list/detail/extra-action paths with include prefix, uncertain requests and original method evidence');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

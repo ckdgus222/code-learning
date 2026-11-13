@@ -2,6 +2,14 @@
 
 **0단계 일부와 1A의 로컬 탐색·구문 근거 이동·흐름 따라가기 화면을 구현했다.** AI 연결, 초기 이해도 관찰과 나머지 보호 검수는 끝나지 않았으므로 0단계 전체·1A 전체·개인용 시제품·범용 MVP 완료로 표시하지 않는다. 기획서는 v2.2와, 사용자가 2026-10-19 확정한 보완 v2.3(에이전트 작업 검사, v2.2와 다르면 v2.3 우선)이 기준이다. v2.3 2차 개정(사용자 확정)의 순서는 A 프로젝트 지도(완료) → 0 안정성(완료) → C-1 어려운 코드 표시(완료) → F 함수 호출 관계(완료) → V-1 값 따라가기 예시 값(완료) → V-2 값의 모양(완료) → C-2 변경 보기(완료)이고, B 기획 대조는 보류다. 사용자가 2026-10-20 C-2 뒤에 D ‘DB 구조(SQL 기준)’를 더했다(기획 v2.3 3차 개정, plan 리뷰 2차 통과).
 
+## g144: DRF 기본 라우터와 추가 액션 (2026-11-14)
+
+- 공식 SimpleRouter·DefaultRouter의 유일한 모듈 생성, 명시 prefix/클래스/basename 등록과 router.urls의 직접 대입·목록 추가·path/include 사용을 읽는다. 실제 사용 뒤 등록을 소급하지 않으며 trailing_slash/use_regex_path의 literal 불리언을 지원한다. 직접 list/create와 상세 액션을 실제 함수로 연결하고, ModelViewSet·ReadOnlyModelViewSet의 외부 상속 함수는 미확인 주소로 둔다. 모든 연결은 추정이고 기본 상세 칸도 값 모양을 확정하지 않는다. [DRF router 구현](https://raw.githubusercontent.com/encode/django-rest-framework/3.16.1/rest_framework/routers.py)을 기준으로 했다.
+- 공식 단일 @action의 detail·methods·url_path·url_name을 구분한다. 생략/None methods는 GET, 빈 목록은 주소 없음, 빈 url_path는 메서드 이름이며 ASCII HTTP 메서드만 허용한다. 꾸민 함수의 원본 범위와 register 호출의 근거를 분리한다. 표준 액션 이름 충돌·추가 꾸미기·mapping·사용자 lookup은 보류한다. DefaultRouter의 API 루트·형식 접미사는 외부 코드 근거를 만들지 않고 안내하며 빈 라우터도 안내한다. [공식 action 구현](https://raw.githubusercontent.com/encode/django-rest-framework/3.16.1/rest_framework/decorators.py)을 확인했다.
+- 라우터·클래스·생성 별칭의 제삼 파일 변경과 전달, 알려진 공식 DRF 객체 변경을 검사하고 정확한 register 인자 읽기만 예외로 허용한다. 변경 import 정보는 프로젝트 5,000개까지 보관하며 한도 초과 시 DRF 연결을 보류한다. 관련 없는 Response 호출은 유지한다. 등록·사용·생성 항목은 기존 5,000개 예산과 200,000회 조합 작업 한도를 사용하고, 등록×사용×액션을 통째로 펼치지 않는다.
+- 새 회귀 **61개**, 최종 집중 **896개**. 최초 **23개**, 제삼 파일/선언 순서/lookup **7개**, 공식 객체·별칭·문자 변환 **9개**, 빈 기본 라우터 안내 **1개** 실패를 재현 후 보완했다. 기존 예산 객체·중복 import 해석 검사 5개는 구현을 조정해 유지했다. 큰 조합·변경 수집 한도와 취소도 확인했으며 독립 보안 **19사례**, 최종 리뷰 **6사례**가 통과했다.
+- 최종 전체 단위 **6,224개 통과·6개 제외**, 타입·패키징·서명·배포 앱 **47항목 통과**. include 앞 경로가 붙은 목록·상세·추가 액션의 추정 요청과 원본 4–5행·6–7행·8–10행 이동, 원본 유지를 확인했다. 화면 검사 3번의 실패는 같은 앞 경로를 가진 항목의 부분 일치 선택(진단 재현 포함)과 여러 요청에 표시된 동일 함수 단계의 중복 선택이었다. 정확한 제목과 첫 동일 함수 단계로 고쳐 같은 배포 앱 재검사가 통과했다. 전체 fixture의 직접 파싱·실제 파일 스캔 분석도 정상 주소 3개를 확인했다. 앱 코드는 바뀌지 않아 스크립트 수정 뒤 단위·패키징은 반복하지 않았다. 전체 Electron은 공유 경로 배포 검사로 대체해 **미실행**이며 실제 Python 실행·AI 요청·Windows CI·푸시·새 출시도 미실행이다.
+
 ## g143: DRF ViewSet 명시 액션 매핑 (2026-11-14)
 
 - 공식 ViewSet·GenericViewSet·ModelViewSet·ReadOnlyModelViewSet의 직접 선언 액션을 as_view의 리터럴 딕셔너리에 대응한다. 위치/키워드 인자와 유일한 선행 생성 함수 별칭, 기존 import 해석의 클래스·별칭 한 단계를 지원한다. get/post/put/patch/delete의 소문자 키만 읽고 액션 문자열은 식별자처럼 정규화하지 않는다. 선택된 액션 하나라도 확인하지 못하면 전체 매핑을 보류한다. 모든 DRF 연결은 추정이며 실제 액션 함수와 URL 등록 근거를 구분한다. [DRF 공식 구현](https://raw.githubusercontent.com/encode/django-rest-framework/3.16.1/rest_framework/viewsets.py)을 기준으로 했다.

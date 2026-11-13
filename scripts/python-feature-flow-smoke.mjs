@@ -16,6 +16,8 @@ export async function checkPythonFeatureFlow(app, page, folder) {
     'foreign/factory.py': 'from flask import Flask\nfrom .routers import bp\ndef create_web():\n    app = Flask(__name__)\n    app.register_blueprint(bp, url_prefix="/factory-blue")\n    return app\n',
     'foreign/viewsets.py': 'from rest_framework.viewsets import ViewSet\nclass Records(ViewSet):\n    def list(self, request):\n        return []\n',
     'foreign/drfurls.py': 'from django.urls import path\nfrom .viewsets import Records\nrecords_view = Records.as_view({"get": "list"})\nurlpatterns = [path("drf-records/", Records.as_view({"get": "list"})), path("drf-alias/", records_view)]\n',
+    'foreign/routerviews.py': 'from rest_framework.viewsets import ViewSet\nfrom rest_framework.decorators import action\nclass RouterRecords(ViewSet):\n    def list(self, request):\n        return []\n    def retrieve(self, request, pk=None):\n        return []\n    @action(detail=False)\n    def summary(self, request):\n        return []\n',
+    'foreign/routerurls.py': 'from django.urls import path, include\nfrom rest_framework.routers import DefaultRouter\nfrom .routerviews import RouterRecords\nrouter = DefaultRouter()\nrouter.register("records", RouterRecords, basename="records")\nurlpatterns = [path("routed/", include(router.urls))]\n',
     'modulefactory.py': 'from fastapi import FastAPI, APIRouter\nmodule_router = APIRouter(prefix="/v5")\n@module_router.get("/records")\ndef module_records():\n    return []\ndef create_app():\n    app = FastAPI()\n    app.include_router(module_router, prefix="/factory-module")\n    return app\n',
     'flaskviews.py': 'from flask import Flask\nfrom flask.views import MethodView, View\napp = Flask(__name__)\nclass ClassUsers(MethodView):\n    def get(self):\n        return []\nclass ClassPage(View):\n    def dispatch_request(self):\n        return "page"\nusers_view = ClassUsers.as_view("class_users")\napp.add_url_rule("/class-users", view_func=users_view)\napp.add_url_rule("/class-page", view_func=ClassPage.as_view("class_page"))\n',
     'flaskrules.py': 'from flask import Flask\napp = Flask(__name__)\ndef rule_users():\n    return []\napp.add_url_rule("/direct-rules", view_func=rule_users, methods=["GET"])\n',
@@ -39,6 +41,7 @@ export async function checkPythonFeatureFlow(app, page, folder) {
   sources['client.ts'] += 'export function legacyPage() { return fetch("/legacy-page/"); }\nexport function legacyAssets() { return fetch("/assets/example.txt"); }\n';
   sources['client.ts'] += 'export function directRules() { return fetch("/direct-rules"); }\n';
   sources['client.ts'] += 'export function drfRecords() { return fetch("/drf-records/"); }\nexport function drfAlias() { return fetch("/drf-alias/"); }\n';
+  sources['client.ts'] += 'export function routedRecords() { return fetch("/routed/records/"); }\nexport function routedRecord() { return fetch("/routed/records/1/"); }\nexport function routedSummary() { return fetch("/routed/records/summary/"); }\n';
   for (const [name, source] of Object.entries(sources)) {
     await mkdir(path.dirname(path.join(folder, name)), { recursive: true });
     await writeFile(path.join(folder, name), source);
@@ -92,7 +95,7 @@ export async function checkPythonFeatureFlow(app, page, folder) {
       .getByText('factory.py: 앱 팩토리 안에서 찾은 주소는 실행·배포 여부를 확인하지 않아 추정으로 표시해요.', { exact: true }).waitFor();
     await steps.filter({ has: page.locator('b', { hasText: /^factory_handler$/ }) }).getByRole('button', { name: '코드 보기', exact: true }).click();
     await page.getByTestId('evidence-range').getByText('근거: factory.py · 6–8줄', { exact: true }).waitFor();
-    for (const [route, name, lines, file, uncertain] of [
+    for (const [route, name, lines, file, uncertain, requestPath] of [
       ['/api/v1/widgets', 'api_widgets', '5–7', 'registrations.py', false], ['/bp/widgets', 'flask_widgets', '11–13', 'registrations.py', false],
       ['/api/nested/group/v3/chapters', 'nested_chapters', '5–7', 'nested.py', false],
       ['/library/pages/notes', 'nested_notes', '5–7', 'nestedflask.py', false],
@@ -109,20 +112,29 @@ export async function checkPythonFeatureFlow(app, page, folder) {
       ['/direct-rules', 'rule_users', '3–4', 'flaskrules.py', true],
       ['/drf-records/', 'Records.list', '3–4', 'foreign/viewsets.py', true],
       ['/drf-alias/', 'Records.list', '3–4', 'foreign/viewsets.py', true],
+      ['/routed/records/', 'RouterRecords.list', '4–5', 'foreign/routerviews.py', true],
+      ['/routed/records/<pk>/', 'RouterRecords.retrieve', '6–7', 'foreign/routerviews.py', true, '/routed/records/1/'],
+      ['/routed/records/summary/', 'RouterRecords.summary', '8–10', 'foreign/routerviews.py', true],
       ['/app/v2/books', 'factory_books', '6–8', 'factoryrouters.py', true], ['/shelf/pages', 'factory_pages', '14–16', 'factoryrouters.py', true],
     ]) {
       await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
       await page.getByRole('button', { name: '다른 기능 고르기', exact: true }).click();
-      await list.getByRole('listitem').filter({ hasText: `보기 · ${route}` }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+      try {
+        await list.getByRole('listitem').filter({ has: page.getByText(`보기 · ${route}`, { exact: true }) })
+          .getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+      } catch (error) {
+        await writeFile(path.join(import.meta.dirname, '../test-results/python-flow-failure.txt'), await list.innerText());
+        throw error;
+      }
       await details.waitFor();
       if (!await details.evaluate(element => element.open)) await details.locator(':scope > summary').click();
       await diagram.getByRole('group', { name: `${file} · ${name}`, exact: true }).waitFor();
-      const request = steps.filter({ has: page.locator('b', { hasText: `GET ${route}` }) });
+      const request = steps.filter({ has: page.locator('b', { hasText: `GET ${requestPath ?? route}` }) });
       await request.waitFor();
       if (uncertain) await request.getByText('추정', { exact: true }).waitFor();
       assert.equal(await request.getByText('추정', { exact: true }).count(), uncertain ? 1 : 0);
       await steps.filter({ has: page.locator('b', { hasText: new RegExp(`^${name}$`) }) })
-        .getByRole('button', { name: '코드 보기', exact: true }).click();
+        .first().getByRole('button', { name: '코드 보기', exact: true }).click();
       await page.getByTestId('evidence-range').getByText(`근거: ${file} · ${lines}줄`, { exact: true }).waitFor();
     }
     for (const [name, lines] of [['legacy_page', '3–4'], ['legacy_static', '5–6']]) {
