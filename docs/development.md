@@ -81,7 +81,7 @@ macOS의 AI 질문 단계와 Codex·Antigravity 설치 확인은 `sandbox-exec` 
 ## 알려진 한계
 
 - 지도 내보내기는 저장 직전에 다른 프로그램이 고른 폴더를 링크 등으로 바꿔치는 경우를 막지 않습니다.
-- 개발·CI 도구의 의존성 보안 경고(2026-11-14): 프로젝트의 npm `undici`는 6.29.1·7.30.2로 패치했고 CI·출시 Node는 24.22.3으로 고정했습니다. 로컬 `npm audit`에는 `undici` 없이 `glob`·`minimatch` 공지 2건의 영향을 받는 개발 패키지 3개(보통 등급)가 남습니다. npm 자체에 포함된 구버전 `undici`와 이 컴퓨터의 기본 Node 24.18.0은 별도이며, 새 검증은 독립 Node 24.22.3에서 실행합니다. Windows 설치 파일 내부 검사는 남아 있습니다([검토 기록](implementation-status.md)).
+- 개발·CI 도구의 의존성 보안 경고(2026-11-14): 프로젝트의 npm `undici`는 6.29.1·7.30.2로 패치했고 CI·출시 Node는 24.22.3으로 고정했습니다. 로컬 `npm audit`에는 `undici` 없이 `glob`·`minimatch` 공지 2건의 영향을 받는 개발 패키지 3개(보통 등급)가 남습니다. npm 자체에 포함된 구버전 `undici`와 이 컴퓨터의 기본 Node 24.18.0은 별도이며, 새 검증은 독립 Node 24.22.3에서 실행했습니다. 양쪽 OS의 출시 파일 내부 검사도 마쳤으며, 악성 서버·디렉터리 재현은 미실행입니다([검토 기록](implementation-status.md)).
 
 질문을 보내기 전에 알아 둘 것입니다. macOS의 Codex·Gemini 단독은 앱 전용 홈·울타리를 쓰지만 아래 한계가 있습니다. Windows Codex는 앱 전용 홈을 쓰지만 이 울타리는 없습니다. 시험 기록은 [구현 상태](implementation-status.md)에 있습니다.
 
@@ -111,9 +111,9 @@ Windows 설치 프로그램은 Windows에서 `npm run make:win`으로 만듭니�
 
 tree-sitter 패키지들은 macOS arm64·Windows x64용 N-API 미리 빌드 파일을 포함하므로 설치 스크립트가 필요 없어 `allowScripts`에서 차단하며, `.npmrc`의 `strict-allow-scripts=true`는 검토하지 않은 설치 스크립트가 추가되면 설치를 실패시킵니다.
 
-패키징은 중첩된 의존성을 포함해 `node_modules/.vitest-cache`와 `node_modules/.vite`를 제외하고, 실행에 필요한 루트 `.vite`는 포함합니다. 캐시·로컬 홈·작업 폴더 경로가 없는지는 macOS arm64 앱의 ASAR와 풀린 리소스에서 확인했으며, Windows 설치 파일 내부 검사는 출시 빌드 뒤에 남아 있습니다.
+패키징은 중첩된 의존성을 포함해 `node_modules/.vitest-cache`와 `node_modules/.vite`를 제외하고, 실행에 필요한 루트 `.vite`는 포함합니다. 공개한 1.1.0의 macOS arm64 DMG와 Windows x64 설치 파일에서 ASAR·풀린 리소스를 검사했고, 테스트 캐시와 검사 대상으로 지정한 로컬·CI 환경 경로 일치는 0개였습니다.
 
-`1.1.0`은 로컬 출시 준비 버전이며, CI에서 만든 설치 파일 확인과 GitHub 공개는 아직 남아 있습니다([출시 노트 초안](release-notes-1.1.0.md)).
+`1.1.0`은 2026-11-14(KST) [GitHub에 공개했습니다](https://github.com/ckdgus222/code-learning/releases/tag/v1.1.0). 다운로드한 파일의 SHA-256을 대조했고, macOS 배포 앱의 실행 검사 20항목과 Windows 출시 CI의 설치·실행·제거 검사가 통과했습니다([출시 노트](release-notes-1.1.0.md)). Windows 로컬 PC에서의 수동 설치 검사는 실행하지 않았습니다.
 
 ```sh
 npm run typecheck

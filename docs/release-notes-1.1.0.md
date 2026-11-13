@@ -1,6 +1,6 @@
 # Code Learning 1.1.0
 
-출시 노트 초안입니다. 설치 파일의 빌드·확인과 GitHub 공개는 아직 완료하지 않았습니다.
+2026-11-14(KST) [GitHub에 공개했습니다](https://github.com/ckdgus222/code-learning/releases/tag/v1.1.0).
 
 Python 프로젝트를 읽고 서버 주소까지 따라갈 수 있으며, 파일 사이의 관계를 찾고 공유하는 기능을 더했습니다.
 
