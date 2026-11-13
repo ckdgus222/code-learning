@@ -524,6 +524,7 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
       if (!found.complete) { result.limited = true; result.notes.push(`${file.relativePath}: 일부만 확인했어요.`); }
       omitted ||= found.cut;
       for (const framework of found.routers) routers.add(framework);
+      if (found.factoryRoutes) result.notes.push(`${file.relativePath}: 앱 팩토리 안에서 찾은 주소는 실행·배포 여부를 확인하지 않아 추정으로 표시해요.`);
       const visible = found.routes.filter(route => !shadows.has(route.framework));
       if (found.odd && visible.length) result.notes.push(`${file.relativePath}: 실행 중에 이름·속성이나 주소 규칙을 바꿀 수 있는 코드가 있어, 이 파일의 Python 서버 주소는 요청과 잇지 않았어요.`);
       if (!found.odd && visible.some(route => route.unmatched)) unmatched = true;

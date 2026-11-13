@@ -515,6 +515,7 @@ try {
   report.checks.push('Python static file guide, safe import opening, function and class evidence, caller search and function selection');
   report.checks.push('Python fake AI file explanation, consent, real chunks and storage, decorator evidence, reopen and stale locking');
   report.checks.push('Python internal Django feature flow, uncertain helper edge, exact evidence and no confirmed callers');
+  report.checks.push('Python application factory routes, uncertain request, nested handler evidence and internal helper flow');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

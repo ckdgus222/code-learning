@@ -3,6 +3,7 @@ import type { ProjectFile, Route } from '../../shared/contracts';
 import { firstLine, lineRange } from './names';
 import { normalize } from './python-imports';
 import { pythonFunction } from './python-syntax';
+import { pythonAttributeNames } from './python-values';
 import { bounded, ROUTE_LIMITS, shortName } from './routes';
 import { parseTree } from './syntax';
 
@@ -196,21 +197,22 @@ export function walkPython(text: string, relativePath: string, nodeBudget: numbe
   const root = parseTree(text, relativePath);
   // 1. Every node up to the budget, each marked as module scope or inside a function or class body.
   // The type is read once here: every reader filters by it, and each read of a node's property is a call into the parser.
-  const nodes: { node: Node; module: boolean; type: string }[] = [];
-  const pending = [{ node: root, module: true, depth: 0 }];
+  const nodes: { node: Node; module: boolean; type: string; scopeBodyId: number }[] = [];
+  const pending = [{ node: root, module: true, depth: 0, scopeBodyId: root.id }];
   let tooDeep = false;
   // Visit siblings lazily so even a very wide argument list respects the node budget.
   while (pending.length && nodes.length < nodeBudget) {
-    const { node, module: outerModule, depth } = pending.pop()!;
-    if (node.nextNamedSibling) pending.push({ node: node.nextNamedSibling, module: outerModule, depth });
+    const { node, module: outerModule, depth, scopeBodyId: outerScope } = pending.pop()!;
+    if (node.nextNamedSibling) pending.push({ node: node.nextNamedSibling, module: outerModule, depth, scopeBodyId: outerScope });
     // Defaults and class bases run in the enclosing scope; only the bodies introduce a local scope.
     const owner = node.parent;
     const body = owner && ['function_definition', 'class_definition', 'lambda'].includes(owner.type)
       && owner.childForFieldName('body')?.id === node.id;
     const module = outerModule && !body;
-    nodes.push({ node, module, type: node.type });
+    const scopeBodyId = body ? node.id : outerScope;
+    nodes.push({ node, module, type: node.type, scopeBodyId });
     if (!node.firstNamedChild) continue;
-    if (depth < PYTHON_WALK_DEPTH) pending.push({ node: node.firstNamedChild, module, depth: depth + 1 });
+    if (depth < PYTHON_WALK_DEPTH) pending.push({ node: node.firstNamedChild, module, depth: depth + 1, scopeBodyId });
     else tooDeep = true;
   }
   // What lies deeper was not looked at, so the file counts as partly read, like one past the node budget.
@@ -218,9 +220,9 @@ export function walkPython(text: string, relativePath: string, nodeBudget: numbe
   return { root, nodes, complete, tooDeep };
 }
 
-/** The FastAPI and Flask routes one Python file declares. Nothing is run: only decorators on module-level functions are read. */
+/** The FastAPI and Flask routes declared at module level or inside a simple returned-app factory. */
 export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPython>, hash: string, maxRoutes: number):
-  { routes: Route[]; routers: Framework[]; complete: boolean; cut: boolean; odd: boolean } {
+  { routes: Route[]; routers: Framework[]; complete: boolean; cut: boolean; odd: boolean; factoryRoutes?: number } {
   const { root, nodes, complete } = walk;
   const visited = new Set(nodes.map(({ node }) => node.id));
   // 2. Imported framework names and the apps and routers made at the top of the module.
@@ -336,5 +338,134 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
       });
     }
   }
-  return { routes, routers, complete, cut, odd: complete && odd };
+  const local = appFactoryRoutes(file, walk, hash, maxRoutes - routes.length, factories, bindings, invalid, odd, rootPath, redirectSlashes);
+  routes.push(...local.routes);
+  return { routes, routers, complete, cut: cut || local.cut, odd: complete && odd, ...(local.routes.length ? { factoryRoutes: local.routes.length } : {}) };
+}
+
+/** Each factory owns its app names. Its existence is evidence of code, not of invocation or deployment. */
+function appFactoryRoutes(file: ProjectFile, walk: ReturnType<typeof walkPython>, hash: string, maxRoutes: number,
+  factories: Map<string, Factory>, moduleBindings: Map<string, Set<number>>, moduleInvalid: Set<string>, fileOdd: boolean,
+  rootPath: boolean, redirectSlashes: boolean): { routes: Route[]; cut: boolean } {
+  const routes: Route[] = [];
+  if (!walk.complete || walk.root.hasError || !factories.size) return { routes, cut: false };
+  type Entry = (typeof walk.nodes)[number];
+  type Scope = { fn: Node; body: Node; name: Node; entries: Entry[] };
+  const scopes: Scope[] = [];
+  const declarations = new Map<string, Set<number>>();
+  let current: Scope | null = null;
+  // Nodes are in source order. Group whole top-level functions in one pass rather than rescanning for each factory.
+  for (const entry of walk.nodes) {
+    const { node, type, module } = entry;
+    if (current && node.startIndex >= current.fn.endIndex) current = null;
+    if (type === 'function_definition' && node.parent?.id === walk.root.id) {
+      const body = node.childForFieldName('body'), name = node.childForFieldName('name');
+      if (body && name) { current = { fn: node, body, name, entries: [] }; scopes.push(current); }
+    }
+    current?.entries.push(entry);
+    if (type !== 'identifier' || !module || labelPosition(node) || parameterPosition(node)) continue;
+    const parent = node.parent;
+    const read = parent?.type === 'call' && parent.childForFieldName('function')?.id === node.id
+      || parent?.type === 'argument_list' || typePosition(node);
+    if (read) continue;
+    const name = nameOf(node), places = declarations.get(name) ?? new Set<number>();
+    places.add(node.id);
+    declarations.set(name, places);
+  }
+  const fromScope = (scope: Scope, room: number): { routes: Route[]; cut: boolean } | null => {
+    const routes: Route[] = [];
+    const { fn, body, name, entries } = scope;
+    if (fn.firstChild?.type === 'async' || declarations.get(nameOf(name))?.size !== 1 || moduleBindings.has(nameOf(name))) return null;
+    const own = entries.filter(entry => entry.scopeBodyId === body.id);
+    const returns = own.filter(entry => entry.type === 'return_statement');
+    const statements = own.filter(entry => entry.node.parent?.id === body.id && !['comment', 'line_continuation'].includes(entry.type));
+    const last = statements.at(-1)?.node;
+    const returned = last?.type === 'return_statement' ? last.namedChildren.find(child => child.type !== 'comment') : null;
+    if (returns.length !== 1 || own.some(entry => entry.type === 'yield') || returned?.type !== 'identifier') return null;
+    const appName = nameOf(returned);
+    const assignments = own.filter(entry => entry.type === 'assignment' && nameOf(entry.node.childForFieldName('left')) === appName);
+    if (assignments.length !== 1) return null;
+    const assignment = assignments[0].node;
+    if (assignment.parent?.parent?.id !== body.id) return null;
+    const left = assignment.childForFieldName('left'), right = assignment.childForFieldName('right');
+    if (left?.type !== 'identifier' || right?.type !== 'call') return null;
+    const callee = right.childForFieldName('function');
+    const receiver = callee?.type === 'attribute' ? callee.childForFieldName('object') : callee;
+    if (receiver?.type !== 'identifier') return null;
+    const constructor = nameOf(receiver), factory = factories.get(constructor);
+    if (!factory || moduleInvalid.has(constructor)) return null;
+    const kind = factory.kind === 'module' ? factoryKind(factory.framework, nameOf(callee?.childForFieldName('attribute')))
+      : callee?.type === 'identifier' ? factory.kind : null;
+    if (kind !== 'app') return null;
+    const parameters = fn.childForFieldName('parameters');
+    let invalid = false, odd = fileOdd;
+    for (const entry of entries) {
+      const { node, type, scopeBodyId } = entry;
+      if (type === 'identifier') {
+        const name = nameOf(node), parent = node.parent;
+        if (labelPosition(node)) continue;
+        odd ||= pythonRouteMachinery.has(name);
+        if ([appName, constructor].includes(name) && ['global_statement', 'nonlocal_statement'].includes(parent?.type ?? '')) invalid = true;
+        const parameter = parameterPosition(node);
+        const ownParameter = parameter && parameters && node.startIndex >= parameters.startIndex && node.endIndex <= parameters.endIndex;
+        if (!ownParameter && (scopeBodyId !== body.id || parameter)) continue;
+        if (name !== appName && name !== constructor) continue;
+        const made = node.id === left.id || node.id === returned.id;
+        const reading = parent?.type === 'attribute' && parent.childForFieldName('object')?.id === node.id
+          || parent?.type === 'argument_list' || parent?.type === 'keyword_argument' && parent.childForFieldName('value')?.id === node.id
+          || name === constructor && (parent?.type === 'call' && parent.childForFieldName('function')?.id === node.id || typePosition(node));
+        if (!made && (!reading || ownParameter)) invalid = true;
+      }
+      if (scopeBodyId === body.id && ['import_statement', 'import_from_statement'].includes(type)) {
+        if (node.namedChildren.some(child => child.type === 'wildcard_import')) invalid = true;
+        invalid ||= node.childrenForFieldName('name').some(imported => {
+          const original = imported.childForFieldName('name') ?? imported;
+          const binding = imported.childForFieldName('alias') ?? original.firstNamedChild ?? original;
+          return [appName, constructor].includes(nameOf(binding));
+        });
+      }
+      if (type === 'attribute') {
+        const names = pythonAttributeNames(node);
+        if (names?.length !== 2 || ![appName, constructor].includes(names[0])) continue;
+        const attribute = names[1];
+        const called = node.parent?.type === 'call' && node.parent.childForFieldName('function')?.id === node.id;
+        odd ||= attribute.startsWith('__') || frameworks[factory.framework].attributes.has(attribute) && !called && !typePosition(node);
+      }
+      if (type !== 'call') continue;
+      const called = pythonAttributeNames(node.childForFieldName('function'));
+      if (called?.length !== 1 || !['setattr', 'delattr', 'vars'].includes(called[0])) continue;
+      const object = pythonAttributeNames(argumentsOf(node)[0]);
+      odd ||= !!object && [appName, constructor].includes(object[0]);
+    }
+    if (invalid) return null;
+    const app = readApp(factory.framework, constructor, false, argumentsOf(right));
+    for (const { node, type } of own) {
+      if (type !== 'decorator' || node.parent?.parent?.id !== body.id || node.startIndex < assignment.endIndex) continue;
+      const definition = node.parent.childForFieldName('definition'), handler = definition && pythonFunction(definition);
+      const call = node.firstNamedChild, callee = call?.type === 'call' ? call.childForFieldName('function') : null;
+      const object = callee?.type === 'attribute' ? callee.childForFieldName('object') : null;
+      if (!handler || object?.type !== 'identifier' || nameOf(object) !== appName) continue;
+      const method = nameOf(callee?.childForFieldName('attribute'));
+      if (!['get', 'post', 'put', 'patch', 'delete', frameworks[app.framework].route].includes(method)) continue;
+      const { path, selected, shape } = readRoute(app, argumentsOf(call!), method, rootPath, redirectSlashes);
+      for (const selectedMethod of selected) {
+        if (routes.length >= room) return { routes, cut: true };
+        const declaration = handler.declaration;
+        routes.push({ method: selectedMethod as Route['method'], path, framework: app.framework, prefix: 'unknown',
+          handler: { fileId: file.id, fileHash: hash, startUtf16: declaration.startIndex, endUtf16: declaration.endIndex,
+            startLine: declaration.startPosition.row + 1, name: shortName(handler.name) },
+          basis: { text: firstLine(node), range: { fileId: file.id, fileHash: hash, startUtf16: node.startIndex,
+            endUtf16: node.endIndex, ...lineRange(node), text: firstLine(node) } },
+          ...(odd ? { unmatched: true as const } : shape) });
+      }
+    }
+    return { routes, cut: false };
+  };
+  for (const scope of scopes) {
+    const found = fromScope(scope, maxRoutes - routes.length);
+    if (!found) continue;
+    routes.push(...found.routes);
+    if (found.cut) return { routes, cut: true };
+  }
+  return { routes, cut: false };
 }

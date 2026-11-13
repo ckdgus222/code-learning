@@ -10,7 +10,8 @@ export async function checkPythonFeatureFlow(app, page, folder) {
     'site/settings.py': 'ROOT_URLCONF = "site.urls"\n',
     'site/urls.py': 'from django.urls import path\nfrom . import views\nurlpatterns = [path("users/", views.handle)]\n',
     'site/views.py': '# 한국어 😀\ndef handle(request):\n    return helper(1)\ndef helper(value):\n    return value\n',
-    'client.ts': 'export function load() { return fetch("/users/"); }\n',
+    'factory.py': 'from fastapi import FastAPI\ndef factory_helper(value):\n    return value\ndef create_app():\n    app = FastAPI()\n    @app.get("/factory/{id}")\n    def factory_handler(id):\n        return factory_helper(id)\n    return app\n',
+    'client.ts': 'export function load() { return fetch("/users/"); }\nexport function factoryLoad() { return fetch("/factory/1"); }\n',
   };
   for (const [name, source] of Object.entries(sources)) {
     await mkdir(path.dirname(path.join(folder, name)), { recursive: true });
@@ -52,6 +53,19 @@ export async function checkPythonFeatureFlow(app, page, folder) {
     await page.getByRole('navigation', { name: '함수와 단계', exact: true }).getByRole('button', { name: 'helper', exact: true })
       .and(page.locator('[aria-pressed="true"]')).waitFor();
     assert.equal(await page.getByRole('list', { name: '이 함수를 부르는 곳', exact: true }).count(), 0);
+    await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    await page.getByRole('button', { name: '다른 기능 고르기', exact: true }).click();
+    await list.getByRole('listitem').filter({ hasText: '보기 · /factory/{id}' })
+      .getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+    await details.waitFor();
+    if (!await details.evaluate(element => element.open)) await details.locator(':scope > summary').click();
+    await diagram.getByRole('group', { name: 'factory.py · factory_handler', exact: true }).waitFor();
+    await diagram.getByRole('group', { name: 'factory.py · factory_helper', exact: true }).waitFor();
+    await steps.filter({ has: page.locator('b', { hasText: /^GET \/factory\/1$/ }) }).getByText('추정', { exact: true }).waitFor();
+    await page.getByRole('region', { name: '기능 흐름 단계', exact: true })
+      .getByText('factory.py: 앱 팩토리 안에서 찾은 주소는 실행·배포 여부를 확인하지 않아 추정으로 표시해요.', { exact: true }).waitFor();
+    await steps.filter({ has: page.locator('b', { hasText: /^factory_handler$/ }) }).getByRole('button', { name: '코드 보기', exact: true }).click();
+    await page.getByTestId('evidence-range').getByText('근거: factory.py · 6–8줄', { exact: true }).waitFor();
     for (const [name, source] of Object.entries(sources)) assert.equal(await readFile(path.join(folder, name), 'utf8'), source);
   } finally {
     await app.evaluate(() => globalThis.restorePythonFlowDialog?.());
