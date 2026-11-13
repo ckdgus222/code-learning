@@ -894,7 +894,7 @@ it.each([undefined, { ...routes, requests: [], links: [] }, {
   const html = renderToStaticMarkup(React.createElement(FlowLimits, { project, routes, flow, locked: false, onCode() {} }));
   expect(html).toMatch(/^<details class="card"><summary>이 흐름을 찾은 방법과 한계<\/summary><p class="hint">코드 글자로 찾은 흐름이에요/);
   expect(html).toContain('찾은 범위와 한계');
-  expect(html).toContain('같은 파일의 모듈 맨 위나 단순 앱 팩토리의 include_router·register_blueprint 등록에서 앞 경로를 연결해요. FastAPI 라우터와 Flask Blueprint의 중첩 등록도 따라가요. 같은 파일의 모듈 앱 사이 app.mount 주소는 추정으로 연결해요. 다른 파일에서 가져온 앱·라우터·Blueprint의 주소 데코레이터와 모듈 앱·단순 앱 팩토리의 직접 라우터 등록도 추정으로 연결해요. Flask 모듈 앱의 add_url_rule로 직접 등록한 함수도 추정으로 연결해요. 그 밖의 언어·서버 방식, app.use·파일 사이의 중첩 라우터 연결은 아직 따라가지 않아요. tsconfig 경로 별칭은 따라가요. Python은 직접·확정 import 호출과 메서드 후보를 따라가요.');
+  expect(html).toContain('같은 파일의 모듈 맨 위나 단순 앱 팩토리의 include_router·register_blueprint 등록에서 앞 경로를 연결해요. FastAPI 라우터와 Flask Blueprint의 중첩 등록도 따라가요. 같은 파일의 모듈 앱 사이 app.mount 주소는 추정으로 연결해요. 다른 파일에서 가져온 앱·라우터·Blueprint의 주소 데코레이터와 모듈 앱·단순 앱 팩토리의 직접 라우터 등록도 추정으로 연결해요. Flask 모듈 앱의 add_url_rule로 직접 등록한 함수와 같은 파일의 기본 View·MethodView 메서드도 추정으로 연결해요. 그 밖의 언어·서버 방식, app.use·파일 사이의 중첩 라우터 연결은 아직 따라가지 않아요. tsconfig 경로 별칭은 따라가요. Python은 직접·확정 import 호출과 메서드 후보를 따라가요.');
   expect(html).toContain('저장소는 Prisma 모양과 흔한 DB 클라이언트·TypeORM Repository 이름으로 찾아요(이름으로 찾은 것은 추정, Mongoose·Drizzle 등은 아직 못 찾아요)');
   expect(html).not.toContain('이을 주소를 못 찾은 요청');
   expect(html).not.toContain('다른 서버 주소 요청');

@@ -524,6 +524,7 @@ try {
   report.checks.push('Imported FastAPI and Flask app decorators, uncertain requests and original foreign-file evidence');
   report.checks.push('Imported router and Blueprint registrations, prefix override and third-file decorator evidence');
   report.checks.push('App factory registration of same-file and imported module routers with uncertain original handler evidence');
+  report.checks.push('Flask View and MethodView registrations, uncertain requests and original class method evidence');
   report.checks.push('Flask add_url_rule direct function registration with uncertain request and original function evidence');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));

@@ -514,7 +514,15 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
     ...(registered.mounts + local.mounts ? { appMounts: registered.mounts + local.mounts } : {}), ...(importRoom ? { imports } : {}) };
 }
 
-type FlaskRuleRegistration = { rule: Node; endpoint: Node | null; viewFunc: Node; selected: Route['method'][] };
+type FlaskRuleRegistration = { rule: Node; endpoint: Node | null; viewFunc: Node; selected: Route['method'][]; defaultMethods: boolean };
+type FlaskHandlerInfo = NonNullable<ReturnType<typeof pythonFunction>>;
+type FlaskViewTarget = { name: string; identity: number; handlers: { method: Route['method']; info: FlaskHandlerInfo }[]; safe: () => boolean };
+function flaskWrittenMethods(node: Node): Route['method'][] | null {
+  if (!['list', 'tuple', 'set'].includes(node.type)) return null;
+  const written = node.namedChildren.filter(child => child.type !== 'comment').map(plainString);
+  if (written.includes(null)) return null;
+  return [...new Set(written.map(method => method!.toUpperCase()).filter(method => methods.has(method)))] as Route['method'][];
+}
 function flaskRuleRegistration(call: Node): FlaskRuleRegistration | null {
   const args = argumentsOf(call), positions = args.filter(positional);
   const positionalNames = ['rule', 'endpoint', 'view_func', 'provide_automatic_options'];
@@ -535,15 +543,146 @@ function flaskRuleRegistration(call: Node): FlaskRuleRegistration | null {
   const methodList = keyword(args, 'methods');
   let selected: Route['method'][] = ['GET'];
   if (methodList && methodList.type !== 'none') {
-    if (!['list', 'tuple', 'set'].includes(methodList.type)) return null;
-    const written = methodList.namedChildren.filter(node => node.type !== 'comment').map(plainString);
-    if (written.includes(null)) return null;
-    selected = [...new Set(written.map(method => method!.toUpperCase()).filter(method => methods.has(method)))] as Route['method'][];
+    const written = flaskWrittenMethods(methodList);
+    if (!written) return null;
+    selected = written;
   }
-  return { rule, viewFunc, endpoint: positions[1] ?? keyword(args, 'endpoint') ?? null, selected };
+  return { rule, viewFunc, endpoint: positions[1] ?? keyword(args, 'endpoint') ?? null, selected,
+    defaultMethods: !methodList || methodList.type === 'none' };
 }
 
-/** Direct Flask function registration; unresolved rules lower only their owning application's certainty. */
+function flaskViewBody(node: Node, kind: 'View' | 'MethodView') {
+  const handlers = new Map<string, FlaskHandlerInfo>(), fields = new Set<string>();
+  let selected: Route['method'][] | undefined;
+  for (const child of node.childForFieldName('body')?.namedChildren ?? []) {
+    if (child.type === 'comment' || child.type === 'pass_statement') continue;
+    if (child.type === 'function_definition') {
+      const name = nameOf(child.childForFieldName('name')), info = pythonFunction(child);
+      if (!info || handlers.has(name) || name.startsWith('__') || ['as_view', 'methods', 'decorators', 'init_every_request', 'provide_automatic_options'].includes(name)
+        || kind === 'MethodView' && name === 'dispatch_request') return null;
+      handlers.set(name, info); continue;
+    }
+    const value = child.type === 'expression_statement' ? child.firstNamedChild : null;
+    if (value?.type === 'string' && plainString(value) !== null) continue;
+    if (value?.type !== 'assignment' || value.childForFieldName('type')) return null;
+    const left = value.childForFieldName('left'), right = value.childForFieldName('right');
+    if (left?.type !== 'identifier' || !right) return null;
+    const name = nameOf(left);
+    if (fields.has(name)) return null;
+    fields.add(name);
+    if (name === 'methods') {
+      const written = right.type === 'none' ? ['GET'] as Route['method'][] : flaskWrittenMethods(right);
+      if (!written) return null;
+      selected = written; continue;
+    }
+    if (name === 'decorators' && right.type === 'list' && !right.namedChildren.some(node => node.type !== 'comment')) continue;
+    if (name === 'init_every_request' && ['true', 'false'].includes(right.type)) continue;
+    if (name === 'provide_automatic_options' && ['true', 'false', 'none'].includes(right.type)) continue;
+    return null;
+  }
+  if (kind === 'View' && !handlers.has('dispatch_request')) return null;
+  return { handlers, selected: selected ?? (kind === 'View' ? ['GET'] : [...handlers.keys()].map(name => name.toUpperCase()).filter(name => methods.has(name))) as Route['method'][] };
+}
+
+/** Generated views retain their own identity: two as_view calls are two different endpoint functions. */
+function flaskClassViews(walk: ReturnType<typeof walkPython>, bindings: Map<string, Set<number>>, spend: (cost: number) => boolean) {
+  type Base = { kind: 'View' | 'MethodView'; root: string; importedAt: number };
+  type Class = { node: Node; name: string; base: Base; body: NonNullable<ReturnType<typeof flaskViewBody>> };
+  type Generated = { node: Node; owner: Class; name: string };
+  const bases = new Map<string, Base>(), classes = new Map<string, Class>(), generated = new Map<number, Generated>();
+  const aliases = new Map<string, { binding: Node; value: Generated }>();
+  const definitions = new Set<number>(), baseReads = new Set<number>(), aliasCalls = new Set<number>(), accepted = new Set<number>();
+  const unsafe = new Set<string>(), unsafeBases = new Set<string>();
+  for (const { node, type } of walk.nodes) {
+    if (!['import_statement', 'import_from_statement'].includes(type) || node.parent?.id !== walk.root.id) continue;
+    const from = type === 'import_from_statement' ? nameOf(node.childForFieldName('module_name')) : null;
+    for (const imported of node.childrenForFieldName('name')) {
+      const original = imported.type === 'aliased_import' ? imported.childForFieldName('name')! : imported;
+      const alias = imported.childForFieldName('alias'), binding = alias ?? original.firstNamedChild ?? original;
+      const name = nameOf(binding), importedName = nameOf(original);
+      let prefix: string | null = null;
+      if (from === 'flask.views' && ['View', 'MethodView'].includes(importedName)) {
+        bases.set(name, { kind: importedName as Base['kind'], root: name, importedAt: node.endIndex }); definitions.add(binding.id);
+      }
+      if (from === 'flask' && importedName === 'views' || !from && importedName === 'flask.views') prefix = alias || from ? name : 'flask.views';
+      if (prefix === null) continue;
+      definitions.add(binding.id);
+      for (const kind of ['View', 'MethodView'] as const) bases.set(`${prefix}.${kind}`, { kind, root: name, importedAt: node.endIndex });
+    }
+  }
+  if (!bases.size) return { resolve: (_input: Node, _selected: Route['method'][] | null, _at: number): FlaskViewTarget | null => null, verify: (_reads: Set<number>) => {} };
+  const baseRoots = new Set([...bases.values()].map(base => base.root));
+  for (const name of baseRoots) if (bindings.get(name)?.size !== 1) unsafeBases.add(name);
+  for (const { node, type } of walk.nodes) {
+    if (type !== 'class_definition' || node.parent?.id !== walk.root.id) continue;
+    if (!spend(100 + node.endIndex - node.startIndex)) break;
+    const supers = node.childForFieldName('superclasses')?.namedChildren.filter(child => child.type !== 'comment') ?? [];
+    const names = supers.length === 1 ? pythonAttributeNames(supers[0]) : null;
+    const base = names && bases.get(names.join('.')), nameNode = node.childForFieldName('name');
+    if (!base || !nameNode || base.importedAt >= node.startIndex) continue;
+    const body = flaskViewBody(node, base.kind), name = nameOf(nameNode);
+    if (!body) { unsafe.add(name); continue; }
+    if (classes.has(name) || bindings.has(name)) unsafe.add(name);
+    classes.set(name, { node, name, base, body }); definitions.add(nameNode.id); baseReads.add(supers[0].id);
+  }
+  for (const { node, type } of walk.nodes) {
+    if (type !== 'call') continue;
+    const names = pythonAttributeNames(node.childForFieldName('function'));
+    const owner = names?.length === 2 && names[1] === 'as_view' ? classes.get(names[0]) : null;
+    if (!owner) continue;
+    if (!spend(100 + node.endIndex - node.startIndex)) break;
+    const args = argumentsOf(node), positions = args.filter(positional);
+    const input = positions[0] ?? keyword(args, 'name'), name = plainString(input);
+    if (node.startIndex <= owner.node.endIndex || positions.length > 1 || !keywordsValid(args, new Set(['name']))
+      || positions.length && keyword(args, 'name') || name === null || name.length > ROUTE_LIMITS.name) continue;
+    const value = { node, owner, name };
+    generated.set(node.id, value);
+    const assignment = node.parent;
+    if (assignment?.type !== 'assignment' || assignment.childForFieldName('right')?.id !== node.id
+      || assignment.parent?.parent?.id !== walk.root.id) continue;
+    const binding = assignment.childForFieldName('left');
+    if (binding?.type !== 'identifier' || assignment.childForFieldName('type')) continue;
+    const alias = nameOf(binding), previous = aliases.get(alias);
+    if (previous) unsafe.add(previous.value.owner.name);
+    if (previous || bindings.has(alias) || classes.has(alias)) unsafe.add(owner.name);
+    aliases.set(alias, { binding, value }); definitions.add(binding.id); aliasCalls.add(node.id);
+  }
+  const resolve = (input: Node, selected: Route['method'][] | null, at: number): FlaskViewTarget | null => {
+    const identifier = identifierInParens(input), alias = identifier && aliases.get(nameOf(identifier));
+    const value = alias ? alias.value : generated.get(input.id);
+    if (!value || alias && (value.node.endIndex >= at || alias.binding.endIndex >= at)) return null;
+    // Inline as_view executes inside this registration, after the class definition.
+    if (!alias && value.node.startIndex < at) return null;
+    const handlers: FlaskViewTarget['handlers'] = [];
+    for (const method of selected ?? value.owner.body.selected) {
+      const info = value.owner.body.handlers.get(value.owner.base.kind === 'View' ? 'dispatch_request' : method.toLowerCase());
+      if (!info) return null;
+      handlers.push({ method, info });
+    }
+    accepted.add(value.node.id);
+    return { name: value.name, identity: value.node.startIndex, handlers,
+      safe: () => !unsafe.has(value.owner.name) && !unsafeBases.has(value.owner.base.root) };
+  };
+  const verify = (reads: Set<number>) => {
+    for (const { node, type } of walk.nodes) {
+      if (type !== 'identifier' || definitions.has(node.id) || labelPosition(node) || parameterPosition(node) || typePosition(node)) continue;
+      const name = nameOf(node), owner = classes.get(name), alias = aliases.get(name);
+      const base = baseRoots.has(name);
+      if (!owner && !alias && !base) continue;
+      if (!spend(1)) break;
+      const access = pythonValueAccess(node), parent = access.node.parent;
+      if (base && !baseReads.has(access.node.id)) unsafeBases.add(name);
+      if (alias && !reads.has(access.node.id)) unsafe.add(alias.value.owner.name);
+      if (!owner) continue;
+      const allowed = access.names.length === 2 && access.names[1] === 'as_view' && parent?.type === 'call'
+        && (accepted.has(parent.id) || aliasCalls.has(parent.id));
+      if (!allowed) unsafe.add(owner.name);
+    }
+  };
+  return { resolve, verify };
+}
+
+/** Flask registration; unresolved rules lower only their owning application's certainty. */
 function flaskFunctionRules(file: ProjectFile, walk: ReturnType<typeof walkPython>, hash: string, owners: Map<string, RouteOwner>,
   bindings: Map<string, Set<number>>, invalid: Set<string>, moduleUnsafe: Set<string>, odd: boolean, maxRoutes: number, work: RegistrationWork) {
   const templates: RouteTemplate[] = [], uncertain = new Set<number>(), allowed = new Set<number>();
@@ -563,6 +702,8 @@ function flaskFunctionRules(file: ProjectFile, walk: ReturnType<typeof walkPytho
     if (cost > work.left) { work.cut = true; for (const owner of active) uncertain.add(owner); return false; }
     work.left -= cost; return true;
   };
+  const classViews = flaskClassViews(walk, bindings, spend);
+  if (work.cut) return result();
   type Handler = { node: Node; name: Node; info: NonNullable<ReturnType<typeof pythonFunction>> };
   const handlers = new Map<string, Handler>(), unsafe = new Set<string>(), reads = new Set<number>();
   for (const { node, type } of walk.nodes) {
@@ -573,7 +714,7 @@ function flaskFunctionRules(file: ProjectFile, walk: ReturnType<typeof walkPytho
     if (handlers.has(key) || bindings.has(key)) unsafe.add(key);
     handlers.set(key, { node, name, info });
   }
-  const drafts: { node: Node; owner: RouteOwner; registration: FlaskRuleRegistration; handler: Handler; name: string; path: string; endpoint: string }[] = [];
+  const drafts: { node: Node; owner: RouteOwner; target: FlaskViewTarget; path: string; endpoint: string }[] = [];
   const endpointNames = new Map<number, Map<string, number>>();
   const endpoint = (owner: RouteOwner, name: string | null, handlerStart: number) => {
     if (name === null || name.length > ROUTE_LIMITS.name) { uncertain.add(owner.id); return; }
@@ -605,16 +746,18 @@ function flaskFunctionRules(file: ProjectFile, walk: ReturnType<typeof walkPytho
     }
     const registration = flaskRuleRegistration(node), input = registration && identifierInParens(registration.viewFunc);
     const name = input && nameOf(input), handler = name && handlers.get(name);
-    if (!registration || !input || !name || !handler || handler.node.endIndex >= node.startIndex || unsafe.has(name)) {
-      uncertain.add(owner.id); continue;
-    }
+    if (!registration) { uncertain.add(owner.id); continue; }
+    const target: FlaskViewTarget | null = handler && name && handler.node.endIndex < node.startIndex && !unsafe.has(name)
+      ? { name, identity: handler.info.declaration.startIndex, handlers: registration.selected.map(method => ({ method, info: handler.info })), safe: () => !unsafe.has(name) }
+      : classViews.resolve(registration.viewFunc, registration.defaultMethods ? null : registration.selected, node.startIndex);
+    if (!target) { uncertain.add(owner.id); continue; }
     const path = plainString(registration.rule), option = registration.endpoint;
-    const registeredName = option && option.type !== 'none' ? plainString(option) : name;
+    const registeredName = option && option.type !== 'none' ? plainString(option) : target.name;
     if (path === null || bounded(path) === null || flaskShape(path).unmatched || registeredName === null || registeredName.length > ROUTE_LIMITS.name) {
       uncertain.add(owner.id); continue;
     }
     reads.add(registration.viewFunc.id);
-    drafts.push({ node, owner, registration, handler, name, path, endpoint: registeredName });
+    drafts.push({ node, owner, target, path, endpoint: registeredName });
   }
   for (const { node, type } of walk.nodes) {
     if (type !== 'identifier' || labelPosition(node) || parameterPosition(node) || typePosition(node)) continue;
@@ -626,19 +769,21 @@ function flaskFunctionRules(file: ProjectFile, walk: ReturnType<typeof walkPytho
     if (access.names.length === 1 && parent?.type === 'call' && parent.childForFieldName('function')?.id === access.node.id) continue;
     unsafe.add(name);
   }
+  classViews.verify(reads);
+  if (work.cut) return result();
   for (const draft of drafts) {
-    const { node, owner, handler, registration, name, path } = draft;
-    if (unsafe.has(name)) { uncertain.add(owner.id); continue; }
-    endpoint(owner, draft.endpoint, handler.info.declaration.startIndex);
+    const { node, owner, target, path } = draft;
+    if (!target.safe()) { uncertain.add(owner.id); continue; }
+    endpoint(owner, draft.endpoint, target.identity);
     allowed.add(node.startIndex);
     owner.lastRouteEnd = Math.max(owner.lastRouteEnd, node.endIndex);
-    for (const method of registration.selected) {
+    for (const { method, info } of target.handlers) {
       if (!spend(100 + path.length)) return result();
       if (templates.length >= maxRoutes) { work.cut = true; for (const owner of active) uncertain.add(owner); return result(); }
-      const declaration = handler.info.declaration;
+      const declaration = info.declaration;
       const base: Route = { method, framework: 'flask', path, prefix: 'unknown', ...flaskShape(path),
         handler: { fileId: file.id, fileHash: hash, startUtf16: declaration.startIndex, endUtf16: declaration.endIndex,
-          startLine: declaration.startPosition.row + 1, name: shortName(handler.info.name) },
+          startLine: declaration.startPosition.row + 1, name: shortName(info.name) },
         basis: { text: firstLine(node), range: { fileId: file.id, fileHash: hash, startUtf16: node.startIndex, endUtf16: node.endIndex,
           ...lineRange(node), text: firstLine(node) } } };
       if (lacksRouteEvidence(base)) uncertain.add(owner.id);
