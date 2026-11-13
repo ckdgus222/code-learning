@@ -59,6 +59,8 @@ export interface PythonFileFacts {
   functions: PythonFunctionFact[];
   classes: PythonClassFact[];
   calls: PythonCallFact[];
+  /** Opt-in routing effects include definition headers; ordinary call analysis still excludes them. */
+  routeCalls?: PythonCallFact[];
   importsPlain: boolean;
   initNames: InitFacts | null;
   attributeWrites: { node: Parser.SyntaxNode; scope: PythonScope }[];
@@ -119,14 +121,14 @@ function bindParameters(scope: PythonScope, parameters: Parser.SyntaxNode | null
 }
 
 /** Collect every binding before resolving any call: a later assignment also makes an earlier read local. */
-export function readPythonFacts(file: ProjectFile, text: string, hash: string, nodeBudget: number, withValues = false): PythonFileFacts {
+export function readPythonFacts(file: ProjectFile, text: string, hash: string, nodeBudget: number, withValues = false, withRouteCalls = false): PythonFileFacts {
   const root = parse(text, file.relativePath);
   const program = scopeOf('module', null);
   const facts: PythonFileFacts = { file, text, hash, program, functions: [], classes: [], calls: [], unclear: null,
     importsPlain: false, initNames: null, attributeWrites: [], moduleEscapes: [], namespaceAccesses: [],
     complete: !!root && !root.hasError,
     incompleteReason: !root ? NESTED_NOTE : root.hasError ? '구문 오류가 있어 이 파일의 이름은 확정하지 않았어요.' : null,
-    ...(withValues ? { values: newPythonValueFacts() } : {}) };
+    ...(withValues ? { values: newPythonValueFacts() } : {}), ...(withRouteCalls ? { routeCalls: [] } : {}) };
   if (!root) return facts;
   type Frame = { node: Parser.SyntaxNode; scope: PythonScope; fn: PythonFunctionFact | null; conditional: boolean; calls: boolean; inClass: boolean; escapes: boolean };
   const pending: Frame[] = [{ node: root, scope: program, fn: null, conditional: false, calls: true, inClass: false, escapes: false }];
@@ -283,6 +285,7 @@ export function readPythonFacts(file: ProjectFile, text: string, hash: string, n
       }
     }
     if (node.type === 'call' && frame.calls) facts.calls.push({ node, scope, fn, inClass: frame.inClass });
+    if (node.type === 'call' && facts.routeCalls) facts.routeCalls.push({ node, scope, fn, inClass: frame.inClass });
     const conditional = frame.conditional || conditionalBlocks.has(node.type);
     const children = node.namedChildren;
     for (let index = children.length - 1; index >= 0; index--) {

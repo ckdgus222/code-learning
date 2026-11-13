@@ -5,7 +5,9 @@ import { readPathAliases, resolveImport } from './path-aliases';
 import { AppError } from '../../shared/errors';
 import { MAX_FILE_BYTES, readAllowed } from '../project/files';
 import { codeFile, pythonFile, MAP_LIMITS, type MapLimits } from './project-map';
-import { pythonRoutes, walkPython } from './python-routes';
+import { pythonRoutes, walkPython, type PythonRouteImportFacts, type PythonRouteImportRoom } from './python-routes';
+import { readPythonFacts, type PythonFileFacts } from './python-names';
+import { importedAppRoutes } from './python-route-imports';
 import { djangoFile, djangoRoutes, type DjangoFile, type DjangoRoom } from './django-routes';
 import { pythonTestFile } from './reading-order';
 import { formatNextPath, nextRouteOf } from './next-routes';
@@ -499,6 +501,10 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
     result.notes.push(`프로젝트 안에 ${framework}라는 이름의 Python 모듈이 있어(${shadow}), ${framework === 'fastapi' ? 'FastAPI' : framework === 'flask' ? 'Flask' : 'Django'} 주소를 요청과 잇지 않았어요.`);
   }
   const djangoFiles = new Map<string, DjangoFile>();
+  const pythonFacts = new Map<string, PythonFileFacts>();
+  const routeImports = new Map<string, PythonRouteImportFacts>();
+  let pythonReadsComplete = true;
+  const importRoom: PythonRouteImportRoom = { owners: ROUTE_LIMITS.routes, drafts: ROUTE_LIMITS.routes, work: ROUTE_LIMITS.work, cut: false };
   const djangoRoom: DjangoRoom = { entries: 5_000, views: 20_000 };
   const routers = new Set<'fastapi' | 'flask'>();
   let unmatched = false;
@@ -512,14 +518,17 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
       result.notes.push('읽기 한도에 닿아 Python 파일 일부는 확인하지 못했어요.');
       break;
     }
-    if (!room(result.routes, ROUTE_LIMITS.routes)) break;
+    room(result.routes, ROUTE_LIMITS.routes);
     count++;
     try {
       const source = await readAllowed(root, file.relativePath, Math.min(MAX_FILE_BYTES, left));
       bytes += Buffer.byteLength(source.text);
       const walk = walkPython(source.text, file.relativePath, limits.nodesPerFile);
       nested ||= walk.tooDeep;
-      const found = pythonRoutes(file, walk, source.hash, ROUTE_LIMITS.routes - result.routes.length);
+      const found = pythonRoutes(file, walk, source.hash, Math.max(0, ROUTE_LIMITS.routes - result.routes.length), importRoom);
+      pythonFacts.set(file.id, readPythonFacts(file, source.text, source.hash, limits.nodesPerFile, false, true));
+      pythonReadsComplete &&= found.complete;
+      if (found.imports) routeImports.set(file.id, found.imports);
       djangoFiles.set(file.relativePath, djangoFile(file, walk, source.hash, djangoRoom));
       if (!found.complete) { result.limited = true; result.notes.push(`${file.relativePath}: 일부만 확인했어요.`); }
       omitted ||= found.cut;
@@ -541,6 +550,24 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
       result.notes.push(`${file.relativePath}: ${error instanceof AppError ? error.message : '파일을 읽지 못했어요.'}`);
     }
   }
+  const stopPython = () => { if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.'); };
+  const importedApps = importedAppRoutes(files, pythonFacts, routeImports,
+    pythonReadsComplete && !importRoom.cut && pythonFacts.size === pythonFiles.length && [...pythonFacts.values()].every(facts => facts.complete),
+    Math.max(0, ROUTE_LIMITS.routes - result.routes.length), stopPython);
+  omitted ||= importRoom.cut || importedApps.cut;
+  let blockedPythonRoutes = false;
+  for (const route of [...result.routes, ...importedApps.routes]) {
+    stopPython();
+    if (!['fastapi', 'flask'].includes(route.framework)) continue;
+    if (importedApps.blocked.has(route.handler.fileId) || shadows.has(route.framework)) {
+      blockedPythonRoutes ||= importedApps.blocked.has(route.handler.fileId);
+      route.unmatched = true; delete route.segments; delete route.typed;
+    }
+  }
+  result.routes.push(...importedApps.routes);
+  if (importedApps.routes.length) result.notes.push('다른 파일에서 가져온 Python 앱의 주소는 출처만 확인했어요. 등록·배포 여부는 확인하지 않아 추정으로 표시해요.');
+  if (importedApps.skipped) result.notes.push(`가져온 앱의 주소 후보 ${importedApps.skipped}개는 import·이름 변경·파일 조사 범위를 확정하지 못해 연결하지 않았어요.`);
+  if (blockedPythonRoutes) result.notes.push('다른 Python 파일에서 모듈의 이름·속성을 바꾸거나 외부로 전달한 곳이 있어, 해당 파일의 서버 주소는 요청과 잇지 않았어요.');
   const django = djangoRoutes(djangoFiles, new Set(paths), ROUTE_LIMITS.routes - result.routes.length, shouldStop, djangoFiles.size === pythonFiles.length);
   omitted ||= django.cut;
   const oddPaths = new Set(django.oddFiles);
@@ -593,7 +620,7 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
  * A route whose prefix is unknown is matched against the end of a request. Without one literal segment
  * (`/`, `/:id`) it would match every request, and that one guess would turn every other link into a guess.
  */
-function lacksRouteEvidence(route: Route): boolean {
+export function lacksRouteEvidence(route: Route): boolean {
   if (route.path === null || route.unmatched || route.prefix !== 'unknown') return false;
   if (route.segments) return !route.segments.some(segment => 'text' in segment);
   return !route.path.split('/').some(part => part && !part.startsWith(':') && !part.endsWith('*'));

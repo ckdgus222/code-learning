@@ -194,10 +194,14 @@ function readRoute(app: App, args: Node[], method: string, rootPath: boolean, re
 }
 
 type WrittenPrefix = { kind: 'missing' | 'none' | 'dynamic' } | { kind: 'literal'; text: string };
-type RouteOwner = { id: number; name: string; app: App; end: number; args: Node[]; lastRouteEnd: number };
+type RouteOwner = { id: number; name: string; app: App; end: number; args: Node[]; lastRouteEnd: number; bindingStartUtf16: number };
 type RouteTemplate = { ownerId: number; writtenPath: string | null; base: Route; unsupported: boolean };
 type RegistrationScope = { bodyId: number; entries: ReturnType<typeof walkPython>['nodes']; returnedReadId?: number; templatesCut?: boolean };
 type RegistrationWork = { left: number; cut: boolean };
+export type PythonRouteImportRoom = { owners: number; drafts: number; work: number; cut: boolean };
+export type PythonRouteOwnerOrigin = { name: string; bindingStartUtf16: number; app: App; safe: boolean; redirectSlashes: boolean };
+export type PythonImportedDecorator = { callStartUtf16: number; receiverNames: string[]; method: string; handler: Route['handler']; basis: Route['basis'] };
+export type PythonRouteImportFacts = { owners: PythonRouteOwnerOrigin[]; drafts: PythonImportedDecorator[] };
 const writtenPrefix = (node: Node | null | undefined): WrittenPrefix => {
   if (!node) return { kind: 'missing' };
   if (node.type === 'none') return { kind: 'none' };
@@ -240,8 +244,9 @@ export function walkPython(text: string, relativePath: string, nodeBudget: numbe
 }
 
 /** The FastAPI and Flask routes declared at module level or inside a simple returned-app factory. */
-export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPython>, hash: string, maxRoutes: number):
-  { routes: Route[]; routers: Framework[]; complete: boolean; cut: boolean; odd: boolean; factoryRoutes?: number; registrationUncertain?: boolean; appMounts?: number } {
+export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPython>, hash: string, maxRoutes: number, importRoom?: PythonRouteImportRoom):
+  { routes: Route[]; routers: Framework[]; complete: boolean; cut: boolean; odd: boolean; factoryRoutes?: number; registrationUncertain?: boolean;
+    appMounts?: number; imports?: PythonRouteImportFacts } {
   const { root, nodes, complete } = walk;
   const visited = new Set(nodes.map(({ node }) => node.id));
   // 2. Imported framework names and the apps and routers made at the top of the module.
@@ -287,7 +292,7 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
     bind(nameOf(left), left);
     const args = argumentsOf(right), app = readApp(factory.framework, nameOf(receiver), kind === 'router', args);
     apps.set(nameOf(left), app);
-    owners.set(nameOf(left), { id: node.id, name: nameOf(left), app, end: node.endIndex, args, lastRouteEnd: 0 });
+    owners.set(nameOf(left), { id: node.id, name: nameOf(left), app, end: node.endIndex, args, lastRouteEnd: 0, bindingStartUtf16: left.startIndex });
   }
   // 3. Only names made once are trusted; dynamic name, attribute or routing changes disable all links in the file.
   const tracked = new Map([...factories, ...apps].map(([name, value]) => [name, value.framework]));
@@ -332,6 +337,39 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
   const routes: Route[] = [];
   const templates: RouteTemplate[] = [];
   const routers: Framework[] = [];
+  const imports: PythonRouteImportFacts = { owners: [], drafts: [] };
+  const importRoomFor = (kind: 'owners' | 'drafts', cost: number) => {
+    if (!importRoom) return false;
+    if (importRoom[kind] <= 0 || cost > importRoom.work) { importRoom.cut = true; return false; }
+    importRoom[kind]--; importRoom.work -= cost; return true;
+  };
+  if (importRoom && complete && !root.hasError) {
+    const unsafe = new Set<string>();
+    for (const { node, type } of nodes) {
+      if (type !== 'identifier' || labelPosition(node) || parameterPosition(node)) continue;
+      const name = nameOf(node);
+      if (!tracked.has(name) || bindings.get(name)?.has(node.id) || typePosition(node)) continue;
+      const access = pythonValueAccess(node), parent = access.node.parent;
+      const called = parent?.type === 'call' && parent.childForFieldName('function')?.id === access.node.id;
+      const factory = factories.get(name), app = apps.get(name);
+      const constructor = factory && (factory.kind === 'module' ? access.names.length === 2 && !!factoryKind(factory.framework, access.names[1])
+        : access.names.length === 1);
+      const method = app && access.names.length === 2 && frameworks[app.framework].attributes.has(access.names[1]);
+      if (!called || !constructor && !method) unsafe.add(name);
+    }
+    for (const owner of owners.values()) {
+      if (owner.app.router) continue;
+      if (!importRoomFor('owners', 100 + owner.name.length + owner.app.factory.length)) break;
+      const positions = owner.args.filter(positional);
+      const keywords = owner.args.filter(arg => arg.type === 'keyword_argument').map(arg => nameOf(arg.childForFieldName('name')));
+      const constructed = keywords.length === new Set(keywords).size && (owner.app.framework === 'fastapi' ? positions.length === 0
+        : positions.length <= 1 && !!positions[0] !== !!keyword(owner.args, 'import_name'));
+      const safe = !star && !odd && !owner.app.spread && !owner.app.unsupported && !invalid.has(owner.name)
+        && !invalid.has(owner.app.factory) && !unsafe.has(owner.name) && !unsafe.has(owner.app.factory)
+        && !keyword(owner.args, 'routes') && constructed;
+      imports.owners.push({ name: owner.name, bindingStartUtf16: owner.bindingStartUtf16, app: owner.app, safe, redirectSlashes });
+    }
+  }
   let cut = false;
   if (star) return { routes, routers, complete, cut, odd: complete && odd };
   for (const { node } of nodes) {
@@ -341,6 +379,19 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
     const call = node.firstNamedChild;
     const callee = call?.type === 'call' ? call.childForFieldName('function') : null;
     const receiver = callee?.type === 'attribute' ? callee.childForFieldName('object') : null;
+    if (importRoom && complete && !root.hasError && handler && call && receiver && !apps.has(nameOf(receiver))) {
+      if (importRoom.drafts <= 0 || importRoom.work <= 0) { importRoom.cut = true; continue; }
+      const receiverNames = pythonAttributeNames(receiver), method = nameOf(callee?.childForFieldName('attribute'));
+      if (receiverNames && ['get', 'post', 'put', 'patch', 'delete', 'api_route', 'route'].includes(method)
+        && importRoomFor('drafts', 100 + receiverNames.join('.').length + firstLine(node).length)) {
+        const declaration = handler.declaration;
+        imports.drafts.push({ callStartUtf16: call.startIndex, receiverNames, method,
+          handler: { fileId: file.id, fileHash: hash, startUtf16: declaration.startIndex, endUtf16: declaration.endIndex,
+            startLine: declaration.startPosition.row + 1, name: shortName(handler.name) },
+          basis: { text: firstLine(node), range: { fileId: file.id, fileHash: hash, startUtf16: node.startIndex,
+            endUtf16: node.endIndex, ...lineRange(node), text: firstLine(node) } } });
+      }
+    }
     if (!handler || receiver?.type !== 'identifier') continue;
     const app = apps.get(nameOf(receiver));
     if (!app || invalid.has(nameOf(receiver)) || invalid.has(app.factory)) continue;
@@ -374,7 +425,15 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
   return { routes: registered.routes, routers: [...new Set([...registered.routers, ...local.routers])], complete,
     cut: cut || registered.cut || local.cut, odd: complete && odd, ...(local.routes.length ? { factoryRoutes: local.routes.length } : {}),
     ...(registered.uncertain || local.uncertain ? { registrationUncertain: true } : {}),
-    ...(registered.mounts + local.mounts ? { appMounts: registered.mounts + local.mounts } : {}) };
+    ...(registered.mounts + local.mounts ? { appMounts: registered.mounts + local.mounts } : {}), ...(importRoom ? { imports } : {}) };
+}
+
+/** Reuse route argument rules against the facts parser, while retaining the decorator's original evidence. */
+export function importedPythonRoutes(owner: PythonRouteOwnerOrigin, draft: PythonImportedDecorator, call: Node, maxRoutes: number): Route[] {
+  if (!owner.safe || !['get', 'post', 'put', 'patch', 'delete', frameworks[owner.app.framework].route].includes(draft.method)) return [];
+  const found = readRoute(owner.app, argumentsOf(call), draft.method, false, owner.redirectSlashes);
+  return found.selected.slice(0, maxRoutes).map(method => ({ method: method as Route['method'], framework: owner.app.framework,
+    path: found.path, prefix: 'unknown', handler: draft.handler, basis: draft.basis, ...found.shape }));
 }
 
 /** Registration metadata stays inside this file snapshot; public routes retain the decorator evidence. */
@@ -850,7 +909,7 @@ function appFactoryRoutes(file: ProjectFile, walk: ReturnType<typeof walkPython>
     if (kind !== 'app') return null;
     const app = readApp(factory.framework, constructor, false, argumentsOf(right));
     const owners = new Map<string, RouteOwner>([[appName, { id: assignment.id, name: appName, app,
-      end: assignment.endIndex, args: argumentsOf(right), lastRouteEnd: 0 }]]);
+      end: assignment.endIndex, args: argumentsOf(right), lastRouteEnd: 0, bindingStartUtf16: left.startIndex }]]);
     const madeIds = new Set([left.id]);
     const invalid = new Set<string>();
     for (const { node, type } of own) {
@@ -868,7 +927,7 @@ function appFactoryRoutes(file: ProjectFile, walk: ReturnType<typeof walkPython>
       const name = nameOf(left), args = argumentsOf(right);
       if (owners.has(name)) invalid.add(name);
       owners.set(name, { id: node.id, name, app: readApp(factory.framework, constructor, true, args),
-        end: node.endIndex, args, lastRouteEnd: 0 });
+        end: node.endIndex, args, lastRouteEnd: 0, bindingStartUtf16: left.startIndex });
       madeIds.add(left.id);
     }
     const constructors = new Set([...owners.values()].map(owner => owner.app.factory));

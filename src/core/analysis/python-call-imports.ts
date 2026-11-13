@@ -43,6 +43,7 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
   const exposedNamespaces = new Set<string>();
   const valueChanged = new Set<string>();
   const moduleEscaped = new Set<string>();
+  const routeChanged = new Set<string>();
   const mark = (paths: Set<string>, file: string) => {
     if (paths.has(file)) return;
     paths.add(file);
@@ -269,5 +270,51 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
     return { kind: 'lexical', fn: local.fn,
       basis: '같은 파일의 함수 선언 후보예요. 함수나 모듈이 다른 코드로 전달되어 실제 호출 대상은 확정하지 못했어요.' };
   }
-  return { resolve, mayName, resolveImportedValue, flowCandidate };
+  const routeModuleSafe = (file: string) => !mutation(file) && !exposedNamespaces.has(file) && !routeChanged.has(file);
+  function scanRouteEffects(owners: ReadonlyMap<string, ReadonlySet<string>>, decorators: ReadonlyMap<string, ReadonlySet<number>>) {
+    for (const facts of byPath.values()) for (const call of facts.routeCalls ?? facts.calls) {
+      stop();
+      if (decorators.get(facts.file.id)?.has(call.node.startIndex)) continue;
+      const names = pythonAttributeNames(call.node.childForFieldName('function'));
+      if (!names) continue;
+      for (const binding of nearest(call.scope, names[0])) {
+        if (binding.kind !== 'import') continue;
+        for (const target of imported(facts, binding)) {
+          if (target.kind === 'unresolved') {
+            for (const candidate of target.candidates) if (owners.get(candidate)?.size) mark(routeChanged, candidate);
+            continue;
+          }
+          if (target.kind !== 'file') continue;
+          const module = binding.imported === null || target.names === 'all', suffix = names.slice(1);
+          if (module && (!binding.prefix.every((part, index) => suffix[index] === part) || suffix.length <= binding.prefix.length)) continue;
+          const name = module ? suffix[binding.prefix.length] : binding.imported!;
+          if (owners.get(target.relativePath)?.has(name)) mark(routeChanged, target.relativePath);
+        }
+      }
+    }
+  }
+  function resolveRouteObject(facts: PythonFileFacts, call: PythonCallFact, receiverNames: string[]):
+    { facts: PythonFileFacts; name: string; bindingStartUtf16: number } | null {
+    stop();
+    if (!facts.complete || !facts.importsPlain || facts.unclear || !receiverNames.length || call.inClass
+      || !routeModuleSafe(facts.file.relativePath)) return null;
+    const found = resolvePythonName(facts, call, receiverNames[0]);
+    if (found.kind === 'unknown' || found.binding.kind !== 'import') return null;
+    const binding = found.binding;
+    if (binding.privateName || binding.conditional) return null;
+    const targets = imported(facts, binding);
+    if (targets.length !== 1 || targets[0].kind !== 'file') return null;
+    const target = targets[0], suffix = receiverNames.slice(1);
+    const module = binding.imported === null || target.names === 'all';
+    if (module && (suffix.length !== binding.prefix.length + 1 || !binding.prefix.every((part, index) => suffix[index] === part))) return null;
+    if (!module && suffix.length) return null;
+    if (!routeModuleSafe(target.relativePath) || initializerClash(target.relativePath)) return null;
+    const destination = byPath.get(target.relativePath);
+    if (!destination?.complete || !destination.importsPlain || destination.unclear) return null;
+    const name = module ? suffix.at(-1)! : binding.imported!;
+    const entries = destination.program.names.get(name) ?? [];
+    if (entries.length !== 1 || entries[0].kind !== 'variable') return null;
+    return { facts: destination, name, bindingStartUtf16: entries[0].node.startIndex };
+  }
+  return { resolve, mayName, resolveImportedValue, flowCandidate, resolveRouteObject, routeModuleSafe, scanRouteEffects };
 }
