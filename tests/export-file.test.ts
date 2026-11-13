@@ -91,7 +91,8 @@ it.for(['symbolic', 'hard'])('replaces the chosen %s link without writing its pr
   expect(await readFile(source, 'utf8')).toBe('project stays');
   expect(await readFile(target, 'utf8')).toBe('exported');
   expect((await lstat(target)).isSymbolicLink()).toBe(false);
-  expect((await stat(target)).ino).not.toBe((await stat(source)).ino);
+  // As bigints: a Windows file id can be above 2^53, where two different ids are the same number.
+  expect((await stat(target, { bigint: true })).ino).not.toBe((await stat(source, { bigint: true })).ino);
   expect(await readdir(outside)).toEqual(['map.md']);
 });
 
