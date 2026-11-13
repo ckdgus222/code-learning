@@ -1,8 +1,9 @@
 import type Parser from 'tree-sitter';
+import { posix } from 'node:path';
 import type { CallTarget, ProjectFile, Route } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 import { firstLine, lineRange } from './names';
-import { initFactsOf, mentionsMachinery, normalize, pythonImportsOf, resolvePythonImport, type InitFacts, type PythonImport } from './python-imports';
+import { initFactsOf, mentionsMachinery, moduleFile, normalize, pythonImportsOf, resolvePythonImport, type InitFacts, type PythonImport } from './python-imports';
 import { djangoShape, labelPosition, parameterPosition, plainString, pythonRouteMachinery, typePosition, type walkPython } from './python-routes';
 import { pythonFunction } from './python-syntax';
 import { bounded, ROUTE_LIMITS, shortName } from './routes';
@@ -10,13 +11,23 @@ import { bounded, ROUTE_LIMITS, shortName } from './routes';
 type Node = Parser.SyntaxNode;
 /** A view expression in urlpatterns, optionally followed by .as_view(). */
 interface ViewRef { local: string; attribute: string | null; asView: boolean }
-interface DjangoEntry { path: string | null; shape: Pick<Route, 'segments' | 'typed' | 'unmatched'>; view: ViewRef | null; basis: Route['basis'] }
+interface DjangoEntry {
+  path: string | null;
+  /** Original path text; null for unreadable, regex or spread entries that cannot be prefixed. */
+  written: string | null;
+  shape: Pick<Route, 'segments' | 'typed' | 'unmatched'>;
+  view: ViewRef | null;
+  basis: Route['basis'];
+}
+/** One path entry whose literal include can be joined from the manage.py folder. */
+interface DjangoInclude { written: string; module: string[] }
 type DjangoView = { kind: 'function'; handler: CallTarget; methods: Route['method'][] }
   | { kind: 'class'; methods: { method: Route['method']; handler: CallTarget }[] };
 /** Values only: syntax trees are released after each file is read. */
 export interface DjangoFile {
   entries: DjangoEntry[];
-  includes: number;
+  includes: DjangoInclude[];
+  unfollowed: number;
   imports: Map<string, PythonImport>;
   views: Map<string, DjangoView>;
   plain: boolean;
@@ -31,7 +42,7 @@ const argumentsOf = (node: Node) => node.childForFieldName('arguments')?.namedCh
 
 export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython>, hash: string, room: DjangoRoom): DjangoFile {
   const { root, nodes, complete } = walk;
-  const result: DjangoFile = { entries: [], includes: 0, imports: new Map(), views: new Map(), plain: complete && !root.hasError, init: null, odd: false };
+  const result: DjangoFile = { entries: [], includes: [], unfollowed: 0, imports: new Map(), views: new Map(), plain: complete && !root.hasError, init: null, odd: false };
   // 1. Bound names are normalized once, after rejecting text too long to be a route name.
   const names = new Map<number, string>();
   const nameOf = (node: Node | null | undefined): string => {
@@ -150,8 +161,24 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
     const args = argumentsOf(call), positions = args.filter(arg => !['keyword_argument', 'list_splat', 'dictionary_splat'].includes(arg.type));
     const keyword = (name: string) => args.find(arg => arg.type === 'keyword_argument' && nameOf(arg.childForFieldName('name')) === name)?.childForFieldName('value');
     let expression: Node | null | undefined = positions[1] ?? keyword('view');
+    const pathNode = positions[0] ?? keyword('route');
+    const written = pathNode ? plainString(pathNode) : null;
+    const regex = django.get(callee) === 're_path';
+    const spread = args.some(arg => arg.type === 'list_splat' || arg.type === 'dictionary_splat');
     const include = expression?.type === 'call' ? expression.childForFieldName('function') : null;
-    if (include?.type === 'identifier' && django.get(nameOf(include)) === 'include' && !invalid.has(nameOf(include))) { result.includes++; continue; }
+    if (include?.type === 'identifier' && django.get(nameOf(include)) === 'include' && !invalid.has(nameOf(include))) {
+      room.entries--;
+      const includeArgs = argumentsOf(expression!);
+      const positional = includeArgs.filter(arg => arg.type !== 'keyword_argument');
+      const module = positional.length === 1 ? plainString(positional[0]) : null;
+      const allowed = includeArgs.every(arg => arg.type !== 'keyword_argument' || nameOf(arg.childForFieldName('name')) === 'namespace');
+      if (regex || spread || written === null || written.length > ROUTE_LIMITS.pathLength || !allowed
+        || module === null || module.length > (ROUTE_LIMITS.name + 1) * ROUTE_LIMITS.segments - 1) { result.unfollowed++; continue; }
+      const parts = module.split('.');
+      if (parts.length > ROUTE_LIMITS.segments || parts.some(part => part.length > ROUTE_LIMITS.name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(part))) { result.unfollowed++; continue; }
+      result.includes.push({ written, module: parts });
+      continue;
+    }
     let asView = false;
     if (expression?.type === 'call') {
       const fn = expression.childForFieldName('function');
@@ -164,13 +191,11 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
     const attribute = expression?.type === 'attribute' ? nameOf(expression.childForFieldName('attribute')) : null;
     const view = local?.type === 'identifier' && nameOf(local) && (attribute === null || attribute)
       ? { local: nameOf(local), attribute, asView } : null;
-    const pathNode = positions[0] ?? keyword('route');
-    const written = pathNode ? plainString(pathNode) : null;
-    const regex = django.get(callee) === 're_path';
     // `bounded` looks at the length first, so an overlong route is never split or matched.
     const path = written === null ? null : bounded(regex ? written : '/' + written);
-    const shape = regex || args.some(arg => arg.type === 'list_splat' || arg.type === 'dictionary_splat') ? { unmatched: true as const } : path === null ? {} : djangoShape(path);
-    result.entries.push({ path, shape, view, basis: { text: firstLine(call), range: { fileId: file.id, fileHash: hash,
+    const shape = regex || spread ? { unmatched: true as const } : path === null ? {} : djangoShape(path);
+    result.entries.push({ path, written: regex || spread || written === null || written.length > ROUTE_LIMITS.pathLength ? null : written,
+      shape, view, basis: { text: firstLine(call), range: { fileId: file.id, fileHash: hash,
       startUtf16: call.startIndex, endUtf16: call.endIndex, ...lineRange(call), text: firstLine(call) } } });
     room.entries--;
   }
@@ -249,14 +274,73 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
   return result;
 }
 
-/** Resolve each urlconf using only the existing import resolver's single, certain file. */
+/** Join literal includes from manage.py folders; resolve views with the existing import rules. */
 export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: ReadonlySet<string>, maxRoutes: number, shouldStop: () => boolean):
-  { routes: Route[]; skipped: number; cut: boolean; oddFiles: string[] } {
+  { routes: Route[]; skipped: number; cut: boolean; oddFiles: string[]; unfollowed: number } {
   const routes: Route[] = [];
   const oddFiles = new Set<string>();
-  let skipped = 0, cut = false;
+  let skipped = 0, cut = false, unfollowed = 0;
   const facts = { init: (path: string) => files.get(path)?.init ?? null, plain: (path: string) => files.get(path)?.plain ?? false };
   const ordered = [...files].sort(([a], [b]) => a.localeCompare(b));
+  // Includes are edges only when one module is reachable from the nearest manage.py.
+  const edges = new Map<string, { target: string; written: string }[]>();
+  const incoming = new Set<string>();
+  for (const [filePath, file] of ordered) {
+    unfollowed += file.unfollowed;
+    if (!file.includes.length) continue;
+    if (!file.plain) { unfollowed += file.includes.length; continue; }
+    let root: string | null = posix.dirname(filePath);
+    while (!known.has(posix.join(root, 'manage.py'))) {
+      if (root === '.') { root = null; break; }
+      root = posix.dirname(root);
+    }
+    const outgoing: { target: string; written: string }[] = [];
+    edges.set(filePath, outgoing);
+    for (const include of file.includes) {
+      if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
+      const target = root === null ? null : moduleFile(root, include.module, known, facts);
+      if (target === null || !files.has(target)) { unfollowed++; continue; }
+      outgoing.push({ target, written: include.written });
+      incoming.add(target);
+    }
+  }
+  // Keep fragment validity separately: joining '<int:' and 'id>' cannot create a converter.
+  const incomplete = (written: string) => /[<>]/.test(written.replace(/<[^<>]*>/g, ''));
+  type Prefix = { written: string; incomplete: boolean; oddPaths: string[] };
+  /** What a file has when nothing is joined in front of it: its routes as written. */
+  const bare = (filePath: string, file: DjangoFile): Prefix => ({ written: '', incomplete: false, oddPaths: file.odd ? [filePath] : [] });
+  const prefixes = new Map<string, Prefix[]>();
+  const pending: { file: string; prefix: Prefix; chain: string[] }[] = [];
+  for (const [filePath, file] of ordered) {
+    if (incoming.has(filePath)) continue;
+    const prefix = bare(filePath, file);
+    prefixes.set(filePath, [prefix]);
+    pending.push({ file: filePath, prefix, chain: [filePath] });
+  }
+  let attempts = 0, created = 0;
+  const seen = new Set<string>();
+  propagate: for (let index = 0; index < pending.length; index++) {
+    const current = pending[index];
+    for (const edge of edges.get(current.file) ?? []) {
+      if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
+      if (++attempts > 200_000) { cut = true; break propagate; }
+      if (current.chain.includes(edge.target)) continue;
+      const written = current.prefix.written + edge.written;
+      if (current.chain.length >= 10 || written.length > ROUTE_LIMITS.pathLength) { cut = true; continue; }
+      const prefix: Prefix = { written, incomplete: current.prefix.incomplete || incomplete(edge.written),
+        oddPaths: files.get(edge.target)!.odd ? [...current.prefix.oddPaths, edge.target] : current.prefix.oddPaths };
+      // Two chains that attach a file with the same text make the same routes: only the first is kept.
+      const key = JSON.stringify([edge.target, written, prefix.incomplete, prefix.oddPaths.length > 0]);
+      if (seen.has(key)) continue;
+      if (created >= 5_000) { cut = true; break propagate; }
+      seen.add(key);
+      const collected = prefixes.get(edge.target) ?? [];
+      collected.push(prefix);
+      prefixes.set(edge.target, collected);
+      pending.push({ file: edge.target, prefix, chain: [...current.chain, edge.target] });
+      created++;
+    }
+  }
   const resolved = new Map<string, Map<string, { path: string; name: string | null }>>();
   // 5. Imports resolve once per local binding, even when thousands of entries use that view.
   for (const [path, file] of ordered) {
@@ -272,6 +356,8 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
       imports.set(name, { path: found.relativePath, name: found.names === 'all' ? null : found.names[0] });
     }
   }
+  const prepared: { path: string; file: DjangoFile; entry: DjangoEntry; viewPath: string;
+    handlers: { method: Route['method']; handler: CallTarget }[] }[] = [];
   const entries = ordered.flatMap(([path, file]) => file.entries.map(entry => ({ path, file, entry })));
   for (const { path, file, entry } of entries) {
     if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
@@ -289,16 +375,26 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
     if (!view || ref.asView !== (view.kind === 'class')) { skipped++; continue; }
     if (view.kind === 'class' && !view.methods.length) { skipped++; continue; }
     const handlers = view.kind === 'function' ? view.methods.map(method => ({ method, handler: view.handler })) : view.methods;
-    // 6. Odd files stay visible, but their routes have no matchable shape.
-    const odd = file.odd || files.get(viewPath)!.odd;
-    for (const { method, handler } of handlers) {
+    if (!handlers.length) continue;
+    prepared.push({ path, file, entry, viewPath, handlers });
+  }
+  // Every prepared combination produces a route. Stop the entire product at the first extra route.
+  build: for (const { path, file, entry, viewPath, handlers } of prepared) {
+    const collected = prefixes.get(path) ?? [bare(path, file)];
+    for (let index = 0; index < collected.length * handlers.length; index++) {
       if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
-      if (routes.length >= maxRoutes) { cut = true; continue; }
-      if (file.odd) oddFiles.add(path);
+      if (routes.length >= maxRoutes) { cut = true; break build; }
+      const prefix = collected[Math.floor(index / handlers.length)];
+      const { method, handler } = handlers[index % handlers.length];
+      const joined = entry.written === null ? entry.path : bounded('/' + prefix.written + entry.written);
+      const odd = prefix.oddPaths.length > 0 || files.get(viewPath)!.odd;
+      prefix.oddPaths.forEach(oddPath => oddFiles.add(oddPath));
       if (files.get(viewPath)!.odd) oddFiles.add(viewPath);
-      routes.push({ framework: 'django', prefix: 'unknown', method, handler, path: entry.path, basis: entry.basis,
-        ...(odd ? { unmatched: true as const } : entry.shape) });
+      const shape = entry.written === null || !prefix.written ? entry.shape : joined === null ? {} : djangoShape(joined);
+      // A bracket left open in the entry needs its other half in a prefix fragment, which is then incomplete too.
+      routes.push({ framework: 'django', prefix: 'unknown', method, handler, path: joined, basis: entry.basis,
+        ...(odd || prefix.incomplete ? { unmatched: true as const } : shape) });
     }
   }
-  return { routes, skipped, cut, oddFiles: [...oddFiles] };
+  return { routes, skipped, cut, oddFiles: [...oddFiles], unfollowed };
 }

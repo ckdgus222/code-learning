@@ -556,7 +556,8 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
     result.limited = true;
     result.notes.push('Django 주소 항목이 너무 많아 처음 5,000개만 봤어요.');
   }
-  if (django.routes.length) result.notes.push('Django 주소는 include()와 ROOT_URLCONF로 붙는 앞 경로를 따라가지 않아, 모두 앞부분을 모르는 것으로 봤어요.');
+  if (django.routes.length) result.notes.push('Django 주소의 앞 경로는 읽을 수 있는 include()만 manage.py가 있는 폴더 기준으로 따라가요. 시작 설정(ROOT_URLCONF)은 아직 확인하지 않아, 모두 앞부분을 모르는 것으로 봤어요.');
+  if (django.unfollowed) result.notes.push(`Django include ${django.unfollowed}개는 따라가지 못했어요(문자열이 아닌 인자, 프로젝트에 없는 모듈, manage.py를 찾지 못함 등). 그렇게 붙는 주소는 앞 경로가 빠져 있거나 목록에 없을 수 있어요.`);
   if (django.skipped) result.notes.push(`Django 주소 ${django.skipped}개는 처리 함수를 코드에서 확정하지 못해 목록에 넣지 않았어요(다른 패키지에서 가져온 뷰, get·post 메서드가 직접 없는 클래스 뷰 등).`);
   for (const path of django.oddFiles) {
     const note = `${path}: 실행 중에 이름·속성이나 주소 규칙을 바꿀 수 있는 코드가 있어, 이 파일의 Python 서버 주소는 요청과 잇지 않았어요.`;

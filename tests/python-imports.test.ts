@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parse, parseTree } from '../src/core/analysis/syntax';
-import { initFactsOf, mentionsMachinery, pythonImportsOf, resolvePythonImport, type PythonFacts } from '../src/core/analysis/python-imports';
+import { initFactsOf, mentionsMachinery, moduleFile, pythonImportsOf, resolvePythonImport, type PythonFacts } from '../src/core/analysis/python-imports';
 import { PYTHON_STDLIB } from '../src/core/analysis/python-stdlib';
 
 const tree = (text: string) => {
@@ -255,4 +255,29 @@ describe('files that can change import machinery', () => {
 it('reads deeply nested literal containers without recursive JavaScript calls', () => {
   const source = `__all__ = ${'['.repeat(5000)}"name"${']'.repeat(5000)}`;
   expect(initFactsOf(parseTree(source, 'x.py'))).toEqual(new Set(['__all__']));
+});
+
+describe('module files from a script folder', () => {
+  it.each([
+    ['.', 'app.urls', ['app/urls.py'], 'app/urls.py'],
+    ['site', 'app.urls', ['site/app/urls.py', 'app/urls.py'], 'site/app/urls.py'],
+    ['.', 'app.urls', ['app/__init__.py', 'app/urls.py'], 'app/urls.py'],
+    ['.', 'app.urls', ['app/urls/__init__.py'], 'app/urls/__init__.py'],
+    ['.', 'app.urls', ['app/other.py'], null],
+    ['.', 'app.urls', ['app.py', 'app/urls.py'], null],
+    ['.', 'app.urls', ['app.py', 'app/__init__.py', 'app/urls.py'], null],
+    ['.', 'app.urls', ['app/urls.py', 'app/urls/__init__.py'], null],
+    ['.', 'app.urls', ['app/urls/other.py'], null],
+    ['.', 'email.urls', ['email/urls.py'], null],
+  ])('resolves %s / %s with %j', (root, module, paths, expected) => {
+    expect(moduleFile(root, module.split('.'), new Set(paths), plain)).toBe(expected);
+  });
+  it.each(['__init__.py', 'app/__init__.py', 'app/urls/__init__.py'])('rejects unsafe initializer %s', unsafe => {
+    const known = new Set(['__init__.py', 'app/__init__.py', 'app/urls/__init__.py']);
+    expect(moduleFile('.', ['app', 'urls'], known, { ...plain, plain: path => path !== unsafe })).toBeNull();
+    expect(moduleFile('.', ['app', 'urls'], known, plain)).toBe('app/urls/__init__.py');
+  });
+  it('does not resolve an empty module', () => {
+    expect(moduleFile('.', [], new Set(['__init__.py']), plain)).toBeNull();
+  });
 });

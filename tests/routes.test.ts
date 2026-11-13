@@ -996,7 +996,7 @@ describe('Django routes across project files', () => {
     expect(result.links).toHaveLength(2);
     expect(result.links.every(link => !link.sure && link.routeIndex === 0)).toBe(true);
     expect(result.links[0].reasons).toEqual(['앞부분 모름', '값 모양 모름']);
-    expect(result.notes.filter(note => note.startsWith('Django 주소는 include()'))).toHaveLength(1);
+    expect(result.notes.filter(note => note.startsWith('Django 주소의 앞 경로는 읽을 수 있는 include()'))).toHaveLength(1);
     expect(result.notes.some(note => note.startsWith('앞부분을 모르고 글자 칸도 없는 주소'))).toBe(true);
   });
   it.each([
@@ -1252,4 +1252,54 @@ it('does not confirm axios defaults in a skipped file', async () => {
   expect(result.links).toHaveLength(1);
   expect(result.links[0].sure).toBe(false);
   expect(result.notes).toContain(`setup.ts: ${NESTED_NOTE}`);
+});
+
+describe('Django include paths in project routes', () => {
+  const prefixNote = 'Django 주소의 앞 경로는 읽을 수 있는 include()만 manage.py가 있는 폴더 기준으로 따라가요. 시작 설정(ROOT_URLCONF)은 아직 확인하지 않아, 모두 앞부분을 모르는 것으로 봤어요.';
+  it('joins a typed child route, preserves other frameworks and keeps links uncertain', async () => {
+    await put('manage.py', '');
+    await put('mysite/urls.py', "from django.urls import path, include\nurlpatterns = [path('polls/', include('polls.urls'))]");
+    await put('polls/urls.py', "from django.urls import path\nfrom . import views\nurlpatterns = [path('<int:id>/results/', views.results)]");
+    await put('polls/views.py', 'def results(): pass');
+    await put('web/app.ts', "fetch('/polls/5/results/')");
+    await put('fast.py', 'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/fast")\ndef fast(): pass');
+    await put('flask_app.py', 'from flask import Flask\napp = Flask(__name__)\n@app.get("/flask")\ndef flask_view(): pass');
+    const result = await find();
+    expect(result.routes.filter(route => route.framework === 'django')).toMatchObject([
+      { path: '/polls/<int:id>/results/', prefix: 'unknown', typed: true },
+    ]);
+    expect(result.routes.filter(route => route.framework !== 'django').map(route => [route.path, route.method, route.prefix, route.unmatched]))
+      .toEqual([['/fast', 'GET', 'known', undefined], ['/flask', 'GET', 'known', undefined]]);
+    expect(result.links).toHaveLength(1);
+    expect(result.links[0]).toMatchObject({ sure: false, reasons: ['앞부분 모름', '값 모양 모름'] });
+    expect(result.notes).toContain(prefixNote);
+    expect(result.notes.filter(note => note.startsWith('Django include'))).toEqual([]);
+  });
+  it('does not link converters completed across include fragments', async () => {
+    await put('manage.py', '');
+    await put('root.py', "from django.urls import path, include\nurlpatterns = [path('api/<str:', include('child'))]");
+    await put('child.py', "from django.urls import path\ndef view(): pass\nurlpatterns = [path('id>/', view)]");
+    await put('web/app.ts', "fetch('/api/42/')");
+    const result = await find();
+    expect(result.routes).toHaveLength(1);
+    expect(result.routes[0]).toMatchObject({ path: '/api/<str:id>/', unmatched: true });
+    expect(result.routes[0].segments).toBeUndefined();
+    expect(result.links).toEqual([]);
+  });
+  it('explains the supported scope even without include or manage.py', async () => {
+    await put('urls.py', "from django.urls import path\ndef view(): pass\nurlpatterns = [path('x/', view)]");
+    const result = await find();
+    expect(result.routes[0].path).toBe('/x/');
+    expect(result.notes).toContain(prefixNote);
+    expect(result.notes.filter(note => note.startsWith('Django include'))).toEqual([]);
+  });
+  it.each([false, true])('counts unfollowed includes even without routes (has routes: %s)', async hasRoutes => {
+    await put('manage.py', '');
+    await put('urls.py', "from django.urls import path, include\ndef view(): pass\nurlpatterns = [path('x/', include(router.urls)), path('y/', include('missing.urls'))"
+      + (hasRoutes ? ", path('local/', view)" : '') + ']');
+    const result = await find();
+    expect(result.notes).toContain('Django include 2개는 따라가지 못했어요(문자열이 아닌 인자, 프로젝트에 없는 모듈, manage.py를 찾지 못함 등). 그렇게 붙는 주소는 앞 경로가 빠져 있거나 목록에 없을 수 있어요.');
+    expect(result.notes.includes(prefixNote)).toBe(hasRoutes);
+    expect(result.routes).toHaveLength(hasRoutes ? 1 : 0);
+  });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { djangoFile, djangoRoutes } from '../src/core/analysis/django-routes';
+import { djangoFile, djangoRoutes, type DjangoFile } from '../src/core/analysis/django-routes';
 import * as pythonImports from '../src/core/analysis/python-imports';
 import { walkPython } from '../src/core/analysis/python-routes';
 import { analyzeSource } from '../src/core/analysis/syntax';
@@ -21,7 +21,8 @@ describe('Django urlconf entries', () => {
   });
   it('treats an overwritten include as an unreadable view, not as an include', () => {
     const result = find(setup + "include = other\nurlpatterns = [path('x/', include('y'))]");
-    expect(result.includes).toBe(0);
+    expect(result.includes).toEqual([]);
+    expect(result.unfollowed).toBe(0);
     expect(result.entries).toHaveLength(1);
     expect(result.entries[0].view).toBeNull();
   });
@@ -140,7 +141,8 @@ if True:
   it('counts include calls separately and ignores the old url function', () => {
     const result = find(setup + "urlpatterns = [path('polls/', include('polls.urls')), path('', include(router.urls)), url('x', views.x)]");
     expect(result.entries).toEqual([]);
-    expect(result.includes).toBe(2);
+    expect(result.includes).toEqual([{ written: 'polls/', module: ['polls', 'urls'] }]);
+    expect(result.unfollowed).toBe(1);
   });
   it('recognizes aliases, keywords and normalized identifiers', () => {
     const result = find("from django.urls import path as p, re_path as r\nurlpatterns = [p(route='x/', view=views.x), r('^x/$', views.x)]");
@@ -261,7 +263,7 @@ describe('Django safety and bounds', () => {
   it('spends only the available entry and view room, stopping include counting too', () => {
     const room = { entries: 2, views: 1 };
     const result = find(setup + "urlpatterns = [path('x', views.x), path('y', views.x), path('z', include('x')), path('w', views.x)]\ndef x(): pass\ndef y(): pass", room);
-    expect(result.entries).toHaveLength(2); expect(result.includes).toBe(0);
+    expect(result.entries).toHaveLength(2); expect(result.includes).toEqual([]);
     expect(result.views.size).toBe(1); expect(room).toEqual({ entries: 0, views: 0, entriesCut: true, viewsCut: true });
     expect(find('def x(): pass', { entries: 0, views: 0 }).views.size).toBe(0);
     // Room that is used up exactly leaves nothing out, so nothing is reported as cut.
@@ -328,4 +330,275 @@ it('propagates cancellation even when no skipped entry could create a route', ()
   const data = find(setup + entry('lambda r: r'));
   const files = new Map([[file.relativePath, data]]);
   expect(() => djangoRoutes(files, new Set(files.keys()), 0, () => true)).toThrowError(expect.objectContaining({ code: 'CANCELLED' }));
+});
+
+describe('literal Django includes', () => {
+  it.each([
+    "path('polls/', include('polls.urls'))",
+    "path('polls/', include('polls.urls', namespace='polls'))",
+    "path(route='polls/', view=include('polls.urls', namespace=name))",
+  ])('keeps %s', call => {
+    const room = { entries: 1, views: 0 };
+    expect(find(setup + `urlpatterns = [${call}]`, room)).toMatchObject({
+      entries: [], includes: [{ written: 'polls/', module: ['polls', 'urls'] }], unfollowed: 0,
+    });
+    expect(room).toEqual({ entries: 0, views: 0 });
+  });
+  it.each([
+    "path('x/', include(router.urls))", "path('x/', include(imported))",
+    "path('x/', include((patterns, 'app')))", "path('x/', include([path('x/', views.x)]))",
+    "path('x/', include('a.b', 'extra'))", "path('x/', include('a.b', other=1))",
+    "path('x/', include(*args))", "path('x/', include('a.b', **kwargs))",
+    "re_path('^x/', include('a.b'))", "path(route, include('a.b'))",
+    "path('x/', include('a.b'), *extra)", "path('x/', include('a.b'), **extra)",
+    "path('x/', include('a..b'))", "path('x/', include('a.1b'))", "path('x/', include(''))",
+    "path('x/', include(f'a.b'))", "path(f'x/', include('a.b'))",
+    "path('x/', include('a-b'))", "path('x/', include('앱.urls'))",
+  ])('counts an unfollowed include: %s', call => {
+    const room = { entries: 1, views: 0 };
+    expect(find(setup + `urlpatterns = [${call}]`, room)).toMatchObject({ entries: [], includes: [], unfollowed: 1 });
+    expect(room.entries).toBe(0);
+  });
+  it.each([
+    [Array(30).fill('a'.repeat(200)).join('.'), 'x'.repeat(300), true],
+    [Array(31).fill('a').join('.'), 'x', false],
+    ['a'.repeat(201), 'x', false], ['a', 'x'.repeat(301), false],
+  ])('checks module and route boundaries %#', (module, route, accepted) => {
+    const result = find(setup + `urlpatterns = [path('${route}', include('${module}'))]`);
+    expect(result.includes).toHaveLength(accepted ? 1 : 0);
+    expect(result.unfollowed).toBe(accepted ? 0 : 1);
+  });
+  it('bounds a million-character module before splitting it', () => {
+    const result = find(setup + `urlpatterns = [path('', include('${'a.'.repeat(500_000)}'))]`);
+    expect(result).toMatchObject({ includes: [], unfollowed: 1 });
+  }, 30_000);
+  it('charges includes against the entry limit, including unreadable includes', () => {
+    const text = setup + "urlpatterns = [path('', include('app.urls')), path('', include(router.urls)), path('x', views.x)]";
+    const none = { entries: 0, views: 0 };
+    expect(find(text, none)).toMatchObject({ entries: [], includes: [], unfollowed: 0 });
+    expect(none).toMatchObject({ entriesCut: true });
+    const room = { entries: 2, views: 0 };
+    expect(find(text, room)).toMatchObject({ entries: [], includes: [{ module: ['app', 'urls'] }], unfollowed: 1 });
+    expect(room).toMatchObject({ entries: 0, entriesCut: true });
+  });
+});
+
+describe('joining Django includes', () => {
+  const urlconf = (items: string) => `from django.urls import path, re_path, include\ndef view(): pass\nurlpatterns = [${items}]\n`;
+  const project = (sources: Record<string, string>): Map<string, DjangoFile> => new Map(Object.entries(sources).map(([relativePath, text]) =>
+    [relativePath, find(text, undefined, undefined, { ...file, id: relativePath, relativePath })]));
+  const join = (sources: Record<string, string>, max = 1000) => {
+    const files = project(sources);
+    return djangoRoutes(files, new Set(files.keys()), max, () => false);
+  };
+  it('joins an imported view and keeps the child entry as evidence', () => {
+    const result = join({ 'manage.py': '', 'mysite/urls.py': urlconf("path('polls/', include('polls.urls'))"),
+      'polls/urls.py': setup + "urlpatterns = [path('<int:id>/results/', views.results)]",
+      'polls/views.py': 'def results(): pass' });
+    expect(result).toMatchObject({ cut: false, skipped: 0, unfollowed: 0, routes: [{ path: '/polls/<int:id>/results/',
+      typed: true, prefix: 'unknown', basis: { range: { fileId: 'polls/urls.py' } }, handler: { name: 'results' } }] });
+    expect(result.routes).toHaveLength(1);
+  });
+  it.each([
+    ['', 'users/', '/users/', false, false], ['api', 'users/', '/apiusers/', false, false],
+    ['<slug:team>/', 'users/', '/<slug:team>/users/', false, true], ['a/', '/b', '/a//b', true, false],
+    ['api/<str:', 'id>/', '/api/<str:id>/', true, false], ['x>/', 'y/', '/x>/y/', true, false],
+    ['<int:a>/', '<int:', '/<int:a>/<int:', true, false],
+    ['<int:a>/', '<int:b>/', '/<int:a>/<int:b>/', false, true], ['a<int:id>', 'b/', '/a<int:id>b/', true, false],
+  ])('joins fragments %s and %s', (prefix, written, expected, unmatched, typed) => {
+    const result = join({ 'manage.py': '', 'a.py': urlconf(`path('${prefix}', include('b'))`),
+      'b.py': urlconf(`path('${written}', view)`) });
+    expect(result.routes).toHaveLength(1);
+    expect(result.routes[0].path).toBe(expected);
+    expect(!!result.routes[0].unmatched).toBe(unmatched);
+    expect(!!result.routes[0].typed).toBe(typed);
+    if (unmatched) expect(result.routes[0].segments).toBeUndefined();
+    if (prefix === '<int:a>/' && written === '<int:b>/') expect(result.routes[0].segments).toEqual([{ param: 'a' }, { param: 'b' }]);
+  });
+  it.each([['v1/', 'api/', false], ['api/', '<int:', true]])('joins three levels and checks the middle fragment', (first, middle, broken) => {
+    const last = broken ? 'a>/' : 'users/';
+    const result = join({ 'manage.py': '', 'a.py': urlconf(`path('${first}', include('b'))`),
+      'b.py': urlconf(`path('${middle}', include('c'))`), 'c.py': urlconf(`path('${last}', view)`) });
+    expect(result.routes[0].path).toBe('/' + first + middle + last);
+    expect(!!result.routes[0].unmatched).toBe(broken);
+    if (broken) expect(result.routes[0].segments).toBeUndefined();
+  });
+  it('remembers a broken fragment through later whole fragments', () => {
+    // '<int:' and 'a>/' look like one converter once joined, but Django reads each fragment by itself.
+    const three = join({ 'manage.py': '', 'a.py': urlconf("path('<int:', include('b'))"),
+      'b.py': urlconf("path('a>/', include('c'))"), 'c.py': urlconf("path('users/', view)") });
+    expect(three.routes.map(route => [route.path, !!route.unmatched, route.segments])).toEqual([['/<int:a>/users/', true, undefined]]);
+    const four = join({ 'manage.py': '', 'a.py': urlconf("path('<int:', include('b'))"), 'b.py': urlconf("path('a>/', include('c'))"),
+      'c.py': urlconf("path('v/', include('d'))"), 'd.py': urlconf("path('users/', view)") });
+    expect(four.routes.map(route => [route.path, !!route.unmatched, route.segments])).toEqual([['/<int:a>/v/users/', true, undefined]]);
+  });
+  it('keeps one route when two chains attach a file with the same text', () => {
+    // Two starting urlconfs include the same file with the same prefix, as two hosts of one site do.
+    const child = { 'manage.py': '', 'c.py': urlconf("path('x/', view)") };
+    const same = join({ ...child, 'a.py': urlconf("path('', include('c'))"), 'b.py': urlconf("path('', include('c'))") });
+    expect(same.routes.map(route => route.path)).toEqual(['/x/']);
+    expect(same.cut).toBe(false);
+    const different = join({ ...child, 'a.py': urlconf("path('', include('c'))"), 'b.py': urlconf("path('v/', include('c'))") });
+    expect(different.routes.map(route => route.path)).toEqual(['/x/', '/v/x/']);
+    // The same text through a broken fragment is a different route: it cannot be matched.
+    const broken = join({ ...child, 'a.py': urlconf("path('<a>', include('c'))"), 'b.py': urlconf("path('<a', include('d'))"),
+      'd.py': urlconf("path('>', include('c'))") });
+    expect(broken.routes.map(route => [route.path, !!route.unmatched])).toEqual([['/<a>x/', true], ['/<a>x/', true]]);
+  });
+  it('keeps file, entry, prefix and handler order, including entries on a starting file', () => {
+    const result = join({ 'manage.py': '',
+      'z.py': urlconf("path('z/', include('b'))"),
+      'b.py': urlconf("path('one/', view), path('two/', view)").replace('def view(): pass', '@require_http_methods(["POST", "GET"])\ndef view(): pass'),
+      'a.py': urlconf("path('a/', include('b')), path('self/', view)") });
+    expect(result.routes.map(route => [route.path, route.method])).toEqual([
+      ['/self/', 'ALL'], ['/a/one/', 'POST'], ['/a/one/', 'GET'], ['/z/one/', 'POST'], ['/z/one/', 'GET'],
+      ['/a/two/', 'POST'], ['/a/two/', 'GET'], ['/z/two/', 'POST'], ['/z/two/', 'GET'],
+    ]);
+  });
+  it('counts exact prefix and route limits only when another combination exists', () => {
+    const files = project({ 'manage.py': '', 'a.py': urlconf(''), 'b.py': urlconf("path('leaf/', view)") });
+    files.get('a.py')!.includes = Array.from({ length: 5000 }, (_, i) => ({ written: `${i}/`, module: ['b'] }));
+    const exact = djangoRoutes(files, new Set(files.keys()), 5000, () => false);
+    expect(exact.cut).toBe(false);
+    expect(exact.routes).toHaveLength(5000);
+    expect(djangoRoutes(files, new Set(files.keys()), 4999, () => false)).toMatchObject({ cut: true });
+  });
+  it('preserves empty-prefix results even for unreadable paths and unsupported class methods', () => {
+    const source = urlconf(`path('${'<'.repeat(300)}', view), path(VALUE, view), path('class/', Detail.as_view())`)
+      + 'class Detail:\n    def head(self): pass';
+    const alone = join({ 'child.py': source });
+    const included = join({ 'manage.py': '', 'root.py': urlconf("path('', include('child'))"), 'child.py': source });
+    expect(included.routes).toEqual(alone.routes);
+    expect(included).toMatchObject({ cut: false, skipped: 1 });
+    expect(included.routes.map(route => [route.path, route.unmatched])).toEqual([[null, undefined], [null, undefined]]);
+  });
+  it.each([false, true])('keeps only joined routes when another include uses re_path (joined: %s)', joined => {
+    const result = join({ 'manage.py': '', 'root.py': urlconf(
+      (joined ? "path('public/', include('app.urls')), " : '') + "re_path('^private/', include('app.urls'))"),
+      'app/urls.py': urlconf("path('detail/', view)") });
+    expect(result.routes.map(route => route.path)).toEqual([joined ? '/public/detail/' : '/detail/']);
+    expect(result.unfollowed).toBe(1);
+  });
+  it.each([false, true])('keeps only joined routes when another parent is not plain (joined: %s)', joined => {
+    const result = join({ 'manage.py': '', 'bad.py': urlconf("path('private/', include('app.urls'))") + 'from other import *',
+      'root.py': urlconf(joined ? "path('public/', include('app.urls'))" : ''),
+      'app/urls.py': urlconf("path('detail/', view)") });
+    expect(result.routes.map(route => route.path)).toEqual([joined ? '/public/detail/' : '/detail/']);
+    expect(result.unfollowed).toBe(1);
+  });
+  it('requires manage.py and chooses the nearest one for each parent', () => {
+    const sources = { 'root.py': urlconf("path('outer/', include('app.urls'))"), 'app/urls.py': urlconf("path('outer/', view)"),
+      'a/root.py': urlconf("path('a/', include('app.urls'))"), 'a/app/urls.py': urlconf("path('a/', view)"),
+      'b/root.py': urlconf("path('b/', include('app.urls'))"), 'b/app/urls.py': urlconf("path('b/', view)") };
+    const absent = join(sources);
+    expect(absent.routes.map(route => route.path)).toEqual(['/a/', '/outer/', '/b/']);
+    expect(absent.unfollowed).toBe(3);
+    const present = join({ ...sources, 'manage.py': '', 'a/manage.py': '', 'b/manage.py': '' });
+    expect(present.routes.map(route => route.path)).toEqual(['/a/a/', '/outer/outer/', '/b/b/']);
+    expect(present.unfollowed).toBe(0);
+  });
+  it.each([
+    ['missing', {}, 'django.contrib.auth.urls'],
+    ['conflict', { 'app/urls/__init__.py': '' }, 'app.urls'],
+    ['unsafe ancestor', { 'app/__init__.py': '__path__ = other' }, 'app.urls'],
+    ['unsafe destination', { 'target/__init__.py': '__path__ = other' }, 'target'],
+  ])('leaves child routes unchanged for an unfollowed %s', (_reason, extra, module) => {
+    const result = join({ 'manage.py': '', 'root.py': urlconf(`path('prefix/', include('${module}'))`),
+      'app/urls.py': urlconf("path('detail/', view)"), ...extra });
+    expect(result.routes.map(route => route.path)).toEqual(['/detail/']);
+    expect(result.unfollowed).toBe(1);
+  });
+  it('requires the target to be among the files actually read', () => {
+    const files = project({ 'manage.py': '', 'root.py': urlconf("path('p/', include('unread'))") });
+    expect(djangoRoutes(files, new Set([...files.keys(), 'unread.py']), 1000, () => false)).toMatchObject({ unfollowed: 1, routes: [] });
+  });
+  it('falls back for a cycle without a start and never revisits a file on a chain', () => {
+    const sources = { 'manage.py': '', 'a.py': urlconf("path('a/', include('b')), path('one/', view)"),
+      'b.py': urlconf("path('b/', include('a')), path('two/', view)") };
+    expect(join(sources)).toMatchObject({ cut: false, routes: [{ path: '/one/' }, { path: '/two/' }] });
+    expect(join({ ...sources, 'start.py': urlconf("path('s/', include('a'))") })).toMatchObject({
+      cut: false, routes: [{ path: '/s/one/' }, { path: '/s/a/two/' }],
+    });
+  });
+  it('stops after ten files in a chain and keeps unreachable entries without a prefix', () => {
+    const sources: Record<string, string> = { 'manage.py': '' };
+    for (let i = 0; i < 11; i++) sources[`a${i}.py`] = urlconf(i < 10
+      ? `path('p/', include('a${i + 1}')), path('self${i}/', view)` : "path('last/', view)");
+    const result = join(sources);
+    expect(result.cut).toBe(true);
+    expect(result.routes.find(route => route.basis.range.fileId === 'a9.py')?.path).toBe('/' + 'p/'.repeat(9) + 'self9/');
+    expect(result.routes.find(route => route.basis.range.fileId === 'a10.py')?.path).toBe('/last/');
+  });
+  it('bounds prefix and final path length without dropping child entries', () => {
+    const result = join({ 'manage.py': '', 'a.py': urlconf(`path('${'a'.repeat(300)}', include('b'))`),
+      'b.py': urlconf("path('', view), path('x', include('c'))"), 'c.py': urlconf("path('leaf/', view)") });
+    expect(result).toMatchObject({ cut: true, routes: [{ path: null }, { path: '/leaf/' }] });
+    const exact = join({ 'manage.py': '', 'a.py': urlconf(`path('${'a'.repeat(298)}', include('b'))`),
+      'b.py': urlconf("path('b', view)") });
+    expect(exact.routes[0].path).toHaveLength(300);
+    expect(exact.cut).toBe(false);
+  });
+  it('bounds generated prefixes and propagation attempts', () => {
+    const files = project({ 'manage.py': '', 'a.py': urlconf(''), 'b.py': urlconf(''), 'c.py': urlconf("path('x', view)") });
+    files.get('a.py')!.includes = Array.from({ length: 80 }, (_, i) => ({ written: `a${i}/`, module: ['b'] }));
+    files.get('b.py')!.includes = Array.from({ length: 80 }, (_, i) => ({ written: `b${i}/`, module: ['c'] }));
+    const capped = djangoRoutes(files, new Set(files.keys()), 7000, () => false);
+    expect(capped.cut).toBe(true);
+    expect(capped.routes).toHaveLength(4920);
+    files.get('a.py')!.includes = Array.from({ length: 1000 }, (_, i) => ({ written: `${i}`.padStart(300, 'a'), module: ['b'] }));
+    files.get('b.py')!.includes = Array.from({ length: 1000 }, () => ({ written: 'x', module: ['c'] }));
+    const stop = vi.fn(() => false);
+    const result = djangoRoutes(files, new Set(files.keys()), 6000, stop);
+    expect(result.cut).toBe(true);
+    expect(stop.mock.calls.length).toBeLessThanOrEqual(205_000);
+    expect(result.routes.map(route => route.path)).toEqual(['/x']);
+  }, 30_000);
+  it.each([false, true])('resolves each entry once before expanding prefixes (empty handlers: %s)', empty => {
+    const files = project({ 'manage.py': '', 'a.py': urlconf(''), 'b.py': urlconf(''),
+      'c.py': urlconf("path('leaf/', view)") });
+    files.get('a.py')!.includes = Array.from({ length: 70 }, (_, i) => ({ written: `a${i}/`, module: ['b'] }));
+    files.get('b.py')!.includes = Array.from({ length: 70 }, (_, i) => ({ written: `b${i}/`, module: ['c'] }));
+    const child = files.get('c.py')!, original = child.entries[0];
+    const count = empty ? 4000 : 300;
+    let reads = 0;
+    child.entries = Array.from({ length: count }, (_, i) => ({ ...original, get view() {
+      reads++;
+      return !empty && i < 10 ? null : original.view;
+    } }));
+    const view = child.views.get('view')!;
+    if (empty && view.kind === 'function') view.methods = [];
+    const stop = vi.fn(() => false);
+    const result = djangoRoutes(files, new Set(files.keys()), 1000, stop);
+    expect(result.routes).toHaveLength(empty ? 0 : 1000);
+    expect(result.skipped).toBe(empty ? 0 : 10);
+    expect(result.cut).toBe(!empty);
+    expect(reads).toBeLessThanOrEqual(count * 10);
+    expect(stop.mock.calls.length).toBeLessThanOrEqual(300_000);
+  }, 30_000);
+  it('cancels during propagation and route expansion', () => {
+    const files = project({ 'manage.py': '', 'a.py': urlconf("path('p/', include('b'))"), 'b.py': urlconf("path('x/', view)") });
+    for (const at of [2, 4]) {
+      let checks = 0;
+      expect(() => djangoRoutes(files, new Set(files.keys()), 1000, () => ++checks === at))
+        .toThrowError(expect.objectContaining({ code: 'CANCELLED' }));
+    }
+  });
+  it('propagates odd files and keeps regex and spread entries unchanged', () => {
+    const sources = { 'manage.py': '', 'a.py': urlconf("path('p/', include('b'))"),
+      'b.py': urlconf("path('x/', view), re_path('^r/$', view), path('s/', view, *args)") };
+    expect(join(sources).routes.map(route => [route.path, !!route.unmatched])).toEqual([
+      ['/p/x/', false], ['^r/$', true], ['/s/', true],
+    ]);
+    const odd = join({ ...sources, 'a.py': sources['a.py'] + 'exec(code)' });
+    expect(odd.routes.every(route => route.unmatched && route.segments === undefined)).toBe(true);
+    expect(odd.oddFiles).toContain('a.py');
+  });
+  it('keeps an odd middle fragment on the chain even when its prefix is empty', () => {
+    const result = join({ 'manage.py': '', 'a.py': urlconf("path('p/', include('b'))"),
+      'b.py': urlconf("path('', include('c'))") + 'exec(code)', 'c.py': urlconf("path('leaf/', view)") });
+    expect(result.routes).toHaveLength(1);
+    expect(result.routes[0]).toMatchObject({ path: '/p/leaf/', unmatched: true });
+    expect(result.routes[0].segments).toBeUndefined();
+    expect(result.oddFiles).toEqual(['b.py']);
+  });
 });

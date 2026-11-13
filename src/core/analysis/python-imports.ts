@@ -168,6 +168,23 @@ function step(dir: string, name: string, known: ReadonlySet<string>): Step {
   return foldersOf(known).has(base) ? { kind: 'folder', dir: base } : { kind: 'missing' };
 }
 
+/** The one file a dotted module names from a script folder, without ambiguous or unsafe packages. */
+export function moduleFile(root: string, module: string[], known: ReadonlySet<string>, facts: PythonFacts): string | null {
+  if (!module.length || PYTHON_STDLIB.has(module[0])) return null;
+  const init = path.posix.join(root, '__init__.py');
+  if (known.has(init) && !facts.plain(init)) return null;
+  let dir = root;
+  for (const [index, part] of module.entries()) {
+    const target = step(dir, part, known);
+    if (target.kind === 'module') return index === module.length - 1 ? target.file : null;
+    if (target.kind !== 'package' && target.kind !== 'folder') return null;
+    if (target.kind === 'package' && !facts.plain(target.file)) return null;
+    if (index === module.length - 1) return target.kind === 'package' ? target.file : null;
+    dir = target.dir;
+  }
+  return null;
+}
+
 // One import can match a file in every folder of a project, and a file can hold thousands of imports, so
 // each entry keeps only a few candidates (the map also bounds their total).
 export const MAX_CANDIDATES = 5;

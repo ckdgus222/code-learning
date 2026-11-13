@@ -62,6 +62,9 @@ await writeFile(path.join(fastapiFixture, 'server/main.py'), 'from fastapi impor
 const djangoFixture = path.join(temporary, 'Django 흐름 프로젝트');
 await mkdir(path.join(djangoFixture, 'web'), { recursive: true });
 await mkdir(path.join(djangoFixture, 'polls'), { recursive: true });
+await mkdir(path.join(djangoFixture, 'mysite'), { recursive: true });
+await writeFile(path.join(djangoFixture, 'manage.py'), '');
+await writeFile(path.join(djangoFixture, 'mysite/urls.py'), "from django.urls import include, path\nurlpatterns = [path('polls/', include('polls.urls'))]\n");
 await writeFile(path.join(djangoFixture, 'web/app.ts'), "export async function loadResults() { return fetch('/polls/5/results/'); }");
 await writeFile(path.join(djangoFixture, 'polls/__init__.py'), '');
 await writeFile(path.join(djangoFixture, 'polls/urls.py'), "from django.urls import path\nfrom . import views\nurlpatterns = [path('<int:question_id>/results/', views.results), path('', views.index)]\n");
@@ -3676,7 +3679,7 @@ try {
     await page.getByRole('heading', { name: 'Django 흐름 프로젝트', exact: true }).waitFor();
     await openServerFeatures();
     await page.getByRole('region', { name: '기능 목록', exact: true }).getByRole('listitem')
-      .filter({ hasText: '받기 · /<int:question_id>/results/' }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+      .filter({ hasText: '받기 · /polls/<int:question_id>/results/' }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
     const disclosure = page.locator('details').filter({ has: page.locator('summary', { hasText: /^전체 그림과 단계 보기$/ }) });
     await disclosure.waitFor();
     if (await disclosure.getAttribute('open') === null) await disclosure.locator(':scope > summary').click();
