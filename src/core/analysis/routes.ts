@@ -502,8 +502,9 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
   const djangoRoom: DjangoRoom = { entries: 5_000, views: 20_000 };
   const routers = new Set<'fastapi' | 'flask'>();
   let unmatched = false;
-  for (const file of files.filter(file => pythonFile.test(file.relativePath) && !isTestFile(file.relativePath) && !pythonTestFile(file.relativePath))
-    .sort((a, b) => a.relativePath.localeCompare(b.relativePath))) {
+  const pythonFiles = files.filter(file => pythonFile.test(file.relativePath) && !isTestFile(file.relativePath) && !pythonTestFile(file.relativePath))
+    .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  for (const file of pythonFiles) {
     if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
     const left = limits.bytes - bytes;
     if (count >= limits.files || left <= 0) {
@@ -537,7 +538,7 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
       result.notes.push(`${file.relativePath}: ${error instanceof AppError ? error.message : '파일을 읽지 못했어요.'}`);
     }
   }
-  const django = djangoRoutes(djangoFiles, new Set(paths), ROUTE_LIMITS.routes - result.routes.length, shouldStop);
+  const django = djangoRoutes(djangoFiles, new Set(paths), ROUTE_LIMITS.routes - result.routes.length, shouldStop, djangoFiles.size === pythonFiles.length);
   omitted ||= django.cut;
   const oddPaths = new Set(django.oddFiles);
   const pathsById = new Map(files.map(file => [file.id, file.relativePath]));
@@ -556,7 +557,10 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
     result.limited = true;
     result.notes.push('Django 주소 항목이 너무 많아 처음 5,000개만 봤어요.');
   }
-  if (django.routes.length) result.notes.push('Django 주소의 앞 경로는 읽을 수 있는 include()만 manage.py가 있는 폴더 기준으로 따라가요. 시작 설정(ROOT_URLCONF)은 아직 확인하지 않아, 모두 앞부분을 모르는 것으로 봤어요.');
+  if (django.routes.length) result.notes.push('Django 주소의 앞 경로는 읽을 수 있는 include()만 manage.py가 있는 폴더 기준으로 따라가요. '
+    + (django.routes.some(route => route.prefix === 'known')
+      ? '시작 설정(ROOT_URLCONF)이 가리키는 파일에서 이어진 주소만 앞부분을 아는 것으로 봤어요.'
+      : '시작 설정(ROOT_URLCONF)부터 전체 앞 경로를 확정한 Django 주소가 없어, 모두 앞부분을 모르는 것으로 봤어요.'));
   if (django.unfollowed) result.notes.push(`Django include ${django.unfollowed}개는 따라가지 못했어요(문자열이 아닌 인자, 프로젝트에 없는 모듈, manage.py를 찾지 못함 등). 그렇게 붙는 주소는 앞 경로가 빠져 있거나 목록에 없을 수 있어요.`);
   if (django.skipped) result.notes.push(`Django 주소 ${django.skipped}개는 처리 함수를 코드에서 확정하지 못해 목록에 넣지 않았어요(다른 패키지에서 가져온 뷰, get·post 메서드가 직접 없는 클래스 뷰 등).`);
   for (const path of django.oddFiles) {
@@ -568,6 +572,7 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
   if (routers.has('flask')) result.notes.push('Flask의 Blueprint는 register_blueprint로 붙이거나 바꾸는 앞 경로를 따라가지 않아, 그 주소는 앞부분을 모르는 것으로 봤어요.');
   if (result.routes.some(lacksRouteEvidence)) result.notes.push('앞부분을 모르고 글자 칸도 없는 주소(/, /:id 등)는 맞춰 볼 근거가 없어 요청과 잇지 않았어요.');
   result.links = linkRoutes(result.routes, result.requests, shouldStop);
+  if (result.links.some(link => link.reasons.includes('목록 밖 주소 가능'))) result.notes.push('값 칸(<slug> 등)이 있는 Django 주소는 목록에 없는 주소(관리자 화면, 제네릭 뷰, 정규식 주소 등)가 요청을 먼저 받을 수 있어, 연결을 추정으로 뒀어요.');
   if (nested) {
     for (const link of result.links) { link.sure = false; link.reasons.push('분석 못 한 파일 있음'); }
     result.notes.push('너무 깊게 중첩돼 분석하지 못한 파일에 같은 주소를 받는 곳이 더 있을 수 있어, 연결을 모두 추정으로 뒀어요.');
@@ -636,6 +641,7 @@ export function linkRoutes(routes: Route[], requests: Request[], shouldStop: () 
       }
       if (!matched.matched) return;
       const reasons = [...(unknownPrefix ? ['앞부분 모름'] : []), ...(matched.dynamic ? ['경로 값 모름'] : []), ...(route.typed ? ['값 모양 모름'] : []),
+        ...(route.framework === 'django' && routeParts.some(part => part.startsWith(':') || part === '*') ? ['목록 밖 주소 가능'] : []),
         ...(!request.methods ? ['방식 모름'] : request.methods.length > 1 ? ['방식 후보 둘'] : [])];
       candidates.push({ requestIndex, routeIndex, sure: !reasons.length, reasons });
     });

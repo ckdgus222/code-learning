@@ -80,11 +80,11 @@ describe('Django urlconf entries', () => {
     expect(data.entries).toHaveLength(200);
     expect(data.imports.size).toBe(0);
     const files = new Map([[file.relativePath, data]]);
-    expect(djangoRoutes(files, new Set(files.keys()), 1000, () => false)).toMatchObject({ routes: [], skipped: 200 });
+    expect(djangoRoutes(files, new Set(files.keys()), 1000, () => false, true)).toMatchObject({ routes: [], skipped: 200 });
     const kept = find(setup + entry());
     // A cancel is seen before an import is resolved, not only when the entries are walked afterwards.
     const resolve = vi.spyOn(pythonImports, 'resolvePythonImport');
-    expect(() => djangoRoutes(new Map([[file.relativePath, kept]]), new Set([file.relativePath]), 1000, () => true)).toThrow('주소 찾기를 취소했어요.');
+    expect(() => djangoRoutes(new Map([[file.relativePath, kept]]), new Set([file.relativePath]), 1000, () => true, true)).toThrow('주소 찾기를 취소했어요.');
     expect(resolve).not.toHaveBeenCalled();
     resolve.mockRestore();
     expect(find('from django.urls import path\nfrom ' + Array.from({ length: 31 }, () => 'a').join('.') + ' import v\n' + entry('v')).imports.has('v')).toBe(false);
@@ -275,11 +275,11 @@ describe('Django safety and bounds', () => {
   it('cuts only when an actual extra route exists, and cancels skipped entries', () => {
     const data = find(setup + entry('results') + 'def results(): pass');
     const files = new Map([[file.relativePath, data]]), known = new Set(files.keys());
-    expect(djangoRoutes(files, known, 1, () => false)).toMatchObject({ cut: false, skipped: 0, routes: [{ framework: 'django', prefix: 'unknown' }] });
-    expect(djangoRoutes(files, known, 0, () => false)).toMatchObject({ cut: true, routes: [] });
+    expect(djangoRoutes(files, known, 1, () => false, true)).toMatchObject({ cut: false, skipped: 0, routes: [{ framework: 'django', prefix: 'unknown' }] });
+    expect(djangoRoutes(files, known, 0, () => false, true)).toMatchObject({ cut: true, routes: [] });
     const skipped = find(setup + entry('lambda r: r'));
     let checks = 0;
-    expect(() => djangoRoutes(new Map([[file.relativePath, { ...skipped, entries: [...skipped.entries, ...skipped.entries] }]]), known, 1, () => ++checks === 2)).toThrow('주소 찾기를 취소했어요.');
+    expect(() => djangoRoutes(new Map([[file.relativePath, { ...skipped, entries: [...skipped.entries, ...skipped.entries] }]]), known, 1, () => ++checks === 2, true)).toThrow('주소 찾기를 취소했어요.');
     expect(checks).toBe(2);
   });
 });
@@ -294,7 +294,7 @@ it('reuses each resolved import and preserves file and entry order', () => {
   ]);
   const resolve = vi.spyOn(pythonImports, 'resolvePythonImport');
   try {
-    const result = djangoRoutes(files, new Set(files.keys()), 2, () => false);
+    const result = djangoRoutes(files, new Set(files.keys()), 2, () => false, true);
     expect(result.routes.map(route => route.path)).toEqual(['/b/', '/a/']);
     expect(result.cut).toBe(false);
     expect(resolve).toHaveBeenCalledTimes(1);
@@ -309,13 +309,13 @@ it('distinguishes a package value from a module and retains only used unique imp
     [file.relativePath, find(setup + entry('views.results'))],
     [source.relativePath, find('views = 1\ndef results(): pass', undefined, undefined, source)],
   ]);
-  expect(djangoRoutes(files, new Set(files.keys()), 10, () => false)).toMatchObject({ routes: [], skipped: 1 });
+  expect(djangoRoutes(files, new Set(files.keys()), 10, () => false, true)).toMatchObject({ routes: [], skipped: 1 });
 });
 
 it('keeps unsupported HTTP methods empty without counting their known handler as missing', () => {
   const data = find(setup + entry('results') + '@require_http_methods(["HEAD"])\ndef results(): pass');
   const files = new Map([[file.relativePath, data]]);
-  expect(djangoRoutes(files, new Set(files.keys()), 10, () => false)).toMatchObject({ routes: [], skipped: 0, cut: false });
+  expect(djangoRoutes(files, new Set(files.keys()), 10, () => false, true)).toMatchObject({ routes: [], skipped: 0, cut: false });
 });
 
 it('honors exact name and path boundaries before normalizing or splitting', () => {
@@ -329,7 +329,7 @@ it('honors exact name and path boundaries before normalizing or splitting', () =
 it('propagates cancellation even when no skipped entry could create a route', () => {
   const data = find(setup + entry('lambda r: r'));
   const files = new Map([[file.relativePath, data]]);
-  expect(() => djangoRoutes(files, new Set(files.keys()), 0, () => true)).toThrowError(expect.objectContaining({ code: 'CANCELLED' }));
+  expect(() => djangoRoutes(files, new Set(files.keys()), 0, () => true, true)).toThrowError(expect.objectContaining({ code: 'CANCELLED' }));
 });
 
 describe('literal Django includes', () => {
@@ -389,7 +389,7 @@ describe('joining Django includes', () => {
     [relativePath, find(text, undefined, undefined, { ...file, id: relativePath, relativePath })]));
   const join = (sources: Record<string, string>, max = 1000) => {
     const files = project(sources);
-    return djangoRoutes(files, new Set(files.keys()), max, () => false);
+    return djangoRoutes(files, new Set(files.keys()), max, () => false, true);
   };
   it('joins an imported view and keeps the child entry as evidence', () => {
     const result = join({ 'manage.py': '', 'mysite/urls.py': urlconf("path('polls/', include('polls.urls'))"),
@@ -458,10 +458,10 @@ describe('joining Django includes', () => {
   it('counts exact prefix and route limits only when another combination exists', () => {
     const files = project({ 'manage.py': '', 'a.py': urlconf(''), 'b.py': urlconf("path('leaf/', view)") });
     files.get('a.py')!.includes = Array.from({ length: 5000 }, (_, i) => ({ written: `${i}/`, module: ['b'] }));
-    const exact = djangoRoutes(files, new Set(files.keys()), 5000, () => false);
+    const exact = djangoRoutes(files, new Set(files.keys()), 5000, () => false, true);
     expect(exact.cut).toBe(false);
     expect(exact.routes).toHaveLength(5000);
-    expect(djangoRoutes(files, new Set(files.keys()), 4999, () => false)).toMatchObject({ cut: true });
+    expect(djangoRoutes(files, new Set(files.keys()), 4999, () => false, true)).toMatchObject({ cut: true });
   });
   it('preserves empty-prefix results even for unreadable paths and unsupported class methods', () => {
     const source = urlconf(`path('${'<'.repeat(300)}', view), path(VALUE, view), path('class/', Detail.as_view())`)
@@ -510,7 +510,7 @@ describe('joining Django includes', () => {
   });
   it('requires the target to be among the files actually read', () => {
     const files = project({ 'manage.py': '', 'root.py': urlconf("path('p/', include('unread'))") });
-    expect(djangoRoutes(files, new Set([...files.keys(), 'unread.py']), 1000, () => false)).toMatchObject({ unfollowed: 1, routes: [] });
+    expect(djangoRoutes(files, new Set([...files.keys(), 'unread.py']), 1000, () => false, true)).toMatchObject({ unfollowed: 1, routes: [] });
   });
   it('falls back for a cycle without a start and never revisits a file on a chain', () => {
     const sources = { 'manage.py': '', 'a.py': urlconf("path('a/', include('b')), path('one/', view)"),
@@ -542,13 +542,13 @@ describe('joining Django includes', () => {
     const files = project({ 'manage.py': '', 'a.py': urlconf(''), 'b.py': urlconf(''), 'c.py': urlconf("path('x', view)") });
     files.get('a.py')!.includes = Array.from({ length: 80 }, (_, i) => ({ written: `a${i}/`, module: ['b'] }));
     files.get('b.py')!.includes = Array.from({ length: 80 }, (_, i) => ({ written: `b${i}/`, module: ['c'] }));
-    const capped = djangoRoutes(files, new Set(files.keys()), 7000, () => false);
+    const capped = djangoRoutes(files, new Set(files.keys()), 7000, () => false, true);
     expect(capped.cut).toBe(true);
     expect(capped.routes).toHaveLength(4920);
     files.get('a.py')!.includes = Array.from({ length: 1000 }, (_, i) => ({ written: `${i}`.padStart(300, 'a'), module: ['b'] }));
     files.get('b.py')!.includes = Array.from({ length: 1000 }, () => ({ written: 'x', module: ['c'] }));
     const stop = vi.fn(() => false);
-    const result = djangoRoutes(files, new Set(files.keys()), 6000, stop);
+    const result = djangoRoutes(files, new Set(files.keys()), 6000, stop, true);
     expect(result.cut).toBe(true);
     expect(stop.mock.calls.length).toBeLessThanOrEqual(205_000);
     expect(result.routes.map(route => route.path)).toEqual(['/x']);
@@ -568,7 +568,7 @@ describe('joining Django includes', () => {
     const view = child.views.get('view')!;
     if (empty && view.kind === 'function') view.methods = [];
     const stop = vi.fn(() => false);
-    const result = djangoRoutes(files, new Set(files.keys()), 1000, stop);
+    const result = djangoRoutes(files, new Set(files.keys()), 1000, stop, true);
     expect(result.routes).toHaveLength(empty ? 0 : 1000);
     expect(result.skipped).toBe(empty ? 0 : 10);
     expect(result.cut).toBe(!empty);
@@ -579,7 +579,7 @@ describe('joining Django includes', () => {
     const files = project({ 'manage.py': '', 'a.py': urlconf("path('p/', include('b'))"), 'b.py': urlconf("path('x/', view)") });
     for (const at of [2, 4]) {
       let checks = 0;
-      expect(() => djangoRoutes(files, new Set(files.keys()), 1000, () => ++checks === at))
+      expect(() => djangoRoutes(files, new Set(files.keys()), 1000, () => ++checks === at, true))
         .toThrowError(expect.objectContaining({ code: 'CANCELLED' }));
     }
   });
@@ -600,5 +600,263 @@ describe('joining Django includes', () => {
     expect(result.routes[0]).toMatchObject({ path: '/p/leaf/', unmatched: true });
     expect(result.routes[0].segments).toBeUndefined();
     expect(result.oddFiles).toEqual(['b.py']);
+  });
+});
+
+describe('Django root settings and final URL lists', () => {
+  it.each([
+    "ROOT_URLCONF = 'mysite.urls'",
+    "ROOT_URLCONF = 'mysite.urls'\nROOT_URLCONF = 'mysite.urls'",
+    "ROOT_URLCONF: str = 'mysite.urls'",
+    "from .base import *\nROOT_URLCONF = 'mysite.urls'",
+    "ＲOOT_URLCONF = 'mysite.urls'",
+  ])('reads an unambiguous module setting: %s', text => {
+    expect(find(text)).toMatchObject({ root: ['mysite', 'urls'], rootUnclear: false });
+  });
+  it('keeps files with no setting neutral', () => {
+    expect(find('"""URLconf for the project."""')).toMatchObject({ root: null, rootUnclear: false });
+  });
+  it.each([
+    "ROOT_URLCONF = 'a.urls'\nROOT_URLCONF = 'b.urls'",
+    "if DEBUG:\n    ROOT_URLCONF = 'mysite.urls'",
+    "def settings():\n    ROOT_URLCONF = 'mysite.urls'",
+    "class Settings:\n    ROOT_URLCONF = 'mysite.urls'",
+    "a = ROOT_URLCONF = 'mysite.urls'",
+    "ROOT_URLCONF = f'mysite.urls'", "ROOT_URLCONF = 'mysite.' 'urls'",
+    'ROOT_URLCONF = module', "ROOT_URLCONF = os.environ['URLS']",
+    "settings.ROOT_URLCONF = 'mysite.urls'", "override_settings(ROOT_URLCONF='mysite.urls')",
+    "'ROOT_URLCONF'", '# ROOT_URLCONF', "ROOT_URLCONF = 'mysite.urls'\n# ROOT_URLCONF",
+    "ROOT_URLCONF = 'a-b.urls'", "ROOT_URLCONF = ''", "ROOT_URLCONF = '.urls'",
+    `ROOT_URLCONF = '${Array(31).fill('a').join('.')}'`, `ROOT_URLCONF = '${'a'.repeat(201)}'`,
+    `ROOT_URLCONF = '${'a'.repeat(6030)}'`,
+    "ROOT_URLCONF = 'mysite.urls'\nglobals()",
+    "from .base import *\nROOT_URLCONF = 'mysite.urls'\nglobals()",
+    "ROOT_URLCONF = 'mysite.urls'\nfrom .local_settings import *",
+    "ROOT_URLCONF = 'mysite.urls'\nbroken = (",
+    "ROOT_URLCONF = 'mysite.urls'\nLONG_ROOT_URLCONF_NAME = 1",
+  ])('refuses an unsettled root setting: %s', text => {
+    expect(find(text)).toMatchObject({ root: null, rootUnclear: true });
+  });
+  it.each(['urlconf', 'SCRIPT_NAME', 'script_prefix'])('detects %s in comments, strings and names', word => {
+    for (const use of [`# ${word}`, `value = '${word}'`, `prefix_${word} = 1`]) {
+      expect(find(`ROOT_URLCONF = 'mysite.urls'\n${use}`)).toMatchObject({ root: null, rootUnclear: true });
+    }
+  });
+  it('does not trust a setting in a truncated syntax walk', () => {
+    expect(find("ROOT_URLCONF = 'mysite.urls'\nx = 1", undefined, 3)).toMatchObject({ root: null, rootUnclear: true });
+  });
+  it('accepts the exact module length and segment boundaries', () => {
+    const parts = Array<string>(30).fill('a'.repeat(200));
+    expect(find(`ROOT_URLCONF = '${parts.join('.')}'`)).toMatchObject({ root: parts, rootUnclear: false });
+  });
+  it('bounds many setting mentions without storing them as roots', () => {
+    expect(find('# ROOT_URLCONF\n'.repeat(20_000))).toMatchObject({ root: null, rootUnclear: true });
+  }, 20_000);
+  it.each([
+    '', 'urlpatterns = []', 'urlpatterns = [a] + [b]',
+    'urlpatterns = []\nurlpatterns += [a] + [b]', 'urlpatterns = []\nurlpatterns += [a]',
+    'urlpatterns = []\nif settings.DEBUG:\n    urlpatterns += [a]\n    urlpatterns += [b]',
+    'urlpatterns = []\ndef local():\n    urlpatterns += [a]',
+    '"""urlpatterns"""\n# urlpatterns\nurlpatterns = []\ntext = "urlpatterns"',
+    'urlpatterns: list = []',
+  ])('recognizes lists whose existing entries remain: %s', text => {
+    expect(find(text).listFinal).toBe(true);
+  });
+  it.each([
+    "routes = []\nurlpatterns = routes\nurlpatterns += [path('old/', view)]\nroutes.clear()",
+    'urlpatterns = make()', 'urlpatterns = [a] + static()', 'urlpatterns = routes + [a]',
+    'urlpatterns = []\nurlpatterns += static()', 'urlpatterns = []\nurlpatterns += routes',
+    'class Drop:\n    def __radd__(self, other): return []\nurlpatterns = []\nurlpatterns += Drop()',
+    'urlpatterns = [a]\nurlpatterns = []', 'urlpatterns = format_suffix_patterns(urlpatterns)',
+    'urlpatterns += [a]\nurlpatterns = []', 'urlpatterns += [a]',
+    'urlpatterns = []\nurlpatterns.append(a)', 'urlpatterns = []\nurlpatterns.insert(0, a)',
+    'urlpatterns = []\ndel urlpatterns[0]', 'urlpatterns = []\nurlpatterns[:] = []',
+    'urlpatterns = []\nif DEBUG:\n    urlpatterns = [a, *urlpatterns]',
+    'urlpatterns = []\ndef change():\n    global urlpatterns\n    urlpatterns += [a]',
+    'urlpatterns = []\nfrom x import urlpatterns', 'a = urlpatterns = []',
+    'urlpatterns = []\nｕrlpatterns = []',
+    'urlpatterns = []\nf(urlpatterns=1)', 'urlpatterns = []\nx.urlpatterns',
+    'from .views import *\nurlpatterns = []', 'if DEBUG:\n    urlpatterns = []',
+    'def local():\n    urlpatterns = []', 'urlpatterns = [a] + [b] + make()',
+    'urlpatterns = [a]\nurlpatterns *= 0', 'urlpatterns = [a]\nurlpatterns -= [a]', 'urlpatterns: list\nurlpatterns += [a]',
+  ])('refuses lists that may lose or reorder entries: %s', text => {
+    expect(find(text).listFinal).toBe(false);
+  });
+  it.each([
+    'from a.urls import urlpatterns as p', 'import a.urls\na.urls.urlpatterns.append(1)',
+    'from .urlpatterns import view', 'from ..a.urlpatterns import view',
+    'from a.urls import *\nurlpatterns.clear()', 'from a.urls import *\nurlpatterns += [a]',
+    "getattr(m, 'urlpatterns')", "getattr(m, u'urlpatterns')", 'setattr(m, r"urlpatterns", [])',
+    'getattr(m, """urlpatterns""")', "x = 'see urlpatterns'", "f'{Reset():urlpatterns}'",
+    "x = 1\n'urlpatterns'", "getattr(m, b'urlpatterns')", "getattr(m, 'ｕrlpatterns')",
+    'x.ｕrlpatterns.clear()',
+    "def f():\n    f'{Reset():urlpatterns}'", "if DEBUG:\n    'urlpatterns'",
+    'match urls:\n    case ModuleType(urlpatterns=p):\n        p.clear()', 'match x:\n    case m.urlpatterns:\n        pass',
+    'vars(m).update(urlpatterns=[])', 'def take() -> holder[0].urlpatterns:\n    pass',
+  ])('detects access to another module list by name: %s', text => {
+    expect(find(text).reachesList).toBe(true);
+  });
+  it('finds a docstring after many comments without stepping back over them', () => {
+    const walk = walkPython('#\n'.repeat(5_000) + '"""urlpatterns"""\n', file.relativePath, 100_000);
+    let steps = 0;
+    // The statement is reached through the string's parent; counting its sibling getters shows whether the check walks back.
+    const count = <T extends object>(target: T): T => new Proxy(target, {
+      get(inner, property) {
+        if (typeof property === 'string' && /Sibling$/.test(property)) steps++;
+        const field = Reflect.get(inner, property, inner);
+        return typeof field === 'function' ? field.bind(inner) : field;
+      },
+    });
+    const nodes = walk.nodes.map(entry => entry.type !== 'string' ? entry : { ...entry, node: new Proxy(entry.node, {
+      get(inner, property) {
+        const field = Reflect.get(inner, property, inner);
+        if (property === 'parent' && field) return count(field);
+        return typeof field === 'function' ? field.bind(inner) : field;
+      },
+    }) });
+    expect(djangoFile(file, { ...walk, nodes }, 'hash', { entries: 5000, views: 20000 }).reachesList).toBe(false);
+    expect(steps).toBe(0);
+  });
+  it('reads nested strings once, through the outermost string', () => {
+    let value = "'other'";
+    for (let level = 0; level < 20; level++) value = level % 2 ? `f'{${value}}'` : `f"{${value}}"`;
+    const walk = walkPython(`x = ${value}\n`, file.relativePath, 100_000);
+    let reads = 0;
+    // Counted through the text getter: each read of a string's text copies it out of the parser.
+    const nodes = walk.nodes.map(entry => entry.type !== 'string' ? entry : { ...entry, node: new Proxy(entry.node, {
+      get(target, property) {
+        if (property === 'text') reads++;
+        const field = Reflect.get(target, property, target);
+        return typeof field === 'function' ? field.bind(target) : field;
+      },
+    }) });
+    djangoFile(file, { ...walk, nodes }, 'hash', { entries: 5000, views: 20000 });
+    expect(walk.complete && !walk.root.hasError).toBe(true);
+    expect(nodes.filter(entry => entry.type === 'string')).toHaveLength(21);
+    expect(reads).toBe(1);
+  });
+  it.each([
+    '"""urlpatterns"""', '# comment\n"""urlpatterns"""',
+    'class View:\n    """urlpatterns"""\n    pass', 'def view():\n    """urlpatterns"""\n    pass',
+    "f'urlpatterns'", setup + entry(), 'from .views import *\nurlpatterns = []\nurlpatterns += [a]',
+  ])('excludes docstrings and fresh local lists from foreign access: %s', text => {
+    expect(find(text).reachesList).toBe(false);
+  });
+  it.each(['urlpatterns', 'other'])('checks incomplete and invalid files conservatively: %s', name => {
+    expect(find(`# ${name}\nx = 1`, undefined, 1).reachesList).toBe(name === 'urlpatterns');
+    expect(find(`# ${name}\nx = (`).reachesList).toBe(name === 'urlpatterns');
+  });
+});
+
+describe('Django root prefix propagation', () => {
+  const urlconf = (items: string) => `from django.urls import path, re_path, include\ndef view(): pass\nurlpatterns = [${items}]\n`;
+  const sources = () => ({ 'manage.py': '', 'mysite/settings.py': "ROOT_URLCONF = 'mysite.urls'",
+    'mysite/urls.py': urlconf("path('home/', view), path('polls/', include('polls.urls'))"),
+    'polls/urls.py': urlconf("path('x/', view)"), 'other.py': urlconf("path('other/', view)") });
+  const join = (texts: Record<string, string>, allRead = true, unread: string[] = []) => {
+    const files = new Map(Object.entries(texts).map(([relativePath, text]) =>
+      [relativePath, find(text, undefined, undefined, { ...file, id: relativePath, relativePath })]));
+    return djangoRoutes(files, new Set([...files.keys(), ...unread]), 1000, () => false, allRead);
+  };
+  it('marks only the root and its descendants as known', () => {
+    expect(join(sources()).routes.map(route => [route.path, route.prefix])).toEqual([
+      ['/home/', 'known'], ['/other/', 'unknown'], ['/polls/x/', 'known'],
+    ]);
+  });
+  it('keeps regex, unreadable and spread entries unknown on a root chain', () => {
+    const result = join({ ...sources(), 'polls/urls.py': urlconf("re_path('x/', view), path(value, view), path('y/', view, **extra)") });
+    expect(result.routes.slice(2).map(route => route.prefix)).toEqual(['unknown', 'unknown', 'unknown']);
+  });
+  it.each<Record<string, string>>([
+    { 'mysite/local.py': "ROOT_URLCONF = 'other'" },
+    { 'mysite/patch.py': '# request.urlconf' },
+    { 'nested/manage.py': '', 'nested/patch.py': '# script_prefix' },
+    { 'patch.py': '# ROOT_URLCONF' },
+    { 'mysite/patch.py': 'from mysite.urls import urlpatterns as p' },
+    { 'nested/manage.py': '', 'nested/patch.py': 'from mysite.urls import urlpatterns as p' },
+    { 'mysite/settings.py': "ROOT_URLCONF = 'missing.urls'" },
+    { 'mysite/urls.py': "from .views import *\n" + urlconf("path('home/', view)") },
+    { 'mysite/urls.py': urlconf("path('old/', view)") + 'urlpatterns = []' },
+    { 'mysite/manage.py': '' },
+    { 'mysite/settings.py': "ROOT_URLCONF = 'nested.urls'", 'nested/manage.py': '', 'nested/urls.py': urlconf("path('n/', view)") },
+  ])('preserves the unconfigured result when a root cannot be trusted: %j', changes => {
+    const texts: Record<string, string> = { ...sources(), ...changes };
+    const result = join(texts);
+    expect(result.routes.length).toBeGreaterThan(0);
+    expect(result.routes.every(route => route.prefix === 'unknown')).toBe(true);
+    delete texts['mysite/settings.py'];
+    delete texts['mysite/local.py'];
+    expect(result.routes).toEqual(join(texts).routes);
+  });
+  it('requires the root file to have been read and to resolve uniquely', () => {
+    const texts: Record<string, string> = sources();
+    delete texts['mysite/urls.py'];
+    expect(join(texts, true, ['mysite/urls.py']).routes.every(route => route.prefix === 'unknown')).toBe(true);
+    expect(join(sources(), true, ['mysite/urls/__init__.py']).routes.every(route => route.prefix === 'unknown')).toBe(true);
+  });
+  it('does not use settings without an enclosing manage.py', () => {
+    const texts: Record<string, string> = sources();
+    delete texts['manage.py'];
+    expect(join(texts).routes.every(route => route.prefix === 'unknown')).toBe(true);
+  });
+  it('accepts agreeing settings and ignores a plainly stated setting outside manage.py folders', () => {
+    const texts = { ...sources(), 'mysite/local.py': "ROOT_URLCONF = 'mysite.urls'" };
+    expect(join(texts).routes.filter(route => route.prefix === 'known')).toHaveLength(2);
+    const nested = Object.fromEntries(Object.entries(texts).map(([name, text]) => ['project/' + name, text]));
+    expect(join({ ...nested, 'outside.py': "ROOT_URLCONF = 'different.urls'" }).routes.filter(route => route.prefix === 'known')).toHaveLength(2);
+  });
+  it('settles different roots independently in separate manage.py folders', () => {
+    const result = join({ 'a/manage.py': '', 'a/settings.py': "ROOT_URLCONF = 'one'", 'a/one.py': urlconf("path('a/', view)"),
+      'b/manage.py': '', 'b/settings.py': "ROOT_URLCONF = 'two'", 'b/two.py': urlconf("path('b/', view)") });
+    expect(result.routes.map(route => [route.path, route.prefix])).toEqual([['/a/', 'known'], ['/b/', 'known']]);
+  });
+  it.each(['# urlconf', 'from project.mysite.urls import urlpatterns as p'])('blocks certainty for code outside every manage.py folder: %s', patch => {
+    const nested = Object.fromEntries(Object.entries(sources()).map(([name, text]) => ['project/' + name, text]));
+    const result = join({ ...nested, 'outside.py': patch });
+    expect(result.routes).toHaveLength(3);
+    expect(result.routes.every(route => route.prefix === 'unknown')).toBe(true);
+    delete nested['project/mysite/settings.py'];
+    expect(result.routes).toEqual(join({ ...nested, 'outside.py': patch }).routes);
+  });
+  it.each(['outer/', ''])('keeps the bare root when another source attaches it with %s', prefix => {
+    const result = join({ 'manage.py': '', 'settings.py': "ROOT_URLCONF = 'mysite.urls'",
+      'mysite/urls.py': urlconf("path('x/', view)"), 'outer.py': urlconf(`path('${prefix}', include('mysite.urls'))`) });
+    expect(result.routes.map(route => [route.path, route.prefix])).toEqual(prefix
+      ? [['/x/', 'known'], ['/outer/x/', 'unknown']] : [['/x/', 'known']]);
+  });
+  it('does not create a bare root at all when any Python file was unread', () => {
+    const texts = { 'manage.py': '', 'settings.py': "ROOT_URLCONF = 'mysite.urls'",
+      'mysite/urls.py': urlconf("path('x/', view)"), 'outer.py': urlconf("path('outer/', include('mysite.urls'))") };
+    expect(join(texts, false).routes.map(route => [route.path, route.prefix])).toEqual([['/outer/x/', 'unknown']]);
+    const { 'settings.py': ignored, ...withoutSettings } = texts;
+    expect(join(texts, false).routes).toEqual(join(withoutSettings).routes);
+  });
+  it.each([1, 3])('finishes a %i-edge root chain before the shorter unknown chain', depth => {
+    const texts: Record<string, string> = { 'manage.py': '', 'settings.py': "ROOT_URLCONF = 'zroot'",
+      'aother.py': urlconf("path('same/', include('target'))"), 'target.py': urlconf("path('x/', view)") };
+    texts['zroot.py'] = urlconf(`path('same/', include('${depth === 1 ? 'target' : 'middle'}'))`);
+    if (depth === 3) {
+      texts['middle.py'] = urlconf("path('', include('last'))");
+      texts['last.py'] = urlconf("path('', include('target'))");
+    }
+    expect(join(texts).routes.map(route => [route.path, route.prefix])).toEqual([['/same/x/', 'known']]);
+  });
+  it('stops certainty at a replaced intermediate list and preserves a separate branch', () => {
+    const texts = { 'manage.py': '', 'settings.py': "ROOT_URLCONF = 'root'",
+      'root.py': urlconf("path('a/', include('a')), path('c/', include('c'))"),
+      'a.py': urlconf("path('x/', view), path('b/', include('b'))") + 'urlpatterns = []',
+      'b.py': urlconf("path('y/', view)"), 'c.py': urlconf("path('z/', view)") };
+    expect(join(texts).routes.map(route => [route.path, route.prefix])).toEqual([
+      ['/a/x/', 'unknown'], ['/a/b/y/', 'unknown'], ['/c/z/', 'known'],
+    ]);
+  });
+  it('does not carry certainty across a nested manage.py boundary', () => {
+    const result = join({ 'manage.py': '', 'settings.py': "ROOT_URLCONF = 'root'",
+      'root.py': urlconf("path('home/', view), path('nested/', include('nested.urls'))"),
+      'nested/manage.py': '', 'nested/urls.py': urlconf("path('x/', view), path('deep/', include('deep.urls'))"),
+      'nested/deep/urls.py': urlconf("path('y/', view)") });
+    expect(result.routes.map(route => [route.path, route.prefix])).toEqual([
+      ['/nested/deep/y/', 'unknown'], ['/nested/x/', 'unknown'], ['/home/', 'known'],
+    ]);
   });
 });

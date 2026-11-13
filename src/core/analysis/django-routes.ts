@@ -33,6 +33,14 @@ export interface DjangoFile {
   plain: boolean;
   init: InitFacts | null;
   odd: boolean;
+  /** The plainly stated ROOT_URLCONF module, if this file settles it. */
+  root: string[] | null;
+  /** Mentions of the setting or code that moves URL matching which cannot be settled. */
+  rootUnclear: boolean;
+  /** Whether the read entries remain in urlpatterns after the module runs. */
+  listFinal: boolean;
+  /** Whether this file can reach another module's urlpatterns by name. */
+  reachesList: boolean;
 }
 /** What may still be kept for the whole project, and whether something was left out because a count ran out. */
 export interface DjangoRoom { entries: number; views: number; entriesCut?: boolean; viewsCut?: boolean }
@@ -42,7 +50,12 @@ const argumentsOf = (node: Node) => node.childForFieldName('arguments')?.namedCh
 
 export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython>, hash: string, room: DjangoRoom): DjangoFile {
   const { root, nodes, complete } = walk;
-  const result: DjangoFile = { entries: [], includes: [], unfollowed: 0, imports: new Map(), views: new Map(), plain: complete && !root.hasError, init: null, odd: false };
+  const text = root.text.normalize('NFKC');
+  let mentions = 0;
+  for (let at = text.indexOf('ROOT_URLCONF'); at !== -1; at = text.indexOf('ROOT_URLCONF', at + 'ROOT_URLCONF'.length)) mentions++;
+  const result: DjangoFile = { entries: [], includes: [], unfollowed: 0, imports: new Map(), views: new Map(), plain: complete && !root.hasError,
+    init: null, odd: false, root: null, rootUnclear: false, listFinal: false,
+    reachesList: (!complete || root.hasError) && text.includes('urlpatterns') };
   // 1. Bound names are normalized once, after rejecting text too long to be a route name.
   const names = new Map<number, string>();
   const nameOf = (node: Node | null | undefined): string => {
@@ -65,11 +78,12 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
   const django = new Map<string, string>();
   const imports = new Map<string, PythonImport>();
   const definitions = new Map<string, Node>();
+  let lastStar = -1;
   for (const { node, module, type } of nodes) {
     // Every name the import check looks for starts with two underscores, so other names are not handed to it.
     if (type === 'identifier' && nameOf(node).startsWith('__') && mentionsMachinery(node)) result.plain = false;
     if (!module || type !== 'import_statement' && type !== 'import_from_statement' || node.hasError) continue;
-    if (node.namedChildren.some(child => child.type === 'wildcard_import')) result.plain = false;
+    if (node.namedChildren.some(child => child.type === 'wildcard_import')) { result.plain = false; lastStar = node.startIndex; }
     // A dotted path is walked once for every name that uses it: one deeper or longer than any real module is not kept.
     const items = pythonImportsOf(node).map(item => item.module.length > ROUTE_LIMITS.segments
       || item.module.some(part => part.length > ROUTE_LIMITS.name) ? null : item);
@@ -99,9 +113,76 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
   // 2. A name is trusted only at its binding and its specified reading positions.
   const invalid = new Set<string>();
   let odd = false;
+  let stated = 0, firstRoot = -1, rootValue: string | null = null, conflicting = false;
+  let listAssigned = false, invalidList = false;
+  let stringEnd = 0;
+  // The first statement of a body, found once per body: a sibling getter in the binding rescans the earlier siblings,
+  // so stepping back over thousands of comments before a docstring would cost the square of their number.
+  const firstStatements = new Map<number, number | undefined>();
+  const firstStatement = (body: Node) => {
+    if (!firstStatements.has(body.id)) firstStatements.set(body.id, body.namedChildren.find(child => child.type !== 'comment')?.id);
+    return firstStatements.get(body.id);
+  };
   for (const { node, module, type } of nodes) {
+    if (type === 'assignment' && complete && !root.hasError && !node.hasError
+      && node.parent?.type === 'expression_statement' && node.parent.parent?.id === root.id) {
+      const left = node.childForFieldName('left');
+      const value = left?.type === 'identifier' && nameOf(left) === 'ROOT_URLCONF' ? plainString(node.childForFieldName('right')) : null;
+      // A Python file is read up to 256 KiB, so splitting the whole value once is cheap; the part limits below
+      // accept exactly the module names an include accepts.
+      if (value !== null) {
+        const parts = value.split('.');
+        if (parts.length <= ROUTE_LIMITS.segments && parts.every(part => part.length <= ROUTE_LIMITS.name && /^[A-Za-z_][A-Za-z0-9_]*$/.test(part))) {
+          if (!stated) { rootValue = value; firstRoot = node.startIndex; }
+          conflicting ||= rootValue !== value;
+          stated++;
+        }
+      }
+    }
+    if (type === 'string') {
+      // A string inside another string (an f-string's expression) is part of the outer string's text, and an outer
+      // string with an expression is never a docstring, so only outermost strings are checked: nested strings would
+      // otherwise read the same text once for every level.
+      if (node.startIndex < stringEnd || result.reachesList) continue;
+      stringEnd = node.endIndex;
+      if (!node.text.normalize('NFKC').includes('urlpatterns')) continue;
+      const statement = node.parent, body = statement?.parent;
+      const docstring = !!body && statement?.type === 'expression_statement' && statement.namedChildCount === 1
+        && (body.id === root.id || body.type === 'block' && ['class_definition', 'function_definition'].includes(body.parent?.type ?? ''))
+        && firstStatement(body) === statement.id
+        && !node.namedChildren.some(child => child.type === 'interpolation');
+      if (!docstring) result.reachesList = true;
+      continue;
+    }
     if (type !== 'identifier') continue;
     const name = nameOf(node), parent = node.parent;
+    if (name === 'urlpatterns') {
+      const first = !listAssigned && parent?.type === 'assignment' && parent.childForFieldName('left')?.id === node.id
+        && parent.parent?.type === 'expression_statement' && parent.parent.parent?.id === root.id;
+      if (first) listAssigned = true;
+      // The walk visits nodes in source order, so an addition seen once the first assignment is known comes after it.
+      const addition = listAssigned && parent?.type === 'augmented_assignment'
+        && parent.childForFieldName('left')?.id === node.id && parent.childForFieldName('operator')?.text === '+=';
+      let allowed = first || addition;
+      const right = allowed ? parent!.childForFieldName('right') : null;
+      const pending = right ? [right] : [];
+      if (allowed && !right) allowed = false;
+      while (pending.length && allowed) {
+        const value = pending.pop()!;
+        if (value.type === 'list') continue;
+        if (value.type !== 'binary_operator' || value.childForFieldName('operator')?.text !== '+') { allowed = false; break; }
+        pending.push(value.childForFieldName('right')!, value.childForFieldName('left')!);
+      }
+      invalidList ||= !allowed;
+      // A name in a label position names something else's attribute and can reach another module's list: an attribute
+      // (`m.urlpatterns`), an import, a keyword (`vars(m).update(urlpatterns=[])`), a dotted or class pattern
+      // (`case ModuleType(urlpatterns=p)`), an attribute in a type (`-> holder[0].urlpatterns`, run when the def runs).
+      // These are all the label positions among the grammar's nodes that hold an identifier directly (node-types.json
+      // of tree-sitter-python 0.23); the others read or bind this file's own name. After a star import, any other use
+      // may be another module's list.
+      const label = labelPosition(node) || ['keyword_pattern', 'dotted_name', 'member_type'].includes(parent?.type ?? '');
+      if (label || lastStar !== -1 && !allowed) result.reachesList = true;
+    }
     // `setattr(Detail, 'get', other)` reads the name as an argument but changes what it holds.
     if (['setattr', 'delattr', 'vars'].includes(name) && parent?.type === 'call' && parent.childForFieldName('function')?.id === node.id) {
       let receiver = argumentsOf(parent)[0];
@@ -135,6 +216,10 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
   }
   for (const [name, places] of bindings) if (places.size !== 1) invalid.add(name);
   result.odd = result.plain && odd;
+  result.rootUnclear = ['urlconf', 'SCRIPT_NAME', 'script_prefix'].some(word => text.includes(word))
+    || mentions !== stated || conflicting || stated > 0 && (odd || lastStar > firstRoot);
+  result.root = stated > 0 && !result.rootUnclear ? rootValue!.split('.') : null;
+  result.listFinal = result.plain && !invalidList;
   result.init = result.plain && file.relativePath.split('/').at(-1) === '__init__.py' ? initFactsOf(root) : null;
 
   // 3. Read only literal list entries assigned directly to module-level urlpatterns.
@@ -275,51 +360,79 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
 }
 
 /** Join literal includes from manage.py folders; resolve views with the existing import rules. */
-export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: ReadonlySet<string>, maxRoutes: number, shouldStop: () => boolean):
+export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: ReadonlySet<string>, maxRoutes: number, shouldStop: () => boolean, allRead: boolean):
   { routes: Route[]; skipped: number; cut: boolean; oddFiles: string[]; unfollowed: number } {
   const routes: Route[] = [];
   const oddFiles = new Set<string>();
   let skipped = 0, cut = false, unfollowed = 0;
   const facts = { init: (path: string) => files.get(path)?.init ?? null, plain: (path: string) => files.get(path)?.plain ?? false };
   const ordered = [...files].sort(([a], [b]) => a.localeCompare(b));
+  const projectFolder = (filePath: string): string | null => {
+    let folder = posix.dirname(filePath);
+    while (!known.has(posix.join(folder, 'manage.py'))) {
+      if (folder === '.') return null;
+      folder = posix.dirname(folder);
+    }
+    return folder;
+  };
+  const starts = new Set<string>();
+  if (allRead && !ordered.some(([, file]) => file.rootUnclear || file.reachesList)) {
+    const settings = new Map<string, Set<string>>();
+    for (const [filePath, file] of ordered) {
+      if (!file.root) continue;
+      const folder = projectFolder(filePath);
+      if (folder === null) continue;
+      const modules = settings.get(folder) ?? new Set<string>();
+      modules.add(file.root.join('.'));
+      settings.set(folder, modules);
+    }
+    for (const [folder, modules] of settings) {
+      if (modules.size !== 1) continue;
+      const target = moduleFile(folder, [...modules][0].split('.'), known, facts);
+      if (target === null) continue;
+      const file = files.get(target);
+      if (file?.plain && file.listFinal && projectFolder(target) === folder) starts.add(target);
+    }
+  }
   // Includes are edges only when one module is reachable from the nearest manage.py.
-  const edges = new Map<string, { target: string; written: string }[]>();
+  const edges = new Map<string, { target: string; written: string; sameFolder: boolean }[]>();
   const incoming = new Set<string>();
   for (const [filePath, file] of ordered) {
     unfollowed += file.unfollowed;
     if (!file.includes.length) continue;
     if (!file.plain) { unfollowed += file.includes.length; continue; }
-    let root: string | null = posix.dirname(filePath);
-    while (!known.has(posix.join(root, 'manage.py'))) {
-      if (root === '.') { root = null; break; }
-      root = posix.dirname(root);
-    }
-    const outgoing: { target: string; written: string }[] = [];
+    const root = projectFolder(filePath);
+    const outgoing: { target: string; written: string; sameFolder: boolean }[] = [];
     edges.set(filePath, outgoing);
     for (const include of file.includes) {
       if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
       const target = root === null ? null : moduleFile(root, include.module, known, facts);
       if (target === null || !files.has(target)) { unfollowed++; continue; }
-      outgoing.push({ target, written: include.written });
+      outgoing.push({ target, written: include.written, sameFolder: root === projectFolder(target) });
       incoming.add(target);
     }
   }
   // Keep fragment validity separately: joining '<int:' and 'id>' cannot create a converter.
   const incomplete = (written: string) => /[<>]/.test(written.replace(/<[^<>]*>/g, ''));
-  type Prefix = { written: string; incomplete: boolean; oddPaths: string[] };
+  type Prefix = { written: string; known: boolean; incomplete: boolean; oddPaths: string[] };
   /** What a file has when nothing is joined in front of it: its routes as written. */
-  const bare = (filePath: string, file: DjangoFile): Prefix => ({ written: '', incomplete: false, oddPaths: file.odd ? [filePath] : [] });
+  const bare = (filePath: string, file: DjangoFile): Prefix => ({ written: '', known: starts.has(filePath), incomplete: false, oddPaths: file.odd ? [filePath] : [] });
   const prefixes = new Map<string, Prefix[]>();
   const pending: { file: string; prefix: Prefix; chain: string[] }[] = [];
+  const otherSources: typeof pending = [];
+  const seen = new Set<string>();
   for (const [filePath, file] of ordered) {
-    if (incoming.has(filePath)) continue;
+    if (!starts.has(filePath) && incoming.has(filePath)) continue;
     const prefix = bare(filePath, file);
     prefixes.set(filePath, [prefix]);
-    pending.push({ file: filePath, prefix, chain: [filePath] });
+    const sources = starts.has(filePath) ? pending : otherSources;
+    sources.push({ file: filePath, prefix, chain: [filePath] });
+    if (starts.has(filePath)) seen.add(JSON.stringify([filePath, '', false, file.odd]));
   }
   let attempts = 0, created = 0;
-  const seen = new Set<string>();
-  propagate: for (let index = 0; index < pending.length; index++) {
+  // Finish root chains before seeding other sources: deduplication keeps the first arrival.
+  propagate: for (let index = 0; index < pending.length + otherSources.length; index++) {
+    if (index === pending.length) pending.push(...otherSources.splice(0));
     const current = pending[index];
     for (const edge of edges.get(current.file) ?? []) {
       if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
@@ -327,7 +440,7 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
       if (current.chain.includes(edge.target)) continue;
       const written = current.prefix.written + edge.written;
       if (current.chain.length >= 10 || written.length > ROUTE_LIMITS.pathLength) { cut = true; continue; }
-      const prefix: Prefix = { written, incomplete: current.prefix.incomplete || incomplete(edge.written),
+      const prefix: Prefix = { written, known: current.prefix.known && files.get(edge.target)!.listFinal && edge.sameFolder, incomplete: current.prefix.incomplete || incomplete(edge.written),
         oddPaths: files.get(edge.target)!.odd ? [...current.prefix.oddPaths, edge.target] : current.prefix.oddPaths };
       // Two chains that attach a file with the same text make the same routes: only the first is kept.
       const key = JSON.stringify([edge.target, written, prefix.incomplete, prefix.oddPaths.length > 0]);
@@ -392,7 +505,7 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
       if (files.get(viewPath)!.odd) oddFiles.add(viewPath);
       const shape = entry.written === null || !prefix.written ? entry.shape : joined === null ? {} : djangoShape(joined);
       // A bracket left open in the entry needs its other half in a prefix fragment, which is then incomplete too.
-      routes.push({ framework: 'django', prefix: 'unknown', method, handler, path: joined, basis: entry.basis,
+      routes.push({ framework: 'django', prefix: prefix.known && entry.written !== null ? 'known' : 'unknown', method, handler, path: joined, basis: entry.basis,
         ...(odd || prefix.incomplete ? { unmatched: true as const } : shape) });
     }
   }

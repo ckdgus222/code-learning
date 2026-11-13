@@ -1112,7 +1112,7 @@ it.each([
   expect(back).toHaveLength(1);
   expect(back[0]).toMatchObject({ name, relativePath: 'polls/views.py' });
   expect(flow.nodes.map(node => node.name)).toEqual(expect.arrayContaining(['loadResults', 'GET /polls/5/results/', name]));
-  expect(flow.edges.find(edge => edge.kind === 'route')).toMatchObject({ from: request.id, to: back[0].id, sure: false, reasons: ['앞부분 모름', '값 모양 모름'] });
+  expect(flow.edges.find(edge => edge.kind === 'route')).toMatchObject({ from: request.id, to: back[0].id, sure: false, reasons: ['앞부분 모름', '값 모양 모름', '목록 밖 주소 가능'] });
   await put('polls/views.py', source + '\n# changed');
   await expect(buildFeatureFlow(root, project.id, project.files, routes, 0)).rejects.toMatchObject({ code: 'CHANGED' });
 });

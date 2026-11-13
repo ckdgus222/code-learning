@@ -64,8 +64,9 @@ await mkdir(path.join(djangoFixture, 'web'), { recursive: true });
 await mkdir(path.join(djangoFixture, 'polls'), { recursive: true });
 await mkdir(path.join(djangoFixture, 'mysite'), { recursive: true });
 await writeFile(path.join(djangoFixture, 'manage.py'), '');
+await writeFile(path.join(djangoFixture, 'mysite/settings.py'), "ROOT_URLCONF = 'mysite.urls'\n");
 await writeFile(path.join(djangoFixture, 'mysite/urls.py'), "from django.urls import include, path\nurlpatterns = [path('polls/', include('polls.urls'))]\n");
-await writeFile(path.join(djangoFixture, 'web/app.ts'), "export async function loadResults() { return fetch('/polls/5/results/'); }");
+await writeFile(path.join(djangoFixture, 'web/app.ts'), "export async function loadResults() { return fetch('/polls/5/results/'); }\nexport async function loadIndex() { return fetch('/polls/'); }");
 await writeFile(path.join(djangoFixture, 'polls/__init__.py'), '');
 await writeFile(path.join(djangoFixture, 'polls/urls.py'), "from django.urls import path\nfrom . import views\nurlpatterns = [path('<int:question_id>/results/', views.results), path('', views.index)]\n");
 await writeFile(path.join(djangoFixture, 'polls/views.py'), 'def index(request): return 1\ndef results(request, question_id): return question_id\n');
@@ -3673,7 +3674,7 @@ try {
     await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
     await page.screenshot({ path: path.join(artifacts, 'flask-flow.png') });
   });
-  await check('Django flow: unknown prefix, typed route and view function navigation', async () => {
+  await check('Django flow: root urlconf, typed route and view function navigation', async () => {
     await dialogTo(djangoFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
     await page.getByRole('heading', { name: 'Django 흐름 프로젝트', exact: true }).waitFor();
@@ -3691,7 +3692,8 @@ try {
     const steps = page.getByRole('region', { name: '기능 흐름 단계', exact: true });
     const requestStep = steps.getByTestId('feature-step').filter({ has: page.locator('b', { hasText: /^GET \/polls\/5\/results\/$/ }) });
     await requestStep.getByText('추정', { exact: true }).waitFor();
-    assert.match(await requestStep.innerText(), /앞부분 모름/);
+    assert.doesNotMatch(await requestStep.innerText(), /앞부분 모름/);
+    assert.match(await requestStep.innerText(), /목록 밖 주소 가능/);
     assert.match(await requestStep.innerText(), /값 모양 모름/);
     const step = steps.getByTestId('feature-step')
       .filter({ has: page.locator('b', { hasText: /^results$/ }) });
@@ -3704,6 +3706,15 @@ try {
     assert.equal(await page.getByRole('navigation', { name: '함수와 단계', exact: true })
       .getByRole('button', { name: 'results', exact: true }).getAttribute('aria-pressed'), 'true');
     await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    await page.getByRole('button', { name: '다른 기능 고르기', exact: true }).click();
+    await openServerFeatures();
+    await page.getByRole('region', { name: '기능 목록', exact: true }).getByRole('listitem')
+      .filter({ has: page.getByText('받기 · /polls/', { exact: true }) }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+    await diagram.getByRole('group', { name: 'web/app.ts · GET /polls/', exact: true }).waitFor();
+    await diagram.getByRole('group', { name: 'polls/views.py · index', exact: true }).waitFor();
+    const indexRequest = steps.getByTestId('feature-step').filter({ has: page.locator('b', { hasText: /^GET \/polls\/$/ }) });
+    await indexRequest.waitFor();
+    assert.equal(await indexRequest.getByText('추정', { exact: true }).count(), 0);
     await page.screenshot({ path: path.join(artifacts, 'django-flow.png') });
   });
   await check('Python reader: methods, steps, colours, limits and function flow; TS keeps its AI card and hint', async () => {

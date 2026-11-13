@@ -995,7 +995,7 @@ describe('Django routes across project files', () => {
       .toEqual([['django', 'unknown', '/<int:question_id>/results/', 'results', 'polls/views.py', 'polls/urls.py'], ['django', 'unknown', '/', 'index', 'polls/views.py', 'polls/urls.py']]);
     expect(result.links).toHaveLength(2);
     expect(result.links.every(link => !link.sure && link.routeIndex === 0)).toBe(true);
-    expect(result.links[0].reasons).toEqual(['앞부분 모름', '값 모양 모름']);
+    expect(result.links[0].reasons).toEqual(['앞부분 모름', '값 모양 모름', '목록 밖 주소 가능']);
     expect(result.notes.filter(note => note.startsWith('Django 주소의 앞 경로는 읽을 수 있는 include()'))).toHaveLength(1);
     expect(result.notes.some(note => note.startsWith('앞부분을 모르고 글자 칸도 없는 주소'))).toBe(true);
   });
@@ -1255,7 +1255,7 @@ it('does not confirm axios defaults in a skipped file', async () => {
 });
 
 describe('Django include paths in project routes', () => {
-  const prefixNote = 'Django 주소의 앞 경로는 읽을 수 있는 include()만 manage.py가 있는 폴더 기준으로 따라가요. 시작 설정(ROOT_URLCONF)은 아직 확인하지 않아, 모두 앞부분을 모르는 것으로 봤어요.';
+  const prefixNote = 'Django 주소의 앞 경로는 읽을 수 있는 include()만 manage.py가 있는 폴더 기준으로 따라가요. 시작 설정(ROOT_URLCONF)부터 전체 앞 경로를 확정한 Django 주소가 없어, 모두 앞부분을 모르는 것으로 봤어요.';
   it('joins a typed child route, preserves other frameworks and keeps links uncertain', async () => {
     await put('manage.py', '');
     await put('mysite/urls.py', "from django.urls import path, include\nurlpatterns = [path('polls/', include('polls.urls'))]");
@@ -1271,7 +1271,7 @@ describe('Django include paths in project routes', () => {
     expect(result.routes.filter(route => route.framework !== 'django').map(route => [route.path, route.method, route.prefix, route.unmatched]))
       .toEqual([['/fast', 'GET', 'known', undefined], ['/flask', 'GET', 'known', undefined]]);
     expect(result.links).toHaveLength(1);
-    expect(result.links[0]).toMatchObject({ sure: false, reasons: ['앞부분 모름', '값 모양 모름'] });
+    expect(result.links[0]).toMatchObject({ sure: false, reasons: ['앞부분 모름', '값 모양 모름', '목록 밖 주소 가능'] });
     expect(result.notes).toContain(prefixNote);
     expect(result.notes.filter(note => note.startsWith('Django include'))).toEqual([]);
   });
@@ -1301,5 +1301,118 @@ describe('Django include paths in project routes', () => {
     expect(result.notes).toContain('Django include 2개는 따라가지 못했어요(문자열이 아닌 인자, 프로젝트에 없는 모듈, manage.py를 찾지 못함 등). 그렇게 붙는 주소는 앞 경로가 빠져 있거나 목록에 없을 수 있어요.');
     expect(result.notes.includes(prefixNote)).toBe(hasRoutes);
     expect(result.routes).toHaveLength(hasRoutes ? 1 : 0);
+  });
+});
+
+describe('Django ROOT_URLCONF project links', () => {
+  const urlconf = (items: string) => `from django.urls import path, include\ndef view(): pass\nurlpatterns = [${items}]\n`;
+  async function fixture(items = "path('', view)", request = "fetch('/polls/')") {
+    await put('manage.py', '');
+    await put('mysite/settings.py', "ROOT_URLCONF = 'mysite.urls'");
+    await put('mysite/urls.py', urlconf("path('polls/', include('polls.urls'))"));
+    await put('polls/urls.py', urlconf(items));
+    await put('web/app.ts', request);
+  }
+  it('links a literal included route with certainty, even when another file includes the root at an empty prefix', async () => {
+    await fixture();
+    let result = await find();
+    expect(result.routes).toHaveLength(1);
+    expect(result.links).toEqual([{ requestIndex: 0, routeIndex: 0, sure: true, reasons: [] }]);
+    expect(result.notes.some(note => note.includes('이어진 주소만 앞부분을 아는 것'))).toBe(true);
+    await put('other.py', urlconf("path('', include('mysite.urls'))"));
+    result = await find();
+    expect(result.routes).toHaveLength(1);
+    expect(result.links).toEqual([{ requestIndex: 0, routeIndex: 0, sure: true, reasons: [] }]);
+  });
+  it.each([
+    ['<slug>/', ['목록 밖 주소 가능']],
+    ['<int:id>/', ['값 모양 모름', '목록 밖 주소 가능']],
+    ['<path:rest>', ['목록 밖 주소 가능']],
+  ])('keeps a known-prefix value route uncertain: %s', async (route, reasons) => {
+    await fixture(`path('${route}', view)`, "fetch('/polls/42/'); fetch('/polls/43/')");
+    const result = await find();
+    expect(result.routes[0].prefix).toBe('known');
+    expect(result.links).toHaveLength(2);
+    expect(result.links.every(link => !link.sure && JSON.stringify(link.reasons) === JSON.stringify(reasons))).toBe(true);
+    expect(result.notes.filter(note => note.startsWith('값 칸(<slug> 등)'))).toHaveLength(1);
+  });
+  it('does not announce possible missing routes when a value route has no links', async () => {
+    await fixture("path('<id>/', view)", "fetch('/different/')");
+    const result = await find();
+    expect(result.links).toEqual([]);
+    expect(result.notes.some(note => note.startsWith('값 칸(<slug> 등)'))).toBe(false);
+  });
+  it('requires a full path match for a known prefix', async () => {
+    await fixture("path('', view)", "fetch('/x/polls/')");
+    expect((await find()).links).toEqual([]);
+    await rm(path.join(root, 'mysite/settings.py'));
+    expect((await find()).links).toMatchObject([{ sure: false, reasons: ['앞부분 모름'] }]);
+  });
+  it('links the root slash without requiring a literal segment', async () => {
+    await fixture("path('', view)", "fetch('/')");
+    await put('mysite/urls.py', urlconf("path('', view)"));
+    expect((await find()).links).toMatchObject([{ sure: true, reasons: [] }]);
+  });
+  it('does not create a bare root when a Python read fails', async () => {
+    await fixture();
+    await put('outer.py', urlconf("path('outer/', include('mysite.urls'))"));
+    await put('unread.py', '# ' + 'x'.repeat(2048));
+    const limits = { ...MAP_LIMITS, bytes: 1024 };
+    const result = await find(limits);
+    expect(result.notes.some(note => note.includes('unread.py'))).toBe(true);
+    expect(result.routes.map(route => [route.path, route.prefix])).toEqual([['/outer/polls/', 'unknown']]);
+    expect(result.notes.some(note => note.includes('전체 앞 경로를 확정한 Django 주소가 없어'))).toBe(true);
+    await rm(path.join(root, 'mysite/settings.py'));
+    expect(result.routes.map(route => route.path)).toEqual((await find(limits)).routes.map(route => route.path));
+  });
+  it('ignores settings overrides in excluded test files', async () => {
+    await fixture();
+    await put('tests/test_urls.py', "override_settings(ROOT_URLCONF='other.urls')");
+    expect((await find()).links).toMatchObject([{ sure: true, reasons: [] }]);
+  });
+  it('keeps all uncertainty reasons in the documented order', async () => {
+    await fixture("path('item/<int:id>/', view), path('item/<int:id>/', view)", 'fetch(`/polls/${kind}/42/`, {method: method})');
+    await rm(path.join(root, 'mysite/settings.py'));
+    const result = await find();
+    expect(result.links).toHaveLength(2);
+    expect(result.links[0].reasons).toEqual(['앞부분 모름', '경로 값 모름', '값 모양 모름', '목록 밖 주소 가능', '방식 모름', '후보 여럿']);
+  });
+  it('leaves FastAPI, Flask and Express value-route reasons unchanged', async () => {
+    await put('fast.py', 'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/fast/{id}")\ndef view(): pass');
+    await put('flask_app.py', 'from flask import Flask\napp = Flask(__name__)\n@app.get("/flask/<id>")\ndef view(): pass');
+    await put('express.ts', "import express from 'express'; const app = express(); app.get('/express/:id', (req, res) => {});");
+    await put('web/app.ts', "fetch('/fast/1'); fetch('/flask/1'); fetch('/express/1');");
+    const result = await find();
+    expect(result.links).toHaveLength(3);
+    expect(result.links.every(link => !link.reasons.includes('목록 밖 주소 가능'))).toBe(true);
+  });
+  it.each([
+    "urlpatterns = [path('old/', view)]\nurlpatterns = []",
+    "routes = []\nurlpatterns = routes\nurlpatterns += [path('old/', view)]\nroutes.clear()",
+  ])('does not confirm routes from a replaceable root list: %s', async list => {
+    await fixture("path('', view)", "fetch('/old/')");
+    await put('mysite/urls.py', `from django.urls import path\ndef view(): pass\n${list}`);
+    expect((await find()).links).toMatchObject([{ sure: false, reasons: ['앞부분 모름'] }]);
+  });
+  it.each([
+    'from mysite.urls import *\nurlpatterns.clear()',
+    "from mysite import urls\ngetattr(urls, u'urlpatterns').clear()",
+    "f'{Reset():urlpatterns}'\nclass Reset:\n    def __format__(self, spec):\n        from mysite import urls\n        getattr(urls, spec).clear()\n        return ''",
+    'from types import ModuleType\nfrom mysite import urls\nmatch urls:\n    case ModuleType(urlpatterns=p):\n        p.clear()',
+    'from mysite import urls\nvars(urls).update(urlpatterns=[])',
+    'from inspect import signature\nfrom mysite import urls\nholder = [urls]\ndef take() -> holder[0].urlpatterns:\n    pass\nsignature(take).return_annotation.clear()',
+  ])('does not confirm routes when another file can change their list: %s', async patch => {
+    await fixture("path('', view)", "fetch('/old/')");
+    await put('mysite/urls.py', urlconf("path('old/', view)"));
+    await put('mysite/patch.py', patch);
+    expect((await find()).links).toMatchObject([{ sure: false, reasons: ['앞부분 모름'] }]);
+  });
+  it('uses the no-confirmed-path note for a root containing only regex routes', async () => {
+    await fixture();
+    await rm(path.join(root, 'polls/urls.py'));
+    await put('mysite/urls.py', "from django.urls import re_path\ndef view(): pass\nurlpatterns = [re_path('polls/', view)]");
+    const result = await find();
+    expect(result.routes).toMatchObject([{ prefix: 'unknown', unmatched: true }]);
+    expect(result.notes.some(note => note.includes('전체 앞 경로를 확정한 Django 주소가 없어'))).toBe(true);
   });
 });
