@@ -138,9 +138,10 @@ describe('Python nested FastAPI router registration', () => {
     expect(result.routes.every(route => route.prefix === 'unknown')).toBe(true);
   });
 
-  it('keeps nested Flask blueprints unresolved while preserving direct registration', () => {
+  it('also preserves direct and nested Flask registration in the shared reader', () => {
     const base = 'from flask import Flask, Blueprint\napp = Flask(__name__)\nouter = Blueprint("outer", __name__)\ninner = Blueprint("inner", __name__)\n@inner.route("/detail")\ndef detail():\n    pass\n';
     expect(find(base + 'app.register_blueprint(inner, url_prefix="/direct")\n').routes).toMatchObject([{ path: '/direct/detail', prefix: 'known' }]);
-    noConfirmed(base + 'outer.register_blueprint(inner, url_prefix="/nested")\napp.register_blueprint(outer, url_prefix="/api")\n');
+    expect(find(base + 'outer.register_blueprint(inner, url_prefix="/nested")\napp.register_blueprint(outer, url_prefix="/api")\n').routes)
+      .toMatchObject([{ path: '/api/nested/detail', prefix: 'known' }]);
   });
 });

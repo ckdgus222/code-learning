@@ -519,6 +519,7 @@ try {
   report.checks.push('Same-file FastAPI router prefixes and Flask blueprint prefix override, confirmed request links and original decorators');
   report.checks.push('Factory-local FastAPI router and Flask blueprint registration, uncertain composed requests and original evidence');
   report.checks.push('Nested FastAPI router prefixes, confirmed request link and original handler evidence');
+  report.checks.push('Nested Flask Blueprint prefix override, confirmed request link and original handler evidence');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

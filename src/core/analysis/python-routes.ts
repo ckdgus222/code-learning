@@ -445,13 +445,12 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
     const parent = called?.length === 2 ? owners.get(called[0]) ?? null : null;
     const child = owners.get(plainName(input) ?? '') ?? null;
     if (!parent && !child) continue;
-    if (parent?.app.router && parent.app.framework !== 'fastapi') unsafe.add(parent.id);
     if (child && input) registrationArguments.add(input.id);
     const prefix = writtenPrefix(keyword(args, framework === 'fastapi' ? 'prefix' : 'url_prefix'));
     const nameOption = keyword(args, 'name');
     const writtenName = framework === 'flask' ? nameOption ? plainString(nameOption) : child ? blueprintNames.get(child.id) ?? null : null : null;
     const name = writtenName !== null && writtenName.length <= ROUTE_LIMITS.name ? writtenName : null;
-    const settled = !!parent && !!child && (!parent.app.router || framework === 'fastapi') && child.app.router
+    const settled = !!parent && !!child && child.app.router
       && parent.app.framework === framework && child.app.framework === framework
       && node.parent?.type === 'expression_statement' && node.parent.parent?.id === scope.bodyId
       && parent.end < node.startIndex && child.end < node.startIndex
@@ -462,6 +461,8 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
   }
   if (!registrations.length) return original();
   const nestedFast = registrations.some(registration => registration.parent?.app.router && registration.parent.app.framework === 'fastapi');
+  const nestedFlask = registrations.some(registration => registration.parent?.app.router && registration.parent.app.framework === 'flask');
+  const nested = nestedFast || nestedFlask;
   const lastSetup = new Map([...owners.values()].map(owner => [owner.id, owner.lastRouteEnd]));
   for (const { parent, end } of registrations) if (parent) lastSetup.set(parent.id, Math.max(lastSetup.get(parent.id)!, end));
   const spend = (cost: number) => {
@@ -524,6 +525,7 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
       || path !== null && !!frameworks[child.app.framework].shape(path, redirectSlashes).unmatched };
   };
   const byChild = new Map<number, Registration[]>();
+  const byParent = new Map<number, Registration[]>();
   // Bound validation before output as well: output limits alone do not cap templates × registrations.
   const validations = new Map<number, Map<string, { settled: boolean; invalid: boolean }>>();
   const validate = (registration: Registration, templates: RouteTemplate[]) => {
@@ -556,13 +558,18 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
     const { parent, child, at } = registration;
     const templates = child ? byOwner.get(child.id) ?? [] : [];
     registration.settled &&= !!parent && !!child && !odd && !unsafe.has(parent.id) && !unsafe.has(child.id)
-      && lastSetup.get(child.id)! < at && (!nestedFast || spend(1));
-    const validation = registration.settled ? validate(registration, templates) : null;
+      && lastSetup.get(child.id)! < at && (!nested || spend(1));
+    // A nested Flask prefix can make an empty child rule valid only at the final app.
+    const validation = registration.settled ? validate(registration, nestedFlask && child?.app.framework === 'flask' ? [] : templates) : null;
     registration.settled &&= !!validation?.settled;
     if (child) {
       const group = byChild.get(child.id) ?? [];
       group.push(registration); byChild.set(child.id, group);
       if (!registration.settled) unresolved.add(child.id);
+    }
+    if (parent) {
+      const group = byParent.get(parent.id) ?? [];
+      group.push(registration); byParent.set(parent.id, group);
     }
     if (parent && (!registration.settled || validation?.invalid)) uncertainParents.add(parent.id);
   }
@@ -570,20 +577,50 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
   for (const registration of registrations) {
     if (registration.parent && registration.child && unresolved.has(registration.child.id)) uncertainParents.add(registration.parent.id);
   }
-  const allFastAppsUncertain = () => {
-    for (const owner of owners.values()) if (!owner.app.router && owner.app.framework === 'fastapi') uncertainParents.add(owner.id);
+  const allAppsUncertain = (framework: Framework) => {
+    for (const owner of owners.values()) if (!owner.app.router && owner.app.framework === framework) uncertainParents.add(owner.id);
   };
   const propagateUncertainty = () => {
-    if (!nestedFast) return;
+    if (!nested) return;
     const pending = [...uncertainParents], seen = new Set(pending);
     for (let index = 0; index < pending.length; index++) {
       for (const { parent } of byChild.get(pending[index]) ?? []) {
-        if (!spend(1)) { allFastAppsUncertain(); return; }
+        if (!spend(1)) {
+          if (nestedFast) allAppsUncertain('fastapi');
+          if (nestedFlask) allAppsUncertain('flask');
+          return;
+        }
         if (!parent || seen.has(parent.id)) continue;
         seen.add(parent.id); uncertainParents.add(parent.id); pending.push(parent.id);
       }
     }
   };
+  // Blueprint names are registered even when they have no routes. Check every occurrence per final app.
+  let flaskNamesCut = false;
+  for (const app of owners.values()) {
+    if (app.app.router || app.app.framework !== 'flask') continue;
+    const names = new Set<string>();
+    const pending = [{ ownerId: app.id, name: '', visited: [app.id], edgeIndex: 0 }];
+    while (pending.length) {
+      const state = pending.at(-1)!, edges = byParent.get(state.ownerId) ?? [];
+      if (state.edgeIndex >= edges.length) { pending.pop(); continue; }
+      if (state.visited.length > 8) { flaskNamesCut = true; work.cut = true; pending.pop(); continue; }
+      const edge = edges[state.edgeIndex++], child = edge.child;
+      if (!spend(1 + state.name.length + (edge.name?.length ?? 0))) { flaskNamesCut = true; break; }
+      if (!edge.settled || !child || edge.name === null || child.app.framework !== 'flask' || state.visited.includes(child.id)) {
+        uncertainParents.add(app.id); continue;
+      }
+      // Eight bounded literal names plus their separators; never construct an unbounded qualified name.
+      if (state.name.length + edge.name.length + 1 > 8 * ROUTE_LIMITS.name + 7) {
+        flaskNamesCut = true; work.cut = true; continue;
+      }
+      const name = `${state.name}.${edge.name}`.replace(/^\.+/, '');
+      if (!name || names.has(name)) { uncertainParents.add(app.id); continue; }
+      names.add(name);
+      pending.push({ ownerId: child.id, name, visited: [...state.visited, child.id], edgeIndex: 0 });
+    }
+    if (flaskNamesCut) { allAppsUncertain('flask'); break; }
+  }
   propagateUncertainty();
   const routes: Route[] = [], routers = new Set<Framework>();
   const outputOwners: number[] = [];
@@ -597,7 +634,11 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
     return { ...base, path, prefix, ...(template.unsupported || unmatched ? { unmatched: true as const } : shape) };
   };
   const finish = (cut: boolean) => {
-    if (nestedFast && (cut || scope.templatesCut)) allFastAppsUncertain();
+    if (cut || scope.templatesCut) {
+      if (nestedFast) allAppsUncertain('fastapi');
+      if (nestedFlask) allAppsUncertain('flask');
+    }
+    if (flaskNamesCut) allAppsUncertain('flask');
     propagateUncertainty();
     for (let index = 0; index < routes.length; index++) {
       if (uncertainParents.has(outputOwners[index])) routes[index] = { ...routes[index], prefix: 'unknown' };
@@ -605,9 +646,27 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
     return { routes, routers: [...routers], cut: cut || work.cut || !!scope.templatesCut,
       uncertain: registrations.some(registration => !registration.settled) || uncertainParents.size > 0 };
   };
-  const expandFast = (template: RouteTemplate) => {
-    type State = { ownerId: number; path: string | null; invalid: boolean; visited: number[]; edgeIndex: number };
-    const pending: State[] = [{ ownerId: template.ownerId, path: template.writtenPath, invalid: false, visited: [template.ownerId], edgeIndex: 0 }];
+  const flaskPath = (edges: Registration[], raw: string | null): string | null => {
+    let prefix: string | null = null;
+    for (let index = edges.length - 1; index >= 0; index--) {
+      const edge = edges[index], own = ownerPrefixes.get(edge.child!.id)!;
+      const selected = edge.prefix.kind === 'literal' ? edge.prefix : own;
+      if (selected.kind === 'dynamic') return null;
+      const next = selected.kind === 'literal' ? selected.text : null;
+      if (!spend(1 + (prefix?.length ?? 0) + (next?.length ?? 0))) return null;
+      if (next !== null && !short(next)) return null;
+      prefix = prefix !== null && next !== null ? prefix.replace(/\/+$/, '') + '/' + next.replace(/^\/+/, '') : prefix ?? next;
+      if (prefix !== null && !short(prefix)) return null;
+    }
+    if (raw === null || !short(raw)) return null;
+    if (!spend(1 + (prefix?.length ?? 0) + raw.length)) return null;
+    return bounded(prefix === null ? raw : raw ? prefix.replace(/\/+$/, '') + '/' + raw.replace(/^\/+/, '') : prefix);
+  };
+  const expandRegistered = (template: RouteTemplate) => {
+    const flask = template.base.framework === 'flask';
+    type State = { ownerId: number; path: string | null; invalid: boolean; visited: number[]; edgeIndex: number; flaskEdges: Registration[] };
+    const pending: State[] = [{ ownerId: template.ownerId, path: template.writtenPath, invalid: false,
+      visited: [template.ownerId], edgeIndex: 0, flaskEdges: [] }];
     let fallback = false;
     while (pending.length) {
       const state = pending.at(-1)!, edges = byChild.get(state.ownerId) ?? [];
@@ -625,17 +684,22 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
         if (parent) uncertainParents.add(parent.id);
         continue;
       }
-      const joined = composition(edge, { ...template, writtenPath: state.path });
+      const flaskEdges = flask ? [...state.flaskEdges, edge] : [];
+      const joined = flask ? parent.app.router ? { path: state.path, invalid: false }
+        : { path: flaskPath(flaskEdges, template.writtenPath), invalid: false }
+        : composition(edge, { ...template, writtenPath: state.path });
       const invalid = state.invalid || !joined || joined.invalid || joined.path === null || template.unsupported;
       if (invalid) uncertainParents.add(parent.id);
       if (parent.app.router) {
-        pending.push({ ownerId: parent.id, path: joined?.path ?? null, invalid, visited: [...state.visited, parent.id], edgeIndex: 0 });
+        pending.push({ ownerId: parent.id, path: joined?.path ?? null, invalid, visited: [...state.visited, parent.id], edgeIndex: 0, flaskEdges });
         continue;
       }
-      if (!append(rebuilt(template, joined?.path ?? null, rootPath ? 'unknown' : 'known', invalid), parent.id)) return false;
+      const malformed = joined?.path !== null && joined?.path !== undefined && !!frameworks[parent.app.framework].shape(joined.path, redirectSlashes).unmatched;
+      if (malformed) uncertainParents.add(parent.id);
+      if (!append(rebuilt(template, joined?.path ?? null, !flask && rootPath ? 'unknown' : 'known', invalid || malformed), parent.id)) return false;
     }
     if (!fallback) return true;
-    routers.add('fastapi');
+    routers.add(template.base.framework as Framework);
     return append(rebuilt(template, template.writtenPath !== null && short(template.writtenPath) ? template.writtenPath : null, 'unknown'), template.ownerId);
   };
   for (const template of templates) {
@@ -647,8 +711,8 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
       if (!append(route, owner.id)) return finish(true);
       continue;
     }
-    if (nestedFast && owner.app.framework === 'fastapi') {
-      if (!expandFast(template)) return finish(true);
+    if (nestedFast && owner.app.framework === 'fastapi' || nestedFlask && owner.app.framework === 'flask') {
+      if (!expandRegistered(template)) return finish(true);
       continue;
     }
     for (const registration of registrations) {
