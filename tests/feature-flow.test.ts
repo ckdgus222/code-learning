@@ -1097,3 +1097,22 @@ it.each(['<id>', '<int:id>'])('ends a Flask flow at its handler and retains rout
   expect(flow.notes.filter(note => note === 'Python 처리 함수 안에서 부르는 함수는 아직 따라가지 않아요.')).toHaveLength(1);
   expect(flow.limited).toBe(false);
 });
+
+it.each([
+  ['def results(request, question_id): return question_id', 'views.results', 'results'],
+  ['class Detail(View):\n    def get(self, request, question_id): return question_id', 'views.Detail.as_view()', 'Detail.get'],
+])('builds Django handler flow and detects changed view files: %s', async (source, view, name) => {
+  await put('polls/__init__.py', '');
+  await put('polls/views.py', source);
+  await put('polls/urls.py', `from django.urls import path\nfrom . import views\nurlpatterns = [path('<int:question_id>/results/', ${view})]`);
+  await put('web/app.ts', "export async function loadResults() { return fetch('/polls/5/results/'); }");
+  const { project, routes, flow } = await analyze();
+  const back = flow.nodes.filter(node => node.side === 'back');
+  const request = flow.nodes.find(node => node.side === 'request')!;
+  expect(back).toHaveLength(1);
+  expect(back[0]).toMatchObject({ name, relativePath: 'polls/views.py' });
+  expect(flow.nodes.map(node => node.name)).toEqual(expect.arrayContaining(['loadResults', 'GET /polls/5/results/', name]));
+  expect(flow.edges.find(edge => edge.kind === 'route')).toMatchObject({ from: request.id, to: back[0].id, sure: false, reasons: ['앞부분 모름', '값 모양 모름'] });
+  await put('polls/views.py', source + '\n# changed');
+  await expect(buildFeatureFlow(root, project.id, project.files, routes, 0)).rejects.toMatchObject({ code: 'CHANGED' });
+});

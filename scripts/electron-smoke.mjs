@@ -59,6 +59,13 @@ await mkdir(path.join(fastapiFixture, 'web'), { recursive: true });
 await mkdir(path.join(fastapiFixture, 'server'), { recursive: true });
 await writeFile(path.join(fastapiFixture, 'web/app.ts'), "export async function loadUser() { return fetch('/users/1'); }");
 await writeFile(path.join(fastapiFixture, 'server/main.py'), 'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/users/{user_id}")\nasync def read_user(user_id: int):\n    return find_user(user_id)\ndef find_user(user_id):\n    return user_id\n');
+const djangoFixture = path.join(temporary, 'Django 흐름 프로젝트');
+await mkdir(path.join(djangoFixture, 'web'), { recursive: true });
+await mkdir(path.join(djangoFixture, 'polls'), { recursive: true });
+await writeFile(path.join(djangoFixture, 'web/app.ts'), "export async function loadResults() { return fetch('/polls/5/results/'); }");
+await writeFile(path.join(djangoFixture, 'polls/__init__.py'), '');
+await writeFile(path.join(djangoFixture, 'polls/urls.py'), "from django.urls import path\nfrom . import views\nurlpatterns = [path('<int:question_id>/results/', views.results), path('', views.index)]\n");
+await writeFile(path.join(djangoFixture, 'polls/views.py'), 'def index(request): return 1\ndef results(request, question_id): return question_id\n');
 const flaskFixture = path.join(temporary, 'Flask 흐름 프로젝트');
 await mkdir(path.join(flaskFixture, 'web'), { recursive: true });
 await mkdir(path.join(flaskFixture, 'server'), { recursive: true });
@@ -3663,6 +3670,39 @@ try {
     await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
     await page.screenshot({ path: path.join(artifacts, 'flask-flow.png') });
   });
+  await check('Django flow: unknown prefix, typed route and view function navigation', async () => {
+    await dialogTo(djangoFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: 'Django 흐름 프로젝트', exact: true }).waitFor();
+    await openServerFeatures();
+    await page.getByRole('region', { name: '기능 목록', exact: true }).getByRole('listitem')
+      .filter({ hasText: '받기 · /<int:question_id>/results/' }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+    const disclosure = page.locator('details').filter({ has: page.locator('summary', { hasText: /^전체 그림과 단계 보기$/ }) });
+    await disclosure.waitFor();
+    if (await disclosure.getAttribute('open') === null) await disclosure.locator(':scope > summary').click();
+    const diagram = page.getByTestId('feature-flow-canvas');
+    await diagram.getByRole('group', { name: 'web/app.ts · loadResults', exact: true }).waitFor();
+    await diagram.getByRole('group', { name: 'web/app.ts · GET /polls/5/results/', exact: true }).waitFor();
+    await diagram.getByRole('group', { name: 'polls/views.py · results', exact: true }).waitFor();
+    await diagram.locator('.feature-arrow--inferred .react-flow__edge-path').waitFor({ state: 'attached' });
+    const steps = page.getByRole('region', { name: '기능 흐름 단계', exact: true });
+    const requestStep = steps.getByTestId('feature-step').filter({ has: page.locator('b', { hasText: /^GET \/polls\/5\/results\/$/ }) });
+    await requestStep.getByText('추정', { exact: true }).waitFor();
+    assert.match(await requestStep.innerText(), /앞부분 모름/);
+    assert.match(await requestStep.innerText(), /값 모양 모름/);
+    const step = steps.getByTestId('feature-step')
+      .filter({ has: page.locator('b', { hasText: /^results$/ }) });
+    await step.getByRole('button', { name: '코드 보기', exact: true }).click();
+    await page.getByRole('heading', { name: 'polls/views.py', exact: true }).waitFor();
+    assert.match(await page.getByTestId('evidence-range').innerText(), /polls\/views.py · 2–2줄/);
+    await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    await step.getByRole('button', { name: '이 함수 흐름', exact: true }).click();
+    await page.getByRole('heading', { name: '함수 안 순서', exact: true }).waitFor();
+    assert.equal(await page.getByRole('navigation', { name: '함수와 단계', exact: true })
+      .getByRole('button', { name: 'results', exact: true }).getAttribute('aria-pressed'), 'true');
+    await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+    await page.screenshot({ path: path.join(artifacts, 'django-flow.png') });
+  });
   await check('Python reader: methods, steps, colours, limits and function flow; TS keeps its AI card and hint', async () => {
     await dialogTo(pythonFixture);
     await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
@@ -3684,7 +3724,7 @@ try {
     await page.getByRole('button', { name: '다른 조건 확인', exact: true }).click();
     await page.waitForFunction(() => [...document.querySelectorAll('.cm-content .cm-line span')].some(span =>
       getComputedStyle(span).color !== getComputedStyle(span.closest('.cm-content')).color));
-    await page.getByText('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도의 import 연결과 FastAPI·Flask 주소의 기능 흐름(처리 함수까지)을 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 처리 함수 안의 호출 따라가기는 아직 TypeScript·JavaScript만 지원해요.', { exact: true }).waitFor();
+    await page.getByText('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도의 import 연결과 FastAPI·Flask·Django 주소의 기능 흐름(처리 함수까지)을 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 처리 함수 안의 호출 따라가기는 아직 TypeScript·JavaScript만 지원해요.', { exact: true }).waitFor();
     assert.equal(await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).count(), 0);
     await page.getByText('부르는 곳·값 찾기는 아직 TypeScript·JavaScript만 지원해요. 단계는 ‘이 함수 흐름으로 보기’에서 하나씩 볼 수 있어요.', { exact: true }).waitFor();
     await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();

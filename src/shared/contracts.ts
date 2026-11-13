@@ -373,7 +373,7 @@ export interface Route {
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'ALL';
   path: string | null;
   prefix: 'known' | 'unknown';
-  framework: 'nest' | 'next' | 'express' | 'fastapi' | 'flask';
+  framework: 'nest' | 'next' | 'express' | 'fastapi' | 'flask' | 'django';
   handler: CallTarget;
   basis: { text: string; range: ValueSite };
   /** Path parameters for matching requests: Next, FastAPI and Flask spell them differently from `:name`. */

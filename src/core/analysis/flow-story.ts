@@ -12,7 +12,9 @@ export function codeNameOf(route: Route): string {
 
 export function groupNameOf(route: Route, relativePath: string): string {
   if (route.framework === 'next' || route.framework === 'express') return route.path?.split('/').find(Boolean) ?? '주소 모름';
-  return relativePath.split('/').at(-1)?.replace(/\.[^.]+$/, '').replace(/\.(?:controller|routes?|router|handler)$/, '') || '이름 모름';
+  const parts = relativePath.split('/');
+  if (route.framework === 'django' && parts.at(-1) === 'views.py' && parts.length > 1) return parts.at(-2)!;
+  return parts.at(-1)?.replace(/\.[^.]+$/, '').replace(/\.(?:controller|routes?|router|handler)$/, '') || '이름 모름';
 }
 
 const kindLabels: Record<StoryStep['kind'], string> = {

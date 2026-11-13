@@ -1024,7 +1024,7 @@ export function FlowLimits({ project, routes, flow, locked, onCode }: {
     <p className="hint">코드 글자로 찾은 흐름이에요. 실행 순서나 실제 요청을 확인한 것은 아니에요. AI 정리는 동의한 목록만 보내요.</p>
     <section aria-label="찾은 범위와 한계">
       <h3>찾은 범위와 한계</h3>
-      <p>TS/JS의 NestJS·Next API·Express 주소, Python FastAPI·Flask 주소(@app.get·@app.route 같은 데코레이터)와 fetch·axios 요청을 찾아요. 그 밖의 언어·서버 방식, app.use·include_router·register_blueprint의 주소 연결, Python 처리 함수 안의 호출은 따라가지 않아요. tsconfig 경로 별칭은 따라가요. 추정은 확실한 연결 수에 넣지 않아요. 실패는 throw new …만, 저장소는 Prisma 모양과 흔한 DB 클라이언트·TypeORM Repository 이름으로 찾아요(이름으로 찾은 것은 추정, Mongoose·Drizzle 등은 아직 못 찾아요).</p>
+      <p>TS/JS의 NestJS·Next API·Express 주소, Python FastAPI·Flask·Django 주소(@app.get·@app.route 같은 데코레이터, urlpatterns의 path)와 fetch·axios 요청을 찾아요. 그 밖의 언어·서버 방식, app.use·include_router·register_blueprint·include의 주소 연결, Python 처리 함수 안의 호출은 따라가지 않아요. tsconfig 경로 별칭은 따라가요. 추정은 확실한 연결 수에 넣지 않아요. 실패는 throw new …만, 저장소는 Prisma 모양과 흔한 DB 클라이언트·TypeORM Repository 이름으로 찾아요(이름으로 찾은 것은 추정, Mongoose·Drizzle 등은 아직 못 찾아요).</p>
       {(routes?.limited || flow?.limited) && <p>일부 흐름만 확인했어요.</p>}
       {[...new Set([...(routes?.notes ?? []), ...(flow?.notes ?? [])])].map(note => <p key={note} className="hint">{note}</p>)}
     </section>

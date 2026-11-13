@@ -931,3 +931,176 @@ describe('Flask project routes and typed links', () => {
     expect((await find()).links[0].reasons).toEqual(['앞부분 모름', '경로 값 모름', '값 모양 모름', '방식 모름', '후보 여럿']);
   });
 });
+
+describe('Django routes across project files', () => {
+  const views = 'def index(request): return 1\ndef results(request, question_id): return question_id\n';
+  const urls = "from django.urls import path\nfrom . import views\nurlpatterns = [path('<int:question_id>/results/', views.results), path('', views.index)]\n";
+  async function fixture(urlconf = urls, source = views) {
+    await put('polls/__init__.py', '');
+    await put('polls/urls.py', urlconf);
+    await put('polls/views.py', source);
+  }
+  it('names unmatched Django routes in the general note only when no file or module note covers them', async () => {
+    const general = (notes: string[]) => notes.filter(note => note.startsWith('Python 서버 주소 가운데 정확히 맞춰 볼 수 없는 것'));
+    const odd = (notes: string[]) => notes.filter(note => note.includes('실행 중에 이름·속성이나 주소 규칙을'));
+    const mixed = urls.replace("path('', views.index)", "path('v<int:n>/', views.index)");
+    await fixture(mixed);
+    let result = await find();
+    expect(result.routes.map(route => !!route.unmatched)).toEqual([false, true]);
+    expect(general(result.notes)).toHaveLength(1);
+    await fixture(mixed + 'exec(code)\n');
+    result = await find();
+    expect(result.routes.every(route => route.unmatched)).toBe(true);
+    expect(general(result.notes)).toEqual([]);
+    expect(odd(result.notes)).toEqual(['polls/urls.py: 실행 중에 이름·속성이나 주소 규칙을 바꿀 수 있는 코드가 있어, 이 파일의 Python 서버 주소는 요청과 잇지 않았어요.']);
+    await fixture(mixed, views + "globals()['index'] = other\n");
+    result = await find();
+    expect(general(result.notes)).toEqual([]);
+    expect(odd(result.notes)).toEqual(['polls/views.py: 실행 중에 이름·속성이나 주소 규칙을 바꿀 수 있는 코드가 있어, 이 파일의 Python 서버 주소는 요청과 잇지 않았어요.']);
+    await fixture(mixed);
+    await put('django.py', '');
+    result = await find();
+    expect(general(result.notes)).toEqual([]);
+    expect(result.notes.filter(note => note.includes('django라는 이름의 Python 모듈'))).toHaveLength(1);
+  });
+  it('writes one note for a file that is unusual for both a decorator framework and Django', async () => {
+    await put('polls/__init__.py', '');
+    await put('polls/views.py', views);
+    await put('polls/urls.py', urls + "from flask import Flask\napp = Flask(__name__)\n@app.route('/health')\ndef health(): pass\nexec(code)\n");
+    const result = await find();
+    expect(result.routes.map(route => route.framework).sort()).toEqual(['django', 'django', 'flask']);
+    expect(result.routes.every(route => route.unmatched)).toBe(true);
+    expect(result.notes.filter(note => note.includes('실행 중에 이름·속성이나 주소 규칙을'))).toHaveLength(1);
+  });
+  it('keeps handler and declaration files distinct and makes every link uncertain', async () => {
+    await fixture();
+    await put('web/app.ts', "function load() { fetch('/polls/5/results/'); fetch('/6/results/'); fetch('/'); fetch('/unrelated'); }");
+    const project = await scanProject(root, randomUUID());
+    const result = await findProjectRoutes(root, project.id, project.files);
+    const filePath = (id: string) => project.files.find(file => file.id === id)!.relativePath;
+    expect(result.routes.map(route => [route.framework, route.prefix, route.path, route.handler.name, filePath(route.handler.fileId), filePath(route.basis.range.fileId)]))
+      .toEqual([['django', 'unknown', '/<int:question_id>/results/', 'results', 'polls/views.py', 'polls/urls.py'], ['django', 'unknown', '/', 'index', 'polls/views.py', 'polls/urls.py']]);
+    expect(result.links).toHaveLength(2);
+    expect(result.links.every(link => !link.sure && link.routeIndex === 0)).toBe(true);
+    expect(result.links[0].reasons).toEqual(['앞부분 모름', '값 모양 모름']);
+    expect(result.notes.filter(note => note.startsWith('Django 주소는 include()'))).toHaveLength(1);
+    expect(result.notes.some(note => note.startsWith('앞부분을 모르고 글자 칸도 없는 주소'))).toBe(true);
+  });
+  it.each([
+    ['from . import views', 'views.results'], ['from .views import results', 'results'],
+    ['from .views import results as r', 'r'], ['from polls import views', 'views.results'],
+    ['from polls.views import results', 'results'], ['import polls.views as v', 'v.results'],
+    ['def results(request): pass', 'results'],
+  ])('resolves a single certain view: %s', async (imports, view) => {
+    await fixture(`from django.urls import path\n${imports}\nurlpatterns = [path('results/', ${view})]`);
+    expect((await find()).routes).toMatchObject([{ framework: 'django', handler: { name: 'results' } }]);
+  });
+  it.each([
+    ['missing', '', 'from .missing import results', 'results'],
+    ['missing name', '', 'from .views import missing', 'missing'],
+    ['duplicate', 'def results(): pass\ndef results(): pass', 'from . import views', 'views.results'],
+    ['syntax error', 'def results(', 'from . import views', 'views.results'],
+    ['view machinery', views + "__import__('x')", 'from . import views', 'views.results'],
+    ['url machinery', views, "from . import views\n__import__('x')", 'views.results'],
+    ['url star', views, 'from . import views\nfrom .other import *', 'views.results'],
+    ['view star', views + 'from .other import *', 'from . import views', 'views.results'],
+    ['lambda', views, 'from . import views', 'lambda r: r'],
+    ['import rebound', views, 'from . import views\nviews = other', 'views.results'],
+  ])('skips unresolved view with an exact count: %s', async (_name, source, imports, view) => {
+    await fixture(`from django.urls import path\n${imports}\nurlpatterns = [path('a', ${view}), path('b', ${view})]`, source);
+    const result = await find();
+    expect(result.routes).toEqual([]);
+    expect(result.notes.filter(note => note.startsWith('Django 주소 2개는'))).toHaveLength(1);
+    expect(result.notes.some(note => note.includes('실행 중에 이름·속성'))).toBe(false);
+  });
+  it.each(['conflict', 'initializer machinery', 'initializer value', 'external package'])('does not guess through %s', async kind => {
+    await fixture();
+    if (kind === 'conflict') await put('polls/views/__init__.py', views);
+    if (kind === 'initializer machinery') await put('polls/__init__.py', 'def __getattr__(name): pass');
+    if (kind === 'initializer value') await put('polls/__init__.py', 'views = 1');
+    if (kind === 'external package') {
+      await put('polls/urls.py', '');
+      await put('mysite/urls.py', urls.replace('from . import views', 'from polls import views'));
+    }
+    const result = await find();
+    expect(result.routes).toEqual([]);
+    expect(result.notes.filter(note => note.startsWith('Django 주소 2개는'))).toHaveLength(1);
+  });
+  it('reads direct class handlers as distinct methods', async () => {
+    await fixture("from django.urls import path\nfrom . import views\nurlpatterns = [path('detail/', views.Detail.as_view())]", 'class Detail(View):\n    def get(self, request): pass\n    def post(self, request): pass');
+    expect((await find()).routes.map(route => [route.method, route.handler.name])).toEqual([['GET', 'Detail.get'], ['POST', 'Detail.post']]);
+  });
+  it.each([
+    ['class Detail(View):\n    def get(self): pass\n    def as_view(cls): return actual', 'views.Detail.as_view()'],
+    ['class Detail(View):\n    def get(self): pass', 'views.Detail.as_view(dispatch=actual)'],
+    ['class Detail(ListView):\n    model = X', 'views.Detail.as_view()'],
+    ['class Detail(View):\n    def get(self): pass', 'views.Detail'],
+    ['def Detail(): pass', 'views.Detail.as_view()'],
+  ])('skips unsupported class view %s / %s', async (source, expression) => {
+    await fixture(`from django.urls import path\nfrom . import views\nurlpatterns = [path('detail/', ${expression})]`, source);
+    const result = await find();
+    expect(result.routes).toEqual([]);
+    expect(result.notes.some(note => note.startsWith('Django 주소 1개는'))).toBe(true);
+  });
+  it.each([['@require_POST\n', ['POST']], ['', ['GET', 'POST', 'DELETE']]])('restricts supported request methods: %s', async (decorator, expected) => {
+    await fixture("from django.urls import path\nfrom . import views\nurlpatterns = [path('results/', views.results)]", decorator + 'def results(request): pass');
+    await put('web/app.ts', "fetch('/polls/results/'); fetch('/polls/results/', { method: 'POST' }); fetch('/polls/results/', { method: 'DELETE' });");
+    const result = await find();
+    expect(result.links.flatMap(link => result.requests[link.requestIndex].methods)).toEqual(expected);
+    expect(result.links.every(link => !link.sure)).toBe(true);
+  });
+  it('does not turn includes or admin views into routes', async () => {
+    await put('mysite/urls.py', "from django.urls import path, include\nurlpatterns = [path('polls/', include('polls.urls')), path('admin/', admin.site.urls)]");
+    expect((await find()).routes).toEqual([]);
+  });
+  it.each(['django.py', 'django/__init__.py', 'examples/django/x.py'])('checks only actual shadowing modules: %s', async shadow => {
+    await fixture(); await put(shadow, '');
+    await put('fast.py', 'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/fast")\ndef fast(): pass');
+    await put('flask_app.py', 'from flask import Flask\napp = Flask(__name__)\n@app.get("/flask")\ndef flask_view(): pass');
+    const result = await find();
+    const blocked = shadow !== 'examples/django/x.py';
+    expect(result.routes.filter(route => route.framework === 'django').every(route => !!route.unmatched === blocked)).toBe(true);
+    expect(result.routes.filter(route => route.framework !== 'django').every(route => !route.unmatched)).toBe(true);
+    expect(result.notes.filter(note => note.startsWith('프로젝트 안에 django라는'))).toHaveLength(blocked ? 1 : 0);
+  });
+  it.each(['urls', 'views'])('keeps odd %s routes visible and unrelated routes matchable', async odd => {
+    await fixture(urls + (odd === 'urls' ? '\nexec(code)' : ''), views + (odd === 'views' ? "\nglobals()['results'] = other" : ''));
+    await put('other/urls.py', "from django.urls import path\ndef results(request): pass\nurlpatterns = [path('safe/', results)]");
+    await put('web/app.ts', "fetch('/polls/5/results/'); fetch('/other/safe/');");
+    const result = await find();
+    expect(result.routes.filter(route => route.path !== '/safe/').every(route => route.unmatched && !route.segments && !route.typed)).toBe(true);
+    expect(result.links).toHaveLength(1);
+    expect(result.routes[result.links[0].routeIndex].path).toBe('/safe/');
+    expect(result.notes.filter(note => note.includes('실행 중에 이름·속성'))).toEqual([`polls/${odd}.py: 실행 중에 이름·속성이나 주소 규칙을 바꿀 수 있는 코드가 있어, 이 파일의 Python 서버 주소는 요청과 잇지 않았어요.`]);
+  });
+  it('shares route limits and bounds retained entries project-wide', async () => {
+    await fixture('from django.urls import path\nfrom . import views\nurlpatterns = [' + Array.from({ length: 6000 }, (_, i) => `path('r${i}/', views.results)`).join(',') + ']');
+    await put('server.ts', "@Controller('health') class Health { @Get() read() {} }");
+    const result = await find();
+    expect(result.routes).toHaveLength(1000);
+    expect(result.routes.filter(route => route.framework === 'django')).toHaveLength(999);
+    expect(result.limited).toBe(true);
+    expect(result.notes).toContain('Django 주소 항목이 너무 많아 처음 5,000개만 봤어요.');
+    expect(result.notes.some(note => note.startsWith('주소·요청·연결이 너무 많아'))).toBe(true);
+  });
+  it('reports the shared view candidate limit', async () => {
+    for (let file = 0; file < 4; file++) await put(`views${file}.py`, Array.from({ length: 5001 }, (_, i) => `def view${i}(): pass`).join('\n'));
+    const result = await find();
+    expect(result.limited).toBe(true);
+    expect(result.notes).toContain('Python 함수·클래스가 너무 많아 일부 Django 뷰는 찾지 못했을 수 있어요.');
+  });
+  it('excludes Python tests and preserves other frameworks and requests', async () => {
+    await put('fast.py', 'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/fast")\ndef fast(): pass');
+    await put('flask_app.py', 'from flask import Flask\napp = Flask(__name__)\n@app.get("/flask")\ndef flask_view(): pass');
+    await put('server.ts', server); await put('web/app.ts', "fetch('/fast'); fetch('/flask');");
+    const before = await find();
+    await fixture();
+    const local = "from django.urls import path\ndef results(): pass\nurlpatterns = [path('test/', results)]";
+    await put('tests/urls.py', local); await put('test_urls.py', local);
+    const after = await find();
+    expect(after.routes.filter(route => route.framework !== 'django').map(route => [route.path, route.method, route.framework, route.handler.name]))
+      .toEqual(before.routes.map(route => [route.path, route.method, route.framework, route.handler.name]));
+    expect(after.requests.map(request => [request.path, request.methods])).toEqual(before.requests.map(request => [request.path, request.methods]));
+    expect(after.routes.filter(route => route.framework === 'django')).toHaveLength(2);
+  });
+});

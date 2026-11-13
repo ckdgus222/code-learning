@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pythonRoutes } from '../src/core/analysis/python-routes';
+import { PYTHON_WALK_DEPTH, pythonRoutes, walkPython } from '../src/core/analysis/python-routes';
 import { analyzeSource } from '../src/core/analysis/syntax';
 import { matchFunction } from '../src/renderer/map-layout';
 import type { SourceView } from '../src/shared/contracts';
@@ -7,7 +7,7 @@ import type { SourceView } from '../src/shared/contracts';
 const file = { id: 'python', relativePath: 'server/main.py', size: 0 };
 const setup = 'from fastapi import FastAPI, APIRouter\nimport fastapi as f\napp = FastAPI()\n';
 const handler = '@app.get("/users/{user_id}")\nasync def read_user(user_id: int):\n    return find_user(user_id)\n';
-const find = (text = setup + handler, nodes = 100_000, routes = 1000) => pythonRoutes(file, text, 'hash', nodes, routes);
+const find = (text = setup + handler, nodes = 100_000, routes = 1000) => pythonRoutes(file, walkPython(text, file.relativePath, nodes), 'hash', routes);
 
 describe('FastAPI declarations', () => {
   it.each(['', '@app.post("/users/{user_id}")\n'])('uses the analyzer function range, including every decorator: %s', extra => {
@@ -91,6 +91,33 @@ describe('FastAPI declarations', () => {
   });
   it('normalizes decorator names', () => {
     expect(find(setup + handler.replace('@app.get', '@ａｐｐ.ｇｅｔ')).routes).toHaveLength(1);
+  });
+});
+
+describe('deeply nested Python files', () => {
+  const walk = (text: string) => walkPython(text, file.relativePath, 200_000);
+  it('stops at a fixed depth and reports the file as partly read', () => {
+    expect(walk('x = ' + '['.repeat(50) + ']'.repeat(50)).complete).toBe(true);
+    expect(walk('x = ' + '['.repeat(150) + ']'.repeat(150)).complete).toBe(false);
+    expect(walk('x = y' + '.a'.repeat(150)).complete).toBe(false);
+    expect(PYTHON_WALK_DEPTH).toBe(100);
+  });
+  it.each([
+    ['lists nested 20,000 deep', 'x = ' + '['.repeat(20_000) + ']'.repeat(20_000)],
+    ['an attribute chain 20,000 long', 'x = app' + '.a'.repeat(20_000)],
+    ['calls nested 5,000 deep', 'x = ' + 'f('.repeat(5000) + ')'.repeat(5000)],
+  ])('reads %s quickly and links none of the file', (_name, deep) => {
+    // Each of these took between 5 and 37 s before the depth limit: finding a parent costs as much as the node is deep.
+    const started = performance.now();
+    const result = find(setup + handler + deep + '\n', 200_000);
+    expect(performance.now() - started).toBeLessThan(3000);
+    expect(result).toMatchObject({ complete: false, odd: false });
+    expect(result.routes.every(route => route.unmatched)).toBe(true);
+  });
+  it('accepts a type written a few levels deep and no deeper', () => {
+    const typed = (levels: number) => find(`from fastapi import FastAPI\napp: ${'('.repeat(levels)}FastAPI${')'.repeat(levels)} = FastAPI()\n${handler}`).routes;
+    expect(typed(2)).toHaveLength(1);
+    expect(typed(12)).toEqual([]);
   });
 });
 

@@ -40,7 +40,7 @@ class Empty:
     expect(result.symbols[0].params).toBe('(x: int = 1, *args, **kwargs)');
     expect(slice(text, result.symbols[0].evidence)).toMatch(/^@decorate\ndef f/);
     expect(slice(text, result.symbols[4].evidence)).toMatch(/^@staticmethod\n    async def decorated/);
-    expect(result.warnings[1]).toBe('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도의 import 연결과 FastAPI·Flask 주소의 기능 흐름(처리 함수까지)을 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 처리 함수 안의 호출 따라가기는 아직 TypeScript·JavaScript만 지원해요.');
+    expect(result.warnings[1]).toBe('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도의 import 연결과 FastAPI·Flask·Django 주소의 기능 흐름(처리 함수까지)을 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 처리 함수 안의 호출 따라가기는 아직 TypeScript·JavaScript만 지원해요.');
   });
 
   it('collects classes with and without methods and preserves their base lists and ranges', () => {

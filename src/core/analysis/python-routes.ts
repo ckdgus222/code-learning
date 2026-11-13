@@ -28,7 +28,7 @@ const argumentsOf = (node: Node) => node.childForFieldName('arguments')?.namedCh
 const keyword = (args: Node[], name: string) => args.find(arg => arg.type === 'keyword_argument' && nameOf(arg.childForFieldName('name')) === name)?.childForFieldName('value');
 const spread = (args: Node[]) => args.some(arg => arg.type === 'list_splat' || arg.type === 'dictionary_splat');
 const methods = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
-const machinery = new Set(['globals', 'locals', 'exec', 'eval', '__import__', '__builtins__']);
+export const pythonRouteMachinery = new Set(['globals', 'locals', 'exec', 'eval', '__import__', '__builtins__']);
 
 function factoryKind(framework: Framework, name: string): 'app' | 'router' | null {
   if (name === frameworks[framework].app) return 'app';
@@ -36,7 +36,7 @@ function factoryKind(framework: Framework, name: string): 'app' | 'router' | nul
   return null;
 }
 
-function plainString(node: Node | null | undefined): string | null {
+export function plainString(node: Node | null | undefined): string | null {
   if (node?.type !== 'string' || node.text.includes('\\')) return null;
   const quote = node.firstNamedChild?.text;
   // A bare quote: every prefix (f, r, b, u and their mixes) changes what the text means.
@@ -44,9 +44,14 @@ function plainString(node: Node | null | undefined): string | null {
   return node.text.slice(quote.length, -quote.length);
 }
 
-function typePosition(node: Node): boolean {
+export function typePosition(node: Node): boolean {
   let current = node;
-  while (current.parent && ['attribute', 'generic_type', 'type_parameter', 'parenthesized_expression'].includes(current.parent.type)) current = current.parent;
+  // A written type is a few levels at most (`Optional[f.FastAPI]`); a longer climb is not followed.
+  for (let level = 0; level < 8; level++) {
+    const parent = current.parent;
+    if (!parent || !['attribute', 'generic_type', 'type_parameter', 'parenthesized_expression'].includes(parent.type)) break;
+    current = parent;
+  }
   return current.parent?.type === 'type';
 }
 
@@ -89,6 +94,47 @@ function flaskShape(path: string): Shape {
       continue;
     }
     if (args || index !== parts.length - 1 || path.endsWith('/')) return { unmatched: true };
+    segments.push({ catchAll: name, optional: false });
+  }
+  return { segments, ...(typed ? { typed: true } : {}) };
+}
+
+/** A parameter of a function or lambda: a local name, not the module's. */
+export function parameterPosition(node: Node): boolean {
+  const parent = node.parent;
+  return !!parent && (parent.type === 'parameters' || parent.type === 'lambda_parameters'
+    || parent.type === 'typed_parameter' && parent.childForFieldName('type')?.id !== node.id
+    || ['default_parameter', 'typed_default_parameter'].includes(parent.type) && parent.childForFieldName('name')?.id === node.id
+    || ['list_splat_pattern', 'dictionary_splat_pattern'].includes(parent.type)
+      && ['parameters', 'lambda_parameters', 'typed_parameter'].includes(parent.parent?.type ?? ''));
+}
+
+/** A name written as an attribute, a keyword or a part of an import: it neither reads nor binds the variable of that name. */
+export function labelPosition(node: Node): boolean {
+  const parent = node.parent;
+  return !!parent && (parent.type === 'attribute' && parent.childForFieldName('attribute')?.id === node.id
+    || parent.type === 'keyword_argument' && parent.childForFieldName('name')?.id === node.id
+    || parent.type === 'dotted_name' && ['import_statement', 'import_from_statement', 'aliased_import', 'relative_import'].includes(parent.parent?.type ?? '')
+    || parent.type === 'aliased_import');
+}
+
+/** Django converters occupy a whole segment; a path converter consumes a nonempty suffix. */
+export function djangoShape(path: string): Shape {
+  const parts = path.slice(1).split('/');
+  if (path.endsWith('/')) parts.pop();
+  const segments: NonNullable<Route['segments']> = [];
+  let typed = false;
+  for (const [index, part] of parts.entries()) {
+    if (/^[A-Za-z0-9._~-]+$/.test(part)) { segments.push({ text: part }); continue; }
+    const param = part.match(/^<(?:(str|int|slug|uuid|path):)?([A-Za-z_][A-Za-z0-9_]*)>$/);
+    if (!param) return { unmatched: true };
+    const [, converter, name] = param;
+    if (converter !== 'path') {
+      segments.push({ param: name });
+      typed ||= !!converter && converter !== 'str';
+      continue;
+    }
+    if (index !== parts.length - 1 || path.endsWith('/')) return { unmatched: true };
     segments.push({ catchAll: name, optional: false });
   }
   return { segments, ...(typed ? { typed: true } : {}) };
@@ -139,26 +185,43 @@ function readRoute(app: App, args: Node[], method: string, rootPath: boolean, re
   return { path, prefix, selected, shape: unmatched ? { unmatched: true as const } : shape };
 }
 
-/** The FastAPI and Flask routes one Python file declares. Nothing is run: only decorators on module-level functions are read. */
-export function pythonRoutes(file: ProjectFile, text: string, hash: string, nodeBudget: number, maxRoutes: number):
-  { routes: Route[]; routers: Framework[]; complete: boolean; cut: boolean; odd: boolean } {
-  const root = parse(text, file.relativePath);
+/**
+ * How deep the walk goes. Finding a node's parent costs as much as the node is deep, so a small file nested
+ * tens of thousands of levels would take minutes; real code stays below 40 levels.
+ */
+export const PYTHON_WALK_DEPTH = 100;
+
+/** One parse and one bounded walk of a Python file, shared by every reader of its routes. */
+export function walkPython(text: string, relativePath: string, nodeBudget: number) {
+  const root = parse(text, relativePath);
   // 1. Every node up to the budget, each marked as module scope or inside a function or class body.
-  const nodes: { node: Node; module: boolean }[] = [];
-  const pending = [{ node: root, module: true }];
+  // The type is read once here: every reader filters by it, and each read of a node's property is a call into the parser.
+  const nodes: { node: Node; module: boolean; type: string }[] = [];
+  const pending = [{ node: root, module: true, depth: 0 }];
+  let tooDeep = false;
   // Visit siblings lazily so even a very wide argument list respects the node budget.
   while (pending.length && nodes.length < nodeBudget) {
-    const { node, module: outerModule } = pending.pop()!;
-    if (node.nextNamedSibling) pending.push({ node: node.nextNamedSibling, module: outerModule });
+    const { node, module: outerModule, depth } = pending.pop()!;
+    if (node.nextNamedSibling) pending.push({ node: node.nextNamedSibling, module: outerModule, depth });
     // Defaults and class bases run in the enclosing scope; only the bodies introduce a local scope.
     const owner = node.parent;
     const body = owner && ['function_definition', 'class_definition', 'lambda'].includes(owner.type)
       && owner.childForFieldName('body')?.id === node.id;
     const module = outerModule && !body;
-    nodes.push({ node, module });
-    if (node.firstNamedChild) pending.push({ node: node.firstNamedChild, module });
+    nodes.push({ node, module, type: node.type });
+    if (!node.firstNamedChild) continue;
+    if (depth < PYTHON_WALK_DEPTH) pending.push({ node: node.firstNamedChild, module, depth: depth + 1 });
+    else tooDeep = true;
   }
-  const complete = !pending.length;
+  // What lies deeper was not looked at, so the file counts as partly read, like one past the node budget.
+  const complete = !pending.length && !tooDeep;
+  return { root, nodes, complete };
+}
+
+/** The FastAPI and Flask routes one Python file declares. Nothing is run: only decorators on module-level functions are read. */
+export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPython>, hash: string, maxRoutes: number):
+  { routes: Route[]; routers: Framework[]; complete: boolean; cut: boolean; odd: boolean } {
+  const { root, nodes, complete } = walk;
   const visited = new Set(nodes.map(({ node }) => node.id));
   // 2. Imported framework names and the apps and routers made at the top of the module.
   const factories = new Map<string, Factory>();
@@ -217,17 +280,10 @@ export function pythonRoutes(file: ProjectFile, text: string, hash: string, node
       odd ||= tracksFlask && frameworks.flask.routingNames.has(name);
       if (node.parent?.type === 'global_statement') invalid.add(name);
       const parent = node.parent;
-      const parameter = parent?.type === 'parameters' || parent?.type === 'lambda_parameters'
-        || parent?.type === 'typed_parameter' && parent.childForFieldName('type')?.id !== node.id
-        || parent && ['default_parameter', 'typed_default_parameter'].includes(parent.type) && parent.childForFieldName('name')?.id === node.id
-        || parent && ['list_splat_pattern', 'dictionary_splat_pattern'].includes(parent.type)
-          && ['parameters', 'lambda_parameters', 'typed_parameter'].includes(parent.parent?.type ?? '');
-      const label = parent?.type === 'attribute' && parent.childForFieldName('attribute')?.id === node.id
-        || parent?.type === 'keyword_argument' && parent.childForFieldName('name')?.id === node.id
-        || parent?.type === 'dotted_name' && ['import_statement', 'import_from_statement', 'aliased_import', 'relative_import'].includes(parent.parent?.type ?? '')
-        || parent?.type === 'aliased_import';
+      const parameter = parameterPosition(node);
+      const label = labelPosition(node);
       // `model.eval()` is another object's method, not the builtin that can rebind names.
-      odd ||= machinery.has(name) && !label;
+      odd ||= pythonRouteMachinery.has(name) && !label;
       const made = bindings.get(name)?.has(node.id);
       const reading = parent?.type === 'attribute' && parent.childForFieldName('object')?.id === node.id
         || parent?.type === 'argument_list' && parent.parent?.type === 'call'

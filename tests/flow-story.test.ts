@@ -405,3 +405,10 @@ it('names Flask groups after the handler file', () => {
     basis: { text: '@app.route', range: { fileId: 'f', fileHash: 'h', text: '@app.route', startLine: 3, endLine: 3, startUtf16: 0, endUtf16: 10 } } };
   expect(groupNameOf(route, 'views/users.py')).toBe('users');
 });
+
+it.each([
+  ['django', 'polls/views.py', 'polls'], ['django', 'polls/api.py', 'api'], ['django', 'views.py', 'views'],
+  ['fastapi', 'routers/views.py', 'views'], ['flask', 'routers/views.py', 'views'], ['nest', 'api/views.controller.ts', 'views'],
+] as const)('groups %s handler %s as %s', (framework, path, name) => {
+  expect(groupNameOf({ ...route, framework }, path)).toBe(name);
+});

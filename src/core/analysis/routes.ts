@@ -5,7 +5,8 @@ import { readPathAliases, resolveImport } from './path-aliases';
 import { AppError } from '../../shared/errors';
 import { MAX_FILE_BYTES, readAllowed } from '../project/files';
 import { codeFile, pythonFile, MAP_LIMITS, type MapLimits } from './project-map';
-import { pythonRoutes } from './python-routes';
+import { pythonRoutes, walkPython } from './python-routes';
+import { djangoFile, djangoRoutes, type DjangoFile, type DjangoRoom } from './django-routes';
 import { pythonTestFile } from './reading-order';
 import { formatNextPath, nextRouteOf } from './next-routes';
 import { firstLine, hasUnsupportedCertainty, lineRange, nearest, readFacts, reassigned, sameRange, simpleProperties, type CallFact, type FileFacts, type Scope } from './names';
@@ -480,7 +481,7 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
   // Only listed Python files can shadow the installed package; documentation and virtual environments cannot.
   const shadows = new Map<Route['framework'], string>();
   const paths = files.map(file => file.relativePath).sort();
-  for (const framework of ['fastapi', 'flask'] as const) {
+  for (const framework of ['fastapi', 'flask', 'django'] as const) {
     const shadow = paths.find(name => {
       const parts = name.normalize('NFKC').toLowerCase().split('/');
       const last = parts.at(-1);
@@ -490,8 +491,10 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
     });
     if (!shadow) continue;
     shadows.set(framework, shadow);
-    result.notes.push(`프로젝트 안에 ${framework}라는 이름의 Python 모듈이 있어(${shadow}), ${framework === 'fastapi' ? 'FastAPI' : 'Flask'} 주소를 요청과 잇지 않았어요.`);
+    result.notes.push(`프로젝트 안에 ${framework}라는 이름의 Python 모듈이 있어(${shadow}), ${framework === 'fastapi' ? 'FastAPI' : framework === 'flask' ? 'Flask' : 'Django'} 주소를 요청과 잇지 않았어요.`);
   }
+  const djangoFiles = new Map<string, DjangoFile>();
+  const djangoRoom: DjangoRoom = { entries: 5_000, views: 20_000 };
   const routers = new Set<'fastapi' | 'flask'>();
   let unmatched = false;
   for (const file of files.filter(file => pythonFile.test(file.relativePath) && !isTestFile(file.relativePath) && !pythonTestFile(file.relativePath))
@@ -508,7 +511,9 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
     try {
       const source = await readAllowed(root, file.relativePath, Math.min(MAX_FILE_BYTES, left));
       bytes += Buffer.byteLength(source.text);
-      const found = pythonRoutes(file, source.text, source.hash, limits.nodesPerFile, ROUTE_LIMITS.routes - result.routes.length);
+      const walk = walkPython(source.text, file.relativePath, limits.nodesPerFile);
+      const found = pythonRoutes(file, walk, source.hash, ROUTE_LIMITS.routes - result.routes.length);
+      djangoFiles.set(file.relativePath, djangoFile(file, walk, source.hash, djangoRoom));
       if (!found.complete) { result.limited = true; result.notes.push(`${file.relativePath}: 일부만 확인했어요.`); }
       omitted ||= found.cut;
       for (const framework of found.routers) routers.add(framework);
@@ -525,6 +530,31 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
       result.limited = true;
       result.notes.push(`${file.relativePath}: ${error instanceof AppError ? error.message : '파일을 읽지 못했어요.'}`);
     }
+  }
+  const django = djangoRoutes(djangoFiles, new Set(paths), ROUTE_LIMITS.routes - result.routes.length, shouldStop);
+  omitted ||= django.cut;
+  const oddPaths = new Set(django.oddFiles);
+  const pathsById = new Map(files.map(file => [file.id, file.relativePath]));
+  for (const route of django.routes) {
+    if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
+    if (!shadows.has('django') && route.unmatched && !oddPaths.has(pathsById.get(route.basis.range.fileId)!)
+      && !oddPaths.has(pathsById.get(route.handler.fileId)!)) unmatched = true;
+    if (shadows.has('django')) { route.unmatched = true; delete route.segments; delete route.typed; }
+    result.routes.push(route);
+  }
+  if (djangoRoom.viewsCut) {
+    result.limited = true;
+    result.notes.push('Python 함수·클래스가 너무 많아 일부 Django 뷰는 찾지 못했을 수 있어요.');
+  }
+  if (djangoRoom.entriesCut) {
+    result.limited = true;
+    result.notes.push('Django 주소 항목이 너무 많아 처음 5,000개만 봤어요.');
+  }
+  if (django.routes.length) result.notes.push('Django 주소는 include()와 ROOT_URLCONF로 붙는 앞 경로를 따라가지 않아, 모두 앞부분을 모르는 것으로 봤어요.');
+  if (django.skipped) result.notes.push(`Django 주소 ${django.skipped}개는 처리 함수를 코드에서 확정하지 못해 목록에 넣지 않았어요(다른 패키지에서 가져온 뷰, get·post 메서드가 직접 없는 클래스 뷰 등).`);
+  for (const path of django.oddFiles) {
+    const note = `${path}: 실행 중에 이름·속성이나 주소 규칙을 바꿀 수 있는 코드가 있어, 이 파일의 Python 서버 주소는 요청과 잇지 않았어요.`;
+    if (!result.notes.includes(note)) result.notes.push(note);
   }
   if (unmatched) result.notes.push('Python 서버 주소 가운데 정확히 맞춰 볼 수 없는 것(특수 글자나 글이 섞인 칸, 읽지 못한 방식, 받는 요청을 바꾸는 설정)은 요청과 잇지 않았어요.');
   if (routers.has('fastapi')) result.notes.push('FastAPI의 APIRouter는 include_router로 붙이는 앞 경로를 따라가지 않아, 그 주소는 앞부분을 모르는 것으로 봤어요.');
