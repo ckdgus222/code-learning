@@ -6,7 +6,10 @@ import path from 'node:path';
 import { scanProject } from '../src/core/project/files';
 import { assertResultSize, findProjectRoutes, linkRoutes } from '../src/core/analysis/routes';
 import { MAP_LIMITS } from '../src/core/analysis/project-map';
+import { NESTED_NOTE } from '../src/core/analysis/syntax';
+import { readFacts } from '../src/core/analysis/names';
 import type { Route } from '../src/shared/contracts';
+import { deepSources } from './nesting-fixture';
 
 let root: string;
 beforeEach(async () => { root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-routes-'))); });
@@ -1105,4 +1108,138 @@ describe('Django routes across project files', () => {
     expect(after.requests.map(request => [request.path, request.methods])).toEqual(before.requests.map(request => [request.path, request.methods]));
     expect(after.routes.filter(route => route.framework === 'django')).toHaveLength(2);
   });
+});
+
+it.each(deepSources.filter(([, extension]) => extension !== 'py'))('reports %s and preserves independent routes and links', async (_name, extension, deep) => {
+  await put('controller.ts', server);
+  await put('client.ts', "fetch('/dogs')");
+  await put(`deep.${extension}`, '');
+  const project = await scanProject(root, randomUUID());
+  const before = await findProjectRoutes(root, project.id, project.files);
+  expect(before.links).toHaveLength(1);
+  expect(before.links[0].sure).toBe(true);
+  await put(`deep.${extension}`, deep);
+  const after = await findProjectRoutes(root, project.id, project.files);
+  expect(after.notes).toContain(`deep.${extension}: ${NESTED_NOTE}`);
+  expect(after.routes).toEqual(before.routes);
+  expect(after.requests).toEqual(before.requests);
+  expect(after.links).toEqual([{ ...before.links[0], sure: false, reasons: ['분석 못 한 파일 있음'] }]);
+}, 30_000);
+
+describe('links when a file was left unanalysed for its nesting', () => {
+  const reason = '분석 못 한 파일 있음';
+  const note = '너무 깊게 중첩돼 분석하지 못한 파일에 같은 주소를 받는 곳이 더 있을 수 있어, 연결을 모두 추정으로 뒀어요.';
+  const deepArray = (depth: number) => `${'['.repeat(depth)}0${']'.repeat(depth)}`;
+
+  it('keeps the remaining candidate a guess when the other candidate is in the unanalysed file', async () => {
+    await put('a.controller.ts', server);
+    await put('b.controller.ts', server.replace('DogsController', 'OtherController'));
+    await put('client.ts', "fetch('/dogs')");
+    const before = await find();
+    expect(before.links.map(link => [link.sure, link.reasons])).toEqual([[false, ['후보 여럿']], [false, ['후보 여럿']]]);
+    await put('b.controller.ts', `${server.replace('DogsController', 'OtherController')}\n${deepArray(5000)}`);
+    const after = await find();
+    expect(after.links.map(link => [link.sure, link.reasons])).toEqual([[false, [reason]]]);
+    expect(after.notes).toContain(note);
+  });
+
+  it('adds the reason after the other reasons and to every link', async () => {
+    await put('controller.ts', server);
+    await put('client.ts', "fetch('/dogs'); fetch(`/dogs/${id}`, { method: 'DELETE' }); axios('/dogs');");
+    await put('deep.ts', deepArray(5000));
+    const result = await find();
+    expect(result.links.length).toBeGreaterThan(1);
+    for (const link of result.links) {
+      expect(link.sure).toBe(false);
+      expect(link.reasons.at(-1)).toBe(reason);
+      expect(link.reasons.filter(text => text === reason)).toHaveLength(1);
+    }
+  });
+
+  it('treats a Python file beyond the route walk depth the same way', async () => {
+    await put('main.py', 'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/dogs")\ndef dogs(): pass\n');
+    await put('client.ts', "fetch('/dogs')");
+    await put('other.py', `x = ${deepArray(50)}\n`);
+    const before = await find();
+    expect(before.links.map(link => [link.sure, link.reasons])).toEqual([[true, []]]);
+    expect(before.notes).not.toContain(note);
+    await put('other.py', `x = ${deepArray(150)}\n`);
+    const after = await find();
+    expect(after.links.map(link => [link.sure, link.reasons])).toEqual([[false, [reason]]]);
+    expect(after.notes).toContain(note);
+  });
+
+  it.each([
+    ['a syntax error', 'const broken = ('],
+    ['ordinary code', 'export const value = [[[[1]]]];'],
+  ])('leaves links alone for a file with %s', async (_name, text) => {
+    await put('controller.ts', server);
+    await put('client.ts', "fetch('/dogs')");
+    await put('other.ts', text);
+    const result = await find();
+    expect(result.links.map(link => [link.sure, link.reasons])).toEqual([[true, []]]);
+    expect(result.notes).not.toContain(note);
+  });
+
+  it('leaves links alone for a Python file cut by the node budget', async () => {
+    await put('main.py', 'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/dogs")\ndef dogs(): pass\n');
+    await put('client.ts', "fetch('/dogs')");
+    await put('other.py', 'x = 1\n'.repeat(500));
+    const project = await scanProject(root, randomUUID());
+    const result = await findProjectRoutes(root, project.id, project.files, { ...MAP_LIMITS, nodesPerFile: 100 });
+    expect(result.notes).toContain('other.py: 일부만 확인했어요.');
+    expect(result.links.map(link => [link.sure, link.reasons])).toEqual([[true, []]]);
+    expect(result.notes).not.toContain(note);
+  });
+});
+
+it.each(['nested', 'syntax', 'node budget', 'unread'])('does not confirm Nest routes when versioning could be hidden by %s', async kind => {
+  await put('controller.ts', server);
+  await put('client.ts', "fetch('/dogs')");
+  await put('setup.ts', 'app.enableVersioning();');
+  const project = await scanProject(root, randomUUID());
+  const before = await findProjectRoutes(root, project.id, project.files);
+  expect(before.links).toHaveLength(1);
+  expect(before.links[0].sure).toBe(false);
+  const text = kind === 'syntax' ? 'const broken = app.enableVersioning('
+    : kind === 'node budget' ? `${'0;'.repeat(500)}app.enableVersioning();`
+    : `app.enableVersioning();${'['.repeat(5000)}0${']'.repeat(5000)}`;
+  await put('setup.ts', text);
+  const limits = kind === 'node budget' ? { ...MAP_LIMITS, nodesPerFile: 100 } : MAP_LIMITS;
+  const setup = project.files.find(file => file.relativePath === 'setup.ts')!;
+  if (kind === 'syntax' || kind === 'node budget') {
+    const facts = readFacts(setup, text, 'hash', limits.nodesPerFile);
+    expect(facts.complete).toBe(false);
+    expect(facts.calls).toEqual([]);
+  }
+  if (kind === 'unread') await rm(path.join(root, 'setup.ts'));
+  const after = await findProjectRoutes(root, project.id, project.files, limits);
+  expect(after.routes).toEqual(before.routes);
+  expect(after.links).toEqual(kind === 'nested' ? before.links.map(link => ({ ...link, reasons: [...link.reasons, '분석 못 한 파일 있음'] })) : before.links);
+  expect(after.limited).toBe(true);
+  if (kind === 'nested') expect(after.notes).toContain(`setup.ts: ${NESTED_NOTE}`);
+});
+
+it('does not confirm a global prefix in a skipped file', async () => {
+  await put('controller.ts', server);
+  await put('client.ts', "fetch('/api/dogs')");
+  await put('setup.ts', `app.setGlobalPrefix('api');${'['.repeat(5000)}0${']'.repeat(5000)}`);
+  const result = await find();
+  expect(result.prefix).toBeNull();
+  expect(result.routes[0]).toMatchObject({ path: '/dogs', prefix: 'unknown' });
+  expect(result.links).toHaveLength(1);
+  expect(result.links[0].sure).toBe(false);
+  expect(result.notes).toContain(`setup.ts: ${NESTED_NOTE}`);
+});
+
+it('does not confirm axios defaults in a skipped file', async () => {
+  await put('controller.ts', server);
+  await put('client.ts', "import axios from 'axios'; axios.get('/dogs')");
+  await put('setup.ts', `axios.defaults.baseURL = '/api';${'['.repeat(5000)}0${']'.repeat(5000)}`);
+  const result = await find();
+  expect(result.requests).toHaveLength(1);
+  expect(result.requests[0].prefix).toBe('unknown');
+  expect(result.links).toHaveLength(1);
+  expect(result.links[0].sure).toBe(false);
+  expect(result.notes).toContain(`setup.ts: ${NESTED_NOTE}`);
 });

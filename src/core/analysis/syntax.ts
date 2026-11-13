@@ -8,8 +8,31 @@ import { clip, createBudget, MAX_EVIDENCE, MAX_SYMBOLS, MAX_VISITED_NODES, measu
 import { STRUCTURE_NOTE, type Analysis, type CodeStep } from '../../shared/contracts';
 import { languageOf } from '../../shared/languages';
 
-/** TypeScript, JavaScript or Python by `languageOf`; any other path parses as TypeScript (TSX for .tsx). */
-export function parse(text: string, relativePath: string): Parser.SyntaxNode {
+/** Depth every measured real file stays within: it adds no weight. */
+export const NESTING_FREE = 64;
+/** Sum of every node's depth beyond NESTING_FREE, including unnamed nodes. */
+export const NESTING_LIMIT = 2_000_000;
+export const NESTED_NOTE = '코드가 너무 깊게 중첩돼 있어 이 파일의 구조는 분석하지 않았어요. 원문은 그대로 볼 수 있어요.';
+
+/** The parsed tree, or null when walking its deep nodes would cost too much. */
+export function parse(text: string, relativePath: string): Parser.SyntaxNode | null {
+  const root = parseTree(text, relativePath);
+  const cursor = root.walk();
+  let depth = 0;
+  let weight = 0;
+  while (true) {
+    weight += Math.max(0, depth - NESTING_FREE);
+    if (weight > NESTING_LIMIT) return null;
+    if (cursor.gotoFirstChild()) { depth++; continue; }
+    while (!cursor.gotoNextSibling()) {
+      if (!cursor.gotoParent()) return root;
+      depth--;
+    }
+  }
+}
+
+/** The unchecked tree, for walks with their own depth limit. Unknown paths use TypeScript (TSX for .tsx). */
+export function parseTree(text: string, relativePath: string): Parser.SyntaxNode {
   const language = languageOf(relativePath);
   const parser = new Parser();
   parser.setLanguage(language === 'python' ? Python : language === 'javascript' ? JavaScript
@@ -185,9 +208,11 @@ export function analyzeSource(
 
   const root = parse(text, relativePath);
   result.warnings.push(STRUCTURE_NOTE);
+  if (!root) result.warnings.push(NESTED_NOTE);
   if (language === 'python') {
     result.warnings.push('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도의 import 연결과 FastAPI·Flask·Django 주소의 기능 흐름(처리 함수까지)을 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 처리 함수 안의 호출 따라가기는 아직 TypeScript·JavaScript만 지원해요.');
   }
+  if (!root) return result;
   if (root.hasError) {
     result.warnings.push(language === 'python'
       ? '구문 오류가 있습니다. 오류가 포함된 함수와 클래스는 분석에서 제외합니다.'

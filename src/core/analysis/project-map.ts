@@ -3,7 +3,7 @@ import type Parser from 'tree-sitter';
 import { COMPLEXITY_LIMITS, type MapExport, type MapFile, type MapImport, type ProjectFile, type ProjectMap } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 import { assertAllowedFile, MAX_FILE_BYTES, readAllowed, textExtensions } from '../project/files';
-import { classTypes, functionName, functionTypes, importOf, measureFunction, namedFunction, parse } from './syntax';
+import { classTypes, functionName, functionTypes, importOf, measureFunction, namedFunction, NESTED_NOTE, parse } from './syntax';
 import { lookedFor, readPathAliases, resolveImport } from './path-aliases';
 import { scriptFilesOf, unusedFiles } from './unused-files';
 import { readingOrder } from './reading-order';
@@ -64,6 +64,7 @@ type ExportDeclaration = { node: Parser.SyntaxNode; local: string | null; kind: 
 /** Every import node and every function the analyzer would list, in source order, and whether the whole tree was examined. */
 function scanTree(text: string, relativePath: string, nodeBudget: number) {
   const root = parse(text, relativePath);
+  if (!root) return { found: [], functions: [], symbols: [], exports: [], reason: NESTED_NOTE };
   const found: { node: Parser.SyntaxNode; kind: 'static' | 'not-static' | 'syntax'; specifier: string | null }[] = [];
   const functions: Parser.SyntaxNode[] = [];
   const symbols: Parser.SyntaxNode[] = [];
@@ -175,6 +176,7 @@ interface PythonScan {
 function scanPython(text: string, hash: string, file: ProjectFile, nodeBudget: number, room: MapRoom): PythonScan {
   const root = parse(text, file.relativePath);
   const scan: PythonScan = { relativePath: file.relativePath, statements: [], functions: [], symbols: [], plain: false, init: null, reason: null };
+  if (!root) return { ...scan, reason: NESTED_NOTE };
   const pending = [{ node: root, inBroken: false }];
   let visited = 0;
   let machinery = false;

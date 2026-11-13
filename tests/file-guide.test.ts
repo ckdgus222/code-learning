@@ -1,7 +1,8 @@
+import { AppError } from '../src/shared/errors';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { describeFile } from '../src/core/analysis/file-guide';
-import { analyzeSource } from '../src/core/analysis/syntax';
+import { analyzeSource, NESTED_NOTE } from '../src/core/analysis/syntax';
 import { splitFileChunks } from '../src/core/analysis/file-chunks';
 
 const fileId = randomUUID();
@@ -367,4 +368,10 @@ it('describes alias targets and preserves uncertainty and config notes', () => {
     ['project', 'src/api.ts'], ['ambiguous', null], ['not-found', null],
   ]);
   expect(result.notes).toContain('config note');
+});
+
+it('reports the nesting limit before describing any structure', () => {
+  const text = `export function run() {}\n${'f('.repeat(5000)}0${')'.repeat(5000)}`;
+  expect(() => guide(text)).toThrowError(AppError);
+  expect(() => guide(text)).toThrowError(expect.objectContaining({ code: 'LIMIT', message: NESTED_NOTE }));
 });

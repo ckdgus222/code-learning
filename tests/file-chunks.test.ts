@@ -1,7 +1,8 @@
+import { AppError } from '../src/shared/errors';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { splitFileChunks } from '../src/core/analysis/file-chunks';
-import { analyzeSource } from '../src/core/analysis/syntax';
+import { analyzeSource, NESTED_NOTE } from '../src/core/analysis/syntax';
 
 const fileId = randomUUID();
 const hash = 'a'.repeat(64);
@@ -106,4 +107,10 @@ run();`;
     expect(split('// comment\n/* note */\n').chunks).toEqual([]);
     expect(split('').chunks).toEqual([]);
   });
+});
+
+it('reports the nesting limit before describing any structure', () => {
+  const text = `export function run() {}\n${'f('.repeat(5000)}0${')'.repeat(5000)}`;
+  expect(() => split(text)).toThrowError(AppError);
+  expect(() => split(text)).toThrowError(expect.objectContaining({ code: 'LIMIT', message: NESTED_NOTE }));
 });

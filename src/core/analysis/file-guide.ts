@@ -5,7 +5,8 @@ import { splitFileChunks } from './file-chunks';
 import { MAP_LIMITS } from './project-map';
 import { readFacts } from './names';
 import { serverFacts } from './feature-flow';
-import { functionTypes, importOf, parse } from './syntax';
+import { functionTypes, importOf, NESTED_NOTE, parse } from './syntax';
+import { AppError } from '../../shared/errors';
 import { formatNextPath, nextRouteOf } from './next-routes';
 
 type Node = Parser.SyntaxNode;
@@ -77,6 +78,7 @@ function shapeOf(fn: Node) {
 export function describeFile(text: string, relativePath: string, fileId: string, fileHash: string,
   analysis: Analysis, projectFiles: ProjectFile[], aliases: PathAliases = NO_ALIASES): FileGuide {
   const root = parse(text, relativePath);
+  if (!root) throw new AppError('LIMIT', NESTED_NOTE);
   const split = splitFileChunks(text, relativePath, fileId, fileHash, root);
   const top = root.namedChildren.filter(node => !['comment', 'hash_bang_line', 'empty_statement'].includes(node.type));
   // Only the node types the guide needs: walking every node of a large file from JavaScript is slow.

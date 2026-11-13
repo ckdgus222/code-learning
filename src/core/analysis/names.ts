@@ -1,6 +1,6 @@
 import type Parser from 'tree-sitter';
 import type { ProjectFile } from '../../shared/contracts';
-import { functionTypes, importOf, parse } from './syntax';
+import { functionTypes, importOf, NESTED_NOTE, parse } from './syntax';
 
 /*
  * Names in one file, read from the code only (plan v2.3 F and V-1): which declaration a name means, scope by
@@ -244,9 +244,11 @@ interface Frame {
 export function readFacts(file: ProjectFile, text: string, hash: string, nodeBudget: number, withReferences = false): FileFacts {
   const root = parse(text, file.relativePath);
   const program = newScope(null);
-  const facts: FileFacts = { file, hash, text, complete: !root.hasError, incompleteReason: root.hasError ? '구문 오류가 있어 이 파일의 이름은 확정하지 않았어요.' : null,
+  const facts: FileFacts = { file, hash, text, complete: root !== null && !root.hasError,
+    incompleteReason: !root ? NESTED_NOTE : root.hasError ? '구문 오류가 있어 이 파일의 이름은 확정하지 않았어요.' : null,
     unclear: false, oddNames: false, program, calls: [], assignments: [], variables: [], functionDeclarations: [], references: [], functions: [], exports: new Map(), reexported: new Set(),
     reexportsAll: false };
+  if (!root) return facts;
   const pendingExports: { exported: string; local: string; snapshot?: Parser.SyntaxNode }[] = [];
   // Function bodies with their parameters, to find a parameter declared again in the body.
   const bodies: { parameters: Scope; body: Scope }[] = [];

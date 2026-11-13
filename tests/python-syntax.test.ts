@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { pythonFunction, measurePythonFunction } from '../src/core/analysis/python-syntax';
-import { analyzeSource, parse } from '../src/core/analysis/syntax';
+import { analyzeSource, NESTED_NOTE, parse as parseSource } from '../src/core/analysis/syntax';
 import type { Evidence } from '../src/shared/contracts';
+
+function parse(text: string, relativePath: string) {
+  const root = parseSource(text, relativePath);
+  if (!root) throw new Error('Unexpected nesting limit');
+  return root;
+}
 
 const context = { projectId: 'project', fileId: 'python', fileHash: 'hash' };
 const analyze = (text: string) => analyzeSource(text, 'x.py', context);
@@ -260,4 +266,20 @@ it('shares Python function names, decorator ranges and measurements with the map
     .toEqual(symbols.map(symbol => [symbol.name, symbol.evidence.startUtf16, symbol.evidence.endUtf16, symbol.complexity]));
   expect(pythonFunction(root)).toBeNull();
   expect(pythonFunction(parse('def broken():\n    x =', 'x.py').firstNamedChild!)).toBeNull();
+});
+
+it('keeps the Python notice but skips every structure in an over-nested file', () => {
+  const normal = 'import os\ndef run():\n    return 1\nclass Item: pass\n';
+  const result = analyze(`${normal}x = ${'['.repeat(5000)}0${']'.repeat(5000)}`);
+  expect(result.symbols).toEqual([]);
+  expect(result.imports).toEqual([]);
+  expect(result.classes ?? []).toEqual([]);
+  expect(result.warnings[1]).toBe(NESTED_NOTE);
+  expect(result.warnings.some(note => note.startsWith('Python은'))).toBe(true);
+  expect(result.warnings.some(note => note.includes('분석할 수 있는 함수가 없습니다'))).toBe(false);
+  const ordinary = analyze(normal);
+  expect(ordinary.symbols.map(symbol => symbol.name)).toEqual(['run']);
+  expect(ordinary.imports).toHaveLength(1);
+  expect(ordinary.classes?.map(item => item.name)).toEqual(['Item']);
+  expect(ordinary.warnings).not.toContain(NESTED_NOTE);
 });

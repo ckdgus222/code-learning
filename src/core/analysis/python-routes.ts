@@ -4,7 +4,7 @@ import { firstLine, lineRange } from './names';
 import { normalize } from './python-imports';
 import { pythonFunction } from './python-syntax';
 import { bounded, ROUTE_LIMITS, shortName } from './routes';
-import { parse } from './syntax';
+import { parseTree } from './syntax';
 
 type Node = Parser.SyntaxNode;
 type Framework = 'fastapi' | 'flask';
@@ -193,7 +193,7 @@ export const PYTHON_WALK_DEPTH = 100;
 
 /** One parse and one bounded walk of a Python file, shared by every reader of its routes. */
 export function walkPython(text: string, relativePath: string, nodeBudget: number) {
-  const root = parse(text, relativePath);
+  const root = parseTree(text, relativePath);
   // 1. Every node up to the budget, each marked as module scope or inside a function or class body.
   // The type is read once here: every reader filters by it, and each read of a node's property is a call into the parser.
   const nodes: { node: Node; module: boolean; type: string }[] = [];
@@ -215,7 +215,7 @@ export function walkPython(text: string, relativePath: string, nodeBudget: numbe
   }
   // What lies deeper was not looked at, so the file counts as partly read, like one past the node budget.
   const complete = !pending.length && !tooDeep;
-  return { root, nodes, complete };
+  return { root, nodes, complete, tooDeep };
 }
 
 /** The FastAPI and Flask routes one Python file declares. Nothing is run: only decorators on module-level functions are read. */

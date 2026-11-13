@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { parse } from '../src/core/analysis/syntax';
+import { parse, parseTree } from '../src/core/analysis/syntax';
 import { initFactsOf, mentionsMachinery, pythonImportsOf, resolvePythonImport, type PythonFacts } from '../src/core/analysis/python-imports';
 import { PYTHON_STDLIB } from '../src/core/analysis/python-stdlib';
 
-const tree = (text: string) => parse(text, 'x.py');
+const tree = (text: string) => {
+  const root = parse(text, 'x.py');
+  if (!root) throw new Error('Unexpected nesting limit');
+  return root;
+};
 const imports = (text: string) => pythonImportsOf(tree(text).firstNamedChild!);
 const plain: PythonFacts = { init: () => new Set(), plain: () => true };
 const resolve = (text: string, from = 'pkg/main.py', files = ['pkg/__init__.py', 'pkg/service.py'], facts = plain) =>
@@ -250,5 +254,5 @@ describe('files that can change import machinery', () => {
 
 it('reads deeply nested literal containers without recursive JavaScript calls', () => {
   const source = `__all__ = ${'['.repeat(5000)}"name"${']'.repeat(5000)}`;
-  expect(initFactsOf(tree(source))).toEqual(new Set(['__all__']));
+  expect(initFactsOf(parseTree(source, 'x.py'))).toEqual(new Set(['__all__']));
 });

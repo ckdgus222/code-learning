@@ -7,10 +7,11 @@ import { scanProject } from '../src/core/project/files';
 import * as pathAliases from '../src/core/analysis/path-aliases';
 import { buildProjectMap, MAP_LIMITS } from '../src/core/analysis/project-map';
 import { buildOverview } from '../src/core/analysis/overview';
-import { analyzeSource } from '../src/core/analysis/syntax';
+import { analyzeSource, NESTED_NOTE } from '../src/core/analysis/syntax';
 import { matchFunction } from '../src/renderer/map-layout';
 import type { ProjectFiles, ProjectMap } from '../src/shared/contracts';
 import { complexitySource, legacySource } from './complexity-fixture';
+import { deepSources } from './nesting-fixture';
 
 let sandbox: string;
 let root: string;
@@ -294,9 +295,9 @@ describe('project map from static imports', () => {
     expect(map.complexFunctions.filter(item => item.fileId === two.id).map(item => [item.name, item.lines])).toEqual([['first', 61]]);
   });
 
-  it('lists functions in a file of 1000 nested functions without checking every outer function again', async () => {
+  it('lists functions in a file of 300 nested functions without checking every outer function again', async () => {
     // Looking up each function's outer functions made this take about 30 s.
-    await put('src/nested.ts', `${'function f() {'.repeat(1000)}${'}'.repeat(1000)}\n`);
+    await put('src/nested.ts', `${'function f() {'.repeat(300)}${'}'.repeat(300)}\n`);
     const project = await scanProject(root, randomUUID());
     const nested = project.files.filter(file => file.relativePath === 'src/nested.ts');
     const started = Date.now();
@@ -1376,4 +1377,52 @@ describe('missing TS/JS imports and their separate budget', () => {
     expect(map.missingCut).toBe(false);
     expect(map.limited).toBe(true);
   });
+});
+
+it('skips the structure of 1000 nested functions', async () => {
+  await put('src/nested.ts', `${'function f() {'.repeat(1000)}${'}'.repeat(1000)}\n`);
+  const project = await scanProject(root, randomUUID());
+  const map = await mapOf({ ...project, files: project.files.filter(file => file.relativePath === 'src/nested.ts') });
+  expect(map.files[0]).toMatchObject({ checked: 'partial', reason: NESTED_NOTE });
+  expect(map.complexFunctions).toEqual([]);
+  expect(map.symbols).toEqual([]);
+});
+
+it.each(deepSources)('skips %s and preserves independent imports', async (_name, extension, deep) => {
+  const imported = extension === 'py' ? 'from .target import value' : "import { value } from './target';";
+  const target = extension === 'py' ? 'value = 1' : 'export const value = 1;';
+  await put(`nested/main.${extension}`, imported);
+  await put(`nested/target.${extension}`, target);
+  await put(`nested/deep.${extension}`, '');
+  const project = await scanProject(root, randomUUID());
+  const files = project.files.filter(file => file.relativePath.startsWith('nested/'));
+  const before = await mapOf({ ...project, files });
+  expect(before.edges).toHaveLength(1);
+  await put(`nested/deep.${extension}`, deep);
+  const after = await mapOf({ ...project, files });
+  expect(after.files.find(file => file.relativePath === `nested/deep.${extension}`))
+    .toMatchObject({ checked: 'partial', reason: NESTED_NOTE });
+  expect(after.files.filter(file => file.relativePath !== `nested/deep.${extension}`).map(file => file.checked)).toEqual(['full', 'full']);
+  expect(after.edges).toEqual(before.edges);
+  expect(after.unresolved).toEqual(before.unresolved);
+  expect(after.symbols).toEqual(before.symbols);
+}, 30_000);
+
+it('withholds imports through a nested initializer just as through a broken initializer', async () => {
+  await put('pkg/__init__.py', '');
+  await put('pkg/main.py', 'from . import models\n');
+  await put('pkg/models.py', '');
+  const project = await scanProject(root, randomUUID());
+  const files = project.files.filter(file => file.relativePath.startsWith('pkg/'));
+  expect((await mapOf({ ...project, files })).edges).toHaveLength(1);
+  await put('pkg/__init__.py', `value = ${'['.repeat(5000)}0${']'.repeat(5000)}`);
+  const nested = await mapOf({ ...project, files });
+  expect(nested.files.find(file => file.relativePath === 'pkg/__init__.py'))
+    .toMatchObject({ checked: 'partial', reason: NESTED_NOTE });
+  expect(nested.edges).toEqual([]);
+  expect(nested.unresolved.map(item => item.candidates)).toEqual([['pkg/models.py'], ['pkg/__init__.py']]);
+  await put('pkg/__init__.py', 'def broken(:\n');
+  const broken = await mapOf({ ...project, files });
+  expect(nested.edges).toEqual(broken.edges);
+  expect(nested.unresolved).toEqual(broken.unresolved);
 });

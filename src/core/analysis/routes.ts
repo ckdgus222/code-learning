@@ -10,7 +10,7 @@ import { djangoFile, djangoRoutes, type DjangoFile, type DjangoRoom } from './dj
 import { pythonTestFile } from './reading-order';
 import { formatNextPath, nextRouteOf } from './next-routes';
 import { firstLine, hasUnsupportedCertainty, lineRange, nearest, readFacts, reassigned, sameRange, simpleProperties, type CallFact, type FileFacts, type Scope } from './names';
-import { functionName, functionTypes } from './syntax';
+import { functionName, functionTypes, NESTED_NOTE } from './syntax';
 
 type Node = Parser.SyntaxNode;
 const methods = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'ALL']);
@@ -96,6 +96,8 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
   let incomplete = false;
   let omitted = false;
   const room = (list: unknown[], max: number) => { if (list.length < max) return true; omitted = true; return false; };
+  // A file left unanalysed for its nesting may declare a route that competes with any link.
+  let nested = false;
   // Files read but not fully parsed: their raw text can still prove a setting is absent.
   const partial: string[] = [];
   for (const file of files.filter(file => codeFile.test(file.relativePath) && !isTestFile(file.relativePath)).sort((a, b) => a.relativePath.localeCompare(b.relativePath))) {
@@ -109,6 +111,7 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
       const info = readFacts(file, source.text, source.hash, limits.nodesPerFile, true);
       facts.set(file.id, info);
       if (!info.complete) { partial.push(source.text); result.limited = true; result.notes.push(`${file.relativePath}: ${info.incompleteReason ?? '일부만 확인했어요.'}`); }
+      nested ||= info.incompleteReason === NESTED_NOTE;
       // readFacts already has a parsed tree, including files without functions or calls via references.
       const anchor = info.functions[0] ?? info.calls[0]?.node ?? info.references[0]?.node ?? info.variables[0]?.source;
       if (!anchor) { trees.set(file.id, []); continue; }
@@ -179,7 +182,9 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
   if (prefixKnown && prefixes.length) result.prefix = { text: globalPrefix, site: routeSite(prefixes[0].call.node, prefixes[0].info) };
   if (!prefixKnown) result.notes.push('앱 전체 앞 경로를 확정하지 못했어요');
   if (prefixHidden) result.notes.push('모든 파일을 읽지 못해 앞 경로를 확정하지 않았어요');
-  const versioning = [...facts.values()].some(info => info.calls.some(call => (property(field(call.node, 'function')) ?? field(call.node, 'function')?.text) === 'enableVersioning'));
+  // Unread files need no check here: they already leave the prefix unknown.
+  const versioning = partial.some(text => text.includes('enableVersioning'))
+    || [...facts.values()].some(info => info.calls.some(call => (property(field(call.node, 'function')) ?? field(call.node, 'function')?.text) === 'enableVersioning'));
   const decorators = (node: Node) => {
     const found = children(node).filter(child => child.type === 'decorator');
     if (node.type === 'method_definition') for (let previous = node.previousNamedSibling; previous; previous = previous.previousNamedSibling) {
@@ -512,6 +517,7 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
       const source = await readAllowed(root, file.relativePath, Math.min(MAX_FILE_BYTES, left));
       bytes += Buffer.byteLength(source.text);
       const walk = walkPython(source.text, file.relativePath, limits.nodesPerFile);
+      nested ||= walk.tooDeep;
       const found = pythonRoutes(file, walk, source.hash, ROUTE_LIMITS.routes - result.routes.length);
       djangoFiles.set(file.relativePath, djangoFile(file, walk, source.hash, djangoRoom));
       if (!found.complete) { result.limited = true; result.notes.push(`${file.relativePath}: 일부만 확인했어요.`); }
@@ -561,6 +567,10 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
   if (routers.has('flask')) result.notes.push('Flask의 Blueprint는 register_blueprint로 붙이거나 바꾸는 앞 경로를 따라가지 않아, 그 주소는 앞부분을 모르는 것으로 봤어요.');
   if (result.routes.some(lacksRouteEvidence)) result.notes.push('앞부분을 모르고 글자 칸도 없는 주소(/, /:id 등)는 맞춰 볼 근거가 없어 요청과 잇지 않았어요.');
   result.links = linkRoutes(result.routes, result.requests, shouldStop);
+  if (nested) {
+    for (const link of result.links) { link.sure = false; link.reasons.push('분석 못 한 파일 있음'); }
+    result.notes.push('너무 깊게 중첩돼 분석하지 못한 파일에 같은 주소를 받는 곳이 더 있을 수 있어, 연결을 모두 추정으로 뒀어요.');
+  }
   if (result.links.length >= ROUTE_LIMITS.links) omitted = true;
   if (omitted) {
     result.limited = true;

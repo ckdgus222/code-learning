@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { analyzeSource, functionName, parse } from '../src/core/analysis/syntax';
+import { analyzeSource, functionName, measureFunction, NESTED_NOTE, parse as parseSource, parseTree } from '../src/core/analysis/syntax';
 import { clip } from '../src/core/analysis/syntax-tools';
 import { COMPLEXITY_LIMITS, type Evidence } from '../src/shared/contracts';
 import { complexityExpected, complexitySource, legacyExpected, legacySource } from './complexity-fixture';
+
+function parse(text: string, relativePath: string) {
+  const root = parseSource(text, relativePath);
+  if (!root) throw new Error('Unexpected nesting limit');
+  return root;
+}
 
 describe('parse', () => {
   it('uses TSX for an uppercase TSX extension', () => {
@@ -390,8 +396,11 @@ describe('complexity signals (plan v2.3 C-1)', () => {
     // 1500 else-ifs, each inside the one before: walking it with sibling and parent lookups took over 2 s.
     const deep = `function g(a) {${'if (a) {} else if (a) {'.repeat(1500)}${'}'.repeat(1500)}}`;
     const started = Date.now();
-    expect(measured(deep, 'deep.ts')).toEqual([['g', 1, 1500]]);
+    const fn = parseTree(deep, 'deep.ts').firstNamedChild!;
+    const measured = measureFunction(fn, deep);
+    expect([[functionName(fn), measured.lines, measured.depth]]).toEqual([['g', 1, 1500]]);
     expect(Date.now() - started).toBeLessThan(1500);
+    expect(analyze(deep).warnings).toContain(NESTED_NOTE);
   });
 
   it('counts a code line once, whatever else is on it', () => {
@@ -412,4 +421,20 @@ describe('class-qualified display names', () => {
   ])('names methods and fields in %s', (source, names) => {
     expect(analyze(source).symbols.map(symbol => symbol.name)).toEqual(names);
   });
+});
+
+it('skips the whole nested file while retaining the normal file analysis', () => {
+  const normal = "import { value } from './value'; export function run() { return value; } class Item {}";
+  const result = analyze(`${normal}\n${'f('.repeat(5000)}0${')'.repeat(5000)}`);
+  expect(result.symbols).toEqual([]);
+  expect(result.imports).toEqual([]);
+  expect(result.classes ?? []).toEqual([]);
+  expect(result.warnings).toContain(NESTED_NOTE);
+  expect(result.warnings[1]).toBe(NESTED_NOTE);
+  expect(result.warnings.some(note => note.includes('분석할 수 있는 함수가 없습니다'))).toBe(false);
+  const ordinary = analyze(normal);
+  expect(ordinary.symbols.map(symbol => symbol.name)).toEqual(['run']);
+  expect(ordinary.imports).toHaveLength(1);
+  expect(ordinary.classes).toBeUndefined();
+  expect(ordinary.warnings).not.toContain(NESTED_NOTE);
 });

@@ -3,12 +3,13 @@ import type Parser from 'tree-sitter';
 import type { FileChunk } from '../../shared/ai';
 import { AppError } from '../../shared/errors';
 import { codeFile } from './project-map';
-import { functionName, functionTypes, parse } from './syntax';
+import { functionName, functionTypes, NESTED_NOTE, parse } from './syntax';
 
 /** Only top-level statements and direct class members; nested callbacks stay inside their chunk. */
 export function splitFileChunks(text: string, relativePath: string, fileId: string, fileHash: string, parsedRoot?: Parser.SyntaxNode) {
   if (!codeFile.test(relativePath)) throw new AppError('UNSUPPORTED', 'TS/JS 파일만 설명할 수 있어요.');
   const root = parsedRoot ?? parse(text, relativePath);
+  if (!root) throw new AppError('LIMIT', NESTED_NOTE);
   const chunks: FileChunk[] = [];
   let total = 0;
   const add = (start: number, end: number, kind: FileChunk['kind'], name: string | null, fn: Parser.SyntaxNode | null = null) => {

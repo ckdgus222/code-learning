@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { Evidence, ProjectView, SourceView } from '../src/shared/contracts';
+import { NESTED_NOTE } from '../src/core/analysis/syntax';
 import type { WorkerRequest, WorkerResponse } from '../src/workers/analysis';
 
 const worker = vi.hoisted(() => ({ data: { root: '', projectId: 'aliases', stop: new SharedArrayBuffer(4) },
@@ -113,4 +114,26 @@ it('accepts Python class evidence and rejects it after the source changes', asyn
   expect(worker.send.mock.lastCall![0].result).toMatchObject({ ok: false, code: 'CHANGED' });
   await worker.receive!({ id: 11, kind: 'evidence', target: evidence.id });
   expect(worker.send.mock.lastCall![0].result).toMatchObject({ ok: false, code: 'NOT_ALLOWED' });
+});
+
+it('opens over-nested source with a warning and no optional guide', async () => {
+  root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-nested-worker-')));
+  worker.data.root = root;
+  const text = `export function run() {}\n${'f('.repeat(5000)}0${')'.repeat(5000)}`;
+  await writeFile(path.join(root, 'main.ts'), text);
+  vi.resetModules();
+  await import('../src/workers/analysis');
+  await worker.receive!({ id: 11, kind: 'scan' });
+  const scanned = worker.send.mock.lastCall![0].result;
+  if (!scanned.ok) throw new Error(scanned.message);
+  const file = (scanned.value as ProjectView).files.find(file => file.relativePath === 'main.ts')!;
+  await worker.receive!({ id: 12, kind: 'read', target: file.id });
+  const read = worker.send.mock.lastCall![0].result;
+  expect(read.ok).toBe(true);
+  if (!read.ok) throw new Error(read.message);
+  const source = read.value as SourceView;
+  expect(source.text).toBe(text);
+  expect(source.guide).toBeNull();
+  expect(source.analysis.symbols).toEqual([]);
+  expect(source.analysis.warnings).toContain(NESTED_NOTE);
 });
