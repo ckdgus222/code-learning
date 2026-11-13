@@ -14,6 +14,8 @@ export async function checkPythonFeatureFlow(app, page, folder) {
     'foreign/registration.py': 'from fastapi import FastAPI\nfrom flask import Flask\nfrom .routers import router, bp\napi = FastAPI()\nweb = Flask(__name__)\napi.include_router(router, prefix="/external")\nweb.register_blueprint(bp, url_prefix="/blue")\n',
     'foreign/decorated_router.py': 'from .routers import router\n@router.get("/foreign-handlers")\ndef imported_router_handler():\n    return []\n',
     'foreign/factory.py': 'from flask import Flask\nfrom .routers import bp\ndef create_web():\n    app = Flask(__name__)\n    app.register_blueprint(bp, url_prefix="/factory-blue")\n    return app\n',
+    'foreign/viewsets.py': 'from rest_framework.viewsets import ViewSet\nclass Records(ViewSet):\n    def list(self, request):\n        return []\n',
+    'foreign/drfurls.py': 'from django.urls import path\nfrom .viewsets import Records\nrecords_view = Records.as_view({"get": "list"})\nurlpatterns = [path("drf-records/", Records.as_view({"get": "list"})), path("drf-alias/", records_view)]\n',
     'modulefactory.py': 'from fastapi import FastAPI, APIRouter\nmodule_router = APIRouter(prefix="/v5")\n@module_router.get("/records")\ndef module_records():\n    return []\ndef create_app():\n    app = FastAPI()\n    app.include_router(module_router, prefix="/factory-module")\n    return app\n',
     'flaskviews.py': 'from flask import Flask\nfrom flask.views import MethodView, View\napp = Flask(__name__)\nclass ClassUsers(MethodView):\n    def get(self):\n        return []\nclass ClassPage(View):\n    def dispatch_request(self):\n        return "page"\nusers_view = ClassUsers.as_view("class_users")\napp.add_url_rule("/class-users", view_func=users_view)\napp.add_url_rule("/class-page", view_func=ClassPage.as_view("class_page"))\n',
     'flaskrules.py': 'from flask import Flask\napp = Flask(__name__)\ndef rule_users():\n    return []\napp.add_url_rule("/direct-rules", view_func=rule_users, methods=["GET"])\n',
@@ -36,6 +38,7 @@ export async function checkPythonFeatureFlow(app, page, folder) {
   sources['client.ts'] += 'export function classUsers() { return fetch("/class-users"); }\nexport function classPage() { return fetch("/class-page"); }\n';
   sources['client.ts'] += 'export function legacyPage() { return fetch("/legacy-page/"); }\nexport function legacyAssets() { return fetch("/assets/example.txt"); }\n';
   sources['client.ts'] += 'export function directRules() { return fetch("/direct-rules"); }\n';
+  sources['client.ts'] += 'export function drfRecords() { return fetch("/drf-records/"); }\nexport function drfAlias() { return fetch("/drf-alias/"); }\n';
   for (const [name, source] of Object.entries(sources)) {
     await mkdir(path.dirname(path.join(folder, name)), { recursive: true });
     await writeFile(path.join(folder, name), source);
@@ -104,6 +107,8 @@ export async function checkPythonFeatureFlow(app, page, folder) {
       ['/class-users', 'ClassUsers.get', '5–6', 'flaskviews.py', true],
       ['/class-page', 'ClassPage.dispatch_request', '8–9', 'flaskviews.py', true],
       ['/direct-rules', 'rule_users', '3–4', 'flaskrules.py', true],
+      ['/drf-records/', 'Records.list', '3–4', 'foreign/viewsets.py', true],
+      ['/drf-alias/', 'Records.list', '3–4', 'foreign/viewsets.py', true],
       ['/app/v2/books', 'factory_books', '6–8', 'factoryrouters.py', true], ['/shelf/pages', 'factory_pages', '14–16', 'factoryrouters.py', true],
     ]) {
       await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();

@@ -10,7 +10,12 @@ import { bounded, ROUTE_LIMITS, shortName } from './routes';
 
 type Node = Parser.SyntaxNode;
 /** A view expression in urlpatterns, optionally followed by .as_view(). */
-interface ViewRef { local: string; attribute: string | null; asView: boolean }
+interface ViewRef {
+  local: string; attribute: string | null; asView: boolean;
+  actions?: { method: Route['method']; action: string }[] | null;
+  drfOnly?: true;
+  at?: number;
+}
 interface DjangoEntry {
   kind: UnresolvedRoute['kind'];
   path: string | null;
@@ -21,6 +26,7 @@ interface DjangoEntry {
   shape: Pick<Route, 'segments' | 'typed' | 'unmatched'>;
   view: ViewRef | null;
   basis: Route['basis'];
+  invalidRegistration?: true;
 }
 /** One path entry whose literal include can be joined from the manage.py folder. */
 interface DjangoInclude { written: string; module: string[] }
@@ -31,7 +37,8 @@ interface DjangoStaticAddition {
   defaultView: boolean;
 }
 type DjangoView = { kind: 'function'; handler: CallTarget; methods: Route['method'][] }
-  | { kind: 'class'; methods: { method: Route['method']; handler: CallTarget }[] };
+  | { kind: 'class'; methods: { method: Route['method']; handler: CallTarget }[] }
+  | { kind: 'viewset'; definedAt: number; actions: Map<string, CallTarget | null> };
 /** Values only: syntax trees are released after each file is read. */
 export interface DjangoFile {
   entries: DjangoEntry[];
@@ -40,6 +47,8 @@ export interface DjangoFile {
   unfollowed: number;
   imports: Map<string, PythonImport>;
   views: Map<string, DjangoView>;
+  viewAliases: Map<string, { view: ViewRef; end: number }>;
+  viewsetInvalid: Set<string>;
   plain: boolean;
   init: InitFacts | null;
   odd: boolean;
@@ -56,6 +65,19 @@ export interface DjangoFile {
 export interface DjangoRoom { entries: number; views: number; entriesCut?: boolean; viewsCut?: boolean }
 const methods = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const changesDispatch = new Set(['as_view', 'dispatch', 'http_method_names', 'setup']);
+const viewsetBases = ['ViewSet', 'GenericViewSet', 'ModelViewSet', 'ReadOnlyModelViewSet'];
+const viewsetDispatch = new Set([...changesDispatch, 'initialize_request', 'initial', '__init__', '__new__', '__getattribute__', '__getattr__', '__setattr__']);
+const replacedActions = new Set(['name', 'description', 'suffix', 'detail', 'basename', 'action_map']);
+function originalActions(actions: ViewRef['actions']): boolean {
+  if (!actions?.length) return false;
+  const replaced = new Set<string>();
+  // DRF assigns HTTP methods in dictionary order; a later lookup can see an earlier assignment.
+  for (const { method, action } of actions) {
+    if (replacedActions.has(action) || replaced.has(action)) return false;
+    replaced.add(method.toLowerCase());
+  }
+  return true;
+}
 const argumentsOf = (node: Node) => node.childForFieldName('arguments')?.namedChildren.filter(child => child.type !== 'comment') ?? [];
 const positional = (node: Node) => !['keyword_argument', 'list_splat', 'dictionary_splat'].includes(node.type);
 function displayedRegex(node: Node | null | undefined): string | null {
@@ -85,16 +107,33 @@ function registrationArgumentsValid(args: Node[], positionNames: string[], extra
 
 function viewRefOf(input: Node | null | undefined, nameOf: (node: Node | null | undefined) => string): ViewRef | null {
   let expression = input, asView = false;
+  let actions: ViewRef['actions'], drfOnly = false;
   if (expression?.type === 'call') {
     const fn = expression.childForFieldName('function'), args = argumentsOf(expression);
     const safe = args.every(arg => arg.type === 'keyword_argument' && !['dispatch', 'setup', 'http_method_names'].includes(nameOf(arg.childForFieldName('name'))));
-    asView = safe && fn?.type === 'attribute' && nameOf(fn.childForFieldName('attribute')) === 'as_view';
+    const actionArg = args.find(positional) ?? args.find(arg => nameOf(arg.childForFieldName('name')) === 'actions')?.childForFieldName('value');
+    if (actionArg) {
+      actions = null;
+      if (registrationArgumentsValid(args, ['actions'], false, nameOf) && actionArg.type === 'dictionary') {
+        const pairs = actionArg.namedChildren.filter(child => child.type !== 'comment');
+        const selected: NonNullable<ViewRef['actions']> = [], used = new Set<string>();
+        if (pairs.length > 0 && pairs.length <= 5) for (const pair of pairs) {
+          const method = plainString(pair.childForFieldName('key')), action = plainString(pair.childForFieldName('value'));
+          if (pair.type !== 'pair' || !method || method !== method.toLowerCase() || !methods.has(method.toUpperCase())
+            || used.has(method) || !action || action.length > ROUTE_LIMITS.name) break;
+          used.add(method); selected.push({ method: method.toUpperCase() as Route['method'], action });
+        }
+        if (selected.length && selected.length === pairs.length) actions = selected;
+      }
+    }
+    drfOnly = !safe && !!actions;
+    asView = (safe || drfOnly) && fn?.type === 'attribute' && nameOf(fn.childForFieldName('attribute')) === 'as_view';
     expression = asView ? fn!.childForFieldName('object')! : undefined;
   }
   const local = expression?.type === 'attribute' ? expression.childForFieldName('object') : expression;
   const attribute = expression?.type === 'attribute' ? nameOf(expression.childForFieldName('attribute')) : null;
   return local?.type === 'identifier' && nameOf(local) && (attribute === null || attribute)
-    ? { local: nameOf(local), attribute, asView } : null;
+    ? { local: nameOf(local), attribute, asView, ...(actions !== undefined ? { actions, at: input!.startIndex } : {}), ...(drfOnly ? { drfOnly: true as const } : {}) } : null;
 }
 
 function staticAddition(call: Node, basis: Route['basis'], nameOf: (node: Node | null | undefined) => string): DjangoStaticAddition | null {
@@ -113,7 +152,7 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
   const text = root.text.normalize('NFKC');
   let mentions = 0;
   for (let at = text.indexOf('ROOT_URLCONF'); at !== -1; at = text.indexOf('ROOT_URLCONF', at + 'ROOT_URLCONF'.length)) mentions++;
-  const result: DjangoFile = { entries: [], includes: [], staticAdditions: [], unfollowed: 0, imports: new Map(), views: new Map(), plain: complete && !root.hasError,
+  const result: DjangoFile = { entries: [], includes: [], staticAdditions: [], unfollowed: 0, imports: new Map(), views: new Map(), viewAliases: new Map(), viewsetInvalid: new Set(), plain: complete && !root.hasError,
     init: null, odd: false, root: null, rootUnclear: false, listFinal: false,
     reachesList: (!complete || root.hasError) && text.includes('urlpatterns') };
   // 1. Bound names are normalized once, after rejecting text too long to be a route name.
@@ -138,7 +177,10 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
   const django = new Map<string, string>();
   const djangoAt = new Map<string, number>();
   const imports = new Map<string, PythonImport>();
+  const importedAt = new Map<string, number>();
   const definitions = new Map<string, Node>();
+  const drfBases = new Map<string, { root: string; end: number }>();
+  const drfRoots = new Set<string>();
   let lastStar = -1;
   for (const { node, module, type } of nodes) {
     // Every name the import check looks for starts with two underscores, so other names are not handed to it.
@@ -157,9 +199,21 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
       const item = items[from ? 0 : index];
       if (!item || original.text.length > ROUTE_LIMITS.name) continue;
       const name = nameOf(binding);
+      importedAt.set(name, node.endIndex);
       imports.set(name, { ...item, module: !from && !imported.childForFieldName('alias') ? item.module.slice(0, 1) : item.module,
         names: from ? [nameOf(original)] : null });
       const moduleName = from ? nameOf(node.childForFieldName('module_name')) : null, importedName = nameOf(original);
+      if (item.level === 0) {
+        const module = item.module.map(normalize).join('.');
+        const direct = from && module === 'rest_framework.viewsets' && viewsetBases.includes(importedName);
+        const namespace = from && module === 'rest_framework' && importedName === 'viewsets'
+          || !from && module === 'rest_framework.viewsets';
+        if (direct || namespace) {
+          drfRoots.add(name);
+          const prefix = !from && !imported.childForFieldName('alias') ? 'rest_framework.viewsets' : name;
+          for (const reference of direct ? [name] : viewsetBases.map(base => prefix + '.' + base)) drfBases.set(reference, { root: name, end: node.endIndex });
+        }
+      }
       if (moduleName === 'django.urls' && ['path', 're_path', 'include'].includes(importedName)
         || moduleName === 'django.conf.urls' && ['url', 'include'].includes(importedName)
         || moduleName === 'django.conf.urls.static' && importedName === 'static') {
@@ -167,6 +221,7 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
       }
     }
   }
+
   for (const { node, type } of nodes) {
     if (type !== 'function_definition' && type !== 'class_definition') continue;
     const declaration = node.parent?.type === 'decorated_definition' ? node.parent : node;
@@ -174,6 +229,34 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
     const name = node.childForFieldName('name')!;
     bind(name);
     if (nameOf(name)) definitions.set(nameOf(name), node);
+  }
+  const drfClasses = new Map<string, string>(), baseReads = new Set<number>();
+  for (const [name, node] of definitions) {
+    if (node.type !== 'class_definition') continue;
+    const bases = node.childForFieldName('superclasses')?.namedChildren.filter(child => child.type !== 'comment') ?? [];
+    if (bases.length !== 1) continue;
+    const base = drfBases.get(nameOf(bases[0]));
+    if (!base || base.end > node.startIndex) continue;
+    drfClasses.set(name, base.root);
+    let read = bases[0];
+    while (read.type === 'attribute') read = read.childForFieldName('object')!;
+    if (read.type === 'identifier') baseReads.add(read.id);
+  }
+  const receiverOf = (expression: Node): Node | null => {
+    let read: Node | null = expression.type === 'call' ? expression.childForFieldName('function') : expression;
+    // A ViewRef contains at most a module, a class and as_view.
+    for (let level = 0; level < 3 && read?.type === 'attribute'; level++) read = read.childForFieldName('object');
+    return read?.type === 'identifier' ? read : null;
+  };
+  const aliases = new Map<string, { view: ViewRef; end: number; binding: number; read: number }>();
+  for (const { node, type } of nodes) {
+    if (type !== 'assignment' || node.parent?.type !== 'expression_statement' || node.parent.parent?.id !== root.id) continue;
+    const left = node.childForFieldName('left'), ref = viewRefOf(node.childForFieldName('right'), nameOf);
+    if (left?.type !== 'identifier' || !nameOf(left) || !ref?.asView || !ref.actions) continue;
+    bind(left);
+    if (room.views <= 0) { room.viewsCut = true; continue; }
+    aliases.set(nameOf(left), { view: { ...ref, drfOnly: true }, end: node.endIndex, binding: left.id, read: receiverOf(node.childForFieldName('right')!)!.id });
+    room.views--;
   }
 
   // 2. A name is trusted only at its binding and its specified reading positions.
@@ -264,6 +347,12 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
       const called = parent?.type === 'call' && parent.childForFieldName('function')?.id === node.id;
       if (!called && !typePosition(node)) invalid.add(name);
     }
+    if ((drfRoots.has(name) || drfClasses.has(name)) && !label && !parameterPosition(node) && !bindings.get(name)?.has(node.id) && !typePosition(node)) {
+      const asView = drfClasses.has(name) && parent?.type === 'attribute' && parent.childForFieldName('object')?.id === node.id
+        && nameOf(parent.childForFieldName('attribute')) === 'as_view' && parent.parent?.type === 'call' && parent.parent.childForFieldName('function')?.id === parent.id;
+      if (!baseReads.has(node.id) && !asView) invalid.add(name);
+    }
+    if (baseReads.has(node.id)) continue;
     if (!module || label || parameterPosition(node) || bindings.get(name)?.has(node.id)) continue;
     const called = parent?.type === 'call' && parent.childForFieldName('function')?.id === node.id;
     if (django.has(name)) { if (!called) invalid.add(name); continue; }
@@ -294,7 +383,7 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
   result.init = result.plain && file.relativePath.split('/').at(-1) === '__init__.py' ? initFactsOf(root) : null;
 
   // 3. Read literal list entries and static-list additions assigned directly to module-level urlpatterns.
-  const lists = new Set<number>(), staticCalls = new Set<number>();
+  const lists = new Set<number>(), staticCalls = new Set<number>(), aliasReads = new Set<number>(), viewsetReads = new Set<number>();
   for (const { node, type } of nodes) {
     if (type !== 'assignment' && type !== 'augmented_assignment' || node.parent?.parent?.id !== root.id) continue;
     if (nameOf(node.childForFieldName('left')) !== 'urlpatterns') continue;
@@ -330,6 +419,8 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
     const keyword = (name: string) => args.find(arg => arg.type === 'keyword_argument' && nameOf(arg.childForFieldName('name')) === name)?.childForFieldName('value');
     const expression = positions[1] ?? keyword('view');
     const pathNode = positions[0] ?? keyword(django.get(callee) === 'url' ? 'regex' : 'route');
+    const validRegistration = registrationArgumentsValid(args, [django.get(callee) === 'url' ? 'regex' : 'route', 'view', 'kwargs', 'name'], false, nameOf)
+      && !!pathNode && !!expression;
     if (django.get(callee) === 'url' && (!pathNode || !expression)) continue;
     const written = pathNode ? plainString(pathNode) : null;
     const regex = django.get(callee) !== 'path';
@@ -349,15 +440,41 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
       continue;
     }
     const view = viewRefOf(expression, nameOf);
+    if (validRegistration && view && expression) {
+      if (expression.type === 'identifier' && aliases.has(nameOf(expression))) aliasReads.add(expression.id);
+      const receiver = receiverOf(expression);
+      if (receiver) viewsetReads.add(receiver.id);
+    }
     // `bounded` looks at the length first, so an overlong route is never split or matched.
     const path = written === null ? null : bounded(regex ? written : '/' + written);
     const shape = regex || spread ? { unmatched: true as const } : path === null ? {} : djangoShape(path);
     result.entries.push({ kind: regex ? 'regex' : 'path', path, ...(regex ? { displayPath: displayedRegex(pathNode) } : {}),
       written: regex || spread || written === null || written.length > ROUTE_LIMITS.pathLength ? null : written,
-      shape, view, basis: basisOf(call) });
+      shape, view, basis: basisOf(call), ...(!validRegistration ? { invalidRegistration: true as const } : {}) });
     room.entries--;
   }
+  for (const { node, type } of nodes) {
+    if (type !== 'identifier' || !aliases.has(nameOf(node)) || labelPosition(node) || parameterPosition(node) || typePosition(node)) continue;
+    const alias = aliases.get(nameOf(node))!;
+    if (node.id !== alias.binding && !aliasReads.has(node.id)) invalid.add(nameOf(node));
+  }
+  for (const [name, alias] of aliases) {
+    if (invalid.has(name) || invalid.has(alias.view.local)) continue;
+    result.viewAliases.set(name, { view: alias.view, end: alias.end });
+    viewsetReads.add(alias.read);
+  }
+  // Imported classes and generated functions receive the same strict identity check as local ViewSets.
+  // Keep this result separately: ordinary Django views retain their existing reading rules.
+  for (const { node, type } of nodes) {
+    if (type !== 'identifier') continue;
+    const name = nameOf(node);
+    if (!imports.has(name) && !definitions.has(name) && !aliases.has(name)) continue;
+    if (bindings.get(name)?.has(node.id) || labelPosition(node) || parameterPosition(node) || typePosition(node) || baseReads.has(node.id)) continue;
+    if (viewsetReads.has(node.id) && (importedAt.get(name) ?? -1) < node.startIndex) continue;
+    result.viewsetInvalid.add(name);
+  }
   const used = new Set([...result.entries, ...result.staticAdditions].map(entry => entry.view?.local));
+  for (const alias of result.viewAliases.values()) used.add(alias.view.local);
   for (const [name, item] of imports) if (used.has(name) && !invalid.has(name)) result.imports.set(name, item);
   if (!result.plain) return result;
 
@@ -400,6 +517,47 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
     if (room.views <= 0) { room.viewsCut = true; break; }
     if (invalid.has(name) || node.hasError) continue;
     if (node.type === 'class_definition') {
+      if (drfClasses.has(name)) {
+        if (invalid.has(drfClasses.get(name)!) || node.parent?.type === 'decorated_definition') continue;
+        const actions = new Map<string, CallTarget | null>();
+        const statements = node.childForFieldName('body')?.namedChildren ?? [];
+        let safe = true, budget = 2_000;
+        // Reserve each declared action against the same project budget as ordinary views.
+        for (const statement of statements) {
+          const definition = statement.type === 'decorated_definition' ? statement.childForFieldName('definition') : statement;
+          if (definition?.type !== 'function_definition') continue;
+          const action = nameOf(definition.childForFieldName('name'));
+          if (!action || viewsetDispatch.has(action)) { safe = false; break; }
+          if (!actions.has(action) && actions.size + 1 >= room.views) { room.viewsCut = true; safe = false; break; }
+          actions.set(action, actions.has(action) || statement.type === 'decorated_definition'
+            || action.startsWith('__') && !action.endsWith('__') ? null : target(definition));
+        }
+        // An assignment, deletion or control-flow block can replace a previously declared action.
+        for (const statement of safe ? statements : []) {
+          if (statement.type === 'function_definition' || statement.type === 'comment'
+            || statement.type === 'decorated_definition' && statement.childForFieldName('definition')?.type === 'function_definition') continue;
+          const pending = [statement];
+          while (pending.length && safe) {
+            if (--budget < 0) { safe = false; break; }
+            const child = pending.pop()!;
+            if (child.type === 'import_statement' || child.type === 'import_from_statement') {
+              for (const imported of child.childrenForFieldName('name')) {
+                const original = imported.type === 'aliased_import' ? imported.childForFieldName('name')! : imported;
+                const bound = nameOf(imported.childForFieldName('alias') ?? original.firstNamedChild);
+                if (viewsetDispatch.has(bound)) safe = false;
+                if (actions.has(bound)) actions.set(bound, null);
+              }
+            }
+            if (child.type !== 'identifier') { pending.push(...child.namedChildren); continue; }
+            if (labelPosition(child)) continue;
+            const action = nameOf(child);
+            if (viewsetDispatch.has(action)) { safe = false; break; }
+            if (actions.has(action)) actions.set(action, null);
+          }
+        }
+        if (safe) { result.views.set(name, { kind: 'viewset', actions, definedAt: node.endIndex }); room.views -= actions.size + 1; }
+        continue;
+      }
       const handlers = handlersOf(node);
       if (!handlers) continue;
       result.views.set(name, { kind: 'class', methods: [...handlers].filter(([, node]) => node !== null)
@@ -544,7 +702,20 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
     }
   }
   const prepared: { path: string; file: DjangoFile; entry: DjangoEntry; viewPath: string;
-    handlers: { method: Route['method']; handler: CallTarget }[] }[] = [];
+    drf: boolean; handlers: { method: Route['method']; handler: CallTarget }[] }[] = [];
+  const drfShadow = [...known].some(path => {
+    const parts = path.normalize('NFKC').toLowerCase().split('/');
+    const index = parts.at(-1) === 'rest_framework.py' ? parts.length - 1
+      : parts.at(-1) === '__init__.py' && parts.at(-2) === 'rest_framework' ? parts.length - 2 : -1;
+    return index >= 0 && !parts.slice(0, index).some(part => part === 'site-packages' || part === 'dist-packages');
+  });
+  const location = (path: string, ref: ViewRef): { path: string; name: string } | null => {
+    if (ref.attribute === null && (files.get(path)?.views.has(ref.local) || files.get(path)?.viewAliases.has(ref.local))) return { path, name: ref.local };
+    const imported = resolved.get(path)?.get(ref.local);
+    if (!imported) return null;
+    const name = ref.attribute === null ? imported.name : imported.name === null ? ref.attribute : null;
+    return name === null ? null : { path: imported.path, name };
+  };
   const unresolved = (filePath: string, file: DjangoFile, entry: DjangoEntry, reason: UnresolvedRoute['reason'], addition: DjangoStaticAddition | null) => {
     const collected = entry.kind === 'path' ? prefixes.get(filePath) ?? [bare(filePath, file)] : [bare(filePath, file)];
     for (const prefix of collected) {
@@ -571,32 +742,41 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
   for (const { path, file, entry, static: staticEntry } of entries) {
     if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
     if (staticEntry?.defaultView) { unresolved(path, file, entry, 'static-handler', staticEntry); continue; }
-    const ref = entry.view;
+    let ref = entry.view;
     // A urlconf that is not plain has no views of its own and no resolved imports, so its entries fall out below.
     if (!ref) {
       skipped += Number(!staticEntry); unresolved(path, file, entry, 'unreadable-view', staticEntry); continue;
     }
-    let view = ref.attribute === null ? file.views.get(ref.local) : undefined;
-    let viewPath = path;
-    const imported = resolved.get(path)?.get(ref.local);
-    if (!view && imported) {
-      viewPath = imported.path;
-      const name = ref.attribute === null ? imported.name : imported.name === null ? ref.attribute : null;
-      view = name === null ? undefined : files.get(viewPath)?.views.get(name);
+    let found = location(path, ref), refPath = path, unsafeViewset = file.viewsetInvalid.has(ref.local);
+    if (found) unsafeViewset ||= files.get(found.path)!.viewsetInvalid.has(found.name);
+    const alias = found && files.get(found.path)?.viewAliases.get(found.name);
+    if (alias && !ref.asView && (found!.path !== path || alias.end < entry.basis.range.startUtf16)) {
+      refPath = found!.path;
+      ref = alias.view;
+      unsafeViewset ||= files.get(refPath)!.viewsetInvalid.has(ref.local);
+      found = location(refPath, ref);
+      if (found) unsafeViewset ||= files.get(found.path)!.viewsetInvalid.has(found.name);
     }
+    const viewPath = found?.path ?? path, view = found && files.get(found.path)?.views.get(found.name);
     if (!view) {
       skipped += Number(!staticEntry); unresolved(path, file, entry, 'unresolved-handler', staticEntry); continue;
     }
-    if (ref.asView !== (view.kind === 'class') || view.kind === 'class' && !view.methods.length) {
+    const drf = view.kind === 'viewset';
+    const drfHandlers = drf && ref.asView && ref.actions && originalActions(ref.actions) && !drfShadow && !unsafeViewset && !entry.invalidRegistration
+      && (viewPath !== refPath || ref.at !== undefined && view.definedAt < ref.at)
+      ? ref.actions.map(({ method, action }) => ({ method, handler: view.actions.get(action) })) : null;
+    if (drf ? !drfHandlers?.length || drfHandlers.some(item => !item.handler)
+      : ref.drfOnly || ref.asView !== (view.kind === 'class') || view.kind === 'class' && !view.methods.length) {
       skipped += Number(!staticEntry); unresolved(path, file, entry, 'unsupported-view', staticEntry); continue;
     }
-    const handlers = view.kind === 'function' ? view.methods.map(method => ({ method, handler: view.handler })) : view.methods;
+    const handlers = view.kind === 'viewset' ? drfHandlers!.map(item => ({ method: item.method, handler: item.handler! }))
+      : view.kind === 'function' ? view.methods.map(method => ({ method, handler: view.handler })) : view.methods;
     if (!handlers.length) continue;
     if (staticEntry) staticUnresolved--;
-    prepared.push({ path, file, entry, viewPath, handlers });
+    prepared.push({ path, file, entry, viewPath, handlers, drf });
   }
   // Every prepared combination produces a route. Stop the entire product at the first extra route.
-  build: for (const { path, file, entry, viewPath, handlers } of prepared) {
+  build: for (const { path, file, entry, viewPath, handlers, drf } of prepared) {
     const collected = prefixes.get(path) ?? [bare(path, file)];
     for (let index = 0; index < collected.length * handlers.length; index++) {
       if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
@@ -609,7 +789,7 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
       if (files.get(viewPath)!.odd) oddFiles.add(viewPath);
       const shape = entry.written === null || !prefix.written ? entry.shape : joined === null ? {} : djangoShape(joined);
       // A bracket left open in the entry needs its other half in a prefix fragment, which is then incomplete too.
-      routes.push({ framework: 'django', prefix: prefix.known && entry.written !== null ? 'known' : 'unknown', method, handler, path: joined, basis: entry.basis,
+      routes.push({ framework: 'django', prefix: !drf && prefix.known && entry.written !== null ? 'known' : 'unknown', method, handler, path: joined, basis: entry.basis,
         ...(odd || prefix.incomplete ? { unmatched: true as const } : shape) });
     }
   }
