@@ -907,7 +907,7 @@ function App() {
                 </>}
               </dl>
               <p className="hint">{source.analysis.language === 'python'
-                ? '‘이 함수 흐름으로 보기’에서 직접·확정 import 호출과 같은 파일의 매개변수·타입 표기·대입 식을 따라가요.'
+                ? '‘이 함수 흐름으로 보기’에서 직접·확정 import 호출과 값의 출처를 따라가요.'
                 : '돌려주는 값의 모양과 이 함수를 부르는 곳은 ‘이 함수 흐름으로 보기’에서 찾아요.'}</p>
               <button className="btn btn--small" onClick={() => setView('function')}>이 함수 흐름으로 보기</button>
             </section>}

@@ -22,8 +22,29 @@ export interface PythonValueReference {
   fn: PythonFunctionFact | null;
   inClass: boolean;
 }
-export type PythonValueOrigin = { kind: 'origin'; facts: PythonFileFacts; name: string }
-  | { kind: 'external'; specifier: string } | { kind: 'unknown'; detail: string };
+export type PythonValueOrigin = ({ kind: 'origin'; facts: PythonFileFacts; name: string; viaModule?: boolean }
+  | { kind: 'external'; specifier: string } | { kind: 'unknown'; detail: string }) & { localName?: string };
+
+/** Parentheses around one expression do not change its name or object. */
+export function pythonParenthesizedValue(node: Parser.SyntaxNode | null): Parser.SyntaxNode | null {
+  if (node?.type !== 'parenthesized_expression') return null;
+  const children = node.namedChildren.filter(child => !['comment', 'line_continuation'].includes(child.type));
+  return children.length === 1 ? children[0] : null;
+}
+
+/** Literal attribute reads rooted at this identifier, preserving written names for the card label. */
+export function pythonValueAccess(root: Parser.SyntaxNode): { node: Parser.SyntaxNode; names: string[]; label: string } {
+  let node = root;
+  const names = [root.text];
+  while (node.parent) {
+    const parent = node.parent;
+    if (pythonParenthesizedValue(parent)?.id === node.id) { node = parent; continue; }
+    if (parent.type !== 'attribute' || parent.childForFieldName('object')?.id !== node.id) break;
+    node = parent;
+    names.push(node.childForFieldName('attribute')!.text);
+  }
+  return { node, names: names.map(normalize), label: names.join('.') };
+}
 export interface PythonValueFacts {
   bindings: PythonValueBinding[];
   references: PythonValueReference[];
@@ -123,10 +144,12 @@ export async function pythonValuesOf(facts: PythonFileFacts, fn: PythonFunctionF
     else scope.set(name, [event]);
   }
   const seen = new Set<PythonValueBinding[]>();
+  const importedSeen = new Map<PythonValueBinding[], { paths: Set<string>; cards: Set<string> }>();
   const originNames = new Map<PythonFileFacts, Map<string, PythonValueBinding[]>>();
   const follow = async (base: NameValue, reference: PythonValueReference): Promise<NameValue> => {
     const origin = await followImport!(reference);
     stop();
+    base = { ...base, name: origin.localName ?? base.name };
     if (origin.kind === 'unknown') return { ...base, unknown: origin.detail };
     if (origin.kind === 'external') return { ...base, unknown: null, external: origin.specifier };
     let names = originNames.get(origin.facts);
@@ -142,7 +165,7 @@ export async function pythonValuesOf(facts: PythonFileFacts, fn: PythonFunctionF
       }
       originNames.set(origin.facts, names);
     }
-    return importedValue(base, origin.facts, origin.name, names.get(origin.name) ?? []);
+    return importedValue(base, origin.facts, origin.name, names.get(origin.name) ?? [], !!origin.viaModule);
   };
   const unknownDirectives = new Map<PythonScope, Set<string>>();
   for (const scope of groups.values()) {
@@ -177,10 +200,18 @@ export async function pythonValuesOf(facts: PythonFileFacts, fn: PythonFunctionF
     }
     if (seen.has(events)) continue;
     if (functionReferences.has(reference.node.id) && events.every(event => event.kind === 'import')) continue;
-    seen.add(events);
     events.sort((a, b) => a.source.startIndex - b.source.startIndex);
     let value = describe(facts, fn, events, events.some(event => event.fn === fn) ? 'inside' : 'outside');
-    if (followImport && events.length === 1 && events[0].kind === 'import') value = await follow(value, reference);
+    if (followImport && events.length === 1 && events[0].kind === 'import') {
+      const visited = importedSeen.get(events) ?? { paths: new Set<string>(), cards: new Set<string>() };
+      importedSeen.set(events, visited);
+      const key = normalize(pythonValueAccess(reference.node).label);
+      if (visited.paths.has(key)) continue;
+      visited.paths.add(key);
+      value = await follow(value, reference);
+      if (visited.cards.has(normalize(value.name))) continue;
+      visited.cards.add(normalize(value.name));
+    } else seen.add(events);
     if (reference.inClass && privateName(name)) {
       value.unknown = '클래스의 비공개 이름 변환과 __class__의 값 출처는 아직 확정하지 않아요.';
       value.declaredAt = null;
@@ -194,7 +225,7 @@ export async function pythonValuesOf(facts: PythonFileFacts, fn: PythonFunctionF
 }
 
 /** A from-import captures an object reference; later module rebindings are not writes to this local name. */
-function importedValue(base: NameValue, facts: PythonFileFacts, name: string, events: PythonValueBinding[]): NameValue {
+function importedValue(base: NameValue, facts: PythonFileFacts, name: string, events: PythonValueBinding[], viaModule: boolean): NameValue {
   const bindings = facts.program.names.get(name) ?? [];
   const [event] = events;
   if (!facts.complete || !facts.importsPlain || facts.values?.dynamic || facts.values?.unresolved.has(facts.program)) {
@@ -206,7 +237,8 @@ function importedValue(base: NameValue, facts: PythonFileFacts, name: string, ev
     || event.source.parent?.type !== 'expression_statement' || event.source.parent.parent?.type !== 'module') {
     return { ...base, unknown: '가져온 이름이 파일 맨 위의 한 번뿐인 단순 대입이 아니어서 값 출처를 확정하지 않았어요.' };
   }
-  return { ...base, declaredAt: where(facts, event.name), initial: { ...where(facts, event.value), kind: 'export' },
+  return { ...base, declaredAt: where(facts, event.name), initial: { ...where(facts, event.value), kind: viaModule ? 'value' : 'export' },
     type: event.annotation?.text ?? null, unknown: null, assignments: [], fixed: null,
-    notes: ['가져오는 코드의 출처예요. 실행 시점의 값이나 객체 내부 상태는 계산하지 않아요. 원본 이름의 나중 재대입을 따라가는 연결은 아니에요.'] };
+    notes: [viaModule ? '모듈에 처음 적힌 대입 식이에요. 속성을 읽는 실행 시점의 값이나 객체 내부 상태는 계산하지 않아요.'
+      : '가져오는 코드의 출처예요. 실행 시점의 값이나 객체 내부 상태는 계산하지 않아요. 원본 이름의 나중 재대입을 따라가는 연결은 아니에요.'] };
 }

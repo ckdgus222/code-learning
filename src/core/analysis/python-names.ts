@@ -3,7 +3,7 @@ import type { CallUnknownReason, ProjectFile } from '../../shared/contracts';
 import { NESTED_NOTE, parse } from './syntax';
 import { initFactsOf, mentionsMachinery, normalize, pythonImportsOf, type InitFacts, type PythonImport } from './python-imports';
 import { pythonFunction } from './python-syntax';
-import { newPythonValueFacts, pythonValueRead, type PythonValueBinding, type PythonValueFacts } from './python-values';
+import { newPythonValueFacts, pythonValueAccess, pythonValueRead, type PythonValueBinding, type PythonValueFacts } from './python-values';
 
 export interface PythonImportBinding {
   kind: 'import';
@@ -136,13 +136,9 @@ export function readPythonFacts(file: ProjectFile, text: string, hash: string, n
       const parent = node.parent;
       const label = parent?.type === 'attribute' && parent.childForFieldName('attribute')?.id === node.id
         || parent?.type === 'keyword_argument' && parent.childForFieldName('name')?.id === node.id;
-      let chain = node;
-      let namespace = false;
-      while (chain.parent?.type === 'attribute' && chain.parent.childForFieldName('object')?.id === chain.id) {
-        chain = chain.parent;
-        namespace ||= normalize(chain.childForFieldName('attribute')?.text ?? '') === '__dict__';
-      }
-      const invoked = chain.parent?.type === 'call' && chain.parent.childForFieldName('function')?.id === chain.id;
+      const access = pythonValueAccess(node);
+      const namespace = access.names.includes('__dict__');
+      const invoked = access.node.parent?.type === 'call' && access.node.parent.childForFieldName('function')?.id === access.node.id;
       if (!label && (namespace || frame.escapes && !invoked)) facts.moduleEscapes.push({ node, scope });
     }
     if (node.type === 'identifier' && dynamicNames.has(normalize(node.text))) {

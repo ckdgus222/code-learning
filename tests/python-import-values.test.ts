@@ -169,11 +169,11 @@ describe('Python direct from-import value origins', () => {
     await linked(valueOf(await search()));
   });
 
-  it('does not claim module-attribute value following is implemented', async () => {
+  it('follows module-attribute values separately from captured from-import values', async () => {
     await prepare({ 'own/main.py': 'from . import settings\ndef run():\n    return settings.LIMIT\n' });
     const result = await search();
-    expect(result.values.some(value => value.initial?.kind === 'export')).toBe(false);
-    expect(result.values.some(value => value.name === 'LIMIT')).toBe(false);
+    expect(result.values.find(value => value.name === 'settings.LIMIT')).toMatchObject({ role: 'import', type: 'int',
+      initial: { kind: 'value', text: '2 + 3' }, fixed: null, unknown: null });
   });
 
   it('identifies external imports without inventing a source expression', async () => {

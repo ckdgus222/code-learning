@@ -4,7 +4,7 @@ import type { CallUnknownReason, ProjectFile } from '../../shared/contracts';
 import { normalize, resolvePythonImport, type PythonTarget } from './python-imports';
 import { resolvePythonCall, resolvePythonName, type PythonCallFact, type PythonFileFacts, type PythonFunctionFact,
   type PythonImportBinding, type PythonScope } from './python-names';
-import type { PythonValueOrigin, PythonValueReference } from './python-values';
+import { pythonParenthesizedValue, pythonValueAccess, type PythonValueOrigin, type PythonValueReference } from './python-values';
 
 type Found = { kind: 'linked'; facts: PythonFileFacts; fn: PythonFunctionFact }
   | { kind: 'external'; specifier: string }
@@ -14,7 +14,10 @@ const unknown = (reason: CallUnknownReason, detail: string): Extract<Found, { ki
 /** Only literal name/attribute chains, never subscripts, calls or computed attributes. */
 export function pythonAttributeNames(node: Parser.SyntaxNode | null): string[] | null {
   const names: string[] = [];
-  while (node?.type === 'attribute') {
+  while (node) {
+    const inner = pythonParenthesizedValue(node);
+    if (inner) { node = inner; continue; }
+    if (node.type !== 'attribute') break;
     const name = node.childForFieldName('attribute');
     if (name?.type !== 'identifier') return null;
     names.unshift(normalize(name.text));
@@ -113,9 +116,7 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
     for (const binding of nearest(reference.scope, normalize(reference.node.text))) {
       if (binding.kind !== 'import') continue;
       markImport(escaped, facts, binding);
-      let expression = reference.node;
-      while (expression.parent?.type === 'attribute' && expression.parent.childForFieldName('object')?.id === expression.id) expression = expression.parent;
-      const suffix = pythonAttributeNames(expression)?.slice(1) ?? [];
+      const suffix = pythonValueAccess(reference.node).names.slice(1);
       const dictionary = suffix.indexOf('__dict__');
       const namespace = dictionary < 0 ? suffix : suffix.slice(0, dictionary);
       for (const file of moduleAccess(facts, binding, namespace)) mark(moduleEscaped, file);
@@ -124,23 +125,34 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
 
   function resolveImportedValue(facts: PythonFileFacts, reference: PythonValueReference): PythonValueOrigin {
     stop();
+    const access = pythonValueAccess(reference.node);
     const found = resolvePythonName(facts, reference, reference.node.text);
     if (found.kind === 'unknown') return { kind: 'unknown', detail: found.detail };
     const binding = found.binding;
     if (binding.kind !== 'import' || binding.privateName) return { kind: 'unknown', detail: '가져오는 이름의 선언이나 비공개 이름 변환을 확정하지 못했어요.' };
+    const writtenName = binding.imported === null ? access.label : reference.node.text;
     const targets = imported(facts, binding);
-    if (targets.length !== 1) return { kind: 'unknown', detail: '가져오는 이름의 파일을 하나로 정하지 못했어요.' };
+    if (targets.length !== 1) return { kind: 'unknown', localName: writtenName, detail: '가져오는 이름의 파일을 하나로 정하지 못했어요.' };
     const [target] = targets;
-    if (target.kind === 'external') return { kind: 'external', specifier: target.specifier };
-    if (target.kind === 'unresolved') return { kind: 'unknown', detail: target.reasonText ?? '가져오는 경로가 없거나 파일·패키지 후보가 여럿이에요.' };
-    if (binding.imported === null || target.names === 'all') return { kind: 'unknown', detail: '모듈 자체나 모듈 속성의 값은 아직 따라가지 않아요.' };
-    if (valueChanged.has(target.relativePath) || moduleEscaped.has(target.relativePath)) {
-      return { kind: 'unknown', detail: '모듈의 이름을 바꾸거나 모듈 자체를 다른 코드로 전달해 가져오는 시점의 값 출처를 정하지 못했어요.' };
+    if (target.kind === 'external') return { kind: 'external', specifier: target.specifier,
+      ...(binding.imported === null ? { localName: access.label } : {}) };
+    if (target.kind === 'unresolved') return { kind: 'unknown', localName: writtenName, detail: target.reasonText ?? '가져오는 경로가 없거나 파일·패키지 후보가 여럿이에요.' };
+    const module = binding.imported === null || target.names === 'all';
+    const localName = module ? access.label : reference.node.text;
+    const suffix = access.names.slice(1);
+    if (module && (suffix.length !== binding.prefix.length + 1 || !binding.prefix.every((part, index) => suffix[index] === part))) {
+      return { kind: 'unknown', localName, detail: '명시적으로 import한 모듈 바로 아래의 이름만 따라가요. 모듈 자체나 객체 안쪽 속성은 확정하지 않아요.' };
     }
-    if (initializerClash(target.relativePath)) return { kind: 'unknown', detail: '부모 패키지의 초기화 코드가 하위 모듈 이름을 바꿀 수 있어 확정하지 않았어요.' };
+    if (module && reference.inClass && suffix.some(name => name.startsWith('__') && !name.endsWith('__'))) {
+      return { kind: 'unknown', localName, detail: '클래스 안의 비공개 속성 이름 변환은 확정하지 않아요.' };
+    }
+    if (valueChanged.has(target.relativePath) || moduleEscaped.has(target.relativePath)) {
+      return { kind: 'unknown', localName, detail: '모듈의 이름을 바꾸거나 모듈 자체를 다른 코드로 전달해 값 출처를 정하지 못했어요.' };
+    }
+    if (initializerClash(target.relativePath)) return { kind: 'unknown', localName, detail: '부모 패키지의 초기화 코드가 하위 모듈 이름을 바꿀 수 있어 확정하지 않았어요.' };
     const destination = byPath.get(target.relativePath);
-    if (!destination?.complete || !destination.importsPlain) return { kind: 'unknown', detail: '가져온 파일을 끝까지 읽지 못했거나 동적인 이름 규칙이 있어요.' };
-    return { kind: 'origin', facts: destination, name: binding.imported };
+    if (!destination?.complete || !destination.importsPlain) return { kind: 'unknown', localName, detail: '가져온 파일을 끝까지 읽지 못했거나 동적인 이름 규칙이 있어요.' };
+    return { kind: 'origin', facts: destination, name: module ? suffix.at(-1)! : binding.imported!, localName, viaModule: module };
   }
   for (const facts of byPath.values()) {
     facts.attributeWrites.forEach(write => markWrite(facts, write));

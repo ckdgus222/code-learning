@@ -341,7 +341,9 @@ try {
   await writeFile(path.join(pythonFixture, 'worker.py'), 'def transform(value):\n    return value\n');
   const pythonImportedValueSource = 'from .settings import LIMIT as limit\ndef value_import():\n    return limit\n';
   await writeFile(path.join(pythonFixture, 'value_origin.py'), pythonImportedValueSource);
-  await writeFile(path.join(pythonFixture, 'settings.py'), 'LIMIT: int = 5\n');
+  await writeFile(path.join(pythonFixture, 'settings.py'), 'LIMIT: int = 5\nOTHER: int = 6\n');
+  const pythonModuleValueSource = 'from . import settings as cfg\ndef module_values():\n    return cfg.LIMIT + cfg.OTHER + cfg.LIMIT\n';
+  await writeFile(path.join(pythonFixture, 'module_values.py'), pythonModuleValueSource);
   await app.evaluate(({ dialog }, folder) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] });
   }, pythonFixture);
@@ -380,6 +382,21 @@ try {
   await page.getByText('근거: settings.py · 1–1줄', { exact: true }).waitFor();
   assert.equal(await page.getByTestId('evidence-range').innerText(), '근거: settings.py · 1–1줄');
   assert.equal(await readFile(path.join(pythonFixture, 'value_origin.py'), 'utf8'), pythonImportedValueSource);
+  await page.getByRole('button', { name: 'module_values.py', exact: true }).click();
+  await page.getByRole('button', { name: 'module_values', exact: true }).click();
+  await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+  const moduleNames = page.getByRole('group', { name: '바깥 이름', exact: true });
+  await moduleNames.getByRole('button', { name: 'cfg.LIMIT', exact: true }).click();
+  assert.equal(await moduleNames.getByRole('button').count(), 2);
+  const moduleLimit = page.getByRole('region', { name: 'cfg.LIMIT 값', exact: true });
+  await moduleLimit.getByText('5', { exact: true }).waitFor();
+  await moduleLimit.getByText('처음 값', { exact: true }).waitFor();
+  await moduleNames.getByRole('button', { name: 'cfg.OTHER', exact: true }).click();
+  const moduleOther = page.getByRole('region', { name: 'cfg.OTHER 값', exact: true });
+  await moduleOther.getByText('6', { exact: true }).waitFor();
+  await moduleOther.getByRole('button', { name: '코드 보기', exact: true }).last().click();
+  await page.getByText('근거: settings.py · 2–2줄', { exact: true }).waitFor();
+  assert.equal(await readFile(path.join(pythonFixture, 'module_values.py'), 'utf8'), pythonModuleValueSource);
   await page.getByRole('button', { name: 'value_origin.py', exact: true }).click();
   await page.getByRole('button', { name: 'value_import', exact: true }).click();
   await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
@@ -395,6 +412,7 @@ try {
   report.checks.push('Python import alias calls and reverse callers across files');
   report.checks.push('Python parameter value card in the packaged worker');
   report.checks.push('Python direct imported value, written type, cross-file evidence and changed-source rejection');
+  report.checks.push('Python module fields, distinct and deduplicated cards, initial expression and source evidence');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

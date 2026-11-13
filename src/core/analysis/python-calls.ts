@@ -5,7 +5,7 @@ import type { MapLimits } from './project-map';
 import { firstLine, lineRange } from './names';
 import { readPythonFacts, type PythonCallFact, type PythonFileFacts, type PythonFunctionFact } from './python-names';
 import { pythonCallResolver } from './python-call-imports';
-import { pythonValuesOf } from './python-values';
+import { pythonParenthesizedValue, pythonValuesOf } from './python-values';
 
 export interface PythonCallsCache {
   texts: Map<string, { text: string; hash: string }>;
@@ -92,7 +92,12 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
     const found = resolver.resolve(chosen, call);
     if (found.kind !== 'unknown') {
       let callee = call.node.childForFieldName('function');
-      while (callee?.type === 'attribute') callee = callee.childForFieldName('object');
+      while (callee) {
+        const inner = pythonParenthesizedValue(callee);
+        if (inner) { callee = inner; continue; }
+        if (callee.type !== 'attribute') break;
+        callee = callee.childForFieldName('object');
+      }
       if (callee?.type === 'identifier') functionReferences.add(callee.id);
     }
     keep(calls, found.kind === 'linked' ? { ...site(call, chosen), status: 'linked', target: { fileId: found.facts.file.id, fileHash: found.facts.hash, ...functionAt(found.fn) } }
@@ -127,7 +132,7 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
     return { ...origin, facts };
   });
   stop();
-  const notes = ['Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 같은 파일의 매개변수·적힌 타입·기본값·대입 식과 직접 가져온 이름의 값 출처를 보여 줘요. 객체 메서드·다시 가져온 이름·람다 안·함수 정의 헤더의 호출, 모듈 속성값과 호출 인자의 대응은 아직 지원하지 않아요.'];
+  const notes = ['Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 같은 파일의 매개변수·적힌 타입·기본값·대입 식과 확정 import의 값 출처를 보여 줘요. 객체 메서드·다시 가져온 이름·람다 안·함수 정의 헤더의 호출과 호출 인자의 대응은 아직 지원하지 않아요.'];
   if (limited) notes.push('파일·읽기 크기·결과 크기 한도에 닿아 일부 호출과 값은 보이지 않아요.');
   return { projectId, fileId: chosenFile.id, fileHash: chosen.hash, startUtf16: fn.declaration.startIndex,
     endUtf16: fn.declaration.endIndex, name: fn.displayName, calls, callers, typedCallers: [], maybeCallers,
