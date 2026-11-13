@@ -65,7 +65,7 @@ it('forwards the shared stop flag to scanning even when the root has no files', 
     result: { ok: false, code: 'CANCELLED', message: '탐색을 멈췄습니다.' } });
 });
 
-it('reads Python symbols without building a TS/JS file guide', async () => {
+it('reads Python symbols with a Python file guide and exact function evidence', async () => {
   root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-python-worker-')));
   worker.data.root = root;
   await writeFile(path.join(root, 'main.py'), 'def total(value):\n    if value:\n        return value\n');
@@ -79,10 +79,32 @@ it('reads Python symbols without building a TS/JS file guide', async () => {
   const read = worker.send.mock.lastCall![0].result;
   if (!read.ok) throw new Error(read.message);
   const source = read.value as SourceView;
-  expect(source.guide).toBeNull();
+  expect(source.guide?.role.label).toBe('Python 코드');
+  expect(source.guide?.chunks[0].symbolId).toBe(source.analysis.symbols[0].id);
+  expect(source.guide?.chunks[0].chunk.range).toMatchObject({ fileId: file.id, fileHash: source.hash,
+    startUtf16: source.analysis.symbols[0].evidence.startUtf16, endUtf16: source.analysis.symbols[0].evidence.endUtf16 });
   expect(source.analysis.language).toBe('python');
   expect(source.analysis.symbols.map(symbol => symbol.name)).toEqual(['total']);
   expect(source.analysis.symbols[0].steps[0].title).toBe('조건 확인');
+});
+
+it.each([false, true])('preserves source on an optional guide error but forwards cancellation: %s', async cancelled => {
+  root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-python-guide-worker-')));
+  worker.data.root = root;
+  await writeFile(path.join(root, 'main.py'), 'def run():\n    return 1\n');
+  vi.resetModules();
+  const guide = await import('../src/core/analysis/python-file-guide');
+  const { AppError } = await import('../src/shared/errors');
+  vi.spyOn(guide, 'describePythonFile').mockRejectedValue(cancelled ? new AppError('CANCELLED', 'cancelled') : new Error('optional guide failed'));
+  await import('../src/workers/analysis');
+  await worker.receive!({ id: 20, kind: 'scan' });
+  const scanned = worker.send.mock.lastCall![0].result;
+  if (!scanned.ok) throw new Error(scanned.message);
+  const file = (scanned.value as ProjectView).files.find(file => file.relativePath === 'main.py')!;
+  await worker.receive!({ id: 21, kind: 'read', target: file.id });
+  const read = worker.send.mock.lastCall![0].result;
+  if (cancelled) { expect(read).toMatchObject({ ok: false, code: 'CANCELLED' }); return; }
+  expect(read).toMatchObject({ ok: true, value: { text: 'def run():\n    return 1\n', guide: null, analysis: { language: 'python' } } });
 });
 
 it('accepts Python class evidence and rejects it after the source changes', async () => {

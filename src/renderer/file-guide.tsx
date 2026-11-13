@@ -48,6 +48,7 @@ export function FileGuideCard({ open, onToggle, guide, analysis, busy, stale, us
     return () => cancelAnimationFrame(frame);
   }, [focus, open]);
   const locked = busy || stale;
+  const python = analysis.language === 'python';
   const basis = guide.role.basis;
   const facts = new Map(guide.functions.map(item => [item.symbolId, item]));
   const otherChunks = guide.chunks.filter(item => !item.chunk.functionRange);
@@ -119,12 +120,14 @@ export function FileGuideCard({ open, onToggle, guide, analysis, busy, stale, us
           {importers.result.limitedMap && <p className="hint">지도 읽기 한도에 닿아 읽지 않은 파일도 있어요.</p>}
         </details>}
       </>}
-      <p className="hint">경로 별칭(@/…)이나 실행할 때 정하는 가져오기는 따라가지 않아서 더 있을 수 있어요.</p>
+      <p className="hint">{python ? '실행 방법이나 패키지 설정에 따라 import 경로가 달라져 더 있을 수 있어요.'
+        : '경로 별칭(@/…)이나 실행할 때 정하는 가져오기는 따라가지 않아서 더 있을 수 있어요.'}</p>
     </section>
     {basis.range && <button className="btn btn--chip" disabled={locked} onClick={() => onShow(basis.range!)}>
       근거: {basis.text} ({basis.range.startLine}행)
     </button>}
-    <p className="hint">코드 모양으로 짐작했어요. 자세한 문장 설명은 AI 칸의 ‘AI로 이 파일 설명 만들기’에서 만들 수 있어요.</p>
+    <p className="hint">{python ? '코드에 적힌 함수와 import를 정리했어요. 코드를 실행하지 않았어요.'
+      : '코드 모양으로 짐작했어요. 자세한 문장 설명은 AI 칸의 ‘AI로 이 파일 설명 만들기’에서 만들 수 있어요.'}</p>
     {guide.notes.map(note => <p key={note} className="hint">{note}</p>)}
     {guide.limitations.map(message => <p key={message} className="notice notice--warn">{message}</p>)}
     <h4>가져다 쓰는 파일 {guide.imports.length + guide.importsOmitted}개</h4>
@@ -134,7 +137,8 @@ export function FileGuideCard({ open, onToggle, guide, analysis, busy, stale, us
       <p className="hint">{item.specifier ?? '경로 확인 못 함'} · {item.line}행{item.status !== 'project' && ` · ${importStatuses[item.status]}`}</p>
     </li>)}</ul>
     {guide.importsOmitted > 0 && <p className="hint">외 {guide.importsOmitted}개</p>}
-    {!!guide.external.length && <p className="hint">외부 패키지 또는 경로 별칭 · 확인 못 함: {guide.external.join(', ')}{guide.externalOmitted > 0 && ` 외 ${guide.externalOmitted}개`}</p>}
+    {!!guide.external.length && <p className="hint">{python ? '표준 라이브러리 또는 외부 패키지 · 코드 확인 못 함'
+      : '외부 패키지 또는 경로 별칭 · 확인 못 함'}: {guide.external.join(', ')}{guide.externalOmitted > 0 && ` 외 ${guide.externalOmitted}개`}</p>}
     {!!guide.exports.length && <p>내보내는 것: {guide.exports.join(', ')}{guide.exportsOmitted > 0 && ` 외 ${guide.exportsOmitted}개`}</p>}
     {analysis.warnings.filter(message => message !== STRUCTURE_NOTE).map(message => <p key={message} className="notice notice--warn">{message}</p>)}
     {doesState.routes === 'none' && <p className="hint">서버 주소를 찾으면 함수가 보내는 요청도 여기 보여요.</p>}
@@ -147,7 +151,7 @@ export function FileGuideCard({ open, onToggle, guide, analysis, busy, stale, us
       <ul className="map-list">{notes.slice(0, FIRST_ROWS).map(note => <li key={note}>{note}</li>)}</ul>
       {notes.length > FIRST_ROWS && <p className="hint">외 {notes.length - FIRST_ROWS}개</p>}
     </details>}
-    {analysis.language !== 'text' && ai.state === 'none' && <p className="hint">AI 칸의 ‘AI로 이 파일 설명 만들기’를 쓰면, AI가 요약한 함수 카드에 AI 해석을 보여 줘요.</p>}
+    {!python && analysis.language !== 'text' && ai.state === 'none' && <p className="hint">AI 칸의 ‘AI로 이 파일 설명 만들기’를 쓰면, AI가 요약한 함수 카드에 AI 해석을 보여 줘요.</p>}
     {analysis.language !== 'text' && ai.state === 'stale' && <p className="hint">파일이 바뀌어 AI 요약을 숨겼어요. 다시 만들어 주세요.</p>}
     <h4>이 파일의 함수 {analysis.symbols.length}개</h4>
     <p className="hint">종류 표시는 코드 모양으로 판단했어요. 실제로 요청이 이어지는지는 흐름 따라가기에서 확인해요.</p>

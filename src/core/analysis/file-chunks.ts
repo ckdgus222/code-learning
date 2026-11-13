@@ -4,6 +4,81 @@ import type { FileChunk } from '../../shared/ai';
 import { AppError } from '../../shared/errors';
 import { codeFile } from './project-map';
 import { functionName, functionTypes, NESTED_NOTE, parse } from './syntax';
+import { declarationName, pythonFunction, stringOnly } from './python-syntax';
+import { clip, MAX_VISITED_NODES } from './syntax-tools';
+
+/** Python guidance uses the same ranges without enabling AI file explanations yet. */
+export function splitPythonFileChunks(text: string, relativePath: string, fileId: string, fileHash: string,
+  parsedRoot?: Parser.SyntaxNode, shouldStop: () => boolean = () => false) {
+  const root = parsedRoot ?? parse(text, relativePath);
+  if (!root) throw new AppError('LIMIT', NESTED_NOTE);
+  const chunks: FileChunk[] = [];
+  let total = 0;
+  let visited = 0;
+  let limited = false;
+  let imports: { first: Parser.SyntaxNode; last: Parser.SyntaxNode } | null = null;
+  const add = (first: Parser.SyntaxNode, last: Parser.SyntaxNode, kind: FileChunk['kind'], name: string | null,
+    fn: Parser.SyntaxNode | null = null) => {
+    total++;
+    if (chunks.length === 80) return;
+    const startLine = first.startPosition.row + 1;
+    const endLine = Math.max(startLine, last.endPosition.row + (last.endPosition.column === 0 ? 0 : 1));
+    chunks.push({ id: randomUUID(), kind, name: name ? clip(name) : `${startLine}–${endLine}행 문장`,
+      range: { fileId, fileHash, startUtf16: first.startIndex, endUtf16: last.endIndex, startLine, endLine },
+      functionRange: fn ? { startUtf16: fn.startIndex, endUtf16: fn.endIndex } : null });
+  };
+  const flushImports = () => {
+    if (!imports) return;
+    add(imports.first, imports.last, 'imports', `가져오기 (${imports.last.endPosition.row - imports.first.startPosition.row + 1}줄)`);
+    imports = null;
+  };
+  const item = (outer: Parser.SyntaxNode) => {
+    if (outer.type === 'comment') { flushImports(); return; }
+    if (outer.hasError || outer.isMissing) { flushImports(); return; }
+    if (['import_statement', 'import_from_statement', 'future_import_statement'].includes(outer.type)) {
+      if (imports && /\r?\n\s*\r?\n/.test(text.slice(imports.last.endIndex, outer.startIndex))) flushImports();
+      imports = { first: imports?.first ?? outer, last: outer };
+      return;
+    }
+    flushImports();
+    const node = outer.type === 'decorated_definition' ? outer.childForFieldName('definition') ?? outer : outer;
+    const fn = pythonFunction(node);
+    const value = node.type === 'expression_statement' ? node.firstNamedChild : null;
+    const variable = value?.type === 'assignment' || value?.type === 'augmented_assignment';
+    const name = fn?.name ?? (variable ? value.childForFieldName('left')?.text ?? null : stringOnly(node) ? '문서 문자열' : null);
+    add(outer, outer, fn ? 'function' : variable ? 'variable' : 'statement', name, fn?.declaration);
+  };
+  const available = () => {
+    if (shouldStop()) throw new AppError('CANCELLED', '작업을 취소했습니다.');
+    if (++visited <= MAX_VISITED_NODES) return true;
+    limited = true;
+    return false;
+  };
+  for (let outer = root.firstNamedChild; outer; outer = outer.nextNamedSibling) {
+    if (!available()) break;
+    const node = outer.type === 'decorated_definition' ? outer.childForFieldName('definition') ?? outer : outer;
+    if (node.type !== 'class_definition') { item(outer); continue; }
+    flushImports();
+    const body = node.childForFieldName('body');
+    if (!body || node.isError || node.isMissing) continue;
+    const header = body.previousSibling;
+    const brokenHeader = node.children.some(child => child.id !== body.id && child.hasError)
+      || (outer.id !== node.id && outer.namedChildren.some(child => child.id !== node.id && child.hasError));
+    if (header && !brokenHeader) add(outer, header, 'class', `클래스 ${declarationName(node, outer)}`);
+    for (let member = body.firstNamedChild; member; member = member.nextNamedSibling) {
+      if (!available()) break;
+      item(member);
+    }
+    flushImports();
+    if (limited) break;
+  }
+  flushImports();
+  const limitations: string[] = [];
+  if (root.hasError) limitations.push('구문 오류가 있어 일부 코드는 나누지 않았어요');
+  if (total > 80) limitations.push(`덩어리 ${total - 80}개는 설명하지 않았어요`);
+  if (limited) limitations.push('분석량 제한에 닿아 일부 코드 덩어리를 보지 못했어요');
+  return { chunks, limitations };
+}
 
 /** Only top-level statements and direct class members; nested callbacks stay inside their chunk. */
 export function splitFileChunks(text: string, relativePath: string, fileId: string, fileHash: string, parsedRoot?: Parser.SyntaxNode) {

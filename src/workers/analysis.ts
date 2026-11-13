@@ -6,6 +6,7 @@ import { MAX_FILE_BYTES, readAllowed, scanProject } from '../core/project/files'
 import { analyzeSource } from '../core/analysis/syntax';
 import { readPathAliases } from '../core/analysis/path-aliases';
 import { describeFile } from '../core/analysis/file-guide';
+import { describePythonFile } from '../core/analysis/python-file-guide';
 import { buildOverview } from '../core/analysis/overview';
 import { buildProjectMap, codeFile, MAP_LIMITS } from '../core/analysis/project-map';
 import { findFunctionCalls } from '../core/analysis/calls';
@@ -45,13 +46,21 @@ async function readSource(fileId: string): Promise<SourceView> {
   const previous = sources.get(fileId);
   sources.delete(fileId);
   if (stopped()) throw new AppError('CANCELLED', '작업을 취소했습니다.');
-  const aliases = await readPathAliases(root, project!.files, MAX_FILE_BYTES, stopped);
   const analysis = previous?.hash === hash ? previous.analysis : analyzeSource(text, file.relativePath, { projectId, fileId, fileHash: hash });
   let guide: SourceView['guide'] = null;
-  if (codeFile.test(file.relativePath)) {
-    try { guide = describeFile(text, file.relativePath, fileId, hash, analysis, project!.files, aliases); }
-    catch { /* A guide is optional: a failed description must not prevent reading the source. */ }
+  try {
+    if (analysis.language === 'python') {
+      guide = await describePythonFile(text, file.relativePath, fileId, hash, analysis, project!.files,
+        { readFile: (dependency, maxBytes) => readAllowed(root, dependency.relativePath, Math.min(maxBytes, MAX_FILE_BYTES)), shouldStop: stopped });
+    } else if (codeFile.test(file.relativePath)) {
+      const aliases = await readPathAliases(root, project!.files, MAX_FILE_BYTES, stopped);
+      guide = describeFile(text, file.relativePath, fileId, hash, analysis, project!.files, aliases);
+    }
+  } catch (error) {
+    if (error instanceof AppError && error.code === 'CANCELLED') throw error;
+    // A guide is optional: a failed description must not prevent reading the source.
   }
+  if (stopped()) throw new AppError('CANCELLED', '작업을 취소했습니다.');
   const result: SourceView = { projectId, fileId, relativePath: file.relativePath, text, hash, analysis, guide };
   sources.set(fileId, result);
   while (sources.size > KEPT_SOURCES) sources.delete(sources.keys().next().value!);

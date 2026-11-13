@@ -5,6 +5,7 @@ import type { FileUse } from '../src/renderer/screen-groups';
 import type { CallSite, FunctionCalls, MapImport, ProjectRoutes } from '../src/shared/contracts';
 import { FileGuideCard } from '../src/renderer/file-guide';
 import { describeFile } from '../src/core/analysis/file-guide';
+import { describePythonFile } from '../src/core/analysis/python-file-guide';
 import { analyzeSource } from '../src/core/analysis/syntax';
 import { functionDoes } from '../src/renderer/guide-facts';
 
@@ -23,6 +24,26 @@ const text = "import a from './a';\nexport * from 'b';\n\nexport * from 'c';\n"
   + Array.from({ length: 82 }, (_, i) => `export function run${i}() { return ${i}; }`).join('\n') + '\nconst broken = ;';
 const analysis = analyzeSource(text, 'guide.ts', { projectId: 'p', fileId: 'f', fileHash: 'h' });
 const guide = describeFile(text, 'guide.ts', 'f', 'h', analysis, [{ id: 'imported-a', relativePath: 'a.ts', size: 0 }]);
+
+it.each([{ busy: false, stale: false }, { busy: true, stale: false }, { busy: false, stale: true }])('renders a Python guide with its own wording and locked actions: %j', async state => {
+  const source = 'import os\nfrom .helper import load\nclass Controller:\n    count: int = 2\n    def useState(self):\n        return load()\n';
+  const analysis = analyzeSource(source, 'pkg/example.py', { projectId: 'p', fileId: 'f', fileHash: 'h' });
+  const guide = await describePythonFile(source, 'pkg/example.py', 'f', 'h', analysis,
+    [{ id: 'helper', relativePath: 'pkg/helper.py', size: 0 }], { readFile: async () => { throw new Error('unexpected read'); }, shouldStop: () => false });
+  const html = renderToStaticMarkup(React.createElement(FileGuideCard, { ...emptyFacts, ai: { state: 'none', bySymbol: new Map() },
+    uses: emptyUses, onUse() {}, guide, analysis, ...state, onShow() {}, onSelect() {}, onOpenFile() {} }));
+  expect(html).toContain('Python 코드');
+  expect(html).toContain('표준 라이브러리 또는 외부 패키지');
+  expect(html).toContain('helper.py 열기');
+  expect(html).toContain('Controller.useState');
+  expect(html).not.toContain('AI로 이 파일 설명 만들기');
+  expect(html).not.toContain('경로 별칭');
+  expect(html).not.toContain('React');
+  expect(html).toContain('적힌 타입: `int`');
+  const buttons = html.match(/<button[^>]*>/g)!;
+  expect(buttons.length).toBeGreaterThan(2);
+  expect(buttons.every(button => button.includes('disabled=""'))).toBe(state.busy || state.stale);
+});
 
 it.each([
   ['db.post.delete()', 'post 지우기'], ['db .post.delete()', 'post 지우기'],

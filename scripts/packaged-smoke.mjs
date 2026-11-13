@@ -361,6 +361,26 @@ try {
   await page.getByRole('heading', { name: 'Python 읽기', exact: true }).waitFor();
   await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
   await page.getByRole('button', { name: 'order.py', exact: true }).click();
+  const pythonGuide = page.getByRole('region', { name: '이 파일 안내', exact: true }).locator('.file-guide');
+  if (!await pythonGuide.evaluate(element => element.open)) await pythonGuide.locator(':scope > summary').click();
+  await pythonGuide.getByText('이 파일의 함수 3개', { exact: true }).waitFor();
+  assert.equal(await pythonGuide.getByText('AI로 이 파일 설명 만들기', { exact: false }).count(), 0);
+  await pythonGuide.getByRole('button', { name: 'worker.py 열기', exact: true }).click();
+  await page.getByRole('heading', { name: 'worker.py', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'order.py', exact: true }).click();
+  const helperCard = pythonGuide.locator('.file-guide__functions > li').filter({ has: page.locator('strong', { hasText: /^helper$/ }) });
+  await helperCard.getByRole('button', { name: '부르는 곳 찾기', exact: true }).click();
+  await helperCard.getByText('order.py 7행 · Order.total 안', { exact: false }).waitFor();
+  await helperCard.getByRole('button', { name: '코드 보기', exact: true }).click();
+  await page.getByTestId('evidence-range').getByText('근거: order.py · 1–2줄', { exact: true }).waitFor();
+  await pythonGuide.locator('summary').filter({ hasText: /^그 밖의 코드/ }).click();
+  const classChunk = pythonGuide.locator('.file-guide__chunks > li').filter({ has: page.locator('strong', { hasText: /^클래스 Order$/ }) });
+  await classChunk.getByRole('button', { name: '코드 보기', exact: true }).click();
+  await page.getByTestId('evidence-range').getByText('근거: order.py · 4–4줄', { exact: true }).waitFor();
+  const totalCard = pythonGuide.locator('.file-guide__functions > li').filter({ has: page.locator('strong', { hasText: /^Order.total$/ }) });
+  await totalCard.getByRole('button', { name: '이 함수 고르기', exact: true }).click();
+  await page.getByTestId('evidence-range').getByText('근거: order.py · 5–8줄', { exact: true }).waitFor();
+  await pythonGuide.locator(':scope > summary').click();
   await page.getByRole('button', { name: 'Order.total', exact: true }).click();
   await page.getByRole('button', { name: '조건 확인', exact: true }).click();
   await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
@@ -488,6 +508,7 @@ try {
   report.checks.push('Python written return annotation, non-inference notice and exact unchanged source evidence');
   report.checks.push('Python same-file typed method candidates, reverse-only candidate callers and no incoming examples');
   report.checks.push('Python imported class and annotated method candidates, original-file navigation and no duplicate import value');
+  report.checks.push('Python static file guide, safe import opening, function and class evidence, caller search and function selection');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {
