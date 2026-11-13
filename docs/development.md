@@ -112,6 +112,8 @@ tree-sitter 패키지들은 macOS arm64·Windows x64용 N-API 미리 빌드 파�
 
 패키징은 중첩된 의존성을 포함해 `node_modules/.vitest-cache`와 `node_modules/.vite`를 제외하고, 실행에 필요한 루트 `.vite`는 포함합니다. 캐시·로컬 홈·작업 폴더 경로가 없는지는 macOS arm64 앱의 ASAR와 풀린 리소스에서 확인했으며, Windows 설치 파일 내부 검사는 출시 빌드 뒤에 남아 있습니다.
 
+`1.1.0`은 로컬 출시 준비 버전이며, CI에서 만든 설치 파일 확인과 GitHub 공개는 아직 남아 있습니다([출시 노트 초안](release-notes-1.1.0.md)).
+
 ```sh
 npm run typecheck
 npm test

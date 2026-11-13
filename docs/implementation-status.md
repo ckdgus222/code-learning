@@ -2,6 +2,14 @@
 
 **0단계 일부와 1A의 로컬 탐색·구문 근거 이동·흐름 따라가기 화면을 구현했다.** AI 연결, 초기 이해도 관찰과 나머지 보호 검수는 끝나지 않았으므로 0단계 전체·1A 전체·개인용 시제품·범용 MVP 완료로 표시하지 않는다. 기획서는 v2.2와, 사용자가 2026-10-19 확정한 보완 v2.3(에이전트 작업 검사, v2.2와 다르면 v2.3 우선)이 기준이다. v2.3 2차 개정(사용자 확정)의 순서는 A 프로젝트 지도(완료) → 0 안정성(완료) → C-1 어려운 코드 표시(완료) → F 함수 호출 관계(완료) → V-1 값 따라가기 예시 값(완료) → V-2 값의 모양(완료) → C-2 변경 보기(완료)이고, B 기획 대조는 보류다. 사용자가 2026-10-20 C-2 뒤에 D ‘DB 구조(SQL 기준)’를 더했다(기획 v2.3 3차 개정, plan 리뷰 2차 통과).
 
+## 1.1.0 버전 반영과 출시 노트 초안 (2026-11-14)
+
+- 기존 출시 제안에 따라 개발 버전을 `1.0.2`에서 `1.1.0`으로 올렸다. `package.json`과 `package-lock.json`의 루트 버전 두 곳, 총 3개 값만 변경했다. JSON 내용 대조로 의존성·설치 정책 등 다른 값이 그대로임을 확인했다.
+- [출시 노트 초안](release-notes-1.1.0.md)에 Python 읽기·지도·FastAPI/Flask/Django, 이름 검색·파일 사이 경로·읽는 순서·변경 영향·Markdown 내보내기, 분석 속도·결과 한도·패키징 개선을 정리했다. Python 처리 함수 안 추적, Java/Spring 분석, Windows Git·AI 제약은 지원 범위와 구분했다. GitHub에 게시한 출시 노트가 아니다.
+- 검증: `npm test -- tests/release-draft.test.ts tests/release-workflow.test.ts tests/update-check.test.ts tests/view-settings-main.test.ts tests/view-settings-view.test.ts tests/build-hardening.test.ts` **6파일·142개 통과·종료 0**. 실제 `package.json`을 읽는 `node scripts/release-draft.mjs version`도 수동 버전과 `refs/tags/v1.1.0` 입력 모두 `1.1.0`을 반환했다. 이 검사는 태그나 GitHub 출시를 만들지 않는다.
+- `npm run package`와 `npm run test:packaged` **종료 0**, 패키지 검사 **20항목 통과**. macOS 앱의 `CFBundleShortVersionString`, `CFBundleVersion`, ASAR의 `package.json`이 모두 `1.1.0`이다. 새 앱의 ASAR·풀린 리소스에도 테스트 캐시와 현재 로컬 홈·작업 폴더 경로 일치가 0개였다(풀린 파일 135개). 결과는 `test-results/release-1.1.0-package-audit.json`과 `release-1.1.0-packaged.json`에 기록했다.
+- **미실행:** 앱 소스·테스트·의존성이 그대로여서 전체 타입·단위·개발용 Electron 검사는 반복하지 않았다. 변경에 영향받는 출시·업데이트 검사와 새 패키지 검사를 수행했고, 기존 앱 로직의 전체 검증은 바로 아래 R3 기록과 구분한다. Windows CI·출시 설치 파일 검증·원격 푸시·태그·GitHub 공개는 남아 있다.
+
 ## R3: 출시 전 보안 점검과 로컬 패키지 캐시 제외 (2026-11-13)
 
 - 범위: `v1.0.2` 이후 변경 중 패키징, Markdown 저장, 외부 프로젝트 입력을 읽는 분석기의 한도. [기획](code-learning-release-security-plan-2026-11-13.md)을 검토한 뒤 구현했으며, 새 의존성·API·분석 정책은 추가하지 않았다.
