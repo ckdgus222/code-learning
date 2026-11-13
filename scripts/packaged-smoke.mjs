@@ -346,6 +346,8 @@ try {
   await writeFile(path.join(pythonFixture, 'module_values.py'), pythonModuleValueSource);
   const pythonArgumentsSource = 'def inputs(first, /, second=20, *, flag):\n    return first + second\ndef caller():\n    inputs(7, flag=True)\n    inputs(8, second=9, flag=False)\n    inputs(10, second=11)\n';
   await writeFile(path.join(pythonFixture, 'arguments.py'), pythonArgumentsSource);
+  const pythonReturnSource = 'def described(value) -> list[int]:\n    return [value]\n';
+  await writeFile(path.join(pythonFixture, 'return_types.py'), pythonReturnSource);
   await app.evaluate(({ dialog }, folder) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] });
   }, pythonFixture);
@@ -388,6 +390,17 @@ try {
   await flagArgument.getByRole('button', { name: '코드 보기', exact: true }).first().click();
   await page.getByTestId('evidence-range').getByText('근거: arguments.py · 4–4줄', { exact: true }).waitFor();
   assert.equal(await readFile(path.join(pythonFixture, 'arguments.py'), 'utf8'), pythonArgumentsSource);
+  await page.getByRole('button', { name: 'return_types.py', exact: true }).click();
+  await page.getByRole('button', { name: 'described', exact: true }).click();
+  await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+  const returnAnnotation = page.getByRole('region', { name: '적힌 반환 타입', exact: true });
+  await returnAnnotation.getByText('list[int]', { exact: true }).waitFor();
+  await returnAnnotation.getByText('함수에 적힌 표기예요. 타입을 추론하거나 실제 반환값과 맞는지 검사하지 않아요.', { exact: true }).waitFor();
+  await returnAnnotation.getByRole('button', { name: '코드 보기', exact: true }).click();
+  await page.getByTestId('evidence-range').getByText('근거: return_types.py · 1–1줄', { exact: true }).waitFor();
+  const annotationStart = pythonReturnSource.indexOf('list[int]');
+  assert.equal(await page.getByTestId('evidence-range').getAttribute('data-utf16'), `${annotationStart},${annotationStart + 'list[int]'.length}`);
+  assert.equal(await readFile(path.join(pythonFixture, 'return_types.py'), 'utf8'), pythonReturnSource);
   await page.getByRole('button', { name: 'value_origin.py', exact: true }).click();
   await page.getByRole('button', { name: 'value_import', exact: true }).click();
   await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
@@ -432,6 +445,7 @@ try {
   report.checks.push('Python direct imported value, written type, cross-file evidence and changed-source rejection');
   report.checks.push('Python module fields, distinct and deduplicated cards, initial expression and source evidence');
   report.checks.push('Python positional and keyword inputs, default, invalid-call rejection and argument evidence');
+  report.checks.push('Python written return annotation, non-inference notice and exact unchanged source evidence');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

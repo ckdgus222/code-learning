@@ -1,4 +1,4 @@
-import type { CallLink, CallSite, FunctionCalls, NameValue, ProjectFile } from '../../shared/contracts';
+import type { CallLink, CallSite, FunctionCalls, NameValue, ProjectFile, ValueSite } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 import { MAX_FILE_BYTES, readAllowed } from '../project/files';
 import type { MapLimits } from './project-map';
@@ -64,6 +64,7 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
         : readPythonFacts(file, source.text, source.hash, limits.nodesPerFile, withValues);
       if (cache) { cache.pythonParsed ??= new Map(); cache.pythonParsed.set(file.id, facts); cache.parsedFiles?.add(file.id); }
       parsed.set(file.id, facts);
+      limited ||= !!facts.nodeLimited;
       if (facts.incompleteReason) skip(file, facts.incompleteReason);
       else if (facts.unclear) skip(file, facts.unclear);
       return facts;
@@ -74,10 +75,14 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
       return null;
     }
   }
-  function keep<T>(rows: T[], row: T): boolean {
+  function reserve(row: unknown): boolean {
     const size = JSON.stringify(row).length;
     if (resultSize + size > limits.results) { limited = true; return false; }
     resultSize += size;
+    return true;
+  }
+  function keep<T>(rows: T[], row: T): boolean {
+    if (!reserve(row)) return false;
     rows.push(row);
     return true;
   }
@@ -137,10 +142,20 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
     }
     return { ...origin, facts };
   });
+  let returnAnnotation: ValueSite | undefined;
+  const annotation = fn.node.childForFieldName('return_type');
+  if (chosen.complete && annotation && !annotation.hasError) {
+    const summary = firstLine(annotation);
+    const site: ValueSite = { fileId: chosen.file.id, fileHash: chosen.hash,
+      startUtf16: annotation.startIndex, endUtf16: annotation.endIndex, ...lineRange(annotation),
+      text: summary.length > 300 ? `${summary.slice(0, 299)}…` : summary };
+    if (reserve(site)) returnAnnotation = site;
+  }
   stop();
   const notes = ['Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 매개변수·적힌 타입·기본값·대입 식과 확정 import의 값 출처, 올바르게 적힌 위치·키워드 인자의 대응을 보여 줘요. 펼침 인자·객체 메서드·다시 가져온 이름·람다 안·함수 정의 헤더의 호출은 아직 지원하지 않아요.'];
-  if (limited) notes.push('파일·읽기 크기·결과 크기 한도에 닿아 일부 호출과 값은 보이지 않아요.');
+  if (limited) notes.push('파일·읽기 크기·구문 개수·결과 크기 한도에 닿아 일부 호출과 값은 보이지 않아요.');
   return { projectId, fileId: chosenFile.id, fileHash: chosen.hash, startUtf16: fn.declaration.startIndex,
     endUtf16: fn.declaration.endIndex, name: fn.displayName, calls, callers, typedCallers: [], maybeCallers,
-    names: { local: [fn.displayName], exported: [], property: [] }, values, limited, unexamined: [...unexamined.values()], notes };
+    names: { local: [fn.displayName], exported: [], property: [] }, values, ...(returnAnnotation ? { returnAnnotation } : {}),
+    limited, unexamined: [...unexamined.values()], notes };
 }

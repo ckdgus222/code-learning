@@ -524,6 +524,8 @@ export interface FunctionCalls {
   unexamined: { fileId: string; relativePath: string; reason: string }[];
   /** The names it uses and what the code says about them (plan v2.3 V-1). */
   values: NameValue[];
+  /** A Python return annotation as written, with source evidence; never inferred or evaluated. */
+  returnAnnotation?: ValueSite;
   limited: boolean;
   notes: string[];
 }

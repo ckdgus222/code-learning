@@ -85,6 +85,11 @@ export function ValuesFacts({ result, shapes, locked, pathOf, onShowSite, onShow
     <dd>
       <p className="hint">실행한 값이 아니에요. 코드에 적힌 값과 식이에요.</p>
       {shapes && <ReturnShape shapes={shapes} locked={locked} onRetry={onRetryShapes} />}
+      {result.returnAnnotation && <section className="value-shape" aria-label="적힌 반환 타입">
+        <span className="eyebrow">적힌 반환 타입</span>
+        <code>{result.returnAnnotation.text}</code> {at(result.returnAnnotation)} {showButton(result.returnAnnotation)}
+        <p className="hint">함수에 적힌 표기예요. 타입을 추론하거나 실제 반환값과 맞는지 검사하지 않아요.</p>
+      </section>}
       {result.values.length === 0 && <p>값 따라가기로 볼 이름이 없어요.</p>}
       {groups.map(group => {
         const items = result.values.flatMap((item, index) => item.group === group.id ? [{ item, index }] : []);

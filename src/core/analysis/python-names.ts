@@ -43,6 +43,7 @@ export interface PythonFileFacts {
   hash: string;
   text: string;
   complete: boolean;
+  nodeLimited?: boolean;
   incompleteReason: string | null;
   unclear: string | null;
   program: PythonScope;
@@ -120,7 +121,7 @@ export function readPythonFacts(file: ProjectFile, text: string, hash: string, n
   const pending: Frame[] = [{ node: root, scope: program, fn: null, conditional: false, calls: true, inClass: false, escapes: false }];
   let visited = 0;
   while (pending.length) {
-    if (++visited > nodeBudget) { facts.complete = false; facts.incompleteReason = '구문 개수 한도에 닿아 이 파일의 이름은 확정하지 않았어요.'; break; }
+    if (++visited > nodeBudget) { facts.complete = false; facts.nodeLimited = true; facts.incompleteReason = '구문 개수 한도에 닿아 이 파일의 이름은 확정하지 않았어요.'; break; }
     const frame = pending.pop()!;
     const { node, scope, fn } = frame;
     const push = (child: Parser.SyntaxNode, changes: Partial<Frame> = {}) => pending.push({ ...frame, ...changes, node: child });
