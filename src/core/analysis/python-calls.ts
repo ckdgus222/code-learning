@@ -3,8 +3,8 @@ import { AppError } from '../../shared/errors';
 import { MAX_FILE_BYTES, readAllowed } from '../project/files';
 import type { MapLimits } from './project-map';
 import { firstLine, lineRange } from './names';
-import { normalize } from './python-imports';
-import { readPythonFacts, resolvePythonCall, type PythonCallFact, type PythonFileFacts, type PythonFunctionFact } from './python-names';
+import { readPythonFacts, type PythonCallFact, type PythonFileFacts, type PythonFunctionFact } from './python-names';
+import { pythonCallResolver } from './python-call-imports';
 
 export interface PythonCallsCache {
   texts: Map<string, { text: string; hash: string }>;
@@ -26,7 +26,7 @@ function site(call: PythonCallFact, facts: PythonFileFacts): CallSite {
     inTest: testFile(facts.file.relativePath), inFunction: call.fn ? functionAt(call.fn) : null };
 }
 
-/** Same-file Python name resolution; imports and dynamic attributes remain explicit unknowns. */
+/** Static Python names and unambiguous project imports, without running the project. */
 export async function findPythonFunctionCalls(root: string, projectId: string, files: ProjectFile[],
   target: { fileId: string; fileHash: string; startUtf16: number; endUtf16: number }, limits: MapLimits,
   shouldStop: () => boolean = () => false, cache?: PythonCallsCache): Promise<FunctionCalls> {
@@ -35,11 +35,13 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
   const stop = () => { if (shouldStop()) throw new AppError('CANCELLED', '호출 찾기를 취소했어요.'); };
   const unexamined = new Map<string, { fileId: string; relativePath: string; reason: string }>();
   const skip = (file: ProjectFile, reason: string) => unexamined.set(file.id, { fileId: file.id, relativePath: file.relativePath, reason });
-  const parsed = new Map<string, PythonFileFacts>();
+  const parsed = new Map<string, PythonFileFacts | null>();
   let filesRead = 0, bytesRead = 0, resultSize = 0, limited = false;
   async function read(file: ProjectFile): Promise<PythonFileFacts | null> {
     stop();
     if (parsed.has(file.id)) return parsed.get(file.id)!;
+    // Failed reads also belong to this snapshot and must not consume the budget again.
+    parsed.set(file.id, null);
     const left = limits.bytes - bytesRead;
     if (filesRead >= limits.files || left <= 0) { limited = true; skip(file, '찾기 한도에 닿아 이 파일은 읽지 않았어요.'); return null; }
     filesRead++;
@@ -77,11 +79,14 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
   if (!fn) throw new AppError('CHANGED', '고른 함수를 지금 파일에서 찾지 못했어요. 파일을 다시 읽어 주세요.');
   const calls: CallLink[] = [], callers: CallSite[] = [];
   const maybeCallers: FunctionCalls['maybeCallers'] = [];
+  for (const file of files.filter(file => pythonFile.test(file.relativePath)).sort((a, b) => a.relativePath.localeCompare(b.relativePath))) await read(file);
+  const resolver = pythonCallResolver(files, parsed, stop);
   for (const call of chosen.calls) {
     if (call.fn !== fn) continue;
     stop();
-    const found = resolvePythonCall(chosen, call);
-    keep(calls, found.kind === 'linked' ? { ...site(call, chosen), status: 'linked', target: { fileId: chosenFile.id, fileHash: chosen.hash, ...functionAt(found.fn) } }
+    const found = resolver.resolve(chosen, call);
+    keep(calls, found.kind === 'linked' ? { ...site(call, chosen), status: 'linked', target: { fileId: found.facts.file.id, fileHash: found.facts.hash, ...functionAt(found.fn) } }
+      : found.kind === 'external' ? { ...site(call, chosen), status: 'external', specifier: found.specifier }
       : { ...site(call, chosen), status: 'unknown', reason: found.reason, detail: found.detail });
   }
   for (const file of files.filter(file => pythonFile.test(file.relativePath)).sort((a, b) => a.relativePath.localeCompare(b.relativePath))) {
@@ -89,20 +94,15 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
     if (!facts) continue;
     for (const call of facts.calls) {
       stop();
-      const callee = call.node.childForFieldName('function');
-      const called = callee?.type === 'identifier' ? callee.text : callee?.type === 'attribute' ? callee.childForFieldName('attribute')?.text : null;
-      if (!called || normalize(called) !== fn.normalizedName) continue;
-      const found = resolvePythonCall(facts, call);
-      if (file.id !== chosenFile.id) {
-        keep(maybeCallers, { ...site(call, facts), reason: 'import-file', detail: '다른 Python 파일의 같은 이름이며 파일 사이 연결은 아직 확정하지 않아요.' });
-        continue;
+      const found = resolver.resolve(facts, call);
+      if (found.kind === 'linked' && found.facts === chosen && found.fn === fn) keep(callers, site(call, facts));
+      if (found.kind === 'unknown' && resolver.mayName(facts, call, chosen, fn.normalizedName)) {
+        keep(maybeCallers, { ...site(call, facts), reason: found.reason, detail: found.detail });
       }
-      if (found.kind === 'linked' && found.fn === fn) keep(callers, site(call, facts));
-      if (found.kind === 'unknown') keep(maybeCallers, { ...site(call, facts), reason: found.reason, detail: found.detail });
     }
   }
   stop();
-  const notes = ['Python은 지금 같은 파일에서 직접 이름으로 부르는 함수만 따라가요. 다른 파일·속성·람다 안·함수 정의 헤더의 호출과 값 추적은 아직 지원하지 않아요.'];
+  const notes = ['Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 객체 메서드·다시 가져온 이름·람다 안·함수 정의 헤더의 호출과 값 추적은 아직 지원하지 않아요.'];
   if (limited) notes.push('파일·읽기 크기·결과 크기 한도에 닿아 일부 호출은 보이지 않아요.');
   return { projectId, fileId: chosenFile.id, fileHash: chosen.hash, startUtf16: fn.declaration.startIndex,
     endUtf16: fn.declaration.endIndex, name: fn.displayName, calls, callers, typedCallers: [], maybeCallers,

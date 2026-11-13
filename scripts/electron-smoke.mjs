@@ -57,6 +57,10 @@ await writeFile(path.join(pythonFixture, 'reference.ts'), 'export function total
 const pythonCallsFixture = path.join(temporary, 'Python 호출 프로젝트');
 await mkdir(pythonCallsFixture);
 await writeFile(path.join(pythonCallsFixture, 'calls.py'), 'def helper(value):\n    return value\n\ndef run():\n    return helper(7)\n\nrun()\n');
+await mkdir(path.join(pythonCallsFixture, 'pkg'));
+await writeFile(path.join(pythonCallsFixture, 'pkg/__init__.py'), '');
+await writeFile(path.join(pythonCallsFixture, 'pkg/worker.py'), 'def transform(value):\n    return value\n');
+await writeFile(path.join(pythonCallsFixture, 'pkg/main.py'), 'from .worker import transform as apply\ndef run_import():\n    return apply(9)\n');
 const fastapiFixture = path.join(temporary, 'FastAPI 흐름 프로젝트');
 await mkdir(path.join(fastapiFixture, 'web'), { recursive: true });
 await mkdir(path.join(fastapiFixture, 'server'), { recursive: true });
@@ -3741,12 +3745,12 @@ try {
     await page.getByRole('button', { name: '다른 조건 확인', exact: true }).click();
     await page.waitForFunction(() => [...document.querySelectorAll('.cm-content .cm-line span')].some(span =>
       getComputedStyle(span).color !== getComputedStyle(span.closest('.cm-content')).color));
-    await page.getByText('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도, 같은 파일의 직접 호출과 FastAPI·Flask·Django 주소의 기능 흐름(처리 함수까지)을 보여 줘요. 파일 안내, 값 추적, 파일 사이·속성 호출과 처리 함수 안의 기능 흐름 확장은 아직 지원하지 않아요.', { exact: true }).waitFor();
+    await page.getByText('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도, 직접 호출·확정 import 호출과 FastAPI·Flask·Django 주소의 기능 흐름(처리 함수까지)을 보여 줘요. 파일 안내, 값 추적, 객체 메서드와 처리 함수 안의 기능 흐름 확장은 아직 지원하지 않아요.', { exact: true }).waitFor();
     assert.equal(await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).count(), 0);
-    await page.getByText('같은 파일에서 직접 부르는 함수는 ‘이 함수 흐름으로 보기’에서 찾아요. Python 값 추적은 아직 지원하지 않아요.', { exact: true }).waitFor();
+    await page.getByText('직접 부르는 함수와 확정한 import의 함수는 ‘이 함수 흐름으로 보기’에서 찾아요. Python 값 추적은 아직 지원하지 않아요.', { exact: true }).waitFor();
     await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
     await page.getByRole('button', { name: 'Order.total', exact: true }).click();
-    await page.getByText('Python은 지금 같은 파일에서 직접 이름으로 부르는 함수만 따라가요. 다른 파일·속성·람다 안·함수 정의 헤더의 호출과 값 추적은 아직 지원하지 않아요.', { exact: true }).waitFor();
+    await page.getByText('Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 객체 메서드·다시 가져온 이름·람다 안·함수 정의 헤더의 호출과 값 추적은 아직 지원하지 않아요.', { exact: true }).waitFor();
     await page.getByRole('banner').getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
   });
   await check('Python map: relative and own-package arrows, external modules and unsettled candidates', async () => {
@@ -3823,6 +3827,30 @@ try {
         delete globalThis.pythonCallsShapes;
       });
     }
+  });
+  await check('Python import calls: alias targets, reverse navigation and changed target rejection', async () => {
+    await dialogTo(pythonCallsFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: 'Python 호출 프로젝트', exact: true }).waitFor();
+    await openTreeFile('pkg/main.py');
+    await page.getByRole('button', { name: 'run_import', exact: true }).click();
+    await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+    const outgoing = page.getByRole('list', { name: '이 함수가 부르는 것', exact: true });
+    await outgoing.getByText('apply(9)', { exact: true }).waitFor();
+    await outgoing.getByText('pkg/worker.py', { exact: true }).waitFor();
+    await outgoing.getByRole('button', { name: '그 함수로', exact: true }).click();
+    const incoming = page.getByRole('list', { name: '이 함수를 부르는 곳', exact: true });
+    await incoming.getByText('apply(9)', { exact: true }).waitFor();
+    await until(async () => await page.getByRole('button', { name: 'transform', exact: true }).getAttribute('aria-pressed') === 'true');
+    await incoming.getByRole('button', { name: '호출 위치', exact: true }).click();
+    await until(async () => await page.getByTestId('evidence-range').innerText() === '근거: pkg/main.py · 3–3줄');
+    await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+    await page.getByRole('button', { name: 'run_import', exact: true }).click();
+    await outgoing.getByText('apply(9)', { exact: true }).waitFor();
+    await writeFile(path.join(pythonCallsFixture, 'pkg/worker.py'), '# changed\ndef transform(value):\n    return value\n');
+    await outgoing.getByRole('button', { name: '그 함수로', exact: true }).click();
+    await page.getByText('호출을 찾은 뒤 이 파일이 바뀌어 그 함수를 고르지 않았어요. 다시 찾아 주세요.', { exact: true }).waitFor();
+    assert.equal(await readFile(path.join(pythonCallsFixture, 'pkg/main.py'), 'utf8'), 'from .worker import transform as apply\ndef run_import():\n    return apply(9)\n');
   });
   await check('Reading order: settled Python imports, numbered steps and opening a file', async () => {
     await dialogTo(pythonFixture);
@@ -6476,7 +6504,16 @@ try {
     const beforeChangedGuideRoutes = await app.evaluate(() => globalThis.testGuideRoutes.routesId);
     await page.getByRole('button', { name: '다시 찾기', exact: true }).click();
     // A full route analysis again: well over 8 seconds on a slow CI machine.
-    await until(() => app.evaluate((_electron, previous) => globalThis.testGuideRoutes.routesId !== previous, beforeChangedGuideRoutes), 30_000);
+    // One write can deliver another watch notice during that analysis; retry its explicit rejection once.
+    let retriedLateChange = false;
+    await until(async () => {
+      if (await app.evaluate((_electron, previous) => globalThis.testGuideRoutes.routesId !== previous, beforeChangedGuideRoutes)) return true;
+      if (!retriedLateChange && await page.getByText('주소를 찾는 동안 파일이 바뀌었어요.', { exact: true }).isVisible()) {
+        retriedLateChange = true;
+        await page.getByRole('button', { name: '다시 찾기', exact: true }).click();
+      }
+      return false;
+    }, 30_000);
     await openServerFeatures();
     await list.getByText('다시 확인 필요: 기능 정리를 만든 뒤 서버 주소나 그 코드가 바뀌었어요. 다시 정리해 주세요.', { exact: true }).waitFor();
     assert.equal(await list.getByRole('heading', { name: '반려견 관리', exact: true }).count(), 0);
