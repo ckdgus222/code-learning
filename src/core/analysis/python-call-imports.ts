@@ -4,6 +4,7 @@ import type { CallUnknownReason, ProjectFile } from '../../shared/contracts';
 import { normalize, resolvePythonImport, type PythonTarget } from './python-imports';
 import { resolvePythonCall, resolvePythonName, type PythonCallFact, type PythonFileFacts, type PythonFunctionFact,
   type PythonImportBinding, type PythonScope } from './python-names';
+import type { PythonValueOrigin, PythonValueReference } from './python-values';
 
 type Found = { kind: 'linked'; facts: PythonFileFacts; fn: PythonFunctionFact }
   | { kind: 'external'; specifier: string }
@@ -32,6 +33,7 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
   const known = new Set(files.map(file => file.relativePath));
   const byPath = new Map([...parsed.values()].flatMap(facts => facts ? [[facts.file.relativePath, facts] as const] : []));
   const imports = new Map<PythonImportBinding, PythonTarget[]>();
+  const roots = new Map<PythonImportBinding, PythonTarget[]>();
   const imported = (facts: PythonFileFacts, binding: PythonImportBinding) => {
     let result = imports.get(binding);
     if (result) return result;
@@ -46,6 +48,8 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
   // Resolve writes by their module target, so another alias cannot hide a mutation.
   const changed = new Set<string>();
   const escaped = new Set<string>();
+  const valueChanged = new Set<string>();
+  const moduleEscaped = new Set<string>();
   const mark = (paths: Set<string>, file: string) => {
     if (paths.has(file)) return;
     paths.add(file);
@@ -58,6 +62,40 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
       : target.kind === 'unresolved' ? target.candidates : []);
     for (const candidate of candidates) mark(paths, candidate);
   };
+  const moduleFiles = (facts: PythonFileFacts, binding: PythonImportBinding): string[] => {
+    let targets = imported(facts, binding);
+    // `import own.settings` binds own, including when another file reads bridge.own.
+    if (binding.prefix.length) {
+      let root = roots.get(binding);
+      if (!root) {
+        stop();
+        root = resolvePythonImport(facts.file.relativePath, { ...binding.item, module: binding.item.module.slice(0, 1), names: null }, known, {
+          init: file => byPath.get(file)?.initNames ?? null, plain: file => byPath.get(file)?.importsPlain ?? false,
+        });
+        roots.set(binding, root);
+      }
+      targets = root;
+    }
+    return targets.flatMap(target => target.kind === 'file' && (binding.imported === null || target.names === 'all') ? [target.relativePath]
+      : target.kind === 'unresolved' ? target.candidates : []);
+  };
+  const childModules = (file: string, name: string): string[] => {
+    stop();
+    const facts = byPath.get(file);
+    const bindings = facts?.program.names.get(name) ?? [];
+    const children = bindings.flatMap(binding => binding.kind === 'import' ? moduleFiles(facts!, binding) : []);
+    if (!file.endsWith('/__init__.py') && file !== '__init__.py') return children;
+    const base = file.slice(0, -'__init__.py'.length) + name;
+    return children.concat([`${base}.py`, `${base}/__init__.py`].filter(candidate => known.has(candidate)));
+  };
+  const moduleAccess = (facts: PythonFileFacts, binding: PythonImportBinding, suffix: string[]): Set<string> => {
+    let paths = new Set(moduleFiles(facts, binding));
+    for (const part of suffix) {
+      paths = new Set([...paths].flatMap(file => childModules(file, part)));
+      if (!paths.size) break;
+    }
+    return paths;
+  };
   const markWrite = (facts: PythonFileFacts, write: PythonFileFacts['attributeWrites'][number]) => {
     stop();
     const names = pythonAttributeNames(write.node);
@@ -65,16 +103,45 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
     const suffix = names.slice(1);
     for (const binding of nearest(write.scope, names[0])) {
       if (binding.kind !== 'import') continue;
-      if (!binding.prefix.every((part, index) => suffix[index] === undefined || suffix[index] === part)) continue;
-      markImport(changed, facts, binding);
+      if (binding.prefix.every((part, index) => suffix[index] === undefined || suffix[index] === part)) markImport(changed, facts, binding);
+      const itemWrite = write.node.parent?.type === 'subscript' && suffix.at(-1) !== '__dict__';
+      if (!itemWrite) for (const file of moduleAccess(facts, binding, suffix.slice(0, -1))) mark(valueChanged, file);
     }
   };
   const markEscape = (facts: PythonFileFacts, reference: PythonFileFacts['moduleEscapes'][number]) => {
     stop();
     for (const binding of nearest(reference.scope, normalize(reference.node.text))) {
-      if (binding.kind === 'import') markImport(escaped, facts, binding);
+      if (binding.kind !== 'import') continue;
+      markImport(escaped, facts, binding);
+      let expression = reference.node;
+      while (expression.parent?.type === 'attribute' && expression.parent.childForFieldName('object')?.id === expression.id) expression = expression.parent;
+      const suffix = pythonAttributeNames(expression)?.slice(1) ?? [];
+      const dictionary = suffix.indexOf('__dict__');
+      const namespace = dictionary < 0 ? suffix : suffix.slice(0, dictionary);
+      for (const file of moduleAccess(facts, binding, namespace)) mark(moduleEscaped, file);
     }
   };
+
+  function resolveImportedValue(facts: PythonFileFacts, reference: PythonValueReference): PythonValueOrigin {
+    stop();
+    const found = resolvePythonName(facts, reference, reference.node.text);
+    if (found.kind === 'unknown') return { kind: 'unknown', detail: found.detail };
+    const binding = found.binding;
+    if (binding.kind !== 'import' || binding.privateName) return { kind: 'unknown', detail: '가져오는 이름의 선언이나 비공개 이름 변환을 확정하지 못했어요.' };
+    const targets = imported(facts, binding);
+    if (targets.length !== 1) return { kind: 'unknown', detail: '가져오는 이름의 파일을 하나로 정하지 못했어요.' };
+    const [target] = targets;
+    if (target.kind === 'external') return { kind: 'external', specifier: target.specifier };
+    if (target.kind === 'unresolved') return { kind: 'unknown', detail: target.reasonText ?? '가져오는 경로가 없거나 파일·패키지 후보가 여럿이에요.' };
+    if (binding.imported === null || target.names === 'all') return { kind: 'unknown', detail: '모듈 자체나 모듈 속성의 값은 아직 따라가지 않아요.' };
+    if (valueChanged.has(target.relativePath) || moduleEscaped.has(target.relativePath)) {
+      return { kind: 'unknown', detail: '모듈의 이름을 바꾸거나 모듈 자체를 다른 코드로 전달해 가져오는 시점의 값 출처를 정하지 못했어요.' };
+    }
+    if (initializerClash(target.relativePath)) return { kind: 'unknown', detail: '부모 패키지의 초기화 코드가 하위 모듈 이름을 바꿀 수 있어 확정하지 않았어요.' };
+    const destination = byPath.get(target.relativePath);
+    if (!destination?.complete || !destination.importsPlain) return { kind: 'unknown', detail: '가져온 파일을 끝까지 읽지 못했거나 동적인 이름 규칙이 있어요.' };
+    return { kind: 'origin', facts: destination, name: binding.imported };
+  }
   for (const facts of byPath.values()) {
     facts.attributeWrites.forEach(write => markWrite(facts, write));
     facts.moduleEscapes.forEach(reference => markEscape(facts, reference));
@@ -145,5 +212,5 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
       && imported(facts, binding).some(target => target.kind === 'file' ? target.relativePath === destination.file.relativePath
         : target.kind === 'unresolved' && (!target.candidates.length || target.candidates.includes(destination.file.relativePath))));
   }
-  return { resolve, mayName };
+  return { resolve, mayName, resolveImportedValue };
 }

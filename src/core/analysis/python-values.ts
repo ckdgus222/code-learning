@@ -22,6 +22,8 @@ export interface PythonValueReference {
   fn: PythonFunctionFact | null;
   inClass: boolean;
 }
+export type PythonValueOrigin = { kind: 'origin'; facts: PythonFileFacts; name: string }
+  | { kind: 'external'; specifier: string } | { kind: 'unknown'; detail: string };
 export interface PythonValueFacts {
   bindings: PythonValueBinding[];
   references: PythonValueReference[];
@@ -64,7 +66,7 @@ function describe(facts: PythonFileFacts, fn: PythonFunctionFact, events: Python
   const directive = values.directives.get(first.scope)?.get(name);
   if (directive) return { ...base, group: 'outside', unknown: `${directive}로 정한 이름의 실제 선언과 값은 아직 따라가지 않아요.` };
   if (first.inClass && privateName(name)) return { ...base, unknown: '클래스의 비공개 이름 변환과 __class__의 값 출처는 아직 확정하지 않아요.' };
-  if (first.kind === 'import') return { ...base, unknown: '가져온 이름의 값 출처는 아직 따라가지 않아요.' };
+  if (first.kind === 'import') return { ...base, unknown: '가져온 이름의 값 출처를 하나로 정하지 못했어요.' };
   if (group === 'outside' && (!facts.complete || values.dynamic || values.unresolved.has(fn.bodyScope) || values.unresolved.has(first.scope))) {
     return { ...base, unknown: '불완전하거나 동적인 이름 규칙이 있어 바깥 값의 선언을 확정하지 않았어요.' };
   }
@@ -106,7 +108,8 @@ function describe(facts: PythonFileFacts, fn: PythonFunctionFact, events: Python
 
 /** Emit each name within the caller's shared result budget, rather than accumulating an unbounded result. */
 export async function pythonValuesOf(facts: PythonFileFacts, fn: PythonFunctionFact,
-  functionReferences: ReadonlySet<number>, emit: (value: NameValue) => boolean, stop: () => void): Promise<void> {
+  functionReferences: ReadonlySet<number>, emit: (value: NameValue) => boolean, stop: () => void,
+  followImport?: (reference: PythonValueReference) => Promise<PythonValueOrigin>): Promise<void> {
   const values = facts.values;
   if (!values) return;
   const groups = new Map<PythonScope, Map<string, PythonValueBinding[]>>();
@@ -120,6 +123,27 @@ export async function pythonValuesOf(facts: PythonFileFacts, fn: PythonFunctionF
     else scope.set(name, [event]);
   }
   const seen = new Set<PythonValueBinding[]>();
+  const originNames = new Map<PythonFileFacts, Map<string, PythonValueBinding[]>>();
+  const follow = async (base: NameValue, reference: PythonValueReference): Promise<NameValue> => {
+    const origin = await followImport!(reference);
+    stop();
+    if (origin.kind === 'unknown') return { ...base, unknown: origin.detail };
+    if (origin.kind === 'external') return { ...base, unknown: null, external: origin.specifier };
+    let names = originNames.get(origin.facts);
+    if (!names) {
+      names = new Map();
+      for (const event of origin.facts.values?.bindings ?? []) {
+        stop();
+        if (event.scope !== origin.facts.program) continue;
+        const name = normalize(event.name.text);
+        const events = names.get(name);
+        if (events) events.push(event);
+        else names.set(name, [event]);
+      }
+      originNames.set(origin.facts, names);
+    }
+    return importedValue(base, origin.facts, origin.name, names.get(origin.name) ?? []);
+  };
   const unknownDirectives = new Map<PythonScope, Set<string>>();
   for (const scope of groups.values()) {
     for (const events of scope.values()) {
@@ -155,7 +179,8 @@ export async function pythonValuesOf(facts: PythonFileFacts, fn: PythonFunctionF
     if (functionReferences.has(reference.node.id) && events.every(event => event.kind === 'import')) continue;
     seen.add(events);
     events.sort((a, b) => a.source.startIndex - b.source.startIndex);
-    const value = describe(facts, fn, events, events.some(event => event.fn === fn) ? 'inside' : 'outside');
+    let value = describe(facts, fn, events, events.some(event => event.fn === fn) ? 'inside' : 'outside');
+    if (followImport && events.length === 1 && events[0].kind === 'import') value = await follow(value, reference);
     if (reference.inClass && privateName(name)) {
       value.unknown = '클래스의 비공개 이름 변환과 __class__의 값 출처는 아직 확정하지 않아요.';
       value.declaredAt = null;
@@ -166,4 +191,22 @@ export async function pythonValuesOf(facts: PythonFileFacts, fn: PythonFunctionF
     }
     if (!emit(value)) return;
   }
+}
+
+/** A from-import captures an object reference; later module rebindings are not writes to this local name. */
+function importedValue(base: NameValue, facts: PythonFileFacts, name: string, events: PythonValueBinding[]): NameValue {
+  const bindings = facts.program.names.get(name) ?? [];
+  const [event] = events;
+  if (!facts.complete || !facts.importsPlain || facts.values?.dynamic || facts.values?.unresolved.has(facts.program)) {
+    return { ...base, unknown: '가져온 파일에 분석 누락이나 동적인 이름 규칙이 있어 값 출처를 확정하지 않았어요.' };
+  }
+  if (bindings.length !== 1 || bindings[0].kind !== 'variable' || events.length !== 1 || event.kind !== 'assignment'
+    || event.conditional || event.shape !== 'plain' || !event.value || event.source.type !== 'assignment'
+    || event.source.childForFieldName('right')?.type === 'assignment'
+    || event.source.parent?.type !== 'expression_statement' || event.source.parent.parent?.type !== 'module') {
+    return { ...base, unknown: '가져온 이름이 파일 맨 위의 한 번뿐인 단순 대입이 아니어서 값 출처를 확정하지 않았어요.' };
+  }
+  return { ...base, declaredAt: where(facts, event.name), initial: { ...where(facts, event.value), kind: 'export' },
+    type: event.annotation?.text ?? null, unknown: null, assignments: [], fixed: null,
+    notes: ['가져오는 코드의 출처예요. 실행 시점의 값이나 객체 내부 상태는 계산하지 않아요. 원본 이름의 나중 재대입을 따라가는 연결은 아니에요.'] };
 }

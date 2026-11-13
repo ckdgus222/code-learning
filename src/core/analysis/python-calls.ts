@@ -112,9 +112,22 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
     }
   }
   const values: NameValue[] = [];
-  await pythonValuesOf(chosen, fn, functionReferences, value => keep(values, value), stop);
+  const valueFacts = new Map<string, PythonFileFacts>();
+  await pythonValuesOf(chosen, fn, functionReferences, value => keep(values, value), stop, async reference => {
+    const origin = resolver.resolveImportedValue(chosen, reference);
+    if (origin.kind !== 'origin' || origin.facts.values) return origin;
+    let facts = valueFacts.get(origin.facts.file.id);
+    if (!facts) {
+      stop();
+      facts = readPythonFacts(origin.facts.file, origin.facts.text, origin.facts.hash, limits.nodesPerFile, true);
+      stop();
+      valueFacts.set(facts.file.id, facts);
+      cache?.pythonParsed?.set(facts.file.id, facts);
+    }
+    return { ...origin, facts };
+  });
   stop();
-  const notes = ['Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 값은 같은 파일의 매개변수·적힌 타입·기본값·대입 식을 보여 줘요. 객체 메서드·다시 가져온 이름·람다 안·함수 정의 헤더의 호출, 가져온 값과 호출 인자의 대응은 아직 지원하지 않아요.'];
+  const notes = ['Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 같은 파일의 매개변수·적힌 타입·기본값·대입 식과 직접 가져온 이름의 값 출처를 보여 줘요. 객체 메서드·다시 가져온 이름·람다 안·함수 정의 헤더의 호출, 모듈 속성값과 호출 인자의 대응은 아직 지원하지 않아요.'];
   if (limited) notes.push('파일·읽기 크기·결과 크기 한도에 닿아 일부 호출과 값은 보이지 않아요.');
   return { projectId, fileId: chosenFile.id, fileHash: chosen.hash, startUtf16: fn.declaration.startIndex,
     endUtf16: fn.declaration.endIndex, name: fn.displayName, calls, callers, typedCallers: [], maybeCallers,

@@ -479,7 +479,7 @@ export interface NameValue {
   /** Its own parameter, declared inside it, or declared outside it and used in it. */
   group: 'parameter' | 'inside' | 'outside';
   name: string;
-  /** How it is declared; for a followed import, how the exporting file declares it. */
+  /** How it is declared; TS/JS followed imports carry the exporting declaration's role. */
   role: 'parameter' | 'const' | 'let' | 'var' | 'assignment' | 'for' | 'catch' | 'import' | 'function' | 'other';
   shape: 'plain' | 'rest' | 'destructured';
   declaredAt: ValueSite | null;

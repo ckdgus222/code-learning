@@ -229,11 +229,11 @@ describe('Python values written in the chosen function', () => {
     expect(named(result, 'p').notes.length).toBeGreaterThan(0);
   });
 
-  it('reports imported value origins as unsupported instead of inventing their initial value', async () => {
+  it('identifies an external imported value without inventing its initial value', async () => {
     await prepare('from elsewhere import LIMIT\ndef run():\n    return LIMIT\n');
     const value = named(await search(), 'LIMIT');
     expect(value).toMatchObject({ group: 'outside', role: 'import', initial: null, fixed: null });
-    expect(value.unknown || value.notes.join(' ')).toBeTruthy();
+    expect(value).toMatchObject({ external: 'elsewhere', unknown: null });
   });
 
   it('keeps every displayed source range tied to the selected file hash and leaves the source unchanged', async () => {

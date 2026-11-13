@@ -299,7 +299,7 @@ export function analyzeSource(
   result.warnings.push(STRUCTURE_NOTE);
   if (!root) result.warnings.push(NESTED_NOTE);
   if (language === 'python') {
-    result.warnings.push('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도, 직접·확정 import 호출, 같은 파일의 값 출처와 FastAPI·Flask·Django 주소의 기능 흐름(처리 함수까지)을 보여 줘요. 파일 안내, 가져온 값, 객체 메서드와 처리 함수 안의 기능 흐름 확장은 아직 지원하지 않아요.');
+    result.warnings.push('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도, 직접·확정 import 호출, 같은 파일과 직접 가져온 이름의 값 출처, FastAPI·Flask·Django 주소의 기능 흐름(처리 함수까지)을 보여 줘요. 파일 안내, 모듈 속성값, 객체 메서드와 처리 함수 안의 기능 흐름 확장은 아직 지원하지 않아요.');
   }
   if (!root) return result;
   if (root.hasError) {

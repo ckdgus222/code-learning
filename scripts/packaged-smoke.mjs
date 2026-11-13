@@ -339,6 +339,9 @@ try {
   await writeFile(path.join(pythonFixture, 'order.py'), pythonSource);
   await writeFile(path.join(pythonFixture, '__init__.py'), '');
   await writeFile(path.join(pythonFixture, 'worker.py'), 'def transform(value):\n    return value\n');
+  const pythonImportedValueSource = 'from .settings import LIMIT as limit\ndef value_import():\n    return limit\n';
+  await writeFile(path.join(pythonFixture, 'value_origin.py'), pythonImportedValueSource);
+  await writeFile(path.join(pythonFixture, 'settings.py'), 'LIMIT: int = 5\n');
   await app.evaluate(({ dialog }, folder) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] });
   }, pythonFixture);
@@ -364,12 +367,34 @@ try {
   await page.getByRole('list', { name: '이 함수를 부르는 곳', exact: true })
     .getByText('apply(9)', { exact: true }).waitFor();
   assert.equal(await readFile(path.join(pythonFixture, 'order.py'), 'utf8'), pythonSource);
+  await page.getByRole('button', { name: '코드 읽기로 돌아가기', exact: true }).click();
+  await page.getByRole('button', { name: 'value_origin.py', exact: true }).click();
+  await page.getByRole('button', { name: 'value_import', exact: true }).click();
+  await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+  await page.getByRole('group', { name: '바깥 이름', exact: true }).getByRole('button', { name: 'limit', exact: true }).click();
+  const importedValue = page.getByRole('region', { name: 'limit 값', exact: true });
+  await importedValue.getByText('int', { exact: true }).waitFor();
+  await importedValue.getByText('5', { exact: true }).waitFor();
+  await importedValue.getByRole('button', { name: '코드 보기', exact: true }).last().click();
+  await page.getByRole('heading', { name: 'settings.py', exact: true }).waitFor();
+  await page.getByText('근거: settings.py · 1–1줄', { exact: true }).waitFor();
+  assert.equal(await page.getByTestId('evidence-range').innerText(), '근거: settings.py · 1–1줄');
+  assert.equal(await readFile(path.join(pythonFixture, 'value_origin.py'), 'utf8'), pythonImportedValueSource);
+  await page.getByRole('button', { name: 'value_origin.py', exact: true }).click();
+  await page.getByRole('button', { name: 'value_import', exact: true }).click();
+  await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+  await page.getByRole('group', { name: '바깥 이름', exact: true }).getByRole('button', { name: 'limit', exact: true }).click();
+  await importedValue.getByText('5', { exact: true }).waitFor();
+  await writeFile(path.join(pythonFixture, 'settings.py'), '# changed\nLIMIT: int = 9\n');
+  await importedValue.getByRole('button', { name: '코드 보기', exact: true }).last().click();
+  await page.getByText('값을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 다시 찾아 주세요.', { exact: true }).waitFor();
   await app.close(); app = undefined;
   await testCopy.cleanup(); testCopy = undefined;
   const report = { passed: true, checks: ['Python native grammar, method outline and conditional step', 'screen groups and cached flow selection without flow IPC', 'system light and dark themes, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', onMac ? 'changes from git inside its sandbox' : 'Windows changes unavailable notice', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel', 'release fuses and plain startup', 'UI uses an inspect-enabled temporary copy', 'entire distributed app unchanged'], state };
   report.checks.push('Python same-file calls, reverse callers and source unchanged');
   report.checks.push('Python import alias calls and reverse callers across files');
   report.checks.push('Python parameter value card in the packaged worker');
+  report.checks.push('Python direct imported value, written type, cross-file evidence and changed-source rejection');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

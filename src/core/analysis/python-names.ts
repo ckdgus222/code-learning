@@ -132,20 +132,25 @@ export function readPythonFacts(file: ProjectFile, text: string, hash: string, n
     if (facts.values && node.type === 'identifier' && frame.calls && pythonValueRead(node, facts.values)) {
       facts.values.references.push({ node, scope, fn, inClass: frame.inClass });
     }
-    if (node.type === 'identifier' && frame.escapes) {
+    if (node.type === 'identifier') {
       const parent = node.parent;
       const label = parent?.type === 'attribute' && parent.childForFieldName('attribute')?.id === node.id
         || parent?.type === 'keyword_argument' && parent.childForFieldName('name')?.id === node.id;
       let chain = node;
-      while (chain.parent?.type === 'attribute' && chain.parent.childForFieldName('object')?.id === chain.id) chain = chain.parent;
+      let namespace = false;
+      while (chain.parent?.type === 'attribute' && chain.parent.childForFieldName('object')?.id === chain.id) {
+        chain = chain.parent;
+        namespace ||= normalize(chain.childForFieldName('attribute')?.text ?? '') === '__dict__';
+      }
       const invoked = chain.parent?.type === 'call' && chain.parent.childForFieldName('function')?.id === chain.id;
-      if (!label && !invoked) facts.moduleEscapes.push({ node, scope });
+      if (!label && (namespace || frame.escapes && !invoked)) facts.moduleEscapes.push({ node, scope });
     }
     if (node.type === 'identifier' && dynamicNames.has(normalize(node.text))) {
       facts.unclear = '동적으로 이름이나 함수 내용을 바꾸는 이름이 있어 이 파일의 연결은 확정하지 않았어요.';
       if (facts.values) facts.values.dynamic = true;
     }
-    if (['global_statement', 'nonlocal_statement', 'match_statement', 'type_alias_statement', 'type_parameter'].includes(node.type)) {
+    const typeParameters = node.type === 'type_parameter' && node.parent?.childForFieldName('type_parameters')?.id === node.id;
+    if (['global_statement', 'nonlocal_statement', 'match_statement', 'type_alias_statement'].includes(node.type) || typeParameters) {
       facts.unclear = 'global·nonlocal·match·타입 매개변수의 이름 규칙은 아직 확정하지 않아요.';
     }
     if (facts.values && (node.type === 'global_statement' || node.type === 'nonlocal_statement')) {
@@ -153,8 +158,7 @@ export function readPythonFacts(file: ProjectFile, text: string, hash: string, n
       for (const name of node.namedChildren.filter(child => child.type === 'identifier')) names.set(normalize(name.text), node.type === 'global_statement' ? 'global' : 'nonlocal');
       facts.values.directives.set(scope, names);
     }
-    if (node.type === 'match_statement' || node.type === 'type_alias_statement'
-      || node.type === 'type_parameter' && node.parent?.childForFieldName('type_parameters')?.id === node.id) facts.values?.unresolved.add(scope);
+    if (node.type === 'match_statement' || node.type === 'type_alias_statement' || typeParameters) facts.values?.unresolved.add(scope);
     if (node.type === 'function_definition') {
       const found = pythonFunction(node);
       const name = node.childForFieldName('name');
