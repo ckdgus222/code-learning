@@ -63,6 +63,8 @@ await writeFile(path.join(pythonCallsFixture, 'pkg/worker.py'), 'def transform(v
 await writeFile(path.join(pythonCallsFixture, 'pkg/main.py'), 'from .worker import transform as apply\ndef run_import():\n    return apply(9)\n');
 const pythonValuesSource = 'offset = 4\ndef calculate(amount: int = 2):\n    total: int = amount + offset\n    total += 1\n    return total\n';
 await writeFile(path.join(pythonCallsFixture, 'values.py'), pythonValuesSource);
+const pythonArgumentsSource = 'def inputs(first, /, second=20, *, flag):\n    return first + second\ndef caller():\n    inputs(7, flag=True)\n    inputs(8, second=9, flag=False)\n    inputs(10, second=11)\n';
+await writeFile(path.join(pythonCallsFixture, 'arguments.py'), pythonArgumentsSource);
 const fastapiFixture = path.join(temporary, 'FastAPI 흐름 프로젝트');
 await mkdir(path.join(fastapiFixture, 'web'), { recursive: true });
 await mkdir(path.join(fastapiFixture, 'server'), { recursive: true });
@@ -3752,7 +3754,7 @@ try {
     await page.getByText('‘이 함수 흐름으로 보기’에서 직접·확정 import 호출과 값의 출처를 따라가요.', { exact: true }).waitFor();
     await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
     await page.getByRole('button', { name: 'Order.total', exact: true }).click();
-    await page.getByText('Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 같은 파일의 매개변수·적힌 타입·기본값·대입 식과 확정 import의 값 출처를 보여 줘요. 객체 메서드·다시 가져온 이름·람다 안·함수 정의 헤더의 호출과 호출 인자의 대응은 아직 지원하지 않아요.', { exact: true }).waitFor();
+    await page.getByText('Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 매개변수·적힌 타입·기본값·대입 식과 확정 import의 값 출처, 올바르게 적힌 위치·키워드 인자의 대응을 보여 줘요. 펼침 인자·객체 메서드·다시 가져온 이름·람다 안·함수 정의 헤더의 호출은 아직 지원하지 않아요.', { exact: true }).waitFor();
     await page.getByRole('banner').getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
   });
   await check('Python map: relative and own-package arrows, external modules and unsettled candidates', async () => {
@@ -3850,6 +3852,24 @@ try {
     await outside.getByRole('button', { name: '코드 보기', exact: true }).last().click();
     await until(async () => await page.getByTestId('evidence-range').innerText() === '근거: values.py · 1–1줄');
     assert.equal(await readFile(path.join(pythonCallsFixture, 'values.py'), 'utf8'), pythonValuesSource);
+  });
+  await check('Python arguments: positional, keyword-only, default and invalid whole-call correspondence', async () => {
+    await openTreeFile('arguments.py');
+    await page.getByRole('button', { name: 'inputs', exact: true }).click();
+    await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+    await page.getByRole('group', { name: '받는 값', exact: true }).getByRole('button', { name: 'second', exact: true }).click();
+    const second = page.getByRole('list', { name: 'second에 넘기는 값', exact: true });
+    await second.getByText('넘기지 않음 · 기본값을 써요', { exact: true }).waitFor();
+    await second.getByText('9', { exact: true }).waitFor();
+    await second.getByText('확인 못 함(필수 인자가 빠져 있어 호출 전체의 대응을 표시하지 않아요.)', { exact: true }).waitFor();
+    assert.equal(await second.getByText('11', { exact: true }).count(), 0);
+    await page.getByRole('group', { name: '받는 값', exact: true }).getByRole('button', { name: 'flag', exact: true }).click();
+    const flag = page.getByRole('list', { name: 'flag에 넘기는 값', exact: true });
+    await flag.getByText('True', { exact: true }).waitFor();
+    await flag.getByText('False', { exact: true }).waitFor();
+    await flag.getByRole('button', { name: '코드 보기', exact: true }).first().click();
+    await until(async () => await page.getByTestId('evidence-range').innerText() === '근거: arguments.py · 4–4줄');
+    assert.equal(await readFile(path.join(pythonCallsFixture, 'arguments.py'), 'utf8'), pythonArgumentsSource);
   });
   await check('Python import calls: alias targets, reverse navigation and changed target rejection', async () => {
     await dialogTo(pythonCallsFixture);

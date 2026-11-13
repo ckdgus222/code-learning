@@ -51,7 +51,7 @@ describe('Python function calls', () => {
     const incoming = await callsOf('helper');
     expect(incoming.callers).toHaveLength(1);
     expect(incoming.callers![0]).toMatchObject({ text: 'helper(7)', inFunction: { name: 'run' } });
-    expect(incoming.values).toMatchObject([{ name: 'value', role: 'parameter', fixed: null, index: null }]);
+    expect(incoming.values).toMatchObject([{ name: 'value', role: 'parameter', fixed: null, index: 0, parameterKind: 'positional-or-keyword' }]);
     expect(run.callers).toHaveLength(1);
     expect(run.callers![0]).toMatchObject({ text: 'run()', inFunction: null });
   });
@@ -68,12 +68,12 @@ describe('Python function calls', () => {
     expect((await callsOf('helper')).callers?.map(call => call.inFunction?.name)).toEqual(['inner']);
   });
 
-  it('does not map keyword or unpacked arguments to positional parameters', async () => {
+  it('preserves keyword arguments separately and leaves unpacked arguments unresolved', async () => {
     await prepare({ 'main.py': 'def target(value):\n    pass\n\ndef run(args, kwargs):\n    target(1, "two")\n    target(value=1)\n    target(*args)\n    target(**kwargs)\n' });
     const result = await callsOf('run');
     expect(result.calls.map(call => call.status)).toEqual(['linked', 'linked', 'linked', 'linked']);
-    expect(result.calls.map(call => call.args)).toEqual([[{ text: '1', spread: false }, { text: '"two"', spread: false }], null, null, null]);
-    expect(result.values).toMatchObject([{ name: 'args', role: 'parameter', index: null }, { name: 'kwargs', role: 'parameter', index: null }]);
+    expect(result.calls.map(call => call.args)).toEqual([[{ text: '1', spread: false }, { text: '"two"', spread: false }], [{ text: '1', spread: false, keyword: 'value' }], null, null]);
+    expect(result.values).toMatchObject([{ name: 'args', role: 'parameter', index: 0 }, { name: 'kwargs', role: 'parameter', index: 1 }]);
   });
 
   it('does not split an unparenthesized generator argument into separate positional arguments', async () => {

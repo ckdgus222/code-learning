@@ -344,6 +344,8 @@ try {
   await writeFile(path.join(pythonFixture, 'settings.py'), 'LIMIT: int = 5\nOTHER: int = 6\n');
   const pythonModuleValueSource = 'from . import settings as cfg\ndef module_values():\n    return cfg.LIMIT + cfg.OTHER + cfg.LIMIT\n';
   await writeFile(path.join(pythonFixture, 'module_values.py'), pythonModuleValueSource);
+  const pythonArgumentsSource = 'def inputs(first, /, second=20, *, flag):\n    return first + second\ndef caller():\n    inputs(7, flag=True)\n    inputs(8, second=9, flag=False)\n    inputs(10, second=11)\n';
+  await writeFile(path.join(pythonFixture, 'arguments.py'), pythonArgumentsSource);
   await app.evaluate(({ dialog }, folder) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] });
   }, pythonFixture);
@@ -370,6 +372,22 @@ try {
     .getByText('apply(9)', { exact: true }).waitFor();
   assert.equal(await readFile(path.join(pythonFixture, 'order.py'), 'utf8'), pythonSource);
   await page.getByRole('button', { name: '코드 읽기로 돌아가기', exact: true }).click();
+  await page.getByRole('button', { name: 'arguments.py', exact: true }).click();
+  await page.getByRole('button', { name: 'inputs', exact: true }).click();
+  await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+  await page.getByRole('group', { name: '받는 값', exact: true }).getByRole('button', { name: 'second', exact: true }).click();
+  const secondArgument = page.getByRole('list', { name: 'second에 넘기는 값', exact: true });
+  await secondArgument.getByText('넘기지 않음 · 기본값을 써요', { exact: true }).waitFor();
+  await secondArgument.getByText('9', { exact: true }).waitFor();
+  await secondArgument.getByText('확인 못 함(필수 인자가 빠져 있어 호출 전체의 대응을 표시하지 않아요.)', { exact: true }).waitFor();
+  assert.equal(await secondArgument.getByText('11', { exact: true }).count(), 0);
+  await page.getByRole('group', { name: '받는 값', exact: true }).getByRole('button', { name: 'flag', exact: true }).click();
+  const flagArgument = page.getByRole('list', { name: 'flag에 넘기는 값', exact: true });
+  await flagArgument.getByText('True', { exact: true }).waitFor();
+  await flagArgument.getByText('False', { exact: true }).waitFor();
+  await flagArgument.getByRole('button', { name: '코드 보기', exact: true }).first().click();
+  await page.getByTestId('evidence-range').getByText('근거: arguments.py · 4–4줄', { exact: true }).waitFor();
+  assert.equal(await readFile(path.join(pythonFixture, 'arguments.py'), 'utf8'), pythonArgumentsSource);
   await page.getByRole('button', { name: 'value_origin.py', exact: true }).click();
   await page.getByRole('button', { name: 'value_import', exact: true }).click();
   await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
@@ -413,6 +431,7 @@ try {
   report.checks.push('Python parameter value card in the packaged worker');
   report.checks.push('Python direct imported value, written type, cross-file evidence and changed-source rejection');
   report.checks.push('Python module fields, distinct and deduplicated cards, initial expression and source evidence');
+  report.checks.push('Python positional and keyword inputs, default, invalid-call rejection and argument evidence');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

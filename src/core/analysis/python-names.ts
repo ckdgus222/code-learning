@@ -4,6 +4,7 @@ import { NESTED_NOTE, parse } from './syntax';
 import { initFactsOf, mentionsMachinery, normalize, pythonImportsOf, type InitFacts, type PythonImport } from './python-imports';
 import { pythonFunction } from './python-syntax';
 import { newPythonValueFacts, pythonValueAccess, pythonValueRead, type PythonValueBinding, type PythonValueFacts } from './python-values';
+import { pythonParametersOf, type PythonParameter } from './python-parameters';
 
 export interface PythonImportBinding {
   kind: 'import';
@@ -94,13 +95,14 @@ function bindPattern(scope: PythonScope, root: Parser.SyntaxNode | null, attribu
 }
 
 function bindParameters(scope: PythonScope, parameters: Parser.SyntaxNode | null,
-  record?: (name: Parser.SyntaxNode, parameter: Parser.SyntaxNode) => void): void {
+  record?: (name: Parser.SyntaxNode, parameter: Parser.SyntaxNode, metadata?: PythonParameter) => void, inClass = false): void {
+  const kinds = record ? pythonParametersOf(parameters, inClass) : null;
   for (const parameter of parameters?.namedChildren ?? []) {
     if (parameter.type === 'typed_parameter') {
-      bindPattern(scope, parameter.namedChildren.find(child => child.id !== parameter.childForFieldName('type')?.id) ?? null, undefined, name => record?.(name, parameter));
+      bindPattern(scope, parameter.namedChildren.find(child => child.id !== parameter.childForFieldName('type')?.id) ?? null, undefined, name => record?.(name, parameter, kinds?.get(parameter.id)));
       continue;
     }
-    bindPattern(scope, parameter.childForFieldName('name') ?? parameter, undefined, name => record?.(name, parameter));
+    bindPattern(scope, parameter.childForFieldName('name') ?? parameter, undefined, name => record?.(name, parameter, kinds?.get(parameter.id)));
   }
 }
 
@@ -124,9 +126,9 @@ export function readPythonFacts(file: ProjectFile, text: string, hash: string, n
     const push = (child: Parser.SyntaxNode, changes: Partial<Frame> = {}) => pending.push({ ...frame, ...changes, node: child });
     const record = (kind: PythonValueBinding['kind'], source: Parser.SyntaxNode, owner = scope, ownerFn = fn,
       value: Parser.SyntaxNode | null = null, annotation: Parser.SyntaxNode | null = null, conditional = frame.conditional,
-      shape: PythonValueBinding['shape'] = 'plain') => (name: Parser.SyntaxNode) => {
+      shape: PythonValueBinding['shape'] = 'plain', metadata?: PythonParameter) => (name: Parser.SyntaxNode) => {
       if (!facts.values || !frame.calls && kind !== 'parameter') return;
-      facts.values.bindings.push({ name, kind, source, scope: owner, fn: ownerFn, value, annotation, conditional, shape, inClass: frame.inClass });
+      facts.values.bindings.push({ name, kind, source, scope: owner, fn: ownerFn, value, annotation, conditional, shape, inClass: frame.inClass, ...metadata });
       facts.values.targets.set(name.id, kind);
     };
     if (facts.values && node.type === 'identifier' && frame.calls && pythonValueRead(node, facts.values)) {
@@ -166,12 +168,12 @@ export function readPythonFacts(file: ProjectFile, text: string, hash: string, n
         decorated: found.declaration.type === 'decorated_definition' };
       facts.functions.push(item);
       bind(scope, name.text, { kind: 'function', fn: item });
-      bindParameters(bodyScope, node.childForFieldName('parameters'), (parameterName, parameter) => {
+      bindParameters(bodyScope, node.childForFieldName('parameters'), facts.values ? (parameterName, parameter, metadata) => {
         const pattern = parameter.childForFieldName('name') ?? parameter;
         const rest = pattern.type.includes('splat') || parameter.namedChildren.some(child => child.type.includes('splat'));
         record('parameter', parameter, bodyScope, item, parameter.childForFieldName('value'), parameter.childForFieldName('type'), false,
-          rest ? 'rest' : 'plain')(parameterName);
-      });
+          rest ? 'rest' : 'plain', metadata)(parameterName);
+      } : undefined, frame.inClass);
       for (const child of [...node.namedChildren].reverse()) {
         if (child.id === found.body.id) push(child, { scope: bodyScope, fn: item, conditional: false, calls: true, escapes: false });
         else push(child, { calls: false });

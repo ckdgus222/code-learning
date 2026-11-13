@@ -3,6 +3,7 @@ import { SHAPE_QUERY_LIMITS, type CallSite, type FunctionCalls, type NameValue, 
   type ValueSite } from '../shared/contracts';
 import type { CallFunction } from './calls';
 import { firstRows, Omitted } from './project-map';
+import { pythonArgumentAt } from './python-arguments';
 
 const groups: { id: NameValue['group']; label: string }[] = [
   { id: 'parameter', label: '받는 값' }, { id: 'inside', label: '안에서 만든 이름' }, { id: 'outside', label: '바깥 이름' },
@@ -149,9 +150,16 @@ function ShapeText({ shape }: { shape: Shape }) {
 function Incoming({ value, result, at, showButton }: {
   value: NameValue; result: FunctionCalls; at(site: CallSite): React.ReactNode; showButton(site: CallSite): React.ReactNode;
 }) {
+  const writtenArgument = (site: CallSite): React.ReactNode => {
+    if (!value.parameterKind) return argument(site, value.index!, value.initial?.kind === 'default');
+    const found = pythonArgumentAt(site, value, result.values.filter(item => item.group === 'parameter'), result.limited);
+    if (found.kind === 'given') return <code>{found.text}</code>;
+    if (found.kind === 'default') return <span className="hint">넘기지 않음 · 기본값을 써요</span>;
+    return <span className="hint">확인 못 함({found.reason})</span>;
+  };
   const body = value.shape === 'rest' ? <p>나머지 매개변수라 자리를 정할 수 없어요(확인 못 함).</p>
     : value.shape === 'destructured' ? <p>구조 분해한 매개변수라 이름별 값을 정할 수 없어요(확인 못 함).</p>
-    : value.index === null ? null
+    : value.index === null && !value.parameterKind ? null
     : !result.callers ? <p>이름으로 불리지 않는 함수라 들어오는 값을 찾지 않았어요.</p>
     : !result.callers.length ? <p>이 함수로 이어진 부르는 곳이 없어 들어오는 값을 찾지 못했어요.</p>
     : <>{[false, true].map(inTest => {
@@ -160,7 +168,7 @@ function Incoming({ value, result, at, showButton }: {
         <span className="eyebrow">{inTest ? '테스트 예시' : '부르는 곳에서 넘기는 값'}</span>
         <ul className="map-list" aria-label={inTest ? `${value.name} 테스트 예시` : `${value.name}에 넘기는 값`}>
           {firstRows(sites).map(site => <li key={`${site.fileId}:${site.startUtf16}`}>
-            {at(site)} {argument(site, value.index!, value.initial?.kind === 'default')} {showButton(site)}
+            {at(site)} {writtenArgument(site)} {showButton(site)}
           </li>)}
         </ul>
         <Omitted count={sites.length} />

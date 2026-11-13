@@ -15,6 +15,8 @@ export interface PythonValueBinding {
   conditional: boolean;
   shape: NameValue['shape'];
   inClass: boolean;
+  parameterKind?: NameValue['parameterKind'];
+  parameterIndex?: number | null;
 }
 export interface PythonValueReference {
   node: Parser.SyntaxNode;
@@ -105,7 +107,10 @@ function describe(facts: PythonFileFacts, fn: PythonFunctionFact, events: Python
     if (parameter.value) base.initial = { ...where(facts, parameter.value), kind: 'default' };
     if (parameter.fn && parameter.fn !== fn) base.outerFunction = { name: parameter.fn.displayName, fileId: facts.file.id, fileHash: facts.hash,
       startUtf16: parameter.fn.declaration.startIndex, endUtf16: parameter.fn.declaration.endIndex, startLine: parameter.fn.declaration.startPosition.row + 1 };
-    base.notes.push('Python 호출의 인자를 매개변수에 대응하는 기능은 아직 지원하지 않아요.');
+    if (parameter.fn === fn && facts.complete && !facts.unclear && !values.dynamic && !values.unresolved.has(first.scope) && parameter.parameterKind) {
+      base.parameterKind = parameter.parameterKind;
+      base.index = parameter.parameterIndex ?? null;
+    } else if (parameter.fn === fn) base.notes.push('매개변수 규칙을 확정하지 못해 호출 인자의 대응을 표시하지 않아요.');
   }
   const writes = events.filter(event => !['parameter', 'annotation', 'delete', 'import'].includes(event.kind));
   const initial = writes[0];

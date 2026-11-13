@@ -6,6 +6,7 @@ import { firstLine, lineRange } from './names';
 import { readPythonFacts, type PythonCallFact, type PythonFileFacts, type PythonFunctionFact } from './python-names';
 import { pythonCallResolver } from './python-call-imports';
 import { pythonParenthesizedValue, pythonValuesOf } from './python-values';
+import { normalize } from './python-imports';
 
 export interface PythonCallsCache {
   texts: Map<string, { text: string; hash: string }>;
@@ -20,10 +21,15 @@ const functionAt = (fn: PythonFunctionFact) => ({ name: fn.displayName, startUtf
 
 function site(call: PythonCallFact, facts: PythonFileFacts): CallSite {
   const argumentsNode = call.node.childForFieldName('arguments');
-  const args = argumentsNode?.namedChildren.filter(node => node.type !== 'comment') ?? [];
-  const positional = argumentsNode?.type === 'argument_list' && !args.some(node => ['keyword_argument', 'list_splat', 'dictionary_splat'].includes(node.type));
+  const args = argumentsNode?.namedChildren.filter(node => !['comment', 'line_continuation'].includes(node.type)) ?? [];
+  const readable = argumentsNode?.type === 'argument_list' && !argumentsNode.hasError
+    && !args.some(node => ['list_splat', 'dictionary_splat'].includes(node.type)
+      || node.type === 'keyword_argument' && (!node.childForFieldName('value') || node.childForFieldName('name')?.type !== 'identifier'
+        || normalize(node.childForFieldName('name')!.text) === '__debug__'));
   return { fileId: facts.file.id, fileHash: facts.hash, startUtf16: call.node.startIndex, endUtf16: call.node.endIndex,
-    ...lineRange(call.node), text: firstLine(call.node), args: positional ? args.map(node => ({ text: firstLine(node), spread: false })) : null,
+    ...lineRange(call.node), text: firstLine(call.node), args: readable ? args.map(node => node.type === 'keyword_argument'
+      ? { text: firstLine(node.childForFieldName('value')!), spread: false, keyword: normalize(node.childForFieldName('name')!.text) }
+      : { text: firstLine(node), spread: false }) : null,
     inTest: testFile(facts.file.relativePath), inFunction: call.fn ? functionAt(call.fn) : null };
 }
 
@@ -132,7 +138,7 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
     return { ...origin, facts };
   });
   stop();
-  const notes = ['Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 같은 파일의 매개변수·적힌 타입·기본값·대입 식과 확정 import의 값 출처를 보여 줘요. 객체 메서드·다시 가져온 이름·람다 안·함수 정의 헤더의 호출과 호출 인자의 대응은 아직 지원하지 않아요.'];
+  const notes = ['Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 매개변수·적힌 타입·기본값·대입 식과 확정 import의 값 출처, 올바르게 적힌 위치·키워드 인자의 대응을 보여 줘요. 펼침 인자·객체 메서드·다시 가져온 이름·람다 안·함수 정의 헤더의 호출은 아직 지원하지 않아요.'];
   if (limited) notes.push('파일·읽기 크기·결과 크기 한도에 닿아 일부 호출과 값은 보이지 않아요.');
   return { projectId, fileId: chosenFile.id, fileHash: chosen.hash, startUtf16: fn.declaration.startIndex,
     endUtf16: fn.declaration.endIndex, name: fn.displayName, calls, callers, typedCallers: [], maybeCallers,

@@ -353,8 +353,8 @@ export interface CallSite {
   endLine: number;
   /** The call's first line, cut short. */
   text: string;
-  /** Positional arguments as written (first line each); null when their correspondence is not settled. */
-  args: { text: string; spread: boolean }[] | null;
+  /** Arguments as written (first line each), including Python keyword names; null when not settled. */
+  args: { text: string; spread: boolean; keyword?: string }[] | null;
   /** In a test file (`*.test.*`, `*.spec.*`, inside `__tests__/`): its arguments are examples (plan v2.3 V-1). */
   inTest: boolean;
   /** The function the call sits in, named as the analyzer names it; null at the top of the file. */
@@ -493,6 +493,8 @@ export interface NameValue {
   assignments: ValueSite[];
   /** A plain parameter of the chosen function: its position among the arguments of the calls found. */
   index: number | null;
+  /** A fully classified own Python parameter; absence keeps Python argument correspondence unavailable. */
+  parameterKind?: 'positional-only' | 'positional-or-keyword' | 'keyword-only' | 'var-positional' | 'var-keyword';
   /** A parameter of an enclosing function, whose arguments are found by choosing that function. */
   outerFunction: { name: string; fileId: string; fileHash: string; startUtf16: number; endUtf16: number; startLine: number } | null;
   /** Why the declaration or its values cannot be worked out; nothing else is shown then. */

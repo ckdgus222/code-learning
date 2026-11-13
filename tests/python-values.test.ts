@@ -45,15 +45,16 @@ const resultSize = (result: FunctionCalls) => [result.calls, result.callers ?? [
   .flat().reduce((sum, row) => sum + JSON.stringify(row).length, 0);
 
 describe('Python values written in the chosen function', () => {
-  it('lists annotated, default, keyword-only and rest parameters without incoming argument indexes', async () => {
+  it('lists annotated, default, keyword-only and rest parameters with positional indexes where allowed', async () => {
     await prepare('def run(first: int, /, label: str = "hello", *args: float, enabled: bool = True, **kwargs: str):\n    return first\n');
     const result = await search();
     expect(result.values.filter(value => value.group === 'parameter').map(value => value.name)).toEqual(['first', 'label', 'args', 'enabled', 'kwargs']);
-    expect(named(result, 'first')).toMatchObject({ role: 'parameter', type: 'int', index: null, initial: null, fixed: null });
+    expect(named(result, 'first')).toMatchObject({ role: 'parameter', type: 'int', index: 0, parameterKind: 'positional-only', initial: null, fixed: null });
     expect(named(result, 'label')).toMatchObject({ type: 'str', initial: { kind: 'default', text: '"hello"' } });
     expect(named(result, 'enabled')).toMatchObject({ type: 'bool', initial: { kind: 'default', text: 'True' } });
     for (const name of ['args', 'kwargs']) expect(named(result, name)).toMatchObject({ shape: 'rest', role: 'parameter', index: null });
-    expect(result.values.every(value => value.index === null && value.fixed === null)).toBe(true);
+    expect(result.values.map(value => value.index)).toEqual([0, 1, null, null, null]);
+    expect(result.values.every(value => value.fixed === null)).toBe(true);
   });
 
   it('groups repeated assignments into one card and preserves their source order', async () => {
@@ -118,7 +119,7 @@ describe('Python values written in the chosen function', () => {
     const result = await search();
     expect(named(result, 'limit')).toMatchObject({ group: 'outside', role: 'parameter', type: 'int', index: null,
       initial: { kind: 'default', text: '10' }, outerFunction: { ...outer, name: 'outer' } });
-    expect(named(result, 'step')).toMatchObject({ group: 'parameter', type: 'int', index: null, outerFunction: null });
+    expect(named(result, 'step')).toMatchObject({ group: 'parameter', type: 'int', index: 0, outerFunction: null });
   });
 
   it('keeps loop bindings as loop source text rather than an item value', async () => {
