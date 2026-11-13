@@ -1082,13 +1082,15 @@ describe('Django routes across project files', () => {
     expect(result.limited).toBe(true);
     expect(result.notes).toContain('Django 주소 항목이 너무 많아 처음 5,000개만 봤어요.');
     expect(result.notes.some(note => note.startsWith('주소·요청·연결이 너무 많아'))).toBe(true);
-  });
+    // The limit is a fixed 5,000, so the fixture is large; a slow CI runner needs more than the default 5 s.
+  }, 30_000);
   it('reports the shared view candidate limit', async () => {
     for (let file = 0; file < 4; file++) await put(`views${file}.py`, Array.from({ length: 5001 }, (_, i) => `def view${i}(): pass`).join('\n'));
     const result = await find();
     expect(result.limited).toBe(true);
     expect(result.notes).toContain('Python 함수·클래스가 너무 많아 일부 Django 뷰는 찾지 못했을 수 있어요.');
-  });
+    // The limit is a fixed 20,000, so the fixture is large; a slow CI runner needs more than the default 5 s.
+  }, 30_000);
   it('excludes Python tests and preserves other frameworks and requests', async () => {
     await put('fast.py', 'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/fast")\ndef fast(): pass');
     await put('flask_app.py', 'from flask import Flask\napp = Flask(__name__)\n@app.get("/flask")\ndef flask_view(): pass');
