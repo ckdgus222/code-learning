@@ -350,6 +350,10 @@ try {
   await writeFile(path.join(pythonFixture, 'return_types.py'), pythonReturnSource);
   const pythonMethodsSource = 'class Worker:\n    def apply(self, value):\n        return value\n    def run(self):\n        return self.apply(7)\ndef typed_run(worker: Worker):\n    return worker.apply(9)\n';
   await writeFile(path.join(pythonFixture, 'methods.py'), pythonMethodsSource);
+  const pythonClassSource = 'class Factory:\n    @staticmethod\n    def process(value):\n        return value\n';
+  await writeFile(path.join(pythonFixture, 'method_models.py'), pythonClassSource);
+  const pythonImportedMethodsSource = 'from .method_models import Factory as FactoryAlias\ndef imported_method():\n    return FactoryAlias.process(11)\ndef annotated_method(service: FactoryAlias):\n    return service.process(12)\n';
+  await writeFile(path.join(pythonFixture, 'imported_methods.py'), pythonImportedMethodsSource);
   await app.evaluate(({ dialog }, folder) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] });
   }, pythonFixture);
@@ -419,6 +423,24 @@ try {
   await methodCallers.getByRole('button', { name: '호출 위치', exact: true }).last().click();
   await page.getByText('근거: methods.py · 7–7줄', { exact: true }).waitFor();
   assert.equal(await readFile(path.join(pythonFixture, 'methods.py'), 'utf8'), pythonMethodsSource);
+  await page.getByRole('button', { name: 'imported_methods.py', exact: true }).click();
+  await page.getByRole('button', { name: 'imported_method', exact: true }).click();
+  await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+  await pythonCalls.getByText('FactoryAlias.process(11)', { exact: true }).waitFor();
+  await pythonCalls.getByText('· 타입으로 찾음', { exact: true }).waitFor();
+  await pythonCalls.getByText('method_models.py', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('group', { name: '바깥 이름', exact: true }).getByRole('button', { name: 'FactoryAlias', exact: true }).count(), 0);
+  await pythonCalls.getByRole('button', { name: '그 함수로', exact: true }).click();
+  await methodCallers.getByText('FactoryAlias.process(11)', { exact: true }).waitFor();
+  await methodCallers.getByText('service.process(12)', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('list', { name: '이 함수를 부르는 곳', exact: true }).count(), 0);
+  await page.getByRole('group', { name: '받는 값', exact: true }).getByRole('button', { name: 'value', exact: true }).click();
+  const importedParameter = page.getByRole('region', { name: 'value 값', exact: true });
+  await importedParameter.getByRole('button', { name: '코드 보기', exact: true }).first().click();
+  await page.getByRole('heading', { name: 'method_models.py', exact: true }).waitFor();
+  await page.getByText('근거: method_models.py · 3–3줄', { exact: true }).waitFor();
+  assert.equal(await readFile(path.join(pythonFixture, 'method_models.py'), 'utf8'), pythonClassSource);
+  assert.equal(await readFile(path.join(pythonFixture, 'imported_methods.py'), 'utf8'), pythonImportedMethodsSource);
   await page.getByRole('button', { name: 'value_origin.py', exact: true }).click();
   await page.getByRole('button', { name: 'value_import', exact: true }).click();
   await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
@@ -465,6 +487,7 @@ try {
   report.checks.push('Python positional and keyword inputs, default, invalid-call rejection and argument evidence');
   report.checks.push('Python written return annotation, non-inference notice and exact unchanged source evidence');
   report.checks.push('Python same-file typed method candidates, reverse-only candidate callers and no incoming examples');
+  report.checks.push('Python imported class and annotated method candidates, original-file navigation and no duplicate import value');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

@@ -4,10 +4,10 @@ import { normalize, resolvePythonImport, type PythonTarget } from './python-impo
 import { resolvePythonCall, resolvePythonName, type PythonCallFact, type PythonFileFacts, type PythonFunctionFact,
   type PythonImportBinding, type PythonScope } from './python-names';
 import { pythonAttributeNames, pythonValueAccess, type PythonValueOrigin, type PythonValueReference } from './python-values';
-import { pythonMethodResolver, type PythonMethodResolution } from './python-methods';
+import { pythonMethodResolver, type PythonClassOrigin, type PythonMethodEffects, type PythonMethodResolution } from './python-methods';
 
 type Found = { kind: 'linked'; facts: PythonFileFacts; fn: PythonFunctionFact }
-  | (PythonMethodResolution & { facts: PythonFileFacts })
+  | PythonMethodResolution
   | { kind: 'external'; specifier: string }
   | { kind: 'unknown'; reason: CallUnknownReason; detail: string };
 const unknown = (reason: CallUnknownReason, detail: string): Extract<Found, { kind: 'unknown' }> => ({ kind: 'unknown', reason, detail });
@@ -24,6 +24,8 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
   const imports = new Map<PythonImportBinding, PythonTarget[]>();
   const roots = new Map<PythonImportBinding, PythonTarget[]>();
   const methods = new Map<PythonFileFacts, ReturnType<typeof pythonMethodResolver>>();
+  const classOrigins = new Map<PythonImportBinding, Map<string, (PythonClassOrigin & { consumed: number }) | null>>();
+  const effects: PythonMethodEffects = { escaped: new Set(), changed: new Map() };
   const imported = (facts: PythonFileFacts, binding: PythonImportBinding) => {
     let result = imports.get(binding);
     if (result) return result;
@@ -157,6 +159,43 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
     return false;
   };
 
+  function importedClass(facts: PythonFileFacts, binding: PythonImportBinding, suffix: string[]): (PythonClassOrigin & { consumed: number }) | null {
+    stop();
+    if (!facts.complete || !facts.importsPlain || binding.conditional || binding.privateName) return null;
+    const targets = imported(facts, binding);
+    if (targets.length !== 1 || targets[0].kind !== 'file') return null;
+    const target = targets[0];
+    const module = binding.imported === null || target.names === 'all';
+    const prefix = binding.prefix;
+    if (module && (suffix.length <= prefix.length || !prefix.every((part, index) => suffix[index] === part))) return null;
+    const name = module ? suffix[prefix.length] : binding.imported!;
+    const key = module ? [...prefix, name].join('.') : '';
+    let cached = classOrigins.get(binding);
+    if (!cached) { cached = new Map(); classOrigins.set(binding, cached); }
+    if (cached.has(key)) return cached.get(key)!;
+    cached.set(key, null);
+    if (mutation(target.relativePath) || initializerClash(target.relativePath)) return null;
+    const destination = byPath.get(target.relativePath);
+    if (!destination?.complete || !destination.importsPlain) return null;
+    const entries = destination.program.names.get(name) ?? [];
+    if (entries.length !== 1) return null;
+    const owner = methods.get(destination)?.classOf(entries[0]);
+    if (!owner) return null;
+    const origin = { facts: destination, owner, consumed: module ? prefix.length + 2 : 1 };
+    cached.set(key, origin);
+    return origin;
+  }
+  // Factories contain no import traversal during construction. Effects are collected only after all
+  // indexes exist, including third files that write through an imported parameter annotation.
+  for (const facts of byPath.values()) {
+    stop();
+    methods.set(facts, pythonMethodResolver(facts, {
+      imported: (binding, suffix) => importedClass(facts, binding, suffix),
+      member: (origin, name) => methods.get(origin.facts)!.member(origin.owner, name),
+    }, effects, stop));
+  }
+  for (const method of methods.values()) { stop(); method.scanEffects(); }
+
   function resolve(facts: PythonFileFacts, call: PythonCallFact): Found {
     stop();
     const names = pythonAttributeNames(call.node.childForFieldName('function'));
@@ -166,14 +205,12 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
     }
     const found = resolvePythonName(facts, call, names[0]);
     if (found.kind === 'unknown') return found;
+    if (names.length > 1) {
+      const candidate = methods.get(facts)?.resolve(call, names, found);
+      if (candidate) return mutation(facts.file.relativePath) ?? mutation(candidate.facts.file.relativePath) ?? candidate;
+    }
     if (found.binding.kind !== 'import') {
-      if (names.length > 1) {
-        let method = methods.get(facts);
-        if (!method) { method = pythonMethodResolver(facts, stop); methods.set(facts, method); }
-        const candidate = method(call, names, found);
-        if (!candidate) return unknown('member', '같은 파일의 단순한 클래스 구조나 매개변수 타입으로 메서드를 정하지 못했어요.');
-        return mutation(facts.file.relativePath) ?? { ...candidate, facts };
-      }
+      if (names.length > 1) return unknown('member', '단순한 클래스 구조나 매개변수 타입으로 메서드를 정하지 못했어요.');
       const local = resolvePythonCall(facts, call);
       if (local.kind === 'unknown') return local;
       const modified = mutation(facts.file.relativePath);

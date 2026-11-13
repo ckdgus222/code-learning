@@ -3751,12 +3751,12 @@ try {
     await page.getByRole('button', { name: '다른 조건 확인', exact: true }).click();
     await page.waitForFunction(() => [...document.querySelectorAll('.cm-content .cm-line span')].some(span =>
       getComputedStyle(span).color !== getComputedStyle(span.closest('.cm-content')).color));
-    await page.getByText('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도, 직접·확정 import 호출과 값 출처, 같은 파일의 메서드 후보, FastAPI·Flask·Django 주소의 기능 흐름(처리 함수까지)을 보여 줘요. 파일 안내, 가져온 클래스의 메서드와 처리 함수 안의 기능 흐름 확장은 아직 지원하지 않아요.', { exact: true }).waitFor();
+    await page.getByText('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도, 직접·확정 import 호출과 값 출처, 클래스 구조·적힌 타입으로 찾는 메서드 후보, FastAPI·Flask·Django 주소의 기능 흐름(처리 함수까지)을 보여 줘요. 파일 안내와 처리 함수 안의 기능 흐름 확장은 아직 지원하지 않아요.', { exact: true }).waitFor();
     assert.equal(await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).count(), 0);
     await page.getByText('‘이 함수 흐름으로 보기’에서 직접·확정 import 호출과 값의 출처를 따라가요.', { exact: true }).waitFor();
     await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
     await page.getByRole('button', { name: 'Order.total', exact: true }).click();
-    await page.getByText('Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 매개변수·적힌 타입·기본값·대입 식과 확정 import의 값 출처, 위치·키워드 인자의 대응을 보여 줘요. 같은 파일의 단순한 클래스 구조나 매개변수 타입으로 메서드 후보를 찾으며, 후보 호출은 입력값 예시에 넣지 않아요. 상속·가져온 클래스의 메서드·펼침 인자·다시 가져온 이름·람다 안·함수 정의 헤더의 호출은 아직 지원하지 않아요.', { exact: true }).waitFor();
+    await page.getByText('Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 매개변수·적힌 타입·기본값·대입 식과 확정 import의 값 출처, 위치·키워드 인자의 대응을 보여 줘요. 같은 파일과 확정 import의 단순한 클래스 구조나 매개변수 타입으로 메서드 후보를 찾으며, 후보 호출은 입력값 예시에 넣지 않아요. 상속·펼침 인자·다시 가져온 이름·람다 안·함수 정의 헤더의 호출은 아직 지원하지 않아요.', { exact: true }).waitFor();
     await page.getByRole('banner').getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
   });
   await check('Python map: relative and own-package arrows, external modules and unsettled candidates', async () => {

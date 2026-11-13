@@ -1,19 +1,28 @@
 import type Parser from 'tree-sitter';
 import { firstLine } from './names';
 import { normalize } from './python-imports';
-import { resolvePythonName, type PythonBinding, type PythonCallFact, type PythonClassFact, type PythonFileFacts, type PythonFunctionFact, type PythonScope } from './python-names';
+import { resolvePythonName, type PythonBinding, type PythonCallFact, type PythonClassFact, type PythonFileFacts, type PythonFunctionFact, type PythonImportBinding, type PythonScope } from './python-names';
 import { pythonParametersOf, type PythonParameter } from './python-parameters';
 import { pythonAttributeNames, pythonValueAccess } from './python-values';
 
-export interface PythonMethodResolution { kind: 'typed'; fn: PythonFunctionFact; basis: string }
+export interface PythonClassOrigin { facts: PythonFileFacts; owner: PythonClassFact }
+export interface PythonMethodResolution { kind: 'typed'; facts: PythonFileFacts; fn: PythonFunctionFact; basis: string }
+export interface PythonMethodEffects {
+  escaped: Set<PythonClassFact>;
+  changed: Map<PythonClassFact, Set<string>>;
+}
+interface ClassLinks {
+  imported(binding: PythonImportBinding, suffix: string[]): (PythonClassOrigin & { consumed: number }) | null;
+  member(origin: PythonClassOrigin, name: string): PythonFunctionFact | null;
+}
 type BoundName = { binding: PythonBinding; scope: PythonScope };
-type Receiver = { owner: PythonClassFact; basis: string };
+type Receiver = PythonClassOrigin & { consumed: number; basis: string };
 type Parameter = PythonParameter & { node: Parser.SyntaxNode };
 const privateName = (name: string) => name === '__class__' || name.startsWith('__') && !name.endsWith('__') || /^_[^_].*__/.test(name);
 const hooks = new Set(['__getattribute__', '__getattr__', '__setattr__', '__delattr__', '__get__', '__set__', '__delete__']);
 
-/** Same-file candidates only; a class shape never proves which runtime object is received. */
-export function pythonMethodResolver(facts: PythonFileFacts, stop: () => void) {
+/** Build indexes first, then scan effects once for the whole job before resolving any candidate. */
+export function pythonMethodResolver(facts: PythonFileFacts, links: ClassLinks, effects: PythonMethodEffects, stop: () => void) {
   const classes = new Map(facts.classes.map(owner => [owner.name.id, owner]));
   const classScopes = new Map(facts.classes.map(owner => [owner.bodyScope, owner]));
   const functions = new Map(facts.functions.map(fn => [fn.bodyScope, fn]));
@@ -21,8 +30,7 @@ export function pythonMethodResolver(facts: PythonFileFacts, stop: () => void) {
   const modes = new Map<PythonFunctionFact, 'plain' | 'static' | 'class' | null>();
   const receivers = new Map<PythonBinding, Receiver | null>();
   const usableClasses = new Map<PythonClassFact, boolean>();
-  const escaped = new Set<PythonClassFact>();
-  const changed = new Map<PythonClassFact, Set<string>>();
+  const { escaped, changed } = effects;
 
   function usable(owner: PythonClassFact): boolean {
     const cached = usableClasses.get(owner);
@@ -82,15 +90,23 @@ export function pythonMethodResolver(facts: PythonFileFacts, stop: () => void) {
     const fn = bindings[0].fn;
     return !fn.conditional && mode(fn) && header(fn) ? fn : null;
   }
-  function receiver(found: BoundName): Receiver | null {
+  function classOf(binding: PythonBinding): PythonClassFact | null {
+    const owner = binding.kind === 'variable' ? classes.get(binding.node.id) : undefined;
+    return owner && usable(owner) ? owner : null;
+  }
+  function receiver(names: string[], found: BoundName): Receiver | null {
     const { binding, scope } = found;
+    if (binding.kind === 'import') {
+      const origin = links.imported(binding, names.slice(1));
+      return origin ? { ...origin, basis: `가져온 클래스 ${firstLine(origin.owner.name)}에 적힌 메서드 후보예요.` } : null;
+    }
     if (receivers.has(binding)) return receivers.get(binding)!;
     receivers.set(binding, null);
     stop();
     if (binding.kind !== 'variable') return null;
-    const literal = classes.get(binding.node.id);
-    if (literal && usable(literal)) {
-      const result = { owner: literal, basis: `같은 파일의 클래스 ${firstLine(literal.name)}에 적힌 메서드 후보예요.` };
+    const literal = classOf(binding);
+    if (literal) {
+      const result = { facts, owner: literal, consumed: 1, basis: `같은 파일의 클래스 ${firstLine(literal.name)}에 적힌 메서드 후보예요.` };
       receivers.set(binding, result);
       return result;
     }
@@ -100,54 +116,67 @@ export function pythonMethodResolver(facts: PythonFileFacts, stop: () => void) {
     if (!parameter || parameter.parameterKind.startsWith('var-')) return null;
     const owner = classScopes.get(fn.parentScope);
     if (owner && parameter.parameterIndex === 0 && member(owner, fn.normalizedName) === fn && mode(fn) !== 'static') {
-      const result = { owner, basis: `같은 클래스 ${firstLine(owner.name)}의 첫 매개변수 ${firstLine(binding.node)}로 찾은 후보예요.` };
+      const result = { facts, owner, consumed: 1, basis: `같은 클래스 ${firstLine(owner.name)}의 첫 매개변수 ${firstLine(binding.node)}로 찾은 후보예요.` };
       receivers.set(binding, result);
       return result;
     }
     const annotation = parameter.node.childForFieldName('type');
     const type = annotation?.type === 'type' && annotation.namedChildCount === 1 ? annotation.firstNamedChild : annotation;
-    if (type?.type !== 'identifier') return null;
-    const written = resolvePythonName(facts, { node: type, scope: fn.parentScope, inClass: fn.parentScope.kind === 'class' }, type.text);
-    if (written.kind !== 'binding' || written.binding.kind !== 'variable') return null;
-    const target = classes.get(written.binding.node.id);
-    if (!target || !usable(target) || target.declaration.endIndex > fn.declaration.startIndex) return null;
-    const result = { owner: target, basis: `매개변수 ${firstLine(binding.node)}에 적힌 타입 ${firstLine(type)}으로 찾은 후보예요.` };
+    const typeNames = pythonAttributeNames(type ?? null);
+    if (!type || !typeNames || typeNames.some(privateName)) return null;
+    const written = resolvePythonName(facts, { node: type, scope: fn.parentScope, inClass: fn.parentScope.kind === 'class' }, typeNames[0]);
+    if (written.kind !== 'binding') return null;
+    let origin: PythonClassOrigin | null = null;
+    if (written.binding.kind === 'import') {
+      if (written.binding.node.endIndex > fn.declaration.startIndex) return null;
+      const imported = links.imported(written.binding, typeNames.slice(1));
+      if (imported?.consumed === typeNames.length) origin = imported;
+    } else if (typeNames.length === 1) {
+      const target = classOf(written.binding);
+      if (target) origin = { facts, owner: target };
+    }
+    if (!origin || origin.facts === facts && origin.owner.declaration.endIndex > fn.declaration.startIndex) return null;
+    const result = { ...origin, consumed: 1, basis: `매개변수 ${firstLine(binding.node)}에 적힌 타입 ${firstLine(type)}으로 찾은 후보예요.` };
     receivers.set(binding, result);
     return result;
   }
-  function receiverAt(node: Parser.SyntaxNode, scope: PythonScope, name: string): Receiver | null {
-    const found = resolvePythonName(facts, { node, scope, inClass: false }, name);
-    return found.kind === 'binding' ? receiver(found) : null;
+  function receiverAt(node: Parser.SyntaxNode, scope: PythonScope, names: string[]): Receiver | null {
+    const found = resolvePythonName(facts, { node, scope, inClass: false }, names[0]);
+    return found.kind === 'binding' ? receiver(names, found) : null;
   }
-  for (const write of facts.attributeWrites) {
-    stop();
-    const names = pythonAttributeNames(write.node);
-    if (!names || names.length < 2) continue;
-    const origin = receiverAt(write.node, write.scope, names[0]);
-    if (!origin) continue;
-    if (hooks.has(names[1]) || ['__class__', '__dict__', '__bases__'].includes(names[1])) { escaped.add(origin.owner); continue; }
-    const methods = changed.get(origin.owner) ?? new Set<string>();
-    methods.add(names[1]);
-    changed.set(origin.owner, methods);
+  function scanEffects(): void {
+    for (const write of facts.attributeWrites) {
+      stop();
+      const names = pythonAttributeNames(write.node);
+      if (!names || names.length < 2) continue;
+      const origin = receiverAt(write.node, write.scope, names);
+      if (!origin || names.length <= origin.consumed) continue;
+      const name = names[origin.consumed];
+      if (hooks.has(name) || ['__class__', '__dict__', '__bases__'].includes(name)) { escaped.add(origin.owner); continue; }
+      const methods = changed.get(origin.owner) ?? new Set<string>();
+      methods.add(name);
+      changed.set(origin.owner, methods);
+    }
+    for (const reference of facts.moduleEscapes) {
+      stop();
+      const access = pythonValueAccess(reference.node);
+      const origin = receiverAt(reference.node, reference.scope, access.names);
+      if (!origin) continue;
+      if (access.names.length === origin.consumed || links.member(origin, access.names[origin.consumed])) escaped.add(origin.owner);
+    }
   }
-  for (const reference of facts.moduleEscapes) {
+  function resolve(call: PythonCallFact, names: string[], found: BoundName): PythonMethodResolution | null {
     stop();
-    const access = pythonValueAccess(reference.node);
-    const origin = receiverAt(reference.node, reference.scope, access.names[0]);
-    if (!origin) continue;
-    if (access.names.length === 1 || member(origin.owner, access.names[1])) escaped.add(origin.owner);
-  }
-  return (call: PythonCallFact, names: string[], found: BoundName): PythonMethodResolution | null => {
-    stop();
-    if (names.length !== 2 || names.some(privateName)) return null;
-    const origin = receiver(found);
-    if (!origin || escaped.has(origin.owner) || changed.get(origin.owner)?.has(names[1])) return null;
+    if (names.length < 2 || names.some(privateName)) return null;
+    const origin = receiver(names, found);
+    if (!origin || names.length !== origin.consumed + 1 || escaped.has(origin.owner) || changed.get(origin.owner)?.has(names.at(-1)!)) return null;
     for (let execution: PythonScope | null = call.scope; execution; execution = execution.executionParent) {
       stop();
-      if (execution === origin.owner.parentScope && call.node.startIndex < origin.owner.declaration.endIndex) return null;
+      if (origin.facts === facts && execution === origin.owner.parentScope && call.node.startIndex < origin.owner.declaration.endIndex) return null;
       if (execution.deferred) break;
     }
-    const fn = member(origin.owner, names[1]);
-    return fn ? { kind: 'typed', fn, basis: origin.basis } : null;
-  };
+    const fn = links.member(origin, names.at(-1)!);
+    return fn ? { kind: 'typed', facts: origin.facts, fn, basis: origin.basis } : null;
+  }
+  return { classOf, member, receiver, scanEffects, resolve };
 }

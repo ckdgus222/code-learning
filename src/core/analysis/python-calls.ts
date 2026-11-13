@@ -156,7 +156,7 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
     if (reserve(site)) returnAnnotation = site;
   }
   stop();
-  const notes = ['Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 매개변수·적힌 타입·기본값·대입 식과 확정 import의 값 출처, 위치·키워드 인자의 대응을 보여 줘요. 같은 파일의 단순한 클래스 구조나 매개변수 타입으로 메서드 후보를 찾으며, 후보 호출은 입력값 예시에 넣지 않아요. 상속·가져온 클래스의 메서드·펼침 인자·다시 가져온 이름·람다 안·함수 정의 헤더의 호출은 아직 지원하지 않아요.'];
+  const notes = ['Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 매개변수·적힌 타입·기본값·대입 식과 확정 import의 값 출처, 위치·키워드 인자의 대응을 보여 줘요. 같은 파일과 확정 import의 단순한 클래스 구조나 매개변수 타입으로 메서드 후보를 찾으며, 후보 호출은 입력값 예시에 넣지 않아요. 상속·펼침 인자·다시 가져온 이름·람다 안·함수 정의 헤더의 호출은 아직 지원하지 않아요.'];
   if (limited) notes.push('파일·읽기 크기·구문 개수·결과 크기 한도에 닿아 일부 호출과 값은 보이지 않아요.');
   return { projectId, fileId: chosenFile.id, fileHash: chosen.hash, startUtf16: fn.declaration.startIndex,
     endUtf16: fn.declaration.endIndex, name: fn.displayName, calls, callers, typedCallers, maybeCallers,
