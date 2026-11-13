@@ -182,7 +182,8 @@ describe('project watching ignores delayed notifications of pre-watch writes', (
       await session.open();
       const filename = path.join(root, 'a.ts');
       const stats = await stat(filename);
-      const changedStats = field === 'missing stats' ? undefined : { ...stats, [field]: stats[field] + 1 };
+      // Doubled, not one more: a Windows file id can be above 2^53, where adding 1 to a number changes nothing.
+      const changedStats = field === 'missing stats' ? undefined : { ...stats, [field]: stats[field] * 2 + 1 };
       const watcher = session['watcher']!;
       process.env.MAP_DELAY = '10';
       const map = session.map();
