@@ -851,7 +851,7 @@ describe('Flask project routes and typed links', () => {
     const result = await find();
     expect(result.links).toEqual([{ requestIndex: 0, routeIndex: 0, sure: false,
       reasons: param === '<id>' ? ['앞부분 모름'] : ['앞부분 모름', '값 모양 모름'] }]);
-    expect(result.notes).toEqual(['Flask의 Blueprint는 register_blueprint로 붙이거나 바꾸는 앞 경로를 따라가지 않아, 그 주소는 앞부분을 모르는 것으로 봤어요.']);
+    expect(result.notes).toEqual(['Flask의 Blueprint 주소 중 직접 등록이나 앞 경로를 확인하지 못한 것은 앞부분을 모르는 것으로 봤어요.']);
   });
   it.each([
     ['Flask(__name__)', '@app.route("/v<int:n>")', '/v1'],

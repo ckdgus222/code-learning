@@ -516,6 +516,7 @@ try {
   report.checks.push('Python fake AI file explanation, consent, real chunks and storage, decorator evidence, reopen and stale locking');
   report.checks.push('Python internal Django feature flow, uncertain helper edge, exact evidence and no confirmed callers');
   report.checks.push('Python application factory routes, uncertain request, nested handler evidence and internal helper flow');
+  report.checks.push('Same-file FastAPI router prefixes and Flask blueprint prefix override, confirmed request links and original decorators');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

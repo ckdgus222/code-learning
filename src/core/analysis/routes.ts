@@ -525,6 +525,7 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
       omitted ||= found.cut;
       for (const framework of found.routers) routers.add(framework);
       if (found.factoryRoutes) result.notes.push(`${file.relativePath}: 앱 팩토리 안에서 찾은 주소는 실행·배포 여부를 확인하지 않아 추정으로 표시해요.`);
+      if (found.registrationUncertain) result.notes.push(`${file.relativePath}: 해석하지 못한 라우터 등록이나 주소가 있어 다른 처리 함수가 요청을 받을 수 있어요. 관련 앱의 주소는 추정으로 표시해요.`);
       const visible = found.routes.filter(route => !shadows.has(route.framework));
       if (found.odd && visible.length) result.notes.push(`${file.relativePath}: 실행 중에 이름·속성이나 주소 규칙을 바꿀 수 있는 코드가 있어, 이 파일의 Python 서버 주소는 요청과 잇지 않았어요.`);
       if (!found.odd && visible.some(route => route.unmatched)) unmatched = true;
@@ -569,8 +570,8 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
     if (!result.notes.includes(note)) result.notes.push(note);
   }
   if (unmatched) result.notes.push('Python 서버 주소 가운데 정확히 맞춰 볼 수 없는 것(특수 글자나 글이 섞인 칸, 읽지 못한 방식, 받는 요청을 바꾸는 설정)은 요청과 잇지 않았어요.');
-  if (routers.has('fastapi')) result.notes.push('FastAPI의 APIRouter는 include_router로 붙이는 앞 경로를 따라가지 않아, 그 주소는 앞부분을 모르는 것으로 봤어요.');
-  if (routers.has('flask')) result.notes.push('Flask의 Blueprint는 register_blueprint로 붙이거나 바꾸는 앞 경로를 따라가지 않아, 그 주소는 앞부분을 모르는 것으로 봤어요.');
+  if (routers.has('fastapi')) result.notes.push('FastAPI의 APIRouter 주소 중 직접 등록을 확인하지 못한 것은 앞부분을 모르는 것으로 봤어요.');
+  if (routers.has('flask')) result.notes.push('Flask의 Blueprint 주소 중 직접 등록이나 앞 경로를 확인하지 못한 것은 앞부분을 모르는 것으로 봤어요.');
   if (result.routes.some(lacksRouteEvidence)) result.notes.push('앞부분을 모르고 글자 칸도 없는 주소(/, /:id 등)는 맞춰 볼 근거가 없어 요청과 잇지 않았어요.');
   result.links = linkRoutes(result.routes, result.requests, shouldStop);
   if (result.links.some(link => link.reasons.includes('목록 밖 주소 가능'))) result.notes.push('값 칸(<slug> 등)이 있는 Django 주소는 목록에 없는 주소(관리자 화면, 제네릭 뷰, 정규식 주소 등)가 요청을 먼저 받을 수 있어, 연결을 추정으로 뒀어요.');

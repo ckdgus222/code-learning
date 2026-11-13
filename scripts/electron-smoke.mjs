@@ -6160,7 +6160,7 @@ try {
   await check('Python file explanation (fake AI): consent, decorator evidence, persistence and stale locking', async () => {
     await checkPythonFileExplanation(app, page, path.join(temporary, 'Python 파일 설명'));
   });
-  await check('Python feature flow: uncertain Django helper, factory routes, original evidence and unchanged caller certainty', async () => {
+  await check('Python feature flow: Django candidates, factory routes, registration prefixes and original evidence', async () => {
     await checkPythonFeatureFlow(app, page, path.join(temporary, 'Python 내부 기능 흐름'));
   });
   await check('File explanation (fake AI): consent, selected mode, early result, independent code ranges and direct function summaries', async () => {

@@ -11,7 +11,8 @@ export async function checkPythonFeatureFlow(app, page, folder) {
     'site/urls.py': 'from django.urls import path\nfrom . import views\nurlpatterns = [path("users/", views.handle)]\n',
     'site/views.py': '# 한국어 😀\ndef handle(request):\n    return helper(1)\ndef helper(value):\n    return value\n',
     'factory.py': 'from fastapi import FastAPI\ndef factory_helper(value):\n    return value\ndef create_app():\n    app = FastAPI()\n    @app.get("/factory/{id}")\n    def factory_handler(id):\n        return factory_helper(id)\n    return app\n',
-    'client.ts': 'export function load() { return fetch("/users/"); }\nexport function factoryLoad() { return fetch("/factory/1"); }\n',
+    'registrations.py': 'from fastapi import FastAPI, APIRouter\nfrom flask import Flask, Blueprint\napi = FastAPI()\nrouter = APIRouter(prefix="/v1")\n@router.get("/widgets")\ndef api_widgets():\n    return []\napi.include_router(router, prefix="/api")\nweb = Flask(__name__)\nbp = Blueprint("widgets", __name__, url_prefix="/old")\n@bp.get("/widgets")\ndef flask_widgets():\n    return []\nweb.register_blueprint(bp, url_prefix="/bp")\n',
+    'client.ts': 'export function load() { return fetch("/users/"); }\nexport function factoryLoad() { return fetch("/factory/1"); }\nexport function apiWidgets() { return fetch("/api/v1/widgets"); }\nexport function flaskWidgets() { return fetch("/bp/widgets"); }\n',
   };
   for (const [name, source] of Object.entries(sources)) {
     await mkdir(path.dirname(path.join(folder, name)), { recursive: true });
@@ -66,6 +67,20 @@ export async function checkPythonFeatureFlow(app, page, folder) {
       .getByText('factory.py: 앱 팩토리 안에서 찾은 주소는 실행·배포 여부를 확인하지 않아 추정으로 표시해요.', { exact: true }).waitFor();
     await steps.filter({ has: page.locator('b', { hasText: /^factory_handler$/ }) }).getByRole('button', { name: '코드 보기', exact: true }).click();
     await page.getByTestId('evidence-range').getByText('근거: factory.py · 6–8줄', { exact: true }).waitFor();
+    for (const [route, name, lines] of [['/api/v1/widgets', 'api_widgets', '5–7'], ['/bp/widgets', 'flask_widgets', '11–13']]) {
+      await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+      await page.getByRole('button', { name: '다른 기능 고르기', exact: true }).click();
+      await list.getByRole('listitem').filter({ hasText: `보기 · ${route}` }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+      await details.waitFor();
+      if (!await details.evaluate(element => element.open)) await details.locator(':scope > summary').click();
+      await diagram.getByRole('group', { name: `registrations.py · ${name}`, exact: true }).waitFor();
+      const request = steps.filter({ has: page.locator('b', { hasText: `GET ${route}` }) });
+      await request.waitFor();
+      assert.equal(await request.getByText('추정', { exact: true }).count(), 0);
+      await steps.filter({ has: page.locator('b', { hasText: new RegExp(`^${name}$`) }) })
+        .getByRole('button', { name: '코드 보기', exact: true }).click();
+      await page.getByTestId('evidence-range').getByText(`근거: registrations.py · ${lines}줄`, { exact: true }).waitFor();
+    }
     for (const [name, source] of Object.entries(sources)) assert.equal(await readFile(path.join(folder, name), 'utf8'), source);
   } finally {
     await app.evaluate(() => globalThis.restorePythonFlowDialog?.());
