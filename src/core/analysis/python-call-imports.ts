@@ -1,30 +1,16 @@
 import path from 'node:path';
-import type Parser from 'tree-sitter';
 import type { CallUnknownReason, ProjectFile } from '../../shared/contracts';
 import { normalize, resolvePythonImport, type PythonTarget } from './python-imports';
 import { resolvePythonCall, resolvePythonName, type PythonCallFact, type PythonFileFacts, type PythonFunctionFact,
   type PythonImportBinding, type PythonScope } from './python-names';
-import { pythonParenthesizedValue, pythonValueAccess, type PythonValueOrigin, type PythonValueReference } from './python-values';
+import { pythonAttributeNames, pythonValueAccess, type PythonValueOrigin, type PythonValueReference } from './python-values';
+import { pythonMethodResolver, type PythonMethodResolution } from './python-methods';
 
 type Found = { kind: 'linked'; facts: PythonFileFacts; fn: PythonFunctionFact }
+  | (PythonMethodResolution & { facts: PythonFileFacts })
   | { kind: 'external'; specifier: string }
   | { kind: 'unknown'; reason: CallUnknownReason; detail: string };
 const unknown = (reason: CallUnknownReason, detail: string): Extract<Found, { kind: 'unknown' }> => ({ kind: 'unknown', reason, detail });
-
-/** Only literal name/attribute chains, never subscripts, calls or computed attributes. */
-export function pythonAttributeNames(node: Parser.SyntaxNode | null): string[] | null {
-  const names: string[] = [];
-  while (node) {
-    const inner = pythonParenthesizedValue(node);
-    if (inner) { node = inner; continue; }
-    if (node.type !== 'attribute') break;
-    const name = node.childForFieldName('attribute');
-    if (name?.type !== 'identifier') return null;
-    names.unshift(normalize(name.text));
-    node = node.childForFieldName('object');
-  }
-  return node?.type === 'identifier' ? [normalize(node.text), ...names] : null;
-}
 
 const nearest = (scope: PythonScope | null, name: string) => {
   while (scope && !scope.names.has(name)) scope = scope.parent;
@@ -37,6 +23,7 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
   const byPath = new Map([...parsed.values()].flatMap(facts => facts ? [[facts.file.relativePath, facts] as const] : []));
   const imports = new Map<PythonImportBinding, PythonTarget[]>();
   const roots = new Map<PythonImportBinding, PythonTarget[]>();
+  const methods = new Map<PythonFileFacts, ReturnType<typeof pythonMethodResolver>>();
   const imported = (facts: PythonFileFacts, binding: PythonImportBinding) => {
     let result = imports.get(binding);
     if (result) return result;
@@ -180,7 +167,13 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
     const found = resolvePythonName(facts, call, names[0]);
     if (found.kind === 'unknown') return found;
     if (found.binding.kind !== 'import') {
-      if (names.length > 1) return unknown('member', 'import한 모듈이 아닌 객체의 속성 호출은 아직 따라가지 않아요.');
+      if (names.length > 1) {
+        let method = methods.get(facts);
+        if (!method) { method = pythonMethodResolver(facts, stop); methods.set(facts, method); }
+        const candidate = method(call, names, found);
+        if (!candidate) return unknown('member', '같은 파일의 단순한 클래스 구조나 매개변수 타입으로 메서드를 정하지 못했어요.');
+        return mutation(facts.file.relativePath) ?? { ...candidate, facts };
+      }
       const local = resolvePythonCall(facts, call);
       if (local.kind === 'unknown') return local;
       const modified = mutation(facts.file.relativePath);

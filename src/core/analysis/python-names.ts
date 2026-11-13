@@ -38,6 +38,15 @@ export interface PythonFunctionFact {
   decorated: boolean;
 }
 export interface PythonCallFact { node: Parser.SyntaxNode; scope: PythonScope; fn: PythonFunctionFact | null; inClass: boolean }
+export interface PythonClassFact {
+  node: Parser.SyntaxNode;
+  declaration: Parser.SyntaxNode;
+  name: Parser.SyntaxNode;
+  bodyScope: PythonScope;
+  parentScope: PythonScope;
+  conditional: boolean;
+  decorated: boolean;
+}
 export interface PythonFileFacts {
   file: ProjectFile;
   hash: string;
@@ -48,6 +57,7 @@ export interface PythonFileFacts {
   unclear: string | null;
   program: PythonScope;
   functions: PythonFunctionFact[];
+  classes: PythonClassFact[];
   calls: PythonCallFact[];
   importsPlain: boolean;
   initNames: InitFacts | null;
@@ -111,7 +121,7 @@ function bindParameters(scope: PythonScope, parameters: Parser.SyntaxNode | null
 export function readPythonFacts(file: ProjectFile, text: string, hash: string, nodeBudget: number, withValues = false): PythonFileFacts {
   const root = parse(text, file.relativePath);
   const program = scopeOf('module', null);
-  const facts: PythonFileFacts = { file, text, hash, program, functions: [], calls: [], unclear: null,
+  const facts: PythonFileFacts = { file, text, hash, program, functions: [], classes: [], calls: [], unclear: null,
     importsPlain: false, initNames: null, attributeWrites: [], moduleEscapes: [],
     complete: !!root && !root.hasError,
     incompleteReason: !root ? NESTED_NOTE : root.hasError ? '구문 오류가 있어 이 파일의 이름은 확정하지 않았어요.' : null,
@@ -186,6 +196,11 @@ export function readPythonFacts(file: ProjectFile, text: string, hash: string, n
       if (name) bind(scope, name.text, { kind: 'variable', node: name });
       const body = node.childForFieldName('body');
       const classScope = scopeOf('class', lexicalParent(scope), scope);
+      if (name && body) {
+        const declaration = node.parent?.type === 'decorated_definition' ? node.parent : node;
+        facts.classes.push({ node, declaration, name, parentScope: scope, bodyScope: classScope,
+          conditional: frame.conditional, decorated: declaration.type === 'decorated_definition' });
+      }
       for (const child of [...node.namedChildren].reverse()) {
         if (child.id === body?.id) push(child, { scope: classScope, fn: null, conditional: false, inClass: true, escapes: false });
         else push(child, { calls: false });

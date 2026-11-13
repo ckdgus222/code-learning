@@ -93,6 +93,7 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
   const fn = chosen.functions.find(item => item.declaration.startIndex === target.startUtf16 && item.declaration.endIndex === target.endUtf16);
   if (!fn) throw new AppError('CHANGED', '고른 함수를 지금 파일에서 찾지 못했어요. 파일을 다시 읽어 주세요.');
   const calls: CallLink[] = [], callers: CallSite[] = [];
+  const typedCallers: FunctionCalls['typedCallers'] = [];
   const maybeCallers: FunctionCalls['maybeCallers'] = [];
   const functionReferences = new Set<number>();
   for (const file of files.filter(file => pythonFile.test(file.relativePath)).sort((a, b) => a.relativePath.localeCompare(b.relativePath))) await read(file);
@@ -111,7 +112,9 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
       }
       if (callee?.type === 'identifier') functionReferences.add(callee.id);
     }
-    keep(calls, found.kind === 'linked' ? { ...site(call, chosen), status: 'linked', target: { fileId: found.facts.file.id, fileHash: found.facts.hash, ...functionAt(found.fn) } }
+    keep(calls, found.kind === 'linked' || found.kind === 'typed' ? { ...site(call, chosen),
+      ...(found.kind === 'typed' ? { status: 'typed', basis: found.basis } as const : { status: 'linked' } as const),
+      target: { fileId: found.facts.file.id, fileHash: found.facts.hash, ...functionAt(found.fn) } }
       : found.kind === 'external' ? { ...site(call, chosen), status: 'external', specifier: found.specifier }
       : { ...site(call, chosen), status: 'unknown', reason: found.reason, detail: found.detail });
   }
@@ -122,6 +125,7 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
       stop();
       const found = resolver.resolve(facts, call);
       if (found.kind === 'linked' && found.facts === chosen && found.fn === fn) keep(callers, site(call, facts));
+      if (found.kind === 'typed' && found.facts === chosen && found.fn === fn) keep(typedCallers, { ...site(call, facts), basis: found.basis });
       if (found.kind === 'unknown' && resolver.mayName(facts, call, chosen, fn.normalizedName)) {
         keep(maybeCallers, { ...site(call, facts), reason: found.reason, detail: found.detail });
       }
@@ -152,10 +156,11 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
     if (reserve(site)) returnAnnotation = site;
   }
   stop();
-  const notes = ['Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 매개변수·적힌 타입·기본값·대입 식과 확정 import의 값 출처, 올바르게 적힌 위치·키워드 인자의 대응을 보여 줘요. 펼침 인자·객체 메서드·다시 가져온 이름·람다 안·함수 정의 헤더의 호출은 아직 지원하지 않아요.'];
+  const notes = ['Python은 직접 이름과 경로가 하나로 정해진 import의 함수를 따라가요. 매개변수·적힌 타입·기본값·대입 식과 확정 import의 값 출처, 위치·키워드 인자의 대응을 보여 줘요. 같은 파일의 단순한 클래스 구조나 매개변수 타입으로 메서드 후보를 찾으며, 후보 호출은 입력값 예시에 넣지 않아요. 상속·가져온 클래스의 메서드·펼침 인자·다시 가져온 이름·람다 안·함수 정의 헤더의 호출은 아직 지원하지 않아요.'];
   if (limited) notes.push('파일·읽기 크기·구문 개수·결과 크기 한도에 닿아 일부 호출과 값은 보이지 않아요.');
   return { projectId, fileId: chosenFile.id, fileHash: chosen.hash, startUtf16: fn.declaration.startIndex,
-    endUtf16: fn.declaration.endIndex, name: fn.displayName, calls, callers, typedCallers: [], maybeCallers,
-    names: { local: [fn.displayName], exported: [], property: [] }, values, ...(returnAnnotation ? { returnAnnotation } : {}),
+    endUtf16: fn.declaration.endIndex, name: fn.displayName, calls, callers, typedCallers, maybeCallers,
+    names: { local: [fn.displayName], exported: [], property: fn.parentScope.kind === 'class' ? [firstLine(fn.node.childForFieldName('name')!)] : [] },
+    values, ...(returnAnnotation ? { returnAnnotation } : {}),
     limited, unexamined: [...unexamined.values()], notes };
 }

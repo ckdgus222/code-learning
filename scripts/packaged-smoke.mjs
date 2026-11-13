@@ -348,6 +348,8 @@ try {
   await writeFile(path.join(pythonFixture, 'arguments.py'), pythonArgumentsSource);
   const pythonReturnSource = 'def described(value) -> list[int]:\n    return [value]\n';
   await writeFile(path.join(pythonFixture, 'return_types.py'), pythonReturnSource);
+  const pythonMethodsSource = 'class Worker:\n    def apply(self, value):\n        return value\n    def run(self):\n        return self.apply(7)\ndef typed_run(worker: Worker):\n    return worker.apply(9)\n';
+  await writeFile(path.join(pythonFixture, 'methods.py'), pythonMethodsSource);
   await app.evaluate(({ dialog }, folder) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] });
   }, pythonFixture);
@@ -401,6 +403,22 @@ try {
   const annotationStart = pythonReturnSource.indexOf('list[int]');
   assert.equal(await page.getByTestId('evidence-range').getAttribute('data-utf16'), `${annotationStart},${annotationStart + 'list[int]'.length}`);
   assert.equal(await readFile(path.join(pythonFixture, 'return_types.py'), 'utf8'), pythonReturnSource);
+  await page.getByRole('button', { name: 'methods.py', exact: true }).click();
+  await page.getByRole('button', { name: 'Worker.run', exact: true }).click();
+  await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+  await pythonCalls.getByText('self.apply(7)', { exact: true }).waitFor();
+  await pythonCalls.getByText('· 타입으로 찾음', { exact: true }).waitFor();
+  await pythonCalls.getByRole('button', { name: '그 함수로', exact: true }).click();
+  const methodCallers = page.getByRole('list', { name: '타입으로 찾은 부르는 곳', exact: true });
+  await methodCallers.getByText('self.apply(7)', { exact: true }).waitFor();
+  await methodCallers.getByText('worker.apply(9)', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('list', { name: '이 함수를 부르는 곳', exact: true }).count(), 0);
+  await page.getByRole('group', { name: '받는 값', exact: true }).getByRole('button', { name: 'value', exact: true }).click();
+  await page.getByRole('region', { name: 'value 값', exact: true }).getByText('이 함수로 이어진 부르는 곳이 없어 들어오는 값을 찾지 못했어요.', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('list', { name: 'value에 넘기는 값', exact: true }).count(), 0);
+  await methodCallers.getByRole('button', { name: '호출 위치', exact: true }).last().click();
+  await page.getByText('근거: methods.py · 7–7줄', { exact: true }).waitFor();
+  assert.equal(await readFile(path.join(pythonFixture, 'methods.py'), 'utf8'), pythonMethodsSource);
   await page.getByRole('button', { name: 'value_origin.py', exact: true }).click();
   await page.getByRole('button', { name: 'value_import', exact: true }).click();
   await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
@@ -446,6 +464,7 @@ try {
   report.checks.push('Python module fields, distinct and deduplicated cards, initial expression and source evidence');
   report.checks.push('Python positional and keyword inputs, default, invalid-call rejection and argument evidence');
   report.checks.push('Python written return annotation, non-inference notice and exact unchanged source evidence');
+  report.checks.push('Python same-file typed method candidates, reverse-only candidate callers and no incoming examples');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

@@ -34,6 +34,21 @@ export function pythonParenthesizedValue(node: Parser.SyntaxNode | null): Parser
   return children.length === 1 ? children[0] : null;
 }
 
+/** Only literal name/attribute chains, never subscripts, calls or computed attributes. */
+export function pythonAttributeNames(node: Parser.SyntaxNode | null): string[] | null {
+  const names: string[] = [];
+  while (node) {
+    const inner = pythonParenthesizedValue(node);
+    if (inner) { node = inner; continue; }
+    if (node.type !== 'attribute') break;
+    const name = node.childForFieldName('attribute');
+    if (name?.type !== 'identifier') return null;
+    names.unshift(normalize(name.text));
+    node = node.childForFieldName('object');
+  }
+  return node?.type === 'identifier' ? [normalize(node.text), ...names] : null;
+}
+
 /** Literal attribute reads rooted at this identifier, preserving written names for the card label. */
 export function pythonValueAccess(root: Parser.SyntaxNode): { node: Parser.SyntaxNode; names: string[]; label: string } {
   let node = root;

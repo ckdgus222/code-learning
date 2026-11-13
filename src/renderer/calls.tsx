@@ -99,7 +99,7 @@ export function CallsFacts({ state, stale, locked, pathOf, onRetry, onCancel, on
       </details>}
       {result.notes.map(note => <p key={note} className="hint">{note}</p>)}
       {searchedFor && <p className="hint">{searchedFor}</p>}
-      <p className="hint">타입으로 찾음은 적힌 타입 기준이라 실제로 다른 객체가 들어올 수 있어요.</p>
+      <p className="hint">타입으로 찾음은 클래스 구조나 적힌 타입을 근거로 한 후보예요. 실제로 다른 객체가 들어올 수 있어요.</p>
       <p className="hint">코드에 적힌 이름으로 찾은 호출이에요. 실제로 불리는지, 몇 번 불리는지, 어떤 순서인지는 아니에요.</p>
     </dd>
   </>;
