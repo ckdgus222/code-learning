@@ -15,7 +15,8 @@ export async function checkPythonFeatureFlow(app, page, folder) {
     'factoryrouters.py': "from fastapi import FastAPI, APIRouter\nfrom flask import Flask, Blueprint\ndef create_api():\n    app = FastAPI()\n    router = APIRouter(prefix=\"/v2\")\n    @router.get(\"/books\")\n    def factory_books():\n        return []\n    app.include_router(router, prefix=\"/app\")\n    return app\ndef create_web():\n    app = Flask(__name__)\n    bp = Blueprint(\"pages\", __name__, url_prefix=\"/old\")\n    @bp.get(\"/pages\")\n    def factory_pages():\n        return []\n    app.register_blueprint(bp, url_prefix=\"/shelf\")\n    return app\n",
     'nested.py': "from fastapi import FastAPI, APIRouter\napp = FastAPI()\nouter = APIRouter(prefix=\"/nested\")\ninner = APIRouter(prefix=\"/v3\")\n@inner.get(\"/chapters\")\ndef nested_chapters():\n    return []\nouter.include_router(inner, prefix=\"/group\")\napp.include_router(outer, prefix=\"/api\")\n",
     'nestedflask.py': "from flask import Flask, Blueprint\napp = Flask(__name__)\nparent = Blueprint(\"parent\", __name__, url_prefix=\"/library\")\nchild = Blueprint(\"child\", __name__, url_prefix=\"/old\")\n@child.get(\"/notes\")\ndef nested_notes():\n    return []\nparent.register_blueprint(child, url_prefix=\"/pages\")\napp.register_blueprint(parent)\n",
-    'client.ts': 'export function load() { return fetch("/users/"); }\nexport function factoryLoad() { return fetch("/factory/1"); }\nexport function apiWidgets() { return fetch("/api/v1/widgets"); }\nexport function flaskWidgets() { return fetch("/bp/widgets"); }\nexport function books() { return fetch("/app/v2/books"); }\nexport function pages() { return fetch("/shelf/pages"); }\nexport function chapters() { return fetch("/api/nested/group/v3/chapters"); }\nexport function notes() { return fetch("/library/pages/notes"); }\n',
+    'mounted.py': "from fastapi import FastAPI\napp = FastAPI()\nchild = FastAPI()\n@child.get(\"/items\")\ndef mounted_items():\n    return []\napp.mount(\"/mounted\", child)\n",
+    'client.ts': 'export function load() { return fetch("/users/"); }\nexport function factoryLoad() { return fetch("/factory/1"); }\nexport function apiWidgets() { return fetch("/api/v1/widgets"); }\nexport function flaskWidgets() { return fetch("/bp/widgets"); }\nexport function books() { return fetch("/app/v2/books"); }\nexport function pages() { return fetch("/shelf/pages"); }\nexport function chapters() { return fetch("/api/nested/group/v3/chapters"); }\nexport function notes() { return fetch("/library/pages/notes"); }\nexport function mountedItems() { return fetch("/mounted/items"); }\n',
   };
   for (const [name, source] of Object.entries(sources)) {
     await mkdir(path.dirname(path.join(folder, name)), { recursive: true });
@@ -74,6 +75,7 @@ export async function checkPythonFeatureFlow(app, page, folder) {
       ['/api/v1/widgets', 'api_widgets', '5–7', 'registrations.py', false], ['/bp/widgets', 'flask_widgets', '11–13', 'registrations.py', false],
       ['/api/nested/group/v3/chapters', 'nested_chapters', '5–7', 'nested.py', false],
       ['/library/pages/notes', 'nested_notes', '5–7', 'nestedflask.py', false],
+      ['/mounted/items', 'mounted_items', '4–6', 'mounted.py', true],
       ['/app/v2/books', 'factory_books', '6–8', 'factoryrouters.py', true], ['/shelf/pages', 'factory_pages', '14–16', 'factoryrouters.py', true],
     ]) {
       await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();

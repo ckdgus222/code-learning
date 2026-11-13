@@ -525,6 +525,7 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
       omitted ||= found.cut;
       for (const framework of found.routers) routers.add(framework);
       if (found.factoryRoutes) result.notes.push(`${file.relativePath}: 앱 팩토리 안에서 찾은 주소는 실행·배포 여부를 확인하지 않아 추정으로 표시해요.`);
+      if (found.appMounts) result.notes.push(`${file.relativePath}: app.mount의 하위 앱과 상위 앱 주소는 요청을 가리는 범위를 모두 확인하지 않아 추정으로 표시해요. 실제 등록·배포는 확인하지 않았어요.`);
       if (found.registrationUncertain) result.notes.push(`${file.relativePath}: 해석하지 못한 라우터 등록이나 주소가 있어 다른 처리 함수가 요청을 받을 수 있어요. 관련 앱의 주소는 추정으로 표시해요.`);
       const visible = found.routes.filter(route => !shadows.has(route.framework));
       if (found.odd && visible.length) result.notes.push(`${file.relativePath}: 실행 중에 이름·속성이나 주소 규칙을 바꿀 수 있는 코드가 있어, 이 파일의 Python 서버 주소는 요청과 잇지 않았어요.`);
