@@ -199,7 +199,9 @@ type RouteTemplate = { ownerId: number; writtenPath: string | null; base: Route;
 type RegistrationScope = { bodyId: number; entries: ReturnType<typeof walkPython>['nodes']; returnedReadId?: number; templatesCut?: boolean };
 type RegistrationWork = { left: number; cut: boolean };
 export type PythonRouteImportRoom = { owners: number; drafts: number; work: number; cut: boolean };
-export type PythonRouteOwnerOrigin = { name: string; bindingStartUtf16: number; app: App; safe: boolean; redirectSlashes: boolean };
+export type PythonImportedTemplate = Omit<RouteTemplate, 'ownerId'>;
+export type PythonRouteOwnerOrigin = { name: string; bindingStartUtf16: number; app: App; safe: boolean; redirectSlashes: boolean;
+  prefix: WrittenPrefix; blueprintName: string | null; templates: PythonImportedTemplate[] };
 export type PythonImportedDecorator = { callStartUtf16: number; receiverNames: string[]; method: string; handler: Route['handler']; basis: Route['basis'] };
 export type PythonRouteImportFacts = { owners: PythonRouteOwnerOrigin[]; drafts: PythonImportedDecorator[] };
 const writtenPrefix = (node: Node | null | undefined): WrittenPrefix => {
@@ -208,6 +210,49 @@ const writtenPrefix = (node: Node | null | undefined): WrittenPrefix => {
   const text = plainString(node);
   return text === null ? { kind: 'dynamic' } : { kind: 'literal', text };
 };
+const fastOptions = new Set(['router', 'prefix', 'tags', 'dependencies', 'responses', 'deprecated', 'include_in_schema', 'default_response_class', 'callbacks', 'generate_unique_id_function']);
+const flaskOptions = new Set(['blueprint', 'url_prefix', 'name']);
+function keywordsValid(args: Node[], allowed: Set<string>): boolean {
+  const names = args.filter(arg => arg.type === 'keyword_argument').map(arg => nameOf(arg.childForFieldName('name')));
+  return !spread(args) && names.length === new Set(names).size && names.every(name => allowed.has(name));
+}
+function blueprintName(owner: RouteOwner): string | null {
+  const name = owner.app.framework === 'flask' && owner.app.router ? plainString(owner.args.find(positional) ?? keyword(owner.args, 'name')) : null;
+  return name !== null && name.length <= ROUTE_LIMITS.name ? name : null;
+}
+function constructorSafe(owner: RouteOwner, invalid: Set<string>): boolean {
+  if (invalid.has(owner.name) || invalid.has(owner.app.factory) || owner.app.spread || owner.app.unsupported) return false;
+  const keywords = owner.args.filter(arg => arg.type === 'keyword_argument').map(arg => nameOf(arg.childForFieldName('name')));
+  if (keywords.length !== new Set(keywords).size) return false;
+  const positions = owner.args.filter(positional);
+  if (!owner.app.router) {
+    if (keyword(owner.args, 'routes')) return false;
+    return owner.app.framework === 'fastapi' ? positions.length === 0
+      : positions.length <= 1 && !!positions[0] !== !!keyword(owner.args, 'import_name');
+  }
+  if (owner.app.framework === 'fastapi') {
+    return !owner.args.some(positional) && keywordsValid(owner.args, new Set([...fastOptions].filter(name => name !== 'router')));
+  }
+  const name = blueprintName(owner);
+  return !!name && !name.includes('.') && positions.length <= 2
+    && !!positions[0] !== !!keyword(owner.args, 'name') && !!positions[1] !== !!keyword(owner.args, 'import_name') && keywordsValid(owner.args,
+    new Set(['name', 'import_name', 'url_prefix', 'template_folder', 'root_path', 'cli_group']));
+}
+function composedPath(framework: Framework, own: WrittenPrefix, prefix: WrittenPrefix, raw: string | null, redirectSlashes: boolean) {
+  const flask = framework === 'flask';
+  const prefixText = (value: WrittenPrefix): string | null => value.kind === 'literal' ? value.text
+    : value.kind === 'missing' || flask && value.kind === 'none' ? '' : null;
+  const registrationPrefix = prefixText(prefix), constructorPrefix = prefixText(own);
+  const selected = flask && prefix.kind === 'literal' ? prefix.text : constructorPrefix;
+  if (registrationPrefix === null || selected === null || !flask && constructorPrefix === null) return null;
+  if (raw === null || [raw, registrationPrefix, selected].some(text => text.length > ROUTE_LIMITS.pathLength)) return { path: null, invalid: true };
+  const value = flask ? selected && raw ? selected.replace(/\/+$/, '') + '/' + raw.replace(/^\/+/, '') : selected + raw
+    : registrationPrefix + selected + raw;
+  const path = bounded(value);
+  const validFastPrefix = (text: string) => text === '' || text.startsWith('/') && !text.endsWith('/');
+  return { path, invalid: !flask && (!validFastPrefix(registrationPrefix) || !validFastPrefix(selected))
+    || path !== null && !!frameworks[framework].shape(path, redirectSlashes).unmatched };
+}
 
 /**
  * How deep the walk goes. Finding a node's parent costs as much as the node is deep, so a small file nested
@@ -338,6 +383,7 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
   const templates: RouteTemplate[] = [];
   const routers: Framework[] = [];
   const imports: PythonRouteImportFacts = { owners: [], drafts: [] };
+  const ownerOrigins = new Map<number, PythonRouteOwnerOrigin>();
   const importRoomFor = (kind: 'owners' | 'drafts', cost: number) => {
     if (!importRoom) return false;
     if (importRoom[kind] <= 0 || cost > importRoom.work) { importRoom.cut = true; return false; }
@@ -346,6 +392,11 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
   if (importRoom && complete && !root.hasError) {
     const unsafe = new Set<string>();
     for (const { node, type } of nodes) {
+      if (type === 'call') {
+        const names = pythonAttributeNames(node.childForFieldName('function'));
+        if (names?.length === 2 && apps.get(names[0])?.router
+          && ['include_router', 'register_blueprint', 'mount'].includes(names[1])) unsafe.add(names[0]);
+      }
       if (type !== 'identifier' || labelPosition(node) || parameterPosition(node)) continue;
       const name = nameOf(node);
       if (!tracked.has(name) || bindings.get(name)?.has(node.id) || typePosition(node)) continue;
@@ -358,16 +409,11 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
       if (!called || !constructor && !method) unsafe.add(name);
     }
     for (const owner of owners.values()) {
-      if (owner.app.router) continue;
       if (!importRoomFor('owners', 100 + owner.name.length + owner.app.factory.length)) break;
-      const positions = owner.args.filter(positional);
-      const keywords = owner.args.filter(arg => arg.type === 'keyword_argument').map(arg => nameOf(arg.childForFieldName('name')));
-      const constructed = keywords.length === new Set(keywords).size && (owner.app.framework === 'fastapi' ? positions.length === 0
-        : positions.length <= 1 && !!positions[0] !== !!keyword(owner.args, 'import_name'));
-      const safe = !star && !odd && !owner.app.spread && !owner.app.unsupported && !invalid.has(owner.name)
-        && !invalid.has(owner.app.factory) && !unsafe.has(owner.name) && !unsafe.has(owner.app.factory)
-        && !keyword(owner.args, 'routes') && constructed;
-      imports.owners.push({ name: owner.name, bindingStartUtf16: owner.bindingStartUtf16, app: owner.app, safe, redirectSlashes });
+      const safe = !star && !odd && constructorSafe(owner, invalid) && !unsafe.has(owner.name) && !unsafe.has(owner.app.factory);
+      const origin: PythonRouteOwnerOrigin = { name: owner.name, bindingStartUtf16: owner.bindingStartUtf16, app: owner.app, safe, redirectSlashes,
+        prefix: writtenPrefix(keyword(owner.args, frameworks[owner.app.framework].prefix)), blueprintName: blueprintName(owner), templates: [] };
+      imports.owners.push(origin); ownerOrigins.set(owner.id, origin);
     }
   }
   let cut = false;
@@ -417,6 +463,16 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
         base: route, unsupported: !complete || odd || unsupported });
     }
   }
+  for (const template of templates) {
+    const origin = ownerOrigins.get(template.ownerId);
+    if (!origin?.safe || !importRoom) continue;
+    const cost = 100 + (template.writtenPath?.length ?? 0);
+    if (cost > importRoom.work) { importRoom.cut = true; break; }
+    importRoom.work -= cost;
+    const { ownerId: _ownerId, ...plain } = template;
+    origin.templates.push(plain);
+  }
+  if (cut) for (const origin of ownerOrigins.values()) origin.safe = false;
   const work = { left: ROUTE_LIMITS.work, cut: false };
   const registered = registeredRoutes(templates, owners, walk, maxRoutes, invalid, odd, rootPath, redirectSlashes, work,
     { bodyId: root.id, entries: nodes, templatesCut: cut });
@@ -429,11 +485,44 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
 }
 
 /** Reuse route argument rules against the facts parser, while retaining the decorator's original evidence. */
-export function importedPythonRoutes(owner: PythonRouteOwnerOrigin, draft: PythonImportedDecorator, call: Node, maxRoutes: number): Route[] {
+export function importedPythonTemplates(owner: PythonRouteOwnerOrigin, draft: PythonImportedDecorator, call: Node, maxRoutes: number): PythonImportedTemplate[] {
   if (!owner.safe || !['get', 'post', 'put', 'patch', 'delete', frameworks[owner.app.framework].route].includes(draft.method)) return [];
   const found = readRoute(owner.app, argumentsOf(call), draft.method, false, owner.redirectSlashes);
-  return found.selected.slice(0, maxRoutes).map(method => ({ method: method as Route['method'], framework: owner.app.framework,
-    path: found.path, prefix: 'unknown', handler: draft.handler, basis: draft.basis, ...found.shape }));
+  return found.selected.slice(0, maxRoutes).map(method => ({ writtenPath: found.writtenPath, unsupported: found.unsupported,
+    base: { method: method as Route['method'], framework: owner.app.framework, path: found.path,
+      prefix: 'unknown', handler: draft.handler, basis: draft.basis, ...found.shape } }));
+}
+
+export type PythonRouterRegistration = { input: Node; prefix: WrittenPrefix; name: string | null };
+export function pythonRegistrationChild(call: Node): Node | null {
+  const method = pythonAttributeNames(call.childForFieldName('function'))?.at(-1);
+  if (method !== 'include_router' && method !== 'register_blueprint') return null;
+  const args = argumentsOf(call);
+  return args.find(positional) ?? keyword(args, method === 'include_router' ? 'router' : 'blueprint') ?? null;
+}
+export function importedPythonRegistration(child: PythonRouteOwnerOrigin, call: Node): PythonRouterRegistration | null {
+  const input = pythonRegistrationChild(call), args = argumentsOf(call), positions = args.filter(positional);
+  const flask = child.app.framework === 'flask', childKey = flask ? 'blueprint' : 'router';
+  if (!input || !child.safe || !child.app.router || positions.length > 1 || positions.length && keyword(args, childKey)
+    || !keywordsValid(args, flask ? flaskOptions : fastOptions)) return null;
+  const prefix = writtenPrefix(keyword(args, flask ? 'url_prefix' : 'prefix'));
+  const checked = composedPath(child.app.framework, child.prefix, prefix, '', false);
+  if (!checked || checked.path === null || checked.invalid && checked.path !== '') return null;
+  const name = flask ? pythonBlueprintRegistrationName(call, child) : null;
+  if (flask && !name) return null;
+  return { input, prefix, name };
+}
+export function pythonBlueprintRegistrationName(call: Node, child: PythonRouteOwnerOrigin): string | null {
+  const option = keyword(argumentsOf(call), 'name'), name = option ? plainString(option) : child.blueprintName;
+  return name && name.length <= ROUTE_LIMITS.name ? name.replace(/^\.+/, '') || null : null;
+}
+export function importedRegisteredRoute(child: PythonRouteOwnerOrigin, registration: PythonRouterRegistration,
+  template: PythonImportedTemplate, redirectSlashes: boolean): Route | null {
+  const composed = composedPath(child.app.framework, child.prefix, registration.prefix, template.writtenPath, redirectSlashes);
+  if (!composed) return null;
+  const { segments: _segments, typed: _typed, unmatched: _unmatched, ...base } = template.base;
+  return { ...base, path: composed.path, prefix: 'unknown', ...(template.unsupported || composed.invalid ? { unmatched: true as const }
+    : composed.path === null ? {} : frameworks[child.app.framework].shape(composed.path, redirectSlashes)) };
 }
 
 /** Registration metadata stays inside this file snapshot; public routes retain the decorator evidence. */
@@ -458,8 +547,6 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
   const unsafe = new Set<number>();
   const unresolved = new Set<number>();
   const uncertainParents = new Set<number>();
-  const fastOptions = new Set(['router', 'prefix', 'tags', 'dependencies', 'responses', 'deprecated', 'include_in_schema', 'default_response_class', 'callbacks', 'generate_unique_id_function']);
-  const flaskOptions = new Set(['blueprint', 'url_prefix', 'name']);
   const short = (text: string) => text.length <= ROUTE_LIMITS.pathLength;
   const ownerPrefixes = new Map<number, WrittenPrefix>();
   const blueprintNames = new Map<number, string | null>();
@@ -467,33 +554,10 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
     const names = pythonAttributeNames(node ?? null);
     return names?.length === 1 ? names[0] : null;
   };
-  const keywordsValid = (args: Node[], allowed: Set<string>) => {
-    const names = args.filter(arg => arg.type === 'keyword_argument').map(arg => nameOf(arg.childForFieldName('name')));
-    return !spread(args) && names.length === new Set(names).size && names.every(name => allowed.has(name));
-  };
-  const constructorSafe = (owner: RouteOwner) => {
-    if (invalid.has(owner.name) || invalid.has(owner.app.factory) || owner.app.spread || owner.app.unsupported) return false;
-    const keywords = owner.args.filter(arg => arg.type === 'keyword_argument').map(arg => nameOf(arg.childForFieldName('name')));
-    if (keywords.length !== new Set(keywords).size) return false;
-    const positions = owner.args.filter(positional);
-    if (!owner.app.router) {
-      if (keyword(owner.args, 'routes')) return false;
-      return owner.app.framework === 'fastapi' ? positions.length === 0
-        : positions.length <= 1 && !!positions[0] !== !!keyword(owner.args, 'import_name');
-    }
-    if (owner.app.framework === 'fastapi') {
-      return !owner.args.some(positional) && keywordsValid(owner.args, new Set([...fastOptions].filter(name => name !== 'router')));
-    }
-    const name = blueprintNames.get(owner.id);
-    return !!name && !name.includes('.') && positions.length <= 2
-      && !!positions[0] !== !!keyword(owner.args, 'name') && !!positions[1] !== !!keyword(owner.args, 'import_name') && keywordsValid(owner.args,
-      new Set(['name', 'import_name', 'url_prefix', 'template_folder', 'root_path', 'cli_group']));
-  };
   for (const owner of owners.values()) {
     ownerPrefixes.set(owner.id, writtenPrefix(keyword(owner.args, frameworks[owner.app.framework].prefix)));
-    const name = owner.app.framework === 'flask' && owner.app.router ? plainString(owner.args.find(positional) ?? keyword(owner.args, 'name')) : null;
-    blueprintNames.set(owner.id, name !== null && name.length <= ROUTE_LIMITS.name ? name : null);
-    if (!constructorSafe(owner)) unsafe.add(owner.id);
+    blueprintNames.set(owner.id, blueprintName(owner));
+    if (!constructorSafe(owner, invalid)) unsafe.add(owner.id);
   }
   for (const { node, type } of scope.entries) {
     if (type !== 'call') continue;
@@ -592,20 +656,7 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
   const validFastPrefix = (value: string) => value === '' || value.startsWith('/') && !value.endsWith('/');
   const composition = (registration: Registration, template: RouteTemplate): { path: string | null; invalid: boolean } | null => {
     const { child, prefix } = registration;
-    if (!child) return null;
-    const flask = child.app.framework === 'flask';
-    const own = ownerPrefixes.get(child.id)!;
-    const registrationPrefix = prefixText(prefix, flask);
-    const constructorPrefix = prefixText(own, flask);
-    const selected = flask && prefix.kind === 'literal' ? prefix.text : constructorPrefix;
-    if (registrationPrefix === null || selected === null || !flask && constructorPrefix === null) return null;
-    const raw = template.writtenPath;
-    if (raw === null || !short(raw) || !short(registrationPrefix) || !short(selected)) return { path: null, invalid: true };
-    const value = flask ? selected && raw ? selected.replace(/\/+$/, '') + '/' + raw.replace(/^\/+/, '') : selected + raw
-      : registrationPrefix + selected + raw;
-    const path = bounded(value);
-    return { path, invalid: !flask && (!validFastPrefix(registrationPrefix) || !validFastPrefix(selected))
-      || path !== null && !!frameworks[child.app.framework].shape(path, redirectSlashes).unmatched };
+    return child ? composedPath(child.app.framework, ownerPrefixes.get(child.id)!, prefix, template.writtenPath, redirectSlashes) : null;
   };
   const byChild = new Map<number, Registration[]>();
   const byParent = new Map<number, Registration[]>();

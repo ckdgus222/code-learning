@@ -553,7 +553,7 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
   const stopPython = () => { if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.'); };
   const importedApps = importedAppRoutes(files, pythonFacts, routeImports,
     pythonReadsComplete && !importRoom.cut && pythonFacts.size === pythonFiles.length && [...pythonFacts.values()].every(facts => facts.complete),
-    Math.max(0, ROUTE_LIMITS.routes - result.routes.length), stopPython);
+    Math.max(0, ROUTE_LIMITS.routes - result.routes.length), stopPython, importRoom, result.routes);
   omitted ||= importRoom.cut || importedApps.cut;
   let blockedPythonRoutes = false;
   for (const route of [...result.routes, ...importedApps.routes]) {
@@ -565,8 +565,8 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
     }
   }
   result.routes.push(...importedApps.routes);
-  if (importedApps.routes.length) result.notes.push('다른 파일에서 가져온 Python 앱의 주소는 출처만 확인했어요. 등록·배포 여부는 확인하지 않아 추정으로 표시해요.');
-  if (importedApps.skipped) result.notes.push(`가져온 앱의 주소 후보 ${importedApps.skipped}개는 import·이름 변경·파일 조사 범위를 확정하지 못해 연결하지 않았어요.`);
+  if (importedApps.routes.length) result.notes.push('다른 파일에서 가져온 Python 앱·라우터의 주소와 직접 등록은 출처만 확인했어요. 실행·배포 여부는 확인하지 않아 추정으로 표시해요.');
+  if (importedApps.skipped) result.notes.push(`가져온 앱·라우터의 주소 후보 ${importedApps.skipped}개는 import·이름 변경·파일 조사 범위를 확정하지 못해 연결하지 않았어요.`);
   if (blockedPythonRoutes) result.notes.push('다른 Python 파일에서 모듈의 이름·속성을 바꾸거나 외부로 전달한 곳이 있어, 해당 파일의 서버 주소는 요청과 잇지 않았어요.');
   const django = djangoRoutes(djangoFiles, new Set(paths), ROUTE_LIMITS.routes - result.routes.length, shouldStop, djangoFiles.size === pythonFiles.length);
   omitted ||= django.cut;

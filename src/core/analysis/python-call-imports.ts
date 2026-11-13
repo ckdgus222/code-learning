@@ -270,8 +270,20 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
     return { kind: 'lexical', fn: local.fn,
       basis: '같은 파일의 함수 선언 후보예요. 함수나 모듈이 다른 코드로 전달되어 실제 호출 대상은 확정하지 못했어요.' };
   }
-  const routeModuleSafe = (file: string) => !mutation(file) && !exposedNamespaces.has(file) && !routeChanged.has(file);
-  function scanRouteEffects(owners: ReadonlyMap<string, ReadonlySet<string>>, decorators: ReadonlyMap<string, ReadonlySet<number>>) {
+  let routeEscaped: ReadonlySet<string> = escaped;
+  const routeIdentitySafe = (file: string) => !changed.has(file) && !exposedNamespaces.has(file) && !routeChanged.has(file);
+  const routeModuleSafe = (file: string) => routeIdentitySafe(file) && !routeEscaped.has(file);
+  function scanRouteEffects(owners: ReadonlyMap<string, ReadonlySet<string>>, decorators: ReadonlyMap<string, ReadonlySet<number>>,
+    registrationReads: ReadonlyMap<string, ReadonlySet<number>> = new Map()) {
+    const remainingEscapes = new Set<string>();
+    for (const facts of byPath.values()) for (const reference of facts.moduleEscapes) {
+      stop();
+      if (registrationReads.get(facts.file.id)?.has(pythonValueAccess(reference.node).node.id)) continue;
+      for (const binding of nearest(reference.scope, normalize(reference.node.text))) {
+        if (binding.kind === 'import') markImport(remainingEscapes, facts, binding);
+      }
+    }
+    routeEscaped = remainingEscapes;
     for (const facts of byPath.values()) for (const call of facts.routeCalls ?? facts.calls) {
       stop();
       if (decorators.get(facts.file.id)?.has(call.node.startIndex)) continue;
@@ -293,11 +305,14 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
       }
     }
   }
-  function resolveRouteObject(facts: PythonFileFacts, call: PythonCallFact, receiverNames: string[]):
+  function resolveRouteObject(facts: PythonFileFacts, call: PythonCallFact, receiverNames: string[], identityOnly = false):
     { facts: PythonFileFacts; name: string; bindingStartUtf16: number } | null {
     stop();
+    // Registration must identify its exact argument before exempting that read. Every candidate is
+    // checked again against routeModuleSafe after the route-specific escape scan.
+    const safe = identityOnly ? routeIdentitySafe : routeModuleSafe;
     if (!facts.complete || !facts.importsPlain || facts.unclear || !receiverNames.length || call.inClass
-      || !routeModuleSafe(facts.file.relativePath)) return null;
+      || !safe(facts.file.relativePath)) return null;
     const found = resolvePythonName(facts, call, receiverNames[0]);
     if (found.kind === 'unknown' || found.binding.kind !== 'import') return null;
     const binding = found.binding;
@@ -308,7 +323,7 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
     const module = binding.imported === null || target.names === 'all';
     if (module && (suffix.length !== binding.prefix.length + 1 || !binding.prefix.every((part, index) => suffix[index] === part))) return null;
     if (!module && suffix.length) return null;
-    if (!routeModuleSafe(target.relativePath) || initializerClash(target.relativePath)) return null;
+    if (!safe(target.relativePath) || initializerClash(target.relativePath)) return null;
     const destination = byPath.get(target.relativePath);
     if (!destination?.complete || !destination.importsPlain || destination.unclear) return null;
     const name = module ? suffix.at(-1)! : binding.imported!;

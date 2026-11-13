@@ -10,6 +10,9 @@ export async function checkPythonFeatureFlow(app, page, folder) {
     'foreign/application.py': 'from fastapi import FastAPI\nfrom flask import Flask\napi = FastAPI()\nweb = Flask(__name__)\n',
     'foreign/direct.py': '# 가져온 앱 😀\nfrom .application import api\n@api.get("/imported-fast")\ndef imported_fast():\n    return []\n',
     'foreign/module.py': 'from . import application\n@application.web.route("/imported-flask")\ndef imported_flask():\n    return []\n',
+    'foreign/routers.py': 'from fastapi import APIRouter\nfrom flask import Blueprint\nrouter = APIRouter(prefix="/v4")\nbp = Blueprint("entries", __name__, url_prefix="/old")\n@router.get("/entries")\ndef router_entries():\n    return []\n@bp.get("/entries")\ndef blueprint_entries():\n    return []\n',
+    'foreign/registration.py': 'from fastapi import FastAPI\nfrom flask import Flask\nfrom .routers import router, bp\napi = FastAPI()\nweb = Flask(__name__)\napi.include_router(router, prefix="/external")\nweb.register_blueprint(bp, url_prefix="/blue")\n',
+    'foreign/decorated_router.py': 'from .routers import router\n@router.get("/foreign-handlers")\ndef imported_router_handler():\n    return []\n',
     'site/__init__.py': '',
     'site/settings.py': 'ROOT_URLCONF = "site.urls"\n',
     'site/urls.py': 'from django.urls import path\nfrom . import views\nurlpatterns = [path("users/", views.handle)]\n',
@@ -23,6 +26,7 @@ export async function checkPythonFeatureFlow(app, page, folder) {
     'client.ts': 'export function load() { return fetch("/users/"); }\nexport function factoryLoad() { return fetch("/factory/1"); }\nexport function apiWidgets() { return fetch("/api/v1/widgets"); }\nexport function flaskWidgets() { return fetch("/bp/widgets"); }\nexport function books() { return fetch("/app/v2/books"); }\nexport function pages() { return fetch("/shelf/pages"); }\nexport function chapters() { return fetch("/api/nested/group/v3/chapters"); }\nexport function notes() { return fetch("/library/pages/notes"); }\nexport function mountedItems() { return fetch("/mounted/items"); }\n',
   };
   sources['client.ts'] += 'export function importedFast() { return fetch("/imported-fast"); }\nexport function importedFlask() { return fetch("/imported-flask"); }\n';
+  sources['client.ts'] += 'export function routerEntries() { return fetch("/external/v4/entries"); }\nexport function blueprintEntries() { return fetch("/blue/entries"); }\nexport function importedRouterHandler() { return fetch("/external/v4/foreign-handlers"); }\n';
   for (const [name, source] of Object.entries(sources)) {
     await mkdir(path.dirname(path.join(folder, name)), { recursive: true });
     await writeFile(path.join(folder, name), source);
@@ -83,6 +87,9 @@ export async function checkPythonFeatureFlow(app, page, folder) {
       ['/mounted/items', 'mounted_items', '4–6', 'mounted.py', true],
       ['/imported-fast', 'imported_fast', '3–5', 'foreign/direct.py', true],
       ['/imported-flask', 'imported_flask', '2–4', 'foreign/module.py', true],
+      ['/external/v4/entries', 'router_entries', '5–7', 'foreign/routers.py', true],
+      ['/blue/entries', 'blueprint_entries', '8–10', 'foreign/routers.py', true],
+      ['/external/v4/foreign-handlers', 'imported_router_handler', '2–4', 'foreign/decorated_router.py', true],
       ['/app/v2/books', 'factory_books', '6–8', 'factoryrouters.py', true], ['/shelf/pages', 'factory_pages', '14–16', 'factoryrouters.py', true],
     ]) {
       await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
