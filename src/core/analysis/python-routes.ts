@@ -4,7 +4,7 @@ import { firstLine, lineRange } from './names';
 import { normalize } from './python-imports';
 import { pythonFunction } from './python-syntax';
 import { pythonAttributeNames, pythonParenthesizedValue, pythonValueAccess } from './python-values';
-import { bounded, ROUTE_LIMITS, shortName } from './routes';
+import { bounded, lacksRouteEvidence, ROUTE_LIMITS, shortName } from './routes';
 import { parseTree } from './syntax';
 
 type Node = Parser.SyntaxNode;
@@ -18,7 +18,7 @@ const frameworks = {
     attributes: new Set(['FastAPI', 'APIRouter', 'get', 'post', 'put', 'patch', 'delete', 'api_route', 'include_router', 'mount']),
     decoratorKeywords: null, appKeywords: null, shape: fastapiShape },
   flask: { app: 'Flask', router: 'Blueprint', prefix: 'url_prefix', path: 'rule', route: 'route',
-    attributes: new Set(['Flask', 'Blueprint', 'get', 'post', 'put', 'patch', 'delete', 'route', 'register_blueprint']),
+    attributes: new Set(['Flask', 'Blueprint', 'get', 'post', 'put', 'patch', 'delete', 'route', 'register_blueprint', 'add_url_rule']),
     decoratorKeywords: new Set(['rule', 'methods', 'endpoint', 'defaults', 'strict_slashes', 'merge_slashes', 'provide_automatic_options']),
     appKeywords: new Set(['import_name', 'static_folder', 'static_url_path', 'template_folder', 'instance_path', 'instance_relative_config', 'root_path']),
     routingNames: new Set(['converters', 'host_matching', 'subdomain_matching', 'default_subdomain', 'url_rule_class', 'url_map_class', 'view_functions', 'DispatcherMiddleware']),
@@ -197,7 +197,7 @@ type WrittenPrefix = { kind: 'missing' | 'none' | 'dynamic' } | { kind: 'literal
 type RouteOwner = { id: number; name: string; app: App; end: number; args: Node[]; lastRouteEnd: number; bindingStartUtf16: number };
 type RouteTemplate = { ownerId: number; writtenPath: string | null; base: Route; unsupported: boolean };
 type RegistrationScope = { bodyId: number; entries: ReturnType<typeof walkPython>['nodes']; returnedReadId?: number; templatesCut?: boolean;
-  safeOwners?: Set<number> };
+  safeOwners?: Set<number>; uncertainOwners?: Set<number>; flaskRules?: Set<number> };
 type RegistrationWork = { left: number; cut: boolean };
 export type PythonRouteImportRoom = { owners: number; drafts: number; work: number; cut: boolean };
 export type PythonImportedTemplate = Omit<RouteTemplate, 'ownerId'>;
@@ -397,8 +397,9 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
     if (importRoom[kind] <= 0 || cost > importRoom.work) { importRoom.cut = true; return false; }
     importRoom[kind]--; importRoom.work -= cost; return true;
   };
-  if (importRoom && complete && !root.hasError) {
-    const unsafe = new Set<string>();
+  const moduleUnsafe = new Set<string>();
+  if ((importRoom || tracksFlask) && complete && !root.hasError) {
+    const unsafe = moduleUnsafe;
     const hardUnsafe = new Set<string>();
     const readStarts = new Map<string, Set<number>>();
     for (const { node, type } of nodes) {
@@ -407,7 +408,7 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
         const app = names?.length === 2 ? apps.get(names[0]) : null;
         const unsupportedRoute = app?.router && ['get', 'post', 'put', 'patch', 'delete', frameworks[app.framework].route].includes(names![1])
           && (node.parent?.type !== 'decorator' || node.parent.parent?.parent?.id !== root.id);
-        if (app?.router && (unsupportedRoute || ['include_router', 'register_blueprint', 'mount'].includes(names![1]))) {
+        if (app?.router && (unsupportedRoute || ['include_router', 'register_blueprint', 'mount', 'add_url_rule'].includes(names![1]))) {
           unsafe.add(names![0]); hardUnsafe.add(names![0]);
         }
       }
@@ -422,7 +423,7 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
       const method = app && access.names.length === 2 && frameworks[app.framework].attributes.has(access.names[1]);
       if (!called || !constructor && !method) {
         unsafe.add(name);
-        if (!app?.router) continue;
+        if (!app?.router || !importRoom) continue;
         if (importRoom.work <= 0) { importRoom.cut = true; hardUnsafe.add(name); continue; }
         importRoom.work--;
         const starts = readStarts.get(name) ?? new Set<number>();
@@ -430,6 +431,7 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
       }
     }
     for (const owner of owners.values()) {
+      if (!importRoom) break;
       if (!importRoomFor('owners', 100 + owner.name.length + owner.app.factory.length)) break;
       const baseSafe = !star && !odd && constructorSafe(owner, invalid) && !hardUnsafe.has(owner.name) && !unsafe.has(owner.app.factory);
       const origin = routeOrigin(owner, baseSafe && !unsafe.has(owner.name), redirectSlashes);
@@ -486,6 +488,9 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
         base: route, unsupported: !complete || odd || unsupported });
     }
   }
+  const work = { left: ROUTE_LIMITS.work, cut: false };
+  const flaskRules = flaskFunctionRules(file, walk, hash, owners, bindings, invalid, moduleUnsafe, odd, Math.max(0, maxRoutes - templates.length), work);
+  templates.push(...flaskRules.templates); cut ||= flaskRules.cut;
   for (const template of templates) {
     const origin = ownerOrigins.get(template.ownerId);
     if (!origin || !origin.safe && !origin.factoryReadReview?.baseSafe || !importRoom) continue;
@@ -499,15 +504,148 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
     origin.safe = false;
     if (origin.factoryReadReview) origin.factoryReadReview.baseSafe = false;
   }
-  const work = { left: ROUTE_LIMITS.work, cut: false };
   const registered = registeredRoutes(templates, owners, walk, maxRoutes, invalid, odd, rootPath, redirectSlashes, work,
-    { bodyId: root.id, entries: nodes, templatesCut: cut });
+    { bodyId: root.id, entries: nodes, templatesCut: cut, uncertainOwners: flaskRules.uncertain, flaskRules: flaskRules.allowed });
   const local = appFactoryRoutes(file, walk, hash, maxRoutes - registered.routes.length, factories, bindings, invalid, odd, rootPath, redirectSlashes, work, imports, importRoom);
   registered.routes.push(...local.routes);
   return { routes: registered.routes, routers: [...new Set([...registered.routers, ...local.routers])], complete,
     cut: cut || registered.cut || local.cut, odd: complete && odd, ...(local.routes.length ? { factoryRoutes: local.routes.length } : {}),
     ...(registered.uncertain || local.uncertain ? { registrationUncertain: true } : {}),
     ...(registered.mounts + local.mounts ? { appMounts: registered.mounts + local.mounts } : {}), ...(importRoom ? { imports } : {}) };
+}
+
+type FlaskRuleRegistration = { rule: Node; endpoint: Node | null; viewFunc: Node; selected: Route['method'][] };
+function flaskRuleRegistration(call: Node): FlaskRuleRegistration | null {
+  const args = argumentsOf(call), positions = args.filter(positional);
+  const positionalNames = ['rule', 'endpoint', 'view_func', 'provide_automatic_options'];
+  const allowed = new Set([...positionalNames, 'methods', 'strict_slashes', 'merge_slashes']);
+  if (positions.length > 4 || !keywordsValid(args, allowed)) return null;
+  for (let index = 0; index < positions.length; index++) if (keyword(args, positionalNames[index])) return null;
+  let seenKeyword = false;
+  for (const arg of args) {
+    if (arg.type === 'keyword_argument') seenKeyword = true;
+    else if (seenKeyword) return null;
+  }
+  const rule = positions[0] ?? keyword(args, 'rule'), viewFunc = positions[2] ?? keyword(args, 'view_func');
+  if (!rule || !viewFunc) return null;
+  const automatic = positions[3] ?? keyword(args, 'provide_automatic_options');
+  for (const value of [automatic, keyword(args, 'strict_slashes'), keyword(args, 'merge_slashes')]) {
+    if (value && !['true', 'false', 'none'].includes(value.type)) return null;
+  }
+  const methodList = keyword(args, 'methods');
+  let selected: Route['method'][] = ['GET'];
+  if (methodList && methodList.type !== 'none') {
+    if (!['list', 'tuple', 'set'].includes(methodList.type)) return null;
+    const written = methodList.namedChildren.filter(node => node.type !== 'comment').map(plainString);
+    if (written.includes(null)) return null;
+    selected = [...new Set(written.map(method => method!.toUpperCase()).filter(method => methods.has(method)))] as Route['method'][];
+  }
+  return { rule, viewFunc, endpoint: positions[1] ?? keyword(args, 'endpoint') ?? null, selected };
+}
+
+/** Direct Flask function registration; unresolved rules lower only their owning application's certainty. */
+function flaskFunctionRules(file: ProjectFile, walk: ReturnType<typeof walkPython>, hash: string, owners: Map<string, RouteOwner>,
+  bindings: Map<string, Set<number>>, invalid: Set<string>, moduleUnsafe: Set<string>, odd: boolean, maxRoutes: number, work: RegistrationWork) {
+  const templates: RouteTemplate[] = [], uncertain = new Set<number>(), allowed = new Set<number>();
+  const result = () => ({ templates, uncertain, allowed, cut: work.cut });
+  if (!walk.complete || walk.root.hasError || ![...owners.values()].some(owner => owner.app.framework === 'flask')) return result();
+  const calls: { node: Node; owner: RouteOwner }[] = [];
+  const active = new Set<number>();
+  for (const { node, type } of walk.nodes) {
+    if (type !== 'call') continue;
+    const names = pythonAttributeNames(node.childForFieldName('function'));
+    const owner = names?.length === 2 && names[1] === 'add_url_rule' ? owners.get(names[0]) : null;
+    if (owner?.app.framework !== 'flask') continue;
+    calls.push({ node, owner }); active.add(owner.id);
+  }
+  if (!calls.length) return result();
+  const spend = (cost: number) => {
+    if (cost > work.left) { work.cut = true; for (const owner of active) uncertain.add(owner); return false; }
+    work.left -= cost; return true;
+  };
+  type Handler = { node: Node; name: Node; info: NonNullable<ReturnType<typeof pythonFunction>> };
+  const handlers = new Map<string, Handler>(), unsafe = new Set<string>(), reads = new Set<number>();
+  for (const { node, type } of walk.nodes) {
+    if (type !== 'function_definition' || node.parent?.id !== walk.root.id) continue;
+    const name = node.childForFieldName('name'), info = pythonFunction(node);
+    if (!name || !info) continue;
+    const key = nameOf(name);
+    if (handlers.has(key) || bindings.has(key)) unsafe.add(key);
+    handlers.set(key, { node, name, info });
+  }
+  const drafts: { node: Node; owner: RouteOwner; registration: FlaskRuleRegistration; handler: Handler; name: string; path: string; endpoint: string }[] = [];
+  const endpointNames = new Map<number, Map<string, number>>();
+  const endpoint = (owner: RouteOwner, name: string | null, handlerStart: number) => {
+    if (name === null || name.length > ROUTE_LIMITS.name) { uncertain.add(owner.id); return; }
+    const names = endpointNames.get(owner.id) ?? new Map<string, number>();
+    if (names.has(name) && names.get(name) !== handlerStart) uncertain.add(owner.id);
+    names.set(name, handlerStart); endpointNames.set(owner.id, names);
+  };
+  // Include declarations with only HEAD/OPTIONS too: they still reserve an endpoint name.
+  for (const { node, type } of walk.nodes) {
+    if (type !== 'decorator' || node.parent?.parent?.id !== walk.root.id) continue;
+    const call = node.firstNamedChild, names = call?.type === 'call' ? pythonAttributeNames(call.childForFieldName('function')) : null;
+    const owner = names?.length === 2 ? owners.get(names[0]) : null;
+    if (!owner || !active.has(owner.id) || owner.app.framework !== 'flask' || !['get', 'post', 'put', 'patch', 'delete', 'route'].includes(names![1])) continue;
+    if (!spend(100 + node.endIndex - node.startIndex)) return result();
+    const definition = node.parent.childForFieldName('definition'), handler = definition && pythonFunction(definition);
+    const args = argumentsOf(call!), found = readRoute(owner.app, args, names![1], false, false);
+    if (found.path === null || found.unsupported || found.shape.unmatched || !keywordsValid(args, frameworks.flask.decoratorKeywords)
+      || args.filter(positional).length > 1 || args.some(positional) && keyword(args, 'rule')) uncertain.add(owner.id);
+    const option = keyword(args, 'endpoint');
+    endpoint(owner, option && option.type !== 'none' ? plainString(option) : handler ? nameOf(definition!.childForFieldName('name')) : null,
+      handler?.declaration.startIndex ?? -1);
+  }
+  for (const { node, owner } of calls) {
+    if (!spend(100 + node.endIndex - node.startIndex)) return result();
+    if (owner.app.router || !walk.complete || walk.root.hasError || odd || !constructorSafe(owner, invalid)
+      || moduleUnsafe.has(owner.name) || moduleUnsafe.has(owner.app.factory)
+      || node.parent?.type !== 'expression_statement' || node.parent.parent?.id !== walk.root.id || node.startIndex < owner.end) {
+      uncertain.add(owner.id); continue;
+    }
+    const registration = flaskRuleRegistration(node), input = registration && identifierInParens(registration.viewFunc);
+    const name = input && nameOf(input), handler = name && handlers.get(name);
+    if (!registration || !input || !name || !handler || handler.node.endIndex >= node.startIndex || unsafe.has(name)) {
+      uncertain.add(owner.id); continue;
+    }
+    const path = plainString(registration.rule), option = registration.endpoint;
+    const registeredName = option && option.type !== 'none' ? plainString(option) : name;
+    if (path === null || bounded(path) === null || flaskShape(path).unmatched || registeredName === null || registeredName.length > ROUTE_LIMITS.name) {
+      uncertain.add(owner.id); continue;
+    }
+    reads.add(registration.viewFunc.id);
+    drafts.push({ node, owner, registration, handler, name, path, endpoint: registeredName });
+  }
+  for (const { node, type } of walk.nodes) {
+    if (type !== 'identifier' || labelPosition(node) || parameterPosition(node) || typePosition(node)) continue;
+    const name = nameOf(node), handler = handlers.get(name);
+    if (!handler || node.id === handler.name.id) continue;
+    if (!spend(1)) return result();
+    const access = pythonValueAccess(node), parent = access.node.parent;
+    if (reads.has(access.node.id)) continue;
+    if (access.names.length === 1 && parent?.type === 'call' && parent.childForFieldName('function')?.id === access.node.id) continue;
+    unsafe.add(name);
+  }
+  for (const draft of drafts) {
+    const { node, owner, handler, registration, name, path } = draft;
+    if (unsafe.has(name)) { uncertain.add(owner.id); continue; }
+    endpoint(owner, draft.endpoint, handler.info.declaration.startIndex);
+    allowed.add(node.startIndex);
+    owner.lastRouteEnd = Math.max(owner.lastRouteEnd, node.endIndex);
+    for (const method of registration.selected) {
+      if (!spend(100 + path.length)) return result();
+      if (templates.length >= maxRoutes) { work.cut = true; for (const owner of active) uncertain.add(owner); return result(); }
+      const declaration = handler.info.declaration;
+      const base: Route = { method, framework: 'flask', path, prefix: 'unknown', ...flaskShape(path),
+        handler: { fileId: file.id, fileHash: hash, startUtf16: declaration.startIndex, endUtf16: declaration.endIndex,
+          startLine: declaration.startPosition.row + 1, name: shortName(handler.info.name) },
+        basis: { text: firstLine(node), range: { fileId: file.id, fileHash: hash, startUtf16: node.startIndex, endUtf16: node.endIndex,
+          ...lineRange(node), text: firstLine(node) } } };
+      if (lacksRouteEvidence(base)) uncertain.add(owner.id);
+      templates.push({ ownerId: owner.id, writtenPath: path, base, unsupported: false });
+    }
+  }
+  return result();
 }
 
 /** Reuse route argument rules against the facts parser, while retaining the decorator's original evidence. */
@@ -562,7 +700,9 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
     const group = byOwner.get(template.ownerId) ?? [];
     group.push(template); byOwner.set(template.ownerId, group);
   }
-  const original = () => ({ routes: templates.map(template => template.base), cut: false, uncertain: false, mounts: 0,
+  const uncertainParents = new Set(scope.uncertainOwners);
+  const original = () => ({ routes: templates.map(template => uncertainParents.has(template.ownerId)
+    ? { ...template.base, prefix: 'unknown' as const } : template.base), cut: false, uncertain: !!uncertainParents.size, mounts: 0,
     routers: [...new Set(templates.flatMap(template => byId.get(template.ownerId)?.app.router ? [template.base.framework as Framework] : []))] });
   if (!walk.complete || walk.root.hasError) return original();
   type Registration = { parent: RouteOwner | null; child: RouteOwner | null; at: number; end: number; prefix: WrittenPrefix; settled: boolean; name: string | null };
@@ -572,7 +712,6 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
   const registrationArguments = new Set<number>();
   const unsafe = new Set<number>();
   const unresolved = new Set<number>();
-  const uncertainParents = new Set<number>();
   const short = (text: string) => text.length <= ROUTE_LIMITS.pathLength;
   const ownerPrefixes = new Map<number, WrittenPrefix>();
   const blueprintNames = new Map<number, string | null>();
@@ -654,6 +793,8 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
       const names = pythonAttributeNames(node.childForFieldName('function'));
       const owner = names?.length === 2 ? owners.get(names[0]) : null;
       if (owner && !frameworks[owner.app.framework].attributes.has(names![1])) unsafe.add(owner.id);
+      if (owner?.app.framework === 'flask' && names![1] === 'add_url_rule'
+        && (owner.app.router || !scope.flaskRules?.has(node.startIndex))) unsafe.add(owner.id);
       const routeMethod = owner && ['get', 'post', 'put', 'patch', 'delete', frameworks[owner.app.framework].route].includes(names![1]);
       if (owner && routeMethod && (node.parent?.type !== 'decorator' || node.parent.parent?.parent?.id !== scope.bodyId)) unsafe.add(owner.id);
     }

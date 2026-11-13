@@ -15,6 +15,7 @@ export async function checkPythonFeatureFlow(app, page, folder) {
     'foreign/decorated_router.py': 'from .routers import router\n@router.get("/foreign-handlers")\ndef imported_router_handler():\n    return []\n',
     'foreign/factory.py': 'from flask import Flask\nfrom .routers import bp\ndef create_web():\n    app = Flask(__name__)\n    app.register_blueprint(bp, url_prefix="/factory-blue")\n    return app\n',
     'modulefactory.py': 'from fastapi import FastAPI, APIRouter\nmodule_router = APIRouter(prefix="/v5")\n@module_router.get("/records")\ndef module_records():\n    return []\ndef create_app():\n    app = FastAPI()\n    app.include_router(module_router, prefix="/factory-module")\n    return app\n',
+    'flaskrules.py': 'from flask import Flask\napp = Flask(__name__)\ndef rule_users():\n    return []\napp.add_url_rule("/direct-rules", view_func=rule_users, methods=["GET"])\n',
     'site/__init__.py': '',
     'site/settings.py': 'ROOT_URLCONF = "site.urls"\n',
     'site/urls.py': 'from django.urls import path\nfrom . import views\nurlpatterns = [path("users/", views.handle)]\n',
@@ -30,6 +31,7 @@ export async function checkPythonFeatureFlow(app, page, folder) {
   sources['client.ts'] += 'export function importedFast() { return fetch("/imported-fast"); }\nexport function importedFlask() { return fetch("/imported-flask"); }\n';
   sources['client.ts'] += 'export function routerEntries() { return fetch("/external/v4/entries"); }\nexport function blueprintEntries() { return fetch("/blue/entries"); }\nexport function importedRouterHandler() { return fetch("/external/v4/foreign-handlers"); }\n';
   sources['client.ts'] += 'export function moduleRecords() { return fetch("/factory-module/v5/records"); }\nexport function factoryBlueprintEntries() { return fetch("/factory-blue/entries"); }\n';
+  sources['client.ts'] += 'export function directRules() { return fetch("/direct-rules"); }\n';
   for (const [name, source] of Object.entries(sources)) {
     await mkdir(path.dirname(path.join(folder, name)), { recursive: true });
     await writeFile(path.join(folder, name), source);
@@ -95,6 +97,7 @@ export async function checkPythonFeatureFlow(app, page, folder) {
       ['/external/v4/foreign-handlers', 'imported_router_handler', '2–4', 'foreign/decorated_router.py', true],
       ['/factory-module/v5/records', 'module_records', '3–5', 'modulefactory.py', true],
       ['/factory-blue/entries', 'blueprint_entries', '8–10', 'foreign/routers.py', true],
+      ['/direct-rules', 'rule_users', '3–4', 'flaskrules.py', true],
       ['/app/v2/books', 'factory_books', '6–8', 'factoryrouters.py', true], ['/shelf/pages', 'factory_pages', '14–16', 'factoryrouters.py', true],
     ]) {
       await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
