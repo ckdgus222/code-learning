@@ -14,6 +14,95 @@ export const NESTING_FREE = 64;
 export const NESTING_LIMIT = 2_000_000;
 export const NESTED_NOTE = '코드가 너무 깊게 중첩돼 있어 이 파일의 구조는 분석하지 않았어요. 원문은 그대로 볼 수 있어요.';
 
+const linkNames = ['parent', 'nextSibling', 'previousSibling', 'nextNamedSibling', 'previousNamedSibling'] as const;
+type NodeLinks = Record<typeof linkNames[number], Parser.SyntaxNode | null>;
+const treeLinks = new WeakMap<Parser.Tree, Map<number, NodeLinks> | null>();
+// Error recovery puts skipped text between extras as extra ERROR nodes, so they must not end a run.
+const extraTypes = new Set(['comment', 'html_comment', 'line_continuation', 'ERROR']);
+// Measured at 128 KiB: runs of 63 extras cost about three times as much as runs of 10.
+const MAX_EXTRA_RUN = 64;
+
+/** Whether some level holds a long flat run: extras in a row, or any children of an ERROR node, which error recovery also lays flat. */
+function hasLongExtraRun(root: Parser.SyntaxNode): boolean {
+  const cursor = root.walk();
+  const runs = [0];
+  const insideError = [false];
+  let depth = 0;
+  while (true) {
+    const type = cursor.nodeType;
+    runs[depth] = insideError[depth] || extraTypes.has(type) ? runs[depth] + 1 : 0;
+    if (runs[depth] > MAX_EXTRA_RUN) return true;
+    if (cursor.gotoFirstChild()) {
+      runs[++depth] = 0;
+      insideError[depth] = type === 'ERROR';
+      continue;
+    }
+    while (!cursor.gotoNextSibling()) {
+      if (!cursor.gotoParent()) return false;
+      depth--;
+    }
+  }
+}
+
+function buildTreeLinks(root: Parser.SyntaxNode): Map<number, NodeLinks> {
+  const links = new Map<number, NodeLinks>();
+  const cursor = root.walk();
+  const levels: {
+    parent: Parser.SyntaxNode | null;
+    previous: Parser.SyntaxNode | null;
+    previousNamed: Parser.SyntaxNode | null;
+    waiting: NodeLinks[];
+  }[] = [{ parent: null, previous: null, previousNamed: null, waiting: [] }];
+  while (true) {
+    const node = cursor.currentNode;
+    const level = levels[levels.length - 1];
+    const entry: NodeLinks = {
+      parent: level.parent, previousSibling: level.previous, previousNamedSibling: level.previousNamed,
+      nextSibling: null, nextNamedSibling: null,
+    };
+    links.set(node.id, entry);
+    if (level.previous) links.get(level.previous.id)!.nextSibling = node;
+    if (cursor.nodeIsNamed) {
+      for (const waiting of level.waiting) waiting.nextNamedSibling = node;
+      level.waiting = [];
+      level.previousNamed = node;
+    }
+    level.waiting.push(entry);
+    level.previous = node;
+    if (cursor.gotoFirstChild()) {
+      levels.push({ parent: node, previous: null, previousNamed: null, waiting: [] });
+      continue;
+    }
+    while (!cursor.gotoNextSibling()) {
+      if (!cursor.gotoParent()) return links;
+      levels.pop();
+    }
+  }
+}
+
+// The binding searches from the root again for each link, revisiting preceding siblings.
+// Flat runs of extras make that cost grow with the run. Replace these getters in one place
+// to keep all analysis callers unchanged, but index only long-run trees to limit memory.
+// The native-call guards in tree-links.test.ts also check this contract on binding upgrades.
+const nodePrototype = (Parser as unknown as { SyntaxNode: { prototype: Parser.SyntaxNode } }).SyntaxNode.prototype;
+for (const name of linkNames) {
+  const descriptor = Object.getOwnPropertyDescriptor(nodePrototype, name)!;
+  const original = descriptor.get!;
+  Object.defineProperty(nodePrototype, name, {
+    ...descriptor,
+    get(this: Parser.SyntaxNode): Parser.SyntaxNode | null {
+      let links = treeLinks.get(this.tree);
+      if (links === undefined) {
+        const root = this.tree.rootNode;
+        links = hasLongExtraRun(root) ? buildTreeLinks(root) : null;
+        treeLinks.set(this.tree, links);
+      }
+      if (links === null) return original.call(this);
+      return links.get(this.id)![name];
+    },
+  });
+}
+
 /** The parsed tree, or null when walking its deep nodes would cost too much. */
 export function parse(text: string, relativePath: string): Parser.SyntaxNode | null {
   const root = parseTree(text, relativePath);
