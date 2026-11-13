@@ -17,6 +17,7 @@ export async function checkPythonFeatureFlow(app, page, folder) {
     'modulefactory.py': 'from fastapi import FastAPI, APIRouter\nmodule_router = APIRouter(prefix="/v5")\n@module_router.get("/records")\ndef module_records():\n    return []\ndef create_app():\n    app = FastAPI()\n    app.include_router(module_router, prefix="/factory-module")\n    return app\n',
     'flaskviews.py': 'from flask import Flask\nfrom flask.views import MethodView, View\napp = Flask(__name__)\nclass ClassUsers(MethodView):\n    def get(self):\n        return []\nclass ClassPage(View):\n    def dispatch_request(self):\n        return "page"\nusers_view = ClassUsers.as_view("class_users")\napp.add_url_rule("/class-users", view_func=users_view)\napp.add_url_rule("/class-page", view_func=ClassPage.as_view("class_page"))\n',
     'flaskrules.py': 'from flask import Flask\napp = Flask(__name__)\ndef rule_users():\n    return []\napp.add_url_rule("/direct-rules", view_func=rule_users, methods=["GET"])\n',
+    'legacyurls.py': 'from django.conf.urls import url\nfrom django.conf.urls.static import static\ndef legacy_page(request):\n    return 1\ndef legacy_static(request):\n    return 2\nurlpatterns = [url("legacy-page/", legacy_page)]\nurlpatterns += static("/assets/") + static("/custom-assets/", view=legacy_static)\n',
     'site/__init__.py': '',
     'site/settings.py': 'ROOT_URLCONF = "site.urls"\n',
     'site/urls.py': 'from django.urls import path\nfrom . import views\nurlpatterns = [path("users/", views.handle)]\n',
@@ -33,6 +34,7 @@ export async function checkPythonFeatureFlow(app, page, folder) {
   sources['client.ts'] += 'export function routerEntries() { return fetch("/external/v4/entries"); }\nexport function blueprintEntries() { return fetch("/blue/entries"); }\nexport function importedRouterHandler() { return fetch("/external/v4/foreign-handlers"); }\n';
   sources['client.ts'] += 'export function moduleRecords() { return fetch("/factory-module/v5/records"); }\nexport function factoryBlueprintEntries() { return fetch("/factory-blue/entries"); }\n';
   sources['client.ts'] += 'export function classUsers() { return fetch("/class-users"); }\nexport function classPage() { return fetch("/class-page"); }\n';
+  sources['client.ts'] += 'export function legacyPage() { return fetch("/legacy-page/"); }\nexport function legacyAssets() { return fetch("/assets/example.txt"); }\n';
   sources['client.ts'] += 'export function directRules() { return fetch("/direct-rules"); }\n';
   for (const [name, source] of Object.entries(sources)) {
     await mkdir(path.dirname(path.join(folder, name)), { recursive: true });
@@ -117,6 +119,20 @@ export async function checkPythonFeatureFlow(app, page, folder) {
       await steps.filter({ has: page.locator('b', { hasText: new RegExp(`^${name}$`) }) })
         .getByRole('button', { name: '코드 보기', exact: true }).click();
       await page.getByTestId('evidence-range').getByText(`근거: ${file} · ${lines}줄`, { exact: true }).waitFor();
+    }
+    for (const [name, lines] of [['legacy_page', '3–4'], ['legacy_static', '5–6']]) {
+      await page.getByRole('button', { name: '흐름 따라가기', exact: true }).click();
+      await page.getByRole('button', { name: '다른 기능 고르기', exact: true }).click();
+      await list.getByRole('listitem').filter({ hasText: name }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+      await details.waitFor();
+      if (!await details.evaluate(element => element.open)) await details.locator(':scope > summary').click();
+      await diagram.getByRole('group', { name: 'legacyurls.py · ' + name, exact: true }).waitFor();
+      assert.equal(await steps.filter({ has: page.locator('b', { hasText: /^GET \/(?:legacy-page|assets)\// }) }).count(), 0);
+      await page.getByRole('region', { name: '기능 흐름 단계', exact: true })
+        .getByText('Django 정적 파일 등록 2개를 찾았어요.', { exact: false }).waitFor();
+      await steps.filter({ has: page.locator('b', { hasText: new RegExp('^' + name + '$') }) })
+        .getByRole('button', { name: '코드 보기', exact: true }).click();
+      await page.getByTestId('evidence-range').getByText('근거: legacyurls.py · ' + lines + '줄', { exact: true }).waitFor();
     }
     for (const [name, source] of Object.entries(sources)) assert.equal(await readFile(path.join(folder, name), 'utf8'), source);
   } finally {

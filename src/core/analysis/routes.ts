@@ -593,6 +593,9 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
       : '시작 설정(ROOT_URLCONF)부터 전체 앞 경로를 확정한 Django 주소가 없어, 모두 앞부분을 모르는 것으로 봤어요.'));
   if (django.unfollowed) result.notes.push(`Django include ${django.unfollowed}개는 따라가지 못했어요(문자열이 아닌 인자, 프로젝트에 없는 모듈, manage.py를 찾지 못함 등). 그렇게 붙는 주소는 앞 경로가 빠져 있거나 목록에 없을 수 있어요.`);
   if (django.skipped) result.notes.push(`Django 주소 ${django.skipped}개는 처리 함수를 코드에서 확정하지 못해 목록에 넣지 않았어요(다른 패키지에서 가져온 뷰, get·post 메서드가 직접 없는 클래스 뷰 등).`);
+  if (django.staticAdditions) result.notes.push(`Django 정적 파일 등록 ${django.staticAdditions}개를 찾았어요. 설정에 따라 등록되지 않을 수 있어 요청과 잇지 않았어요. `
+    + (django.staticUnresolved ? `${django.staticUnresolved}개는 프로젝트 밖 기본 처리 함수이거나 처리 함수를 확인하지 못해 코드 연결을 만들지 않았어요.`
+      : '명시된 처리 함수는 원본 코드로만 연결해요.'));
   for (const path of django.oddFiles) {
     const note = `${path}: 실행 중에 이름·속성이나 주소 규칙을 바꿀 수 있는 코드가 있어, 이 파일의 Python 서버 주소는 요청과 잇지 않았어요.`;
     if (!result.notes.includes(note)) result.notes.push(note);

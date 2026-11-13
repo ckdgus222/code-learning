@@ -21,12 +21,19 @@ interface DjangoEntry {
 }
 /** One path entry whose literal include can be joined from the manage.py folder. */
 interface DjangoInclude { written: string; module: string[] }
+interface DjangoStaticAddition {
+  prefix: string | null;
+  basis: Route['basis'];
+  view: ViewRef | null;
+  defaultView: boolean;
+}
 type DjangoView = { kind: 'function'; handler: CallTarget; methods: Route['method'][] }
   | { kind: 'class'; methods: { method: Route['method']; handler: CallTarget }[] };
 /** Values only: syntax trees are released after each file is read. */
 export interface DjangoFile {
   entries: DjangoEntry[];
   includes: DjangoInclude[];
+  staticAdditions: DjangoStaticAddition[];
   unfollowed: number;
   imports: Map<string, PythonImport>;
   views: Map<string, DjangoView>;
@@ -47,13 +54,56 @@ export interface DjangoRoom { entries: number; views: number; entriesCut?: boole
 const methods = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const changesDispatch = new Set(['as_view', 'dispatch', 'http_method_names', 'setup']);
 const argumentsOf = (node: Node) => node.childForFieldName('arguments')?.namedChildren.filter(child => child.type !== 'comment') ?? [];
+const positional = (node: Node) => !['keyword_argument', 'list_splat', 'dictionary_splat'].includes(node.type);
+function registrationArgumentsValid(args: Node[], positionNames: string[], extraKeywords: boolean,
+  nameOf: (node: Node | null | undefined) => string): boolean {
+  const written = new Set<string>();
+  let positions = 0, seenKeyword = false;
+  for (const arg of args) {
+    if (['list_splat', 'dictionary_splat'].includes(arg.type)) return false;
+    if (arg.type !== 'keyword_argument') {
+      if (seenKeyword || positions >= positionNames.length) return false;
+      written.add(positionNames[positions++]); continue;
+    }
+    seenKeyword = true;
+    const name = nameOf(arg.childForFieldName('name'));
+    if (!name || written.has(name) || !extraKeywords && !positionNames.includes(name)) return false;
+    written.add(name);
+  }
+  return true;
+}
+
+function viewRefOf(input: Node | null | undefined, nameOf: (node: Node | null | undefined) => string): ViewRef | null {
+  let expression = input, asView = false;
+  if (expression?.type === 'call') {
+    const fn = expression.childForFieldName('function'), args = argumentsOf(expression);
+    const safe = args.every(arg => arg.type === 'keyword_argument' && !['dispatch', 'setup', 'http_method_names'].includes(nameOf(arg.childForFieldName('name'))));
+    asView = safe && fn?.type === 'attribute' && nameOf(fn.childForFieldName('attribute')) === 'as_view';
+    expression = asView ? fn!.childForFieldName('object')! : undefined;
+  }
+  const local = expression?.type === 'attribute' ? expression.childForFieldName('object') : expression;
+  const attribute = expression?.type === 'attribute' ? nameOf(expression.childForFieldName('attribute')) : null;
+  return local?.type === 'identifier' && nameOf(local) && (attribute === null || attribute)
+    ? { local: nameOf(local), attribute, asView } : null;
+}
+
+function staticAddition(call: Node, basis: Route['basis'], nameOf: (node: Node | null | undefined) => string): DjangoStaticAddition | null {
+  const args = argumentsOf(call), positions = args.filter(positional);
+  if (!registrationArgumentsValid(args, ['prefix', 'view'], true, nameOf)) return null;
+  const keyword = (name: string) => args.find(arg => arg.type === 'keyword_argument' && nameOf(arg.childForFieldName('name')) === name)?.childForFieldName('value');
+  const prefix = positions[0] ?? keyword('prefix');
+  if (!prefix) return null;
+  const view = positions[1] ?? keyword('view');
+  const written = plainString(prefix);
+  return { prefix: written === null ? null : bounded(written), basis, view: viewRefOf(view, nameOf), defaultView: !view };
+}
 
 export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython>, hash: string, room: DjangoRoom): DjangoFile {
   const { root, nodes, complete } = walk;
   const text = root.text.normalize('NFKC');
   let mentions = 0;
   for (let at = text.indexOf('ROOT_URLCONF'); at !== -1; at = text.indexOf('ROOT_URLCONF', at + 'ROOT_URLCONF'.length)) mentions++;
-  const result: DjangoFile = { entries: [], includes: [], unfollowed: 0, imports: new Map(), views: new Map(), plain: complete && !root.hasError,
+  const result: DjangoFile = { entries: [], includes: [], staticAdditions: [], unfollowed: 0, imports: new Map(), views: new Map(), plain: complete && !root.hasError,
     init: null, odd: false, root: null, rootUnclear: false, listFinal: false,
     reachesList: (!complete || root.hasError) && text.includes('urlpatterns') };
   // 1. Bound names are normalized once, after rejecting text too long to be a route name.
@@ -76,6 +126,7 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
     bindings.set(name, places);
   };
   const django = new Map<string, string>();
+  const djangoAt = new Map<string, number>();
   const imports = new Map<string, PythonImport>();
   const definitions = new Map<string, Node>();
   let lastStar = -1;
@@ -98,7 +149,12 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
       const name = nameOf(binding);
       imports.set(name, { ...item, module: !from && !imported.childForFieldName('alias') ? item.module.slice(0, 1) : item.module,
         names: from ? [nameOf(original)] : null });
-      if (from && nameOf(node.childForFieldName('module_name')) === 'django.urls' && ['path', 're_path', 'include'].includes(nameOf(original))) django.set(name, nameOf(original));
+      const moduleName = from ? nameOf(node.childForFieldName('module_name')) : null, importedName = nameOf(original);
+      if (moduleName === 'django.urls' && ['path', 're_path', 'include'].includes(importedName)
+        || moduleName === 'django.conf.urls' && ['url', 'include'].includes(importedName)
+        || moduleName === 'django.conf.urls.static' && importedName === 'static') {
+        django.set(name, importedName); djangoAt.set(name, node.endIndex);
+      }
     }
   }
   for (const { node, type } of nodes) {
@@ -193,6 +249,11 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
     if (parent?.type === 'global_statement') invalid.add(name);
     const label = labelPosition(node);
     odd ||= pythonRouteMachinery.has(name) && !label;
+    // New registration helpers must retain their identity even when another function passes or changes them.
+    if (['static', 'url'].includes(django.get(name) ?? '') && !label && !parameterPosition(node) && !bindings.get(name)?.has(node.id)) {
+      const called = parent?.type === 'call' && parent.childForFieldName('function')?.id === node.id;
+      if (!called && !typePosition(node)) invalid.add(name);
+    }
     if (!module || label || parameterPosition(node) || bindings.get(name)?.has(node.id)) continue;
     const called = parent?.type === 'call' && parent.childForFieldName('function')?.id === node.id;
     if (django.has(name)) { if (!called) invalid.add(name); continue; }
@@ -222,8 +283,8 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
   result.listFinal = result.plain && !invalidList;
   result.init = result.plain && file.relativePath.split('/').at(-1) === '__init__.py' ? initFactsOf(root) : null;
 
-  // 3. Read only literal list entries assigned directly to module-level urlpatterns.
-  const lists = new Set<number>();
+  // 3. Read literal list entries and static-list additions assigned directly to module-level urlpatterns.
+  const lists = new Set<number>(), staticCalls = new Set<number>();
   for (const { node, type } of nodes) {
     if (type !== 'assignment' && type !== 'augmented_assignment' || node.parent?.parent?.id !== root.id) continue;
     if (nameOf(node.childForFieldName('left')) !== 'urlpatterns') continue;
@@ -233,22 +294,35 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
     while (pending.length) {
       const value = pending.pop()!;
       if (value.type === 'list') { lists.add(value.id); continue; }
+      if (value.type === 'call') { staticCalls.add(value.id); continue; }
       if (value.type !== 'binary_operator' || value.childForFieldName('operator')?.text !== '+') continue;
       pending.push(value.childForFieldName('right')!, value.childForFieldName('left')!);
     }
   }
-  for (const { node: call, type } of lists.size ? nodes : []) {
-    if (type !== 'call' || !lists.has(call.parent?.id ?? -1)) continue;
+  const basisOf = (call: Node): Route['basis'] => ({ text: firstLine(call), range: { fileId: file.id, fileHash: hash,
+    startUtf16: call.startIndex, endUtf16: call.endIndex, ...lineRange(call), text: firstLine(call) } });
+  for (const { node: call, type } of lists.size || staticCalls.size ? nodes : []) {
+    if (type !== 'call' || !lists.has(call.parent?.id ?? -1) && !staticCalls.has(call.id)) continue;
     if (room.entries <= 0) { room.entriesCut = true; break; }
     if (call.childForFieldName('function')?.type !== 'identifier') continue;
     const callee = nameOf(call.childForFieldName('function'));
-    if (invalid.has(callee) || !['path', 're_path'].includes(django.get(callee) ?? '')) continue;
-    const args = argumentsOf(call), positions = args.filter(arg => !['keyword_argument', 'list_splat', 'dictionary_splat'].includes(arg.type));
+    if (invalid.has(callee)) continue;
+    if (['static', 'url'].includes(django.get(callee) ?? '') && call.startIndex < djangoAt.get(callee)!) continue;
+    if (staticCalls.has(call.id)) {
+      if (django.get(callee) !== 'static' || !result.plain || odd) continue;
+      const addition = staticAddition(call, basisOf(call), nameOf);
+      if (addition) { result.staticAdditions.push(addition); room.entries--; }
+      continue;
+    }
+    if (!['path', 're_path', 'url'].includes(django.get(callee) ?? '')) continue;
+    const args = argumentsOf(call), positions = args.filter(positional);
+    if (django.get(callee) === 'url' && !registrationArgumentsValid(args, ['regex', 'view', 'kwargs', 'name'], false, nameOf)) continue;
     const keyword = (name: string) => args.find(arg => arg.type === 'keyword_argument' && nameOf(arg.childForFieldName('name')) === name)?.childForFieldName('value');
-    let expression: Node | null | undefined = positions[1] ?? keyword('view');
-    const pathNode = positions[0] ?? keyword('route');
+    const expression = positions[1] ?? keyword('view');
+    const pathNode = positions[0] ?? keyword(django.get(callee) === 'url' ? 'regex' : 'route');
+    if (django.get(callee) === 'url' && (!pathNode || !expression)) continue;
     const written = pathNode ? plainString(pathNode) : null;
-    const regex = django.get(callee) === 're_path';
+    const regex = django.get(callee) !== 'path';
     const spread = args.some(arg => arg.type === 'list_splat' || arg.type === 'dictionary_splat');
     const include = expression?.type === 'call' ? expression.childForFieldName('function') : null;
     if (include?.type === 'identifier' && django.get(nameOf(include)) === 'include' && !invalid.has(nameOf(include))) {
@@ -264,27 +338,15 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
       result.includes.push({ written, module: parts });
       continue;
     }
-    let asView = false;
-    if (expression?.type === 'call') {
-      const fn = expression.childForFieldName('function');
-      const viewArgs = argumentsOf(expression);
-      const safe = viewArgs.every(arg => arg.type === 'keyword_argument' && !['dispatch', 'setup', 'http_method_names'].includes(nameOf(arg.childForFieldName('name'))));
-      asView = safe && fn?.type === 'attribute' && nameOf(fn.childForFieldName('attribute')) === 'as_view';
-      expression = asView ? fn!.childForFieldName('object')! : undefined;
-    }
-    const local = expression?.type === 'attribute' ? expression.childForFieldName('object') : expression;
-    const attribute = expression?.type === 'attribute' ? nameOf(expression.childForFieldName('attribute')) : null;
-    const view = local?.type === 'identifier' && nameOf(local) && (attribute === null || attribute)
-      ? { local: nameOf(local), attribute, asView } : null;
+    const view = viewRefOf(expression, nameOf);
     // `bounded` looks at the length first, so an overlong route is never split or matched.
     const path = written === null ? null : bounded(regex ? written : '/' + written);
     const shape = regex || spread ? { unmatched: true as const } : path === null ? {} : djangoShape(path);
     result.entries.push({ path, written: regex || spread || written === null || written.length > ROUTE_LIMITS.pathLength ? null : written,
-      shape, view, basis: { text: firstLine(call), range: { fileId: file.id, fileHash: hash,
-      startUtf16: call.startIndex, endUtf16: call.endIndex, ...lineRange(call), text: firstLine(call) } } });
+      shape, view, basis: basisOf(call) });
     room.entries--;
   }
-  const used = new Set(result.entries.map(entry => entry.view?.local));
+  const used = new Set([...result.entries, ...result.staticAdditions].map(entry => entry.view?.local));
   for (const [name, item] of imports) if (used.has(name) && !invalid.has(name)) result.imports.set(name, item);
   if (!result.plain) return result;
 
@@ -361,10 +423,10 @@ export function djangoFile(file: ProjectFile, walk: ReturnType<typeof walkPython
 
 /** Join literal includes from manage.py folders; resolve views with the existing import rules. */
 export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: ReadonlySet<string>, maxRoutes: number, shouldStop: () => boolean, allRead: boolean):
-  { routes: Route[]; skipped: number; cut: boolean; oddFiles: string[]; unfollowed: number } {
+  { routes: Route[]; skipped: number; cut: boolean; oddFiles: string[]; unfollowed: number; staticAdditions: number; staticUnresolved: number } {
   const routes: Route[] = [];
   const oddFiles = new Set<string>();
-  let skipped = 0, cut = false, unfollowed = 0;
+  let skipped = 0, cut = false, unfollowed = 0, staticAdditions = 0, staticUnresolved = 0;
   const facts = { init: (path: string) => files.get(path)?.init ?? null, plain: (path: string) => files.get(path)?.plain ?? false };
   const ordered = [...files].sort(([a], [b]) => a.localeCompare(b));
   const projectFolder = (filePath: string): string | null => {
@@ -471,12 +533,21 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
   }
   const prepared: { path: string; file: DjangoFile; entry: DjangoEntry; viewPath: string;
     handlers: { method: Route['method']; handler: CallTarget }[] }[] = [];
-  const entries = ordered.flatMap(([path, file]) => file.entries.map(entry => ({ path, file, entry })));
-  for (const { path, file, entry } of entries) {
+  const entries = ordered.flatMap(([path, file]) => {
+    const entries: { path: string; file: DjangoFile; entry: DjangoEntry; static: boolean }[] = file.entries.map(entry => ({ path, file, entry, static: false }));
+    for (const addition of file.staticAdditions) {
+      if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
+      staticAdditions++; staticUnresolved++;
+      if (addition.defaultView) continue;
+      entries.push({ path, file, static: true, entry: { path: null, written: null, shape: { unmatched: true }, view: addition.view, basis: addition.basis } });
+    }
+    return entries.sort((a, b) => a.entry.basis.range.startUtf16 - b.entry.basis.range.startUtf16);
+  });
+  for (const { path, file, entry, static: staticEntry } of entries) {
     if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
     const ref = entry.view;
     // A urlconf that is not plain has no views of its own and no resolved imports, so its entries fall out below.
-    if (!ref) { skipped++; continue; }
+    if (!ref) { if (!staticEntry) skipped++; continue; }
     let view = ref.attribute === null ? file.views.get(ref.local) : undefined;
     let viewPath = path;
     const imported = resolved.get(path)?.get(ref.local);
@@ -485,10 +556,11 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
       const name = ref.attribute === null ? imported.name : imported.name === null ? ref.attribute : null;
       view = name === null ? undefined : files.get(viewPath)?.views.get(name);
     }
-    if (!view || ref.asView !== (view.kind === 'class')) { skipped++; continue; }
-    if (view.kind === 'class' && !view.methods.length) { skipped++; continue; }
+    if (!view || ref.asView !== (view.kind === 'class')) { if (!staticEntry) skipped++; continue; }
+    if (view.kind === 'class' && !view.methods.length) { if (!staticEntry) skipped++; continue; }
     const handlers = view.kind === 'function' ? view.methods.map(method => ({ method, handler: view.handler })) : view.methods;
     if (!handlers.length) continue;
+    if (staticEntry) staticUnresolved--;
     prepared.push({ path, file, entry, viewPath, handlers });
   }
   // Every prepared combination produces a route. Stop the entire product at the first extra route.
@@ -509,5 +581,5 @@ export function djangoRoutes(files: ReadonlyMap<string, DjangoFile>, known: Read
         ...(odd || prefix.incomplete ? { unmatched: true as const } : shape) });
     }
   }
-  return { routes, skipped, cut, oddFiles: [...oddFiles], unfollowed };
+  return { routes, skipped, cut, oddFiles: [...oddFiles], unfollowed, staticAdditions, staticUnresolved };
 }

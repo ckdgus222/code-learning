@@ -894,7 +894,7 @@ it.each([undefined, { ...routes, requests: [], links: [] }, {
   const html = renderToStaticMarkup(React.createElement(FlowLimits, { project, routes, flow, locked: false, onCode() {} }));
   expect(html).toMatch(/^<details class="card"><summary>이 흐름을 찾은 방법과 한계<\/summary><p class="hint">코드 글자로 찾은 흐름이에요/);
   expect(html).toContain('찾은 범위와 한계');
-  expect(html).toContain('같은 파일의 모듈 맨 위나 단순 앱 팩토리의 include_router·register_blueprint 등록에서 앞 경로를 연결해요. FastAPI 라우터와 Flask Blueprint의 중첩 등록도 따라가요. 같은 파일의 모듈 앱 사이 app.mount 주소는 추정으로 연결해요. 다른 파일에서 가져온 앱·라우터·Blueprint의 주소 데코레이터와 모듈 앱·단순 앱 팩토리의 직접 라우터 등록도 추정으로 연결해요. Flask 모듈 앱의 add_url_rule로 직접 등록한 함수와 같은 파일의 기본 View·MethodView 메서드도 추정으로 연결해요. 그 밖의 언어·서버 방식, app.use·파일 사이의 중첩 라우터 연결은 아직 따라가지 않아요. tsconfig 경로 별칭은 따라가요. Python은 직접·확정 import 호출과 메서드 후보를 따라가요.');
+  expect(html).toContain('같은 파일의 모듈 맨 위나 단순 앱 팩토리의 include_router·register_blueprint 등록에서 앞 경로를 연결해요. FastAPI 라우터와 Flask Blueprint의 중첩 등록도 따라가요. 같은 파일의 모듈 앱 사이 app.mount 주소는 추정으로 연결해요. 다른 파일에서 가져온 앱·라우터·Blueprint의 주소 데코레이터와 모듈 앱·단순 앱 팩토리의 직접 라우터 등록도 추정으로 연결해요. Flask 모듈 앱의 add_url_rule로 직접 등록한 함수와 같은 파일의 기본 View·MethodView 메서드도 추정으로 연결해요. Django static 정적 파일 등록은 설정을 확인할 수 없어 요청과 잇지 않고, 명시된 처리 함수만 코드로 연결해요. 그 밖의 언어·서버 방식, app.use·파일 사이의 중첩 라우터 연결은 아직 따라가지 않아요. tsconfig 경로 별칭은 따라가요. Python은 직접·확정 import 호출과 메서드 후보를 따라가요.');
   expect(html).toContain('저장소는 Prisma 모양과 흔한 DB 클라이언트·TypeORM Repository 이름으로 찾아요(이름으로 찾은 것은 추정, Mongoose·Drizzle 등은 아직 못 찾아요)');
   expect(html).not.toContain('이을 주소를 못 찾은 요청');
   expect(html).not.toContain('다른 서버 주소 요청');
@@ -1515,7 +1515,7 @@ it('explains FastAPI scope and renders its handler navigation and question prepa
   const pythonNode = { ...nodes[0], name: 'read_user', relativePath: 'server/main.py', range: { startUtf16: 20, endUtf16: 120, startLine: 3, endLine: 5 } };
   const pythonFlow = { ...flow, nodes: [pythonNode], edges: [], notes: ['Python은 직접·확정 import 호출과 메서드 후보를 따라가요. 오류 던지기·저장소 작업·람다와 callback 실행은 별도로 해석하지 않아요.'] };
   const limits = renderToStaticMarkup(React.createElement(FlowLimits, { project, routes, flow: pythonFlow, locked: false, onCode() {} }));
-  expect(limits).toContain('Python FastAPI·Flask·Django 주소(@app.get·@app.route 같은 데코레이터, urlpatterns의 path)와 fetch·axios 요청을 찾아요.');
+  expect(limits).toContain('Python FastAPI·Flask·Django 주소(@app.get·@app.route 같은 데코레이터, urlpatterns의 path·옛 url)와 fetch·axios 요청을 찾아요.');
   expect(limits).toContain('Python은 직접·확정 import 호출과 메서드 후보를 따라가요. 오류 던지기·저장소 작업·람다와 callback 실행은 별도로 해석하지 않아요.');
   const steps = renderToStaticMarkup(React.createElement(FlowSteps, { flow: pythonFlow, locked: false, onCode() {}, onFunction() {} }));
   expect(steps).toContain('read_user');
