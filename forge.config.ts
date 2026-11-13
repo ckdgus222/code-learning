@@ -11,7 +11,12 @@ export default {
     appBundleId: 'local.codelearning.app',
     executableName: 'Code Learning',
     icon: 'assets/icon/icon',
-    ignore: (file: string) => !!file && !/^\/(?:\.vite|node_modules)(?:\/|$)/.test(file),
+    ignore: (file: string) => {
+      if (!file) return false;
+      // Packager normalizes separators to '/'; only dependency caches are excluded, not our .vite build.
+      if (/\/node_modules\/(?:\.vitest-cache|\.vite)(?:\/|$)/.test(file)) return true;
+      return !/^\/(?:\.vite|node_modules)(?:\/|$)/.test(file);
+    },
   },
   makers: [new MakerSquirrel({
     name: 'code_learning',

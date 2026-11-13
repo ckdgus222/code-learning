@@ -110,6 +110,8 @@ Windows 설치 프로그램은 Windows에서 `npm run make:win`으로 만듭니�
 
 tree-sitter 패키지들은 macOS arm64·Windows x64용 N-API 미리 빌드 파일을 포함하므로 설치 스크립트가 필요 없어 `allowScripts`에서 차단하며, `.npmrc`의 `strict-allow-scripts=true`는 검토하지 않은 설치 스크립트가 추가되면 설치를 실패시킵니다.
 
+패키징은 중첩된 의존성을 포함해 `node_modules/.vitest-cache`와 `node_modules/.vite`를 제외하고, 실행에 필요한 루트 `.vite`는 포함합니다. 캐시·로컬 홈·작업 폴더 경로가 없는지는 macOS arm64 앱의 ASAR와 풀린 리소스에서 확인했으며, Windows 설치 파일 내부 검사는 출시 빌드 뒤에 남아 있습니다.
+
 ```sh
 npm run typecheck
 npm test

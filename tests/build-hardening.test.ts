@@ -8,6 +8,51 @@ import { signMacPackages } from '../scripts/mac-signing';
 const read = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
 
 describe('build hardening', () => {
+  // Packager passes root-relative paths with '/' separators, including on Windows.
+  it.each([
+    '/node_modules/.vite',
+    '/node_modules/.vite/deps/_metadata.json',
+    '/node_modules/.vitest-cache',
+    '/node_modules/.vitest-cache/tests/results.json',
+    '/node_modules/example/node_modules/.vite',
+    '/node_modules/example/node_modules/.vitest-cache/results.json',
+    '/node_modules/@scope/example/node_modules/.vite/deps/index.js',
+    '/node_modules/@scope/example/node_modules/.vitest-cache',
+  ])('excludes development cache %s from the package', file => {
+    expect(config.packagerConfig.ignore(file)).toBe(true);
+  });
+
+  it.each([
+    '',
+    '/.vite',
+    '/.vite/build/main.cjs',
+    '/.vite/renderer/main_window/index.html',
+    '/node_modules',
+    '/node_modules/tree-sitter/prebuilds/darwin-arm64/tree-sitter.node',
+    '/node_modules/@typescript/typescript-darwin-arm64/lib/tsc',
+    '/node_modules/example/node_modules/other/index.js',
+    '/node_modules/.vite-extra/index.js',
+    '/node_modules/.vitest-cache-extra/index.js',
+    '/node_modules/example/node_modules/.vite-extra/index.js',
+    '/node_modules/@scope/example/node_modules/.vitest-cache-extra/index.js',
+    '/node_modules/example/.vite/index.js',
+  ])('preserves runtime path %j and cache-name lookalikes', file => {
+    expect(config.packagerConfig.ignore(file)).toBe(false);
+  });
+
+  it.each([
+    '/src',
+    '/src/main/main.ts',
+    '/docs/development.md',
+    '/tests/build-hardening.test.ts',
+    '/README.md',
+    '/.vitest-cache/results.json',
+    '/.vite-extra/main.cjs',
+    '/node_modules-extra/index.js',
+  ])('continues to exclude non-runtime root path %s', file => {
+    expect(config.packagerConfig.ignore(file)).toBe(true);
+  });
+
   it('sets only the planned fuses and leaves file:// privileges at their default', () => {
     const plugins = config.plugins.filter(plugin => plugin instanceof FusesPlugin);
     expect(plugins).toHaveLength(1);
