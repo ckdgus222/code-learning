@@ -63,6 +63,7 @@ export interface PythonFileFacts {
   initNames: InitFacts | null;
   attributeWrites: { node: Parser.SyntaxNode; scope: PythonScope }[];
   moduleEscapes: { node: Parser.SyntaxNode; scope: PythonScope }[];
+  namespaceAccesses: { node: Parser.SyntaxNode; scope: PythonScope }[];
   values?: PythonValueFacts;
 }
 
@@ -122,7 +123,7 @@ export function readPythonFacts(file: ProjectFile, text: string, hash: string, n
   const root = parse(text, file.relativePath);
   const program = scopeOf('module', null);
   const facts: PythonFileFacts = { file, text, hash, program, functions: [], classes: [], calls: [], unclear: null,
-    importsPlain: false, initNames: null, attributeWrites: [], moduleEscapes: [],
+    importsPlain: false, initNames: null, attributeWrites: [], moduleEscapes: [], namespaceAccesses: [],
     complete: !!root && !root.hasError,
     incompleteReason: !root ? NESTED_NOTE : root.hasError ? '구문 오류가 있어 이 파일의 이름은 확정하지 않았어요.' : null,
     ...(withValues ? { values: newPythonValueFacts() } : {}) };
@@ -151,6 +152,9 @@ export function readPythonFacts(file: ProjectFile, text: string, hash: string, n
         || parent?.type === 'keyword_argument' && parent.childForFieldName('name')?.id === node.id;
       const access = pythonValueAccess(node);
       const namespace = access.names.includes('__dict__');
+      if (!label && access.names.some(name => ['__dict__', '__globals__', 'f_globals', 'f_locals'].includes(name))) {
+        facts.namespaceAccesses.push({ node, scope });
+      }
       const invoked = access.node.parent?.type === 'call' && access.node.parent.childForFieldName('function')?.id === access.node.id;
       if (!label && (namespace || frame.escapes && !invoked)) facts.moduleEscapes.push({ node, scope });
     }

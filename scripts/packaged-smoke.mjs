@@ -10,6 +10,7 @@ import { checkPlanCompare } from './plan-compare-smoke.mjs';
 import { checkViewSettings, checkCodeColors } from './view-settings-smoke.mjs';
 import { checkPlainLaunch, createInspectableCopy } from './fuse-check.mjs';
 import { checkPythonFileExplanation } from './python-file-explanation-smoke.mjs';
+import { checkPythonFeatureFlow } from './python-feature-flow-smoke.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const packagedApp = {
@@ -498,6 +499,7 @@ try {
   await importedValue.getByRole('button', { name: '코드 보기', exact: true }).last().click();
   await page.getByText('값을 찾은 뒤 이 파일이 바뀌어 강조하지 않았어요. 다시 찾아 주세요.', { exact: true }).waitFor();
   await checkPythonFileExplanation(app, page, path.join(temp, 'Python 파일 설명'));
+  await checkPythonFeatureFlow(app, page, path.join(temp, 'Python 내부 기능 흐름'));
   await app.close(); app = undefined;
   await testCopy.cleanup(); testCopy = undefined;
   const report = { passed: true, checks: ['Python native grammar, method outline and conditional step', 'screen groups and cached flow selection without flow IPC', 'system light and dark themes, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', onMac ? 'changes from git inside its sandbox' : 'Windows changes unavailable notice', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel', 'release fuses and plain startup', 'UI uses an inspect-enabled temporary copy', 'entire distributed app unchanged'], state };
@@ -512,6 +514,7 @@ try {
   report.checks.push('Python imported class and annotated method candidates, original-file navigation and no duplicate import value');
   report.checks.push('Python static file guide, safe import opening, function and class evidence, caller search and function selection');
   report.checks.push('Python fake AI file explanation, consent, real chunks and storage, decorator evidence, reopen and stale locking');
+  report.checks.push('Python internal Django feature flow, uncertain helper edge, exact evidence and no confirmed callers');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

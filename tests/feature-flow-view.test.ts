@@ -894,7 +894,7 @@ it.each([undefined, { ...routes, requests: [], links: [] }, {
   const html = renderToStaticMarkup(React.createElement(FlowLimits, { project, routes, flow, locked: false, onCode() {} }));
   expect(html).toMatch(/^<details class="card"><summary>이 흐름을 찾은 방법과 한계<\/summary><p class="hint">코드 글자로 찾은 흐름이에요/);
   expect(html).toContain('찾은 범위와 한계');
-  expect(html).toContain('app.use·include_router·register_blueprint·include의 주소 연결, Python 처리 함수 안의 호출은 따라가지 않아요. tsconfig 경로 별칭은 따라가요.');
+  expect(html).toContain('app.use·include_router·register_blueprint의 주소 연결은 따라가지 않아요. tsconfig 경로 별칭은 따라가요. Python은 직접·확정 import 호출과 메서드 후보를 따라가요.');
   expect(html).toContain('저장소는 Prisma 모양과 흔한 DB 클라이언트·TypeORM Repository 이름으로 찾아요(이름으로 찾은 것은 추정, Mongoose·Drizzle 등은 아직 못 찾아요)');
   expect(html).not.toContain('이을 주소를 못 찾은 요청');
   expect(html).not.toContain('다른 서버 주소 요청');
@@ -1513,10 +1513,10 @@ it('renders lane headers and keeps empty lane messages below them', () => {
 
 it('explains FastAPI scope and renders its handler navigation and question preparation', () => {
   const pythonNode = { ...nodes[0], name: 'read_user', relativePath: 'server/main.py', range: { startUtf16: 20, endUtf16: 120, startLine: 3, endLine: 5 } };
-  const pythonFlow = { ...flow, nodes: [pythonNode], edges: [], notes: ['Python 처리 함수 안에서 부르는 함수는 아직 따라가지 않아요.'] };
+  const pythonFlow = { ...flow, nodes: [pythonNode], edges: [], notes: ['Python은 직접·확정 import 호출과 메서드 후보를 따라가요. 오류 던지기·저장소 작업·람다와 callback 실행은 별도로 해석하지 않아요.'] };
   const limits = renderToStaticMarkup(React.createElement(FlowLimits, { project, routes, flow: pythonFlow, locked: false, onCode() {} }));
   expect(limits).toContain('Python FastAPI·Flask·Django 주소(@app.get·@app.route 같은 데코레이터, urlpatterns의 path)와 fetch·axios 요청을 찾아요.');
-  expect(limits).toContain('Python 처리 함수 안에서 부르는 함수는 아직 따라가지 않아요.');
+  expect(limits).toContain('Python은 직접·확정 import 호출과 메서드 후보를 따라가요. 오류 던지기·저장소 작업·람다와 callback 실행은 별도로 해석하지 않아요.');
   const steps = renderToStaticMarkup(React.createElement(FlowSteps, { flow: pythonFlow, locked: false, onCode() {}, onFunction() {} }));
   expect(steps).toContain('read_user');
   expect(steps).toContain('>이 함수 흐름</button>');

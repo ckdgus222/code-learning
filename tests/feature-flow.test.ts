@@ -1052,18 +1052,19 @@ it('reads alias configs once across all routes and nested call searches', async 
   } finally { read.mockRestore(); }
 });
 
-it('ends a FastAPI flow at the decorated handler, keeping its request and frontend caller', async () => {
+it('follows a FastAPI handler into its helper, keeping decorator evidence and its frontend caller', async () => {
   const python = 'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/users/{user_id}")\nasync def read_user(user_id: int):\n    return find_user(user_id)\ndef find_user(user_id):\n    return user_id\n';
   await put('server/main.py', python);
   await put('web/app.ts', "export async function loadUser() { return fetch('/users/1'); }");
   const { project, routes, flow } = await analyze();
   const back = flow.nodes.filter(node => node.side === 'back');
-  expect(back).toHaveLength(1);
+  expect(back).toHaveLength(2);
   expect(back[0]).toMatchObject({ name: 'read_user', relativePath: 'server/main.py', range: { startLine: 3, endLine: 5 }, outside: [], stores: [], stops: [] });
   expect(flow.nodes.map(node => node.name)).toEqual(expect.arrayContaining(['read_user', 'GET /users/1', 'loadUser']));
-  expect(flow.nodes.some(node => node.name === 'find_user')).toBe(false);
+  expect(back[1]).toMatchObject({ name: 'find_user', range: { startLine: 6, endLine: 7 } });
+  expect(flow.edges.find(edge => edge.from === back[0].id && edge.to === back[1].id)).toMatchObject({ kind: 'calls', sure: true });
   expect(flow.edges.find(edge => edge.kind === 'route')).toMatchObject({ to: back[0].id, sure: true });
-  expect(flow.notes.filter(note => note === 'Python 처리 함수 안에서 부르는 함수는 아직 따라가지 않아요.')).toHaveLength(1);
+  expect(flow.notes.filter(note => note.startsWith('Python은 직접·확정 import 호출'))).toHaveLength(1);
   expect(flow.limited).toBe(false);
   await put('server/main.py', python + '\n# changed');
   await expect(buildFeatureFlow(root, project.id, project.files, routes, 0)).rejects.toMatchObject({ code: 'CHANGED' });
@@ -1082,19 +1083,20 @@ it('builds mixed TypeScript and Python flows in one batch', async () => {
   expect(flows.every(flow => !flow.limited)).toBe(true);
 });
 
-it.each(['<id>', '<int:id>'])('ends a Flask flow at its handler and retains route certainty: %s', async param => {
+it.each(['<id>', '<int:id>'])('follows Flask handler calls and retains route certainty: %s', async param => {
   await put('server/app.py', `from flask import Flask\napp = Flask(__name__)\n@app.route("/users/${param}")\ndef read_user(id):\n    return find_user(id)\ndef find_user(id):\n    return id\n`);
   await put('web/app.ts', "export async function loadUser() { return fetch('/users/1'); }");
   const { flow } = await analyze();
   const back = flow.nodes.filter(node => node.side === 'back');
   const request = flow.nodes.find(node => node.name === 'GET /users/1')!;
-  expect(back).toHaveLength(1);
+  expect(back).toHaveLength(2);
   expect(back[0]).toMatchObject({ name: 'read_user', relativePath: 'server/app.py', range: { startLine: 3, endLine: 5 } });
   expect(flow.nodes.map(node => node.name)).toEqual(expect.arrayContaining(['read_user', 'GET /users/1', 'loadUser']));
-  expect(flow.nodes.some(node => node.name === 'find_user')).toBe(false);
+  expect(back[1].name).toBe('find_user');
+  expect(flow.edges.find(edge => edge.from === back[0].id && edge.to === back[1].id)).toMatchObject({ kind: 'calls', sure: true });
   expect(flow.edges.find(edge => edge.kind === 'route')).toMatchObject({ from: request.id, to: back[0].id,
     sure: param === '<id>', reasons: param === '<id>' ? [] : ['값 모양 모름'] });
-  expect(flow.notes.filter(note => note === 'Python 처리 함수 안에서 부르는 함수는 아직 따라가지 않아요.')).toHaveLength(1);
+  expect(flow.notes.filter(note => note.startsWith('Python은 직접·확정 import 호출'))).toHaveLength(1);
   expect(flow.limited).toBe(false);
 });
 

@@ -1,4 +1,4 @@
-import type { CallLink, CallSite, FunctionCalls, NameValue, ProjectFile, ValueSite } from '../../shared/contracts';
+import type { CallLink, CallSite, CallTarget, FunctionCalls, NameValue, ProjectFile, ValueSite } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
 import { MAX_FILE_BYTES, readAllowed } from '../project/files';
 import type { MapLimits } from './project-map';
@@ -8,10 +8,18 @@ import { pythonCallResolver } from './python-call-imports';
 import { pythonParenthesizedValue, pythonValuesOf } from './python-values';
 import { normalize } from './python-imports';
 
+/** A display-only candidate; never a confirmed caller or input-value source. */
+export interface PythonFlowCandidate {
+  site: ValueSite;
+  target: CallTarget;
+  basis: string;
+}
+
 export interface PythonCallsCache {
   texts: Map<string, { text: string; hash: string }>;
   pythonParsed?: Map<string, PythonFileFacts>;
   parsedFiles?: Set<string>;
+  onPythonFlowCandidate?: (candidate: PythonFlowCandidate) => void;
 }
 
 const pythonFile = /\.py$/i;
@@ -112,11 +120,19 @@ export async function findPythonFunctionCalls(root: string, projectId: string, f
       }
       if (callee?.type === 'identifier') functionReferences.add(callee.id);
     }
-    keep(calls, found.kind === 'linked' || found.kind === 'typed' ? { ...site(call, chosen),
+    const kept = keep(calls, found.kind === 'linked' || found.kind === 'typed' ? { ...site(call, chosen),
       ...(found.kind === 'typed' ? { status: 'typed', basis: found.basis } as const : { status: 'linked' } as const),
       target: { fileId: found.facts.file.id, fileHash: found.facts.hash, ...functionAt(found.fn) } }
       : found.kind === 'external' ? { ...site(call, chosen), status: 'external', specifier: found.specifier }
       : { ...site(call, chosen), status: 'unknown', reason: found.reason, detail: found.detail });
+    if (kept && found.kind === 'unknown' && cache?.onPythonFlowCandidate) {
+      const candidate = resolver.flowCandidate(chosen, call);
+      if (candidate) cache.onPythonFlowCandidate({
+        site: { fileId: chosen.file.id, fileHash: chosen.hash, startUtf16: call.node.startIndex,
+          endUtf16: call.node.endIndex, ...lineRange(call.node), text: firstLine(call.node) },
+        target: { fileId: chosen.file.id, fileHash: chosen.hash, ...functionAt(candidate.fn) }, basis: candidate.basis,
+      });
+    }
   }
   for (const file of files.filter(file => pythonFile.test(file.relativePath)).sort((a, b) => a.relativePath.localeCompare(b.relativePath))) {
     const facts = await read(file);

@@ -3,8 +3,9 @@ import type { CallTarget, FeatureFlow, FlowEdge, FlowAfter, FlowAsk, FlowControl
 import { readPathAliases, resolveImport, type PathAliases } from './path-aliases';
 import { AppError } from '../../shared/errors';
 import { findFunctionCalls, type CallsCache } from './calls';
-import { readAllowed, MAX_FILE_BYTES } from '../project/files';
 import { pythonFile, MAP_LIMITS, type MapLimits } from './project-map';
+import type { PythonFileFacts, PythonFunctionFact } from './python-names';
+import type { PythonFlowCandidate } from './python-calls';
 import { formatNextPath, nextRouteOf } from './next-routes';
 import { firstCode, firstLine, hasToken, hasUnsupportedCertainty, lineRange, nearest, reassigned, sameRange, simpleProperties, unwrapped, propertyName, type CallFact, type Declaration, type FileFacts } from './names';
 import { functionName, functionTypes } from './syntax';
@@ -12,6 +13,9 @@ import { assertResultSize, isTestFile, literal, requestSite, routeSite, shortNam
 
 type Node = Parser.SyntaxNode;
 type ReturnedHook = { hook: Node; properties: { name: string; local: string; declaration: Declaration }[] };
+type InspectedFunction =
+  | { language: 'script'; found: FunctionCalls; facts: FileFacts; fn: Node }
+  | { language: 'python'; found: FunctionCalls; facts: PythonFileFacts; fn: PythonFunctionFact; lexical: PythonFlowCandidate[] };
 const field = (node: Node | null, name: string) => node?.childForFieldName(name) ?? null;
 const enclosing = (node: Node): Node | null => {
   for (let parent = node.parent; parent; parent = parent.parent) if (functionTypes.has(parent.type)) return parent;
@@ -447,8 +451,10 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
   const aliases = pathAliases ?? await readPathAliases(root, files, limits.bytes, shouldStop);
   const flow: FeatureFlow = { projectId, routesId: routes.routesId, routeIndex, nodes: [], edges: [], limited: routes.limited, notes: [...new Set([...routes.notes, ...aliases.notes])] };
   const parsedFiles = new Set<string>();
+  // Initialize on the shared object before making a per-flow view of the parsed file IDs.
+  cache.pythonParsed ??= new Map();
   cache = { ...cache, parsedFiles };
-  const results = new Map<string, { found: FunctionCalls; facts: FileFacts; fn: Node }>();
+  const results = new Map<string, InspectedFunction>();
   const known = new Map(files.map(file => [file.relativePath, file]));
   const referencesByStart = new Map<string, Map<number, FileFacts['references'][number]>>();
   const referenceAt = (info: FileFacts, node: Node) => {
@@ -537,14 +543,28 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
     const key = keyOf(node.fileId, node.range.startUtf16, node.range.endUtf16);
     let result = results.get(key);
     if (!result) {
-      const found = await findFunctionCalls(root, projectId, files, targetOf(node), limits, shouldStop, cache, aliases);
+      const lexical: PythonFlowCandidate[] = [];
+      const found = await findFunctionCalls(root, projectId, files, targetOf(node), limits, shouldStop,
+        { ...cache, onPythonFlowCandidate: candidate => {
+          if (lexical.length >= 200) { limit('화살표는 200개까지만 보여요.'); return; }
+          lexical.push(candidate);
+        } }, aliases);
       if (found.limited || found.unexamined.length) limit('일부 파일은 끝까지 확인하지 못했어요.');
-      const facts = cache.parsed.get(node.fileId)!;
-      const fn = facts.functions.find(fn => fn.startIndex === node.range.startUtf16 && fn.endIndex === node.range.endUtf16)!;
-      result = { found, facts, fn };
+      if (pythonFile.test(node.relativePath)) {
+        const facts = cache.pythonParsed?.get(node.fileId);
+        const fn = facts?.functions.find(fn => fn.declaration.startIndex === node.range.startUtf16 && fn.declaration.endIndex === node.range.endUtf16);
+        if (!facts || facts.hash !== node.fileHash || !fn) throw new AppError('CHANGED', '기능의 함수를 지금 확인할 수 없어요.');
+        result = { language: 'python', found, facts, fn, lexical };
+      } else {
+        const facts = cache.parsed.get(node.fileId);
+        const fn = facts?.functions.find(fn => fn.startIndex === node.range.startUtf16 && fn.endIndex === node.range.endUtf16);
+        if (!facts || facts.hash !== node.fileHash || !fn) throw new AppError('CHANGED', '기능의 함수를 지금 확인할 수 없어요.');
+        result = { language: 'script', found, facts, fn };
+      }
       results.set(key, result);
     }
-    node.range = { startUtf16: result.fn.startIndex, endUtf16: result.fn.endIndex, ...lineRange(result.fn) };
+    const declaration = result.language === 'python' ? result.fn.declaration : result.fn;
+    node.range = { startUtf16: declaration.startIndex, endUtf16: declaration.endIndex, ...lineRange(declaration) };
     return result;
   };
   const back = add('back', route.handler, 0)!;
@@ -554,28 +574,23 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
     const node = backQueue.shift()!;
     if (backSeen.has(node.id)) continue;
     backSeen.add(node.id);
-    if (pythonFile.test(node.relativePath)) {
-      stop();
-      // A batch builds one flow per route; a file with many routes is read once, like the TS/JS files.
-      const source = cache.texts.get(node.fileId) ?? await readAllowed(root, node.relativePath, Math.min(MAX_FILE_BYTES, limits.bytes));
-      cache.texts.set(node.fileId, source);
-      stop();
-      if (source.hash !== node.fileHash) throw new AppError('CHANGED', '함수를 고른 뒤 파일이 바뀌었어요. 파일을 다시 읽어 주세요.');
-      node.range.endLine = node.range.startLine + source.text.slice(node.range.startUtf16, node.range.endUtf16).split('\n').length - 1;
-      flow.notes.push('Python 처리 함수 안에서 부르는 함수는 아직 따라가지 않아요.');
-      continue;
-    }
-    const { found, facts, fn } = await inspect(node);
-    Object.assign(node, serverFacts(fn, facts));
+    const inspected = await inspect(node);
+    const { found } = inspected;
     const outside = found.calls.filter(call => call.status === 'external' || call.status === 'unknown').map(call => call.text);
-    // Only callbacks passed directly as arguments to a call in this body, one nested level.
-    // Each callback is a whole call search, and only a few lines of it are shown: the first three are read.
-    const callbacks = facts.functions.filter(child => isDirectCallback(child, fn));
-    if (callbacks.length > 3) limit('안쪽 함수는 함수마다 3개까지만 봐요.');
-    for (const callback of callbacks.slice(0, 3)) {
-      stop();
-      const nested = await findFunctionCalls(root, projectId, files, routeSite(callback, facts), limits, shouldStop, cache, aliases);
-      outside.push(...nested.calls.filter(call => call.status === 'external' || call.status === 'unknown').map(call => `안쪽 함수에서 ${call.text}`));
+    if (inspected.language === 'python') {
+      const note = 'Python은 직접·확정 import 호출과 메서드 후보를 따라가요. 오류 던지기·저장소 작업·람다와 callback 실행은 별도로 해석하지 않아요.';
+      if (!flow.notes.includes(note)) flow.notes.push(note);
+    } else {
+      const { facts, fn } = inspected;
+      Object.assign(node, serverFacts(fn, facts));
+      // Direct callbacks are a TS/JS rule, with one nested level and at most three searches.
+      const callbacks = facts.functions.filter(child => isDirectCallback(child, fn));
+      if (callbacks.length > 3) limit('안쪽 함수는 함수마다 3개까지만 봐요.');
+      for (const callback of callbacks.slice(0, 3)) {
+        stop();
+        const nested = await findFunctionCalls(root, projectId, files, routeSite(callback, facts), limits, shouldStop, cache, aliases);
+        outside.push(...nested.calls.filter(call => call.status === 'external' || call.status === 'unknown').map(call => `안쪽 함수에서 ${call.text}`));
+      }
     }
     node.outside = outside.slice(0, 6);
     node.outsideOmitted = Math.max(0, outside.length - 6);
@@ -583,7 +598,18 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
       if (call.status !== 'linked' && call.status !== 'typed') continue;
       if (node.depth >= 3) { limit('백엔드 호출은 깊이 3까지만 따라가요.'); continue; }
       const next = add('back', call.target, node.depth + 1);
-      if (next) { edge(node, next, call.status === 'typed' ? 'typed' : 'calls', call); backQueue.push(next); }
+      if (!next) continue;
+      const candidate = inspected.language === 'python' && call.status === 'typed';
+      edge(node, next, call.status === 'typed' ? 'typed' : 'calls', call, candidate ? [call.basis] : [], !candidate);
+      backQueue.push(next);
+    }
+    if (inspected.language === 'python') for (const candidate of inspected.lexical) {
+      stop();
+      if (node.depth >= 3) { limit('백엔드 호출은 깊이 3까지만 따라가요.'); continue; }
+      const next = add('back', candidate.target, node.depth + 1);
+      if (!next) continue;
+      edge(node, next, 'calls', candidate.site, [candidate.basis], false);
+      backQueue.push(next);
     }
   }
   const links = routes.links.filter(link => link.routeIndex === routeIndex).sort((a, b) => Number(b.sure) - Number(a.sure));
@@ -652,7 +678,9 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
     if (expanded.has(node.id) && !needsHook) continue;
     const already = expanded.has(node.id);
     expanded.add(node.id);
-    const { found, facts, fn } = await inspect(node);
+    const inspected = await inspect(node);
+    if (inspected.language !== 'script') continue;
+    const { found, facts, fn } = inspected;
     if (!already && node.event === null) Object.assign(node, controlOf(fn, name => declarationAt(facts, name), stop));
     const next = nextRouteOf(node.relativePath, files.map(file => file.relativePath));
     if (next?.kind === 'page' && facts.exports.get('default')?.some(item => item.fn && sameRange(item.fn, fn))) {
@@ -686,9 +714,10 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
     }
     if (!already) {
       let hooks = 0;
-      hookFiles: for (const info of [...parsedFiles].map(id => cache.parsed.get(id)!)) {
+      hookFiles: for (const id of parsedFiles) {
         stop();
-        if (!info.complete || info.unclear || isTestFile(info.file.relativePath)) continue;
+        const info = cache.parsed.get(id);
+        if (!info || !info.complete || info.unclear || isTestFile(info.file.relativePath)) continue;
         for (const { hook, properties: returned } of hooksOf(info)) {
           stop();
           const properties = new Set<string>();
@@ -712,7 +741,7 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
           let hookCalls = results.get(key)?.found;
           if (!hookCalls) {
             hookCalls = await findFunctionCalls(root, projectId, files, target, limits, shouldStop, cache, aliases);
-            results.set(key, { found: hookCalls, facts: info, fn: hook });
+            results.set(key, { language: 'script', found: hookCalls, facts: info, fn: hook });
             if (hookCalls.limited || hookCalls.unexamined.length) limit('일부 파일은 끝까지 확인하지 못했어요.');
           }
           const callers = [...(hookCalls.callers ?? []), ...hookCalls.typedCallers].filter(caller => !caller.inTest);
@@ -740,9 +769,9 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
     if (!already && /^[A-Z]/.test(node.name)) {
       // A component's same-name import or default import must resolve to exactly this file.
       for (const id of parsedFiles) {
-        const info = cache.parsed.get(id)!;
+        const info = cache.parsed.get(id);
         stop();
-        if (!info.complete || info.unclear || isTestFile(info.file.relativePath)) continue;
+        if (!info || !info.complete || info.unclear || isTestFile(info.file.relativePath)) continue;
         const names = new Set<string>();
         if (info.file.id === facts.file.id) names.add(node.name);
         for (const [local, declarations] of info.program.names) {
@@ -777,7 +806,7 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
   for (const node of front) {
     stop();
     const result = results.get(keyOf(node.fileId, node.range.startUtf16, node.range.endUtf16));
-    if (!result) continue;
+    if (!result || result.language !== 'script') continue;
     const { found, facts, fn } = result;
     const outgoing = flow.edges.filter(edge => edge.from === node.id && edge.kind !== 'placed');
     const positions = new Map<string, ValueSite>();
@@ -820,7 +849,7 @@ export async function buildFeatureFlows(root: string, projectId: string, files: 
   limits: MapLimits = MAP_LIMITS, shouldStop: () => boolean = () => false): Promise<FeatureFlow[]> {
   if (routes.routes.length > FLOW_BATCH_LIMIT) throw new AppError('LIMIT', `서버 주소가 ${FLOW_BATCH_LIMIT}개를 넘어 화면별로 묶지 않았어요.`);
   if (routes.projectId !== projectId) throw new AppError('CHANGED', '기능 목록을 다시 찾아 주세요.');
-  const cache: CallsCache = { texts: new Map(), parsed: new Map() };
+  const cache: CallsCache = { texts: new Map(), parsed: new Map(), pythonParsed: new Map() };
   const aliases = await readPathAliases(root, files, limits.bytes, shouldStop);
   const flows: FeatureFlow[] = [];
   for (let index = 0; index < routes.routes.length; index++) {

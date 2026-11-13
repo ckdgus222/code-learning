@@ -1,5 +1,6 @@
 import { _electron as electron } from 'playwright';
 import { checkPythonFileExplanation } from './python-file-explanation-smoke.mjs';
+import { checkPythonFeatureFlow } from './python-feature-flow-smoke.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm, rename, symlink, realpath, readdir, lstat } from 'node:fs/promises';
 import os from 'node:os';
@@ -3624,10 +3625,10 @@ try {
     const diagram = page.getByTestId('feature-flow-canvas');
     await diagram.getByRole('group', { name: 'server/main.py · read_user', exact: true }).waitFor();
     await diagram.getByRole('group', { name: 'web/app.ts · GET /users/1', exact: true }).waitFor();
-    assert.equal(await diagram.getByText('find_user', { exact: true }).count(), 0);
+    await diagram.getByRole('group', { name: 'server/main.py · find_user', exact: true }).waitFor();
     const limits = page.locator('details').filter({ has: page.locator('summary', { hasText: /^이 흐름을 찾은 방법과 한계$/ }) });
     if (await limits.getAttribute('open') === null) await limits.locator(':scope > summary').click();
-    await limits.getByText('Python 처리 함수 안에서 부르는 함수는 아직 따라가지 않아요.', { exact: true }).waitFor();
+    await limits.getByText('Python은 직접·확정 import 호출과 메서드 후보를 따라가요. 오류 던지기·저장소 작업·람다와 callback 실행은 별도로 해석하지 않아요.', { exact: true }).waitFor();
     const step = page.getByRole('region', { name: '기능 흐름 단계', exact: true }).getByTestId('feature-step')
       .filter({ has: page.locator('b', { hasText: /^read_user$/ }) });
     await step.getByRole('button', { name: '코드 보기', exact: true }).click();
@@ -3669,7 +3670,7 @@ try {
     await diagram.getByRole('group', { name: 'web/app.ts · loadTodo', exact: true }).waitFor();
     await diagram.getByRole('group', { name: 'web/app.ts · GET /todos/7', exact: true }).waitFor();
     await diagram.getByRole('group', { name: 'server/app.py · read_todo', exact: true }).waitFor();
-    assert.equal(await diagram.getByText('find_todo', { exact: true }).count(), 0);
+    await diagram.getByRole('group', { name: 'server/app.py · find_todo', exact: true }).waitFor();
     await diagram.locator('.feature-arrow--inferred .react-flow__edge-path').waitFor({ state: 'attached' });
     const steps = page.getByRole('region', { name: '기능 흐름 단계', exact: true });
     const requestStep = steps.getByTestId('feature-step').filter({ has: page.locator('b', { hasText: /^GET \/todos\/7$/ }) });
@@ -3752,7 +3753,7 @@ try {
     await page.getByRole('button', { name: '다른 조건 확인', exact: true }).click();
     await page.waitForFunction(() => [...document.querySelectorAll('.cm-content .cm-line span')].some(span =>
       getComputedStyle(span).color !== getComputedStyle(span.closest('.cm-content')).color));
-    await page.getByRole('region', { name: '구문과 코드', exact: true }).getByText('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도, 직접·확정 import 호출과 값 출처, 클래스 구조·적힌 타입으로 찾는 메서드 후보, 파일 안내, FastAPI·Flask·Django 주소의 기능 흐름(처리 함수까지)을 보여 줘요. AI로 파일 설명도 만들 수 있어요. 처리 함수 안의 기능 흐름 확장은 아직 지원하지 않아요.', { exact: true }).waitFor();
+    await page.getByRole('region', { name: '구문과 코드', exact: true }).getByText('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도, 직접·확정 import 호출과 값 출처, 클래스 구조·적힌 타입으로 찾는 메서드 후보, 파일 안내, FastAPI·Flask·Django 주소에서 처리 함수 내부 호출까지 이어지는 기능 흐름을 보여 줘요. AI로 파일 설명도 만들 수 있어요.', { exact: true }).waitFor();
     await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).waitFor();
     await page.getByText('‘이 함수 흐름으로 보기’에서 직접·확정 import 호출과 값의 출처를 따라가요.', { exact: true }).waitFor();
     await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
@@ -6158,6 +6159,9 @@ try {
   });
   await check('Python file explanation (fake AI): consent, decorator evidence, persistence and stale locking', async () => {
     await checkPythonFileExplanation(app, page, path.join(temporary, 'Python 파일 설명'));
+  });
+  await check('Python feature flow: uncertain Django helper, original evidence and unchanged caller certainty', async () => {
+    await checkPythonFeatureFlow(app, page, path.join(temporary, 'Python 내부 기능 흐름'));
   });
   await check('File explanation (fake AI): consent, selected mode, early result, independent code ranges and direct function summaries', async () => {
     await app.evaluate(({ ipcMain }) => {

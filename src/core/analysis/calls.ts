@@ -7,7 +7,7 @@ import { codeFile, type MapLimits } from './project-map';
 import { functionName, functionTypes } from './syntax';
 import { valuesOf } from './values';
 import { languageOf } from '../../shared/languages';
-import { findPythonFunctionCalls } from './python-calls';
+import { findPythonFunctionCalls, type PythonFlowCandidate } from './python-calls';
 import type { PythonFileFacts } from './python-names';
 import { calledProperty, firstLine, hasToken, isMemberCall, lineRange, nearest, propertyName, readFacts, reassigned, sameRange,
   type CallFact, type FileFacts, type Scope } from './names';
@@ -122,6 +122,7 @@ export interface CallsCache {
   texts: Map<string, { text: string; hash: string }>;
   parsed: Map<string, FileFacts>;
   pythonParsed?: Map<string, PythonFileFacts>;
+  onPythonFlowCandidate?: (candidate: PythonFlowCandidate) => void;
   /** Files parsed for the current flow, in first-use order, including cache hits. */
   parsedFiles?: Set<string>;
 }

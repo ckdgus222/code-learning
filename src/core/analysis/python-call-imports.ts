@@ -40,6 +40,7 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
   // Resolve writes by their module target, so another alias cannot hide a mutation.
   const changed = new Set<string>();
   const escaped = new Set<string>();
+  const exposedNamespaces = new Set<string>();
   const valueChanged = new Set<string>();
   const moduleEscaped = new Set<string>();
   const mark = (paths: Set<string>, file: string) => {
@@ -146,6 +147,12 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
   for (const facts of byPath.values()) {
     facts.attributeWrites.forEach(write => markWrite(facts, write));
     facts.moduleEscapes.forEach(reference => markEscape(facts, reference));
+    for (const reference of facts.namespaceAccesses) {
+      stop();
+      for (const binding of nearest(reference.scope, normalize(reference.node.text))) {
+        if (binding.kind === 'import') markImport(exposedNamespaces, facts, binding);
+      }
+    }
   }
   const mutation = (file: string) => changed.has(file)
     ? unknown('reassigned', '이 모듈이나 부모 패키지의 속성에 대입·삭제하는 곳이 있어 다른 별칭의 호출도 확정하지 않았어요.')
@@ -254,5 +261,13 @@ export function pythonCallResolver(files: ProjectFile[], parsed: ReadonlyMap<str
       && imported(facts, binding).some(target => target.kind === 'file' ? target.relativePath === destination.file.relativePath
         : target.kind === 'unresolved' && (!target.candidates.length || target.candidates.includes(destination.file.relativePath))));
   }
-  return { resolve, mayName, resolveImportedValue };
+  function flowCandidate(facts: PythonFileFacts, call: PythonCallFact): { kind: 'lexical'; fn: PythonFunctionFact; basis: string } | null {
+    stop();
+    if (!escaped.has(facts.file.relativePath) || changed.has(facts.file.relativePath) || exposedNamespaces.has(facts.file.relativePath)) return null;
+    const local = resolvePythonCall(facts, call);
+    if (local.kind !== 'linked') return null;
+    return { kind: 'lexical', fn: local.fn,
+      basis: '같은 파일의 함수 선언 후보예요. 함수나 모듈이 다른 코드로 전달되어 실제 호출 대상은 확정하지 못했어요.' };
+  }
+  return { resolve, mayName, resolveImportedValue, flowCandidate };
 }
