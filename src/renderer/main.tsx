@@ -859,7 +859,7 @@ function App() {
             <CallsFacts state={callSearch.calls.state} stale={callSearch.calls.revision !== revision.current} locked={busy} pathOf={pathOf}
               onRetry={() => void callSearch.find(source, symbol)} onCancel={() => void callSearch.cancel()}
               onShowSite={site => void showCallSite(site)} onShowFunction={target => void showCallFunction(target)} />
-            {callSearch.calls.state.status === 'done' && <ValuesFacts key={callSearch.calls.key} result={callSearch.calls.state.result} locked={busy} pathOf={pathOf}
+            {callSearch.calls.state.status === 'done' && source.analysis.language !== 'python' && <ValuesFacts key={callSearch.calls.key} result={callSearch.calls.state.result} locked={busy} pathOf={pathOf}
               shapes={callSearch.shapes?.key === callSearch.calls.key ? callSearch.shapes : null}
               onRetryShapes={() => { if (callSearch.calls?.state.status === 'done') void callSearch.findShapes(callSearch.calls.key, callSearch.calls.state.result); }}
               onShowSite={site => void showValueSite(site)} onShowFunction={target => void showCallFunction(target)} />}
@@ -907,7 +907,7 @@ function App() {
                 </>}
               </dl>
               <p className="hint">{source.analysis.language === 'python'
-                ? '부르는 곳·값 찾기는 아직 TypeScript·JavaScript만 지원해요. 단계는 ‘이 함수 흐름으로 보기’에서 하나씩 볼 수 있어요.'
+                ? '같은 파일에서 직접 부르는 함수는 ‘이 함수 흐름으로 보기’에서 찾아요. Python 값 추적은 아직 지원하지 않아요.'
                 : '돌려주는 값의 모양과 이 함수를 부르는 곳은 ‘이 함수 흐름으로 보기’에서 찾아요.'}</p>
               <button className="btn btn--small" onClick={() => setView('function')}>이 함수 흐름으로 보기</button>
             </section>}

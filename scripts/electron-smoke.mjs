@@ -54,6 +54,9 @@ await writeFile(path.join(pythonFixture, 'app/service.py'), 'from .models import
 await writeFile(path.join(pythonFixture, 'app/api.py'), 'from app.service import total\ndef run(item):\n    return total(item)\n');
 await writeFile(path.join(pythonFixture, 'main.py'), 'from app.api import run\n');
 await writeFile(path.join(pythonFixture, 'reference.ts'), 'export function total(value: number) { return value; }\n');
+const pythonCallsFixture = path.join(temporary, 'Python 호출 프로젝트');
+await mkdir(pythonCallsFixture);
+await writeFile(path.join(pythonCallsFixture, 'calls.py'), 'def helper(value):\n    return value\n\ndef run():\n    return helper(7)\n\nrun()\n');
 const fastapiFixture = path.join(temporary, 'FastAPI 흐름 프로젝트');
 await mkdir(path.join(fastapiFixture, 'web'), { recursive: true });
 await mkdir(path.join(fastapiFixture, 'server'), { recursive: true });
@@ -3738,12 +3741,12 @@ try {
     await page.getByRole('button', { name: '다른 조건 확인', exact: true }).click();
     await page.waitForFunction(() => [...document.querySelectorAll('.cm-content .cm-line span')].some(span =>
       getComputedStyle(span).color !== getComputedStyle(span.closest('.cm-content')).color));
-    await page.getByText('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도의 import 연결과 FastAPI·Flask·Django 주소의 기능 흐름(처리 함수까지)을 보여 줘요. 파일 안내, 부르는 곳·값 찾기, 처리 함수 안의 호출 따라가기는 아직 TypeScript·JavaScript만 지원해요.', { exact: true }).waitFor();
+    await page.getByText('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도, 같은 파일의 직접 호출과 FastAPI·Flask·Django 주소의 기능 흐름(처리 함수까지)을 보여 줘요. 파일 안내, 값 추적, 파일 사이·속성 호출과 처리 함수 안의 기능 흐름 확장은 아직 지원하지 않아요.', { exact: true }).waitFor();
     assert.equal(await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).count(), 0);
-    await page.getByText('부르는 곳·값 찾기는 아직 TypeScript·JavaScript만 지원해요. 단계는 ‘이 함수 흐름으로 보기’에서 하나씩 볼 수 있어요.', { exact: true }).waitFor();
+    await page.getByText('같은 파일에서 직접 부르는 함수는 ‘이 함수 흐름으로 보기’에서 찾아요. Python 값 추적은 아직 지원하지 않아요.', { exact: true }).waitFor();
     await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
     await page.getByRole('button', { name: 'Order.total', exact: true }).click();
-    await page.getByText('부르는 것·부르는 곳·값 찾기는 아직 TypeScript·JavaScript 파일만 지원해요.', { exact: true }).waitFor();
+    await page.getByText('Python은 지금 같은 파일에서 직접 이름으로 부르는 함수만 따라가요. 다른 파일·속성·람다 안·함수 정의 헤더의 호출과 값 추적은 아직 지원하지 않아요.', { exact: true }).waitFor();
     await page.getByRole('banner').getByRole('button', { name: /^질문(?: · 진행 중)?$/ }).click();
   });
   await check('Python map: relative and own-package arrows, external modules and unsettled candidates', async () => {
@@ -3783,6 +3786,43 @@ try {
     await service.getByRole('button', { name: '코드 보기', exact: true }).click();
     await page.getByRole('heading', { name: 'app/service.py', exact: true }).waitFor();
     assert.match(await page.getByTestId('evidence-range').innerText(), /app\/service\.py · 1–1줄/);
+  });
+  await check('Python calls: same-file targets, reverse callers, evidence and no TypeScript shape request', async () => {
+    await app.evaluate(({ ipcMain }) => {
+      globalThis.pythonCallsShapes = { original: ipcMain._invokeHandlers.get('learning:shapes'), count: 0 };
+      ipcMain._invokeHandlers.set('learning:shapes', (...args) => {
+        globalThis.pythonCallsShapes.count++;
+        return globalThis.pythonCallsShapes.original(...args);
+      });
+    });
+    try {
+      await dialogTo(pythonCallsFixture);
+      await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+      await page.getByRole('heading', { name: 'Python 호출 프로젝트', exact: true }).waitFor();
+      await openTreeFile('calls.py');
+      await page.getByRole('button', { name: 'run', exact: true }).click();
+      await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+      const outgoing = page.getByRole('list', { name: '이 함수가 부르는 것', exact: true });
+      await outgoing.getByText('helper(7)', { exact: true }).waitFor();
+      await outgoing.getByRole('button', { name: '호출 위치', exact: true }).click();
+      await until(async () => await page.getByTestId('evidence-range').innerText() === '근거: calls.py · 5–5줄');
+      await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+      await page.getByRole('button', { name: 'run', exact: true }).click();
+      await outgoing.getByRole('button', { name: '그 함수로', exact: true }).click();
+      const incoming = page.getByRole('list', { name: '이 함수를 부르는 곳', exact: true });
+      await incoming.getByText('helper(7)', { exact: true }).waitFor();
+      await incoming.getByRole('button', { name: '그 함수로', exact: true }).click();
+      await outgoing.getByText('helper(7)', { exact: true }).waitFor();
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await app.evaluate(() => globalThis.pythonCallsShapes.count), 0);
+      assert.equal(await page.getByText('모양은 TypeScript가 코드에서 읽은 타입이에요. 실행해서 확인한 값이 아니에요.', { exact: true }).count(), 0);
+      assert.equal(await readFile(path.join(pythonCallsFixture, 'calls.py'), 'utf8'), 'def helper(value):\n    return value\n\ndef run():\n    return helper(7)\n\nrun()\n');
+    } finally {
+      await app.evaluate(({ ipcMain }) => {
+        ipcMain._invokeHandlers.set('learning:shapes', globalThis.pythonCallsShapes.original);
+        delete globalThis.pythonCallsShapes;
+      });
+    }
   });
   await check('Reading order: settled Python imports, numbered steps and opening a file', async () => {
     await dialogTo(pythonFixture);

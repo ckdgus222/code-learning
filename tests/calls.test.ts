@@ -607,7 +607,7 @@ it('follows alias imports and refuses competing candidates', async () => {
   expect(uncertain.calls[0]).toMatchObject({ status: 'unknown', detail: '경로 별칭이 가리키는 파일을 하나로 정하지 못했어요.' });
 });
 
-it('rejects a Python target before reading aliases or any source', async () => {
+it('reads a Python target without reading TypeScript path aliases', async () => {
   const filesModule = await import('../src/core/project/files');
   const aliasesModule = await import('../src/core/analysis/path-aliases');
   const read = vi.spyOn(filesModule, 'readAllowed');
@@ -615,9 +615,9 @@ it('rejects a Python target before reading aliases or any source', async () => {
   try {
     await expect(findFunctionCalls('/missing', 'project', [{ id: 'py', relativePath: 'main.py', size: 20 }],
       { fileId: 'py', fileHash: 'hash', startUtf16: 0, endUtf16: 20 }, MAP_LIMITS)).rejects.toMatchObject({
-      code: 'UNSUPPORTED', message: '부르는 것·부르는 곳·값 찾기는 아직 TypeScript·JavaScript 파일만 지원해요.',
+      code: 'IO',
     });
     expect(aliases).not.toHaveBeenCalled();
-    expect(read).not.toHaveBeenCalled();
+    expect(read).toHaveBeenCalled();
   } finally { read.mockRestore(); aliases.mockRestore(); }
 });

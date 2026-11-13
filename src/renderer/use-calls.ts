@@ -24,8 +24,10 @@ export function useCalls({ project, revision, view, source, symbol, setError }: 
   }, [view, source, symbol]);
   // The calls found lead to their value shapes; coming back to a function reuses both.
   useEffect(() => {
-    if (view === 'function' && calls?.state.status === 'done' && shapes?.key !== calls.key) void findShapes(calls.key, calls.state.result);
-  }, [calls, view]);
+    if (view === 'function' && source && symbol && calls?.key === callsKey(source, symbol)
+      && calls.state.status === 'done' && shapes?.key !== calls.key
+      && (source.analysis.language === 'typescript' || source.analysis.language === 'javascript')) void findShapes(calls.key, calls.state.result);
+  }, [calls, view, source, symbol]);
 
   // The function card the last call search belongs to; looked up only while the file guide is drawn.
   function guideCaller(found: NonNullable<typeof calls>) {
@@ -49,7 +51,8 @@ export function useCalls({ project, revision, view, source, symbol, setError }: 
     setCalls({ key, revision: atRevision, state: result.ok ? { status: 'done', result: result.value } : { status: 'failed', message: result.message } });
   }
   async function findShapes(key: string, found: FunctionCalls) {
-    if (!project) return;
+    if (!project || !source || source.fileId !== found.fileId || source.hash !== found.fileHash
+      || (source.analysis.language !== 'typescript' && source.analysis.language !== 'javascript')) return;
     const current = ++shapesRequest.current;
     const { queries, slots } = shapeQueries(found.values, found.fileId);
     setShapes({ key, slots, state: { status: 'finding' } });

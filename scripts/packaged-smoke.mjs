@@ -335,7 +335,8 @@ try {
   // A separate project proves that the Python prebuilt grammar loads in the packaged worker.
   const pythonFixture = path.join(temp, 'Python 읽기');
   await mkdir(pythonFixture);
-  await writeFile(path.join(pythonFixture, 'order.py'), 'class Order:\n    def total(self, value):\n        if value:\n            return value\n        return 0\n');
+  const pythonSource = 'def helper(value):\n    return value\n\nclass Order:\n    def total(self, value):\n        if value:\n            return helper(value)\n        return 0\n';
+  await writeFile(path.join(pythonFixture, 'order.py'), pythonSource);
   await app.evaluate(({ dialog }, folder) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] });
   }, pythonFixture);
@@ -345,9 +346,18 @@ try {
   await page.getByRole('button', { name: 'order.py', exact: true }).click();
   await page.getByRole('button', { name: 'Order.total', exact: true }).click();
   await page.getByRole('button', { name: '조건 확인', exact: true }).click();
+  await page.getByRole('button', { name: '이 함수 흐름으로 보기', exact: true }).click();
+  await page.getByRole('button', { name: 'Order.total', exact: true }).click();
+  const pythonCalls = page.getByRole('list', { name: '이 함수가 부르는 것', exact: true });
+  await pythonCalls.getByText('helper(value)', { exact: true }).waitFor();
+  await pythonCalls.getByRole('button', { name: '그 함수로', exact: true }).click();
+  await page.getByRole('list', { name: '이 함수를 부르는 곳', exact: true })
+    .getByText('helper(value)', { exact: true }).waitFor();
+  assert.equal(await readFile(path.join(pythonFixture, 'order.py'), 'utf8'), pythonSource);
   await app.close(); app = undefined;
   await testCopy.cleanup(); testCopy = undefined;
   const report = { passed: true, checks: ['Python native grammar, method outline and conditional step', 'screen groups and cached flow selection without flow IPC', 'system light and dark themes, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', onMac ? 'changes from git inside its sandbox' : 'Windows changes unavailable notice', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel', 'release fuses and plain startup', 'UI uses an inspect-enabled temporary copy', 'entire distributed app unchanged'], state };
+  report.checks.push('Python same-file calls, reverse callers and source unchanged');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

@@ -6,6 +6,9 @@ import { assertAllowedFile, MAX_FILE_BYTES, readAllowed } from '../project/files
 import { codeFile, type MapLimits } from './project-map';
 import { functionName, functionTypes } from './syntax';
 import { valuesOf } from './values';
+import { languageOf } from '../../shared/languages';
+import { findPythonFunctionCalls } from './python-calls';
+import type { PythonFileFacts } from './python-names';
 import { calledProperty, firstLine, hasToken, isMemberCall, lineRange, nearest, propertyName, readFacts, reassigned, sameRange,
   type CallFact, type FileFacts, type Scope } from './names';
 
@@ -118,6 +121,7 @@ function namesOf(fn: Parser.SyntaxNode, facts: FileFacts): FunctionCalls['names'
 export interface CallsCache {
   texts: Map<string, { text: string; hash: string }>;
   parsed: Map<string, FileFacts>;
+  pythonParsed?: Map<string, PythonFileFacts>;
   /** Files parsed for the current flow, in first-use order, including cache hits. */
   parsedFiles?: Set<string>;
 }
@@ -132,7 +136,8 @@ export async function findFunctionCalls(root: string, projectId: string, files: 
   limits: MapLimits, shouldStop: () => boolean = () => false, cache?: CallsCache, pathAliases?: PathAliases): Promise<FunctionCalls> {
   const chosenFile = files.find(file => file.id === target.fileId);
   if (!chosenFile) throw new AppError('NOT_ALLOWED', '현재 프로젝트의 파일이 아닙니다.');
-  if (!codeFile.test(chosenFile.relativePath)) throw new AppError('UNSUPPORTED', '부르는 것·부르는 곳·값 찾기는 아직 TypeScript·JavaScript 파일만 지원해요.');
+  if (languageOf(chosenFile.relativePath) === 'python') return findPythonFunctionCalls(root, projectId, files, target, limits, shouldStop, cache);
+  if (!codeFile.test(chosenFile.relativePath)) throw new AppError('UNSUPPORTED', '호출 찾기는 TypeScript·JavaScript·Python 파일만 지원해요.');
   const known = new Map(files.map(file => [file.relativePath, file]));
   const result = { limited: false, unexamined: new Map<string, { fileId: string; relativePath: string; reason: string }>() };
   const skip = (file: ProjectFile, reason: string) => {

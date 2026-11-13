@@ -353,7 +353,7 @@ export interface CallSite {
   endLine: number;
   /** The call's first line, cut short. */
   text: string;
-  /** Its arguments as written (first line each); null for a tagged template, whose arguments line up differently. */
+  /** Positional arguments as written (first line each); null when their correspondence is not settled. */
   args: { text: string; spread: boolean }[] | null;
   /** In a test file (`*.test.*`, `*.spec.*`, inside `__tests__/`): its arguments are examples (plan v2.3 V-1). */
   inTest: boolean;

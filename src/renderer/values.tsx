@@ -51,7 +51,7 @@ export function shapeQueries(values: NameValue[], fileId: string): { queries: Sh
 
 /** The argument a call passes at a parameter's position, or why it cannot be told. */
 function argument(site: CallSite, index: number, hasDefault: boolean): React.ReactNode {
-  if (!site.args) return <span className="hint">확인 못 함(태그 템플릿 호출이라 자리가 달라요)</span>;
+  if (!site.args) return <span className="hint">확인 못 함(인자와 매개변수의 대응을 정하지 못했어요)</span>;
   const spread = site.args.findIndex(item => item.spread);
   if (spread !== -1 && spread <= index) return <span className="hint">확인 못 함(펼침 인자로 자리를 정할 수 없어요)</span>;
   if (index >= site.args.length) return <span className="hint">넘기지 않음{hasDefault && ' · 기본값을 써요'}</span>;

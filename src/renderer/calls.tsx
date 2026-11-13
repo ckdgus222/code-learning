@@ -25,6 +25,9 @@ const reasons: Record<CallUnknownReason, string> = {
   export: '가져온 파일에서 그 이름으로 내보낸 함수를 하나로 정할 수 없어요',
 };
 
+const reasonText = (reason: CallUnknownReason, detail: string | null) =>
+  reason === 'unclear-file' && detail ? detail : `${reasons[reason]}${detail ? ` · ${detail}` : ''}`;
+
 /**
  * Plan v2.3 F in the flow view's function summary: what the function calls and where it is called from.
  * Found from names in the code only; the buttons move only while the file is as it was when searched.
@@ -63,7 +66,7 @@ export function CallsFacts({ state, stale, locked, pathOf, onRetry, onCancel, on
         {at(call, false)}
         {call.status === 'linked' || call.status === 'typed' ? <> → <b>{call.target.name}</b> <span className="path">{pathOf(call.target.fileId)}</span>{call.status === 'typed' && <span title={call.basis}> · 타입으로 찾음</span>} {functionButton(call.target)}</>
           : call.status === 'external' ? <> · <span className="tag tag--doc">외부 패키지 또는 경로 별칭</span><code>{call.specifier}</code></>
-          : <> · <span className="tag tag--unknown">확인 못 함</span>{reasons[call.reason]}{call.detail && ` · ${call.detail}`}</>}
+          : <> · <span className="tag tag--unknown">확인 못 함</span>{reasonText(call.reason, call.detail)}</>}
         {' '}{siteButton(call)}
       </li>)}</ul> : <p>이 함수 본문에서 찾은 호출이 없어요.</p>}
       <Omitted count={result.calls.length} />
@@ -86,7 +89,7 @@ export function CallsFacts({ state, stale, locked, pathOf, onRetry, onCancel, on
       </>}
       {result.maybeCallers.length > 0 && <details><summary>이름이 같지만 잇지 못한 호출 · {result.maybeCallers.length}개</summary>
         <ul className="map-list" aria-label="이름이 같지만 잇지 못한 호출">{firstRows(result.maybeCallers).map(site => <li key={`${site.fileId}:${site.startUtf16}`}>
-          {at(site, true)} · <span className="tag tag--unknown">확인 못 함</span>{reasons[site.reason]}{site.detail && ` · ${site.detail}`} {siteButton(site)}
+          {at(site, true)} · <span className="tag tag--unknown">확인 못 함</span>{reasonText(site.reason, site.detail)} {siteButton(site)}
         </li>)}</ul>
         <Omitted count={result.maybeCallers.length} />
       </details>}
