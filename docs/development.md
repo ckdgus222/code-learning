@@ -81,6 +81,7 @@ macOS의 AI 질문 단계와 Codex·Antigravity 설치 확인은 `sandbox-exec` 
 ## 알려진 한계
 
 - 지도 내보내기는 저장 직전에 다른 프로그램이 고른 폴더를 링크 등으로 바꿔치는 경우를 막지 않습니다.
+- 개발·CI 도구의 의존성 보안 경고(2026-11-14): `undici`·`minimatch` 경고 10개가 남아 있으며 npm 패치와 실행 Node 갱신을 권고합니다. 로컬 macOS 앱에는 이 npm 패키지가 없고 Electron 내장 undici는 패치된 `7.30.1`이지만, 개발·CI 다운로드 경로와 Windows 설치 파일 내부는 별도로 확인해야 합니다([검토 기록](implementation-status.md)).
 
 질문을 보내기 전에 알아 둘 것입니다. macOS의 Codex·Gemini 단독은 앱 전용 홈·울타리를 쓰지만 아래 한계가 있습니다. Windows Codex는 앱 전용 홈을 쓰지만 이 울타리는 없습니다. 시험 기록은 [구현 상태](implementation-status.md)에 있습니다.
 

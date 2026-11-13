@@ -2,6 +2,16 @@
 
 **0단계 일부와 1A의 로컬 탐색·구문 근거 이동·흐름 따라가기 화면을 구현했다.** AI 연결, 초기 이해도 관찰과 나머지 보호 검수는 끝나지 않았으므로 0단계 전체·1A 전체·개인용 시제품·범용 MVP 완료로 표시하지 않는다. 기획서는 v2.2와, 사용자가 2026-10-19 확정한 보완 v2.3(에이전트 작업 검사, v2.2와 다르면 v2.3 우선)이 기준이다. v2.3 2차 개정(사용자 확정)의 순서는 A 프로젝트 지도(완료) → 0 안정성(완료) → C-1 어려운 코드 표시(완료) → F 함수 호출 관계(완료) → V-1 값 따라가기 예시 값(완료) → V-2 값의 모양(완료) → C-2 변경 보기(완료)이고, B 기획 대조는 보류다. 사용자가 2026-10-20 C-2 뒤에 D ‘DB 구조(SQL 기준)’를 더했다(기획 v2.3 3차 개정, plan 리뷰 2차 통과).
 
+## 1.1.0 main 푸시·CI 확인과 개발 도구 보안 경고 (2026-11-14)
+
+- 사용자 진행 요청에 따라 준비한 3개 커밋을 `main`에 푸시했다. 원격 `main`은 `a7764f6913fdd9b959d7e8f9ebef6cd87da0569e`이며, [CI 43450010643](https://github.com/ckdgus222/code-learning/actions/runs/43450010643)은 **5개 작업 모두 성공**으로 완료됐다. 태그와 GitHub 출시는 만들지 않았다.
+- CI 검증: 두 OS의 타입 검사 통과. 단위 검사는 macOS **5,033개 통과·6개 제외**, Windows **4,942개 통과·97개 제외**. Electron 화면 검사 macOS **158개 PASS**·Windows **153개 PASS**, 두 OS의 패키징·패키지 실행 검사, Windows 설치 프로그램 생성·설치·실행·제거가 통과했다. 두 OS의 FastAPI 화면 검사도 통과했다. 원격 실행 결과를 확인하는 단계여서 로컬 전체 검사는 반복하지 않았다.
+- 푸시 응답에서 [Dependabot 경고 10개](https://github.com/ckdgus222/code-learning/security/dependabot)(높음 7·보통 3)를 확인했다. 모두 개발용 간접 의존성으로, npm `undici` 6.29.0/7.30.0의 경고 9개와 `minimatch` 10.2.6의 경고 1개다. R3의 지정 검토 범위에는 의존성 취약점 조사가 포함되지 않았으므로 이번에 별도 읽기 전용 검토를 했다.
+- 영향 구분: 로컬 macOS 1.1.0 ASAR·풀린 리소스에는 이 npm 패키지가 없었고 주요 번들에서도 해당 구현 표식을 찾지 못했다. macOS·Windows 패키지 CI 로그의 Electron 내장 undici는 패치 버전 `7.30.1`이었다. 확인한 macOS 앱의 직접적인 출시 차단 문제는 발견하지 못했지만, Windows 설치 파일 내부와 악성 서버 재현은 **미검증**이다.
+- 개발·CI 위험: `node-gyp`는 npm undici로, `@electron/get`은 Node 내장 `fetch`로 파일을 받는다. 현재 개발·CI Node 24.18.0의 내장 undici는 7.28.0이다. 악성·침해된 다운로드 서버나 지정 미러가 [특수 압축 응답](https://github.com/nodejs/undici/security/advisories/GHSA-xjj6-f33q-929c) 또는 [TLS 재협상](https://github.com/nodejs/undici/security/advisories/GHSA-qrxm-fqhp-jwvm)을 사용하면 빌드 프로세스가 종료될 수 있어 패치를 권고한다. 다른 undici 경고의 공유 캐시·함수형 인증서 옵션·WebSocket 조건은 조사한 다운로드 호출에서 발견하지 못했다. 외부 프로젝트를 분석하는 것만으로 이 다운로드 경로에 도달한다는 근거는 없다.
+- 최소 변경 후보: 기존 상위 의존성 범위를 만족하는 npm undici **6.29.1/7.30.1**로 잠금파일을 갱신하고, 개발·CI Node를 **24.22.3**으로 맞춘 뒤 다시 검증한다([Node 공식 보안 릴리스: 내장 undici 7.30.2](https://nodejs.org/en/blog/release/v24.22.3)). npm 의존성만 갱신하면 내장 `fetch` 경로는 남는다.
+- `minimatch`는 공격자가 제어하는 특수 glob 패턴이 필요한데, 현재 패키징에서는 생성된 경로와 고정 패턴을 쓴다. [수정 버전 11.0.1](https://github.com/isaacs/minimatch/security/advisories/GHSA-g3hv-75wg-m249)은 기존 `^10` 범위를 벗어나고 새 의존성도 추가하므로 강제 override 없이 별도 호환 검토·승인이 필요하다. 이번 단계에서는 의존성·Node·워크플로를 변경하지 않았다.
+
 ## 1.1.0 버전 반영과 출시 노트 초안 (2026-11-14)
 
 - 기존 출시 제안에 따라 개발 버전을 `1.0.2`에서 `1.1.0`으로 올렸다. `package.json`과 `package-lock.json`의 루트 버전 두 곳, 총 3개 값만 변경했다. JSON 내용 대조로 의존성·설치 정책 등 다른 값이 그대로임을 확인했다.
