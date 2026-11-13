@@ -24,6 +24,16 @@ async function find(limits = MAP_LIMITS) {
 }
 const server = "@Controller('dogs') export class DogsController { @Get() list() {} @Delete(':id') remove() {} }";
 
+it('fully reads 28000 same-name calls and writes in separate functions', async () => {
+  const text = `function g(){let f;${'f();'.repeat(28_000)}}function h(){let f;${'{'.repeat(50)}${'f++;'.repeat(28_000)}${'}'.repeat(50)}}`;
+  await put('many-writes.ts', text);
+  const result = await find();
+  expect(result.limited).toBe(false);
+  expect(result.notes.some(note => note.includes('many-writes.ts'))).toBe(false);
+  expect(result.routes).toEqual([]);
+  expect(result.requests).toEqual([]);
+}, 30_000);
+
 describe('receiving routes', () => {
   it.each([
     ["'dogs'", "'x'", ['/dogs/x']],

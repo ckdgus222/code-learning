@@ -665,13 +665,64 @@ export function readFacts(file: ProjectFile, text: string, hash: string, nodeBud
   return facts;
 }
 
-/** Whether the name is written to anywhere inside the scope, inner scopes included. */
+/** Scope intervals and direct writes in depth-first order, only for scopes containing a write. */
+interface WriteIndex {
+  span: Map<Scope, { first: number; last: number }>;
+  writes: Map<string, number[]>;
+}
+const writeIndexes = new WeakMap<FileFacts, WriteIndex>();
+
+function buildWriteIndex(facts: FileFacts): WriteIndex {
+  const children = new Map<Scope, Scope[]>();
+  for (const assignment of facts.assignments) {
+    for (let scope: Scope | null = assignment.scope; scope && !children.has(scope); scope = scope.parent) {
+      children.set(scope, []);
+    }
+  }
+  const pending: { scope: Scope; exiting: boolean }[] = [];
+  for (const scope of children.keys()) {
+    const parent = scope.parent;
+    if (!parent) { pending.push({ scope, exiting: false }); continue; }
+    children.get(parent)!.push(scope);
+  }
+  const span: WriteIndex['span'] = new Map();
+  let position = 0;
+  while (pending.length) {
+    const { scope, exiting } = pending.pop()!;
+    if (exiting) { span.get(scope)!.last = position - 1; continue; }
+    span.set(scope, { first: position, last: position });
+    position++;
+    pending.push({ scope, exiting: true });
+    for (const child of children.get(scope)!) pending.push({ scope: child, exiting: false });
+  }
+  const writes: WriteIndex['writes'] = new Map();
+  for (const { name, scope } of facts.assignments) {
+    const positions = writes.get(name);
+    const first = span.get(scope)!.first;
+    if (!positions) { writes.set(name, [first]); continue; }
+    positions.push(first);
+  }
+  for (const positions of writes.values()) positions.sort((a, b) => a - b);
+  return { span, writes };
+}
+
+/**
+ * Whether the name is written to anywhere inside the scope, inner scopes included.
+ * Called only after readFacts has finished filling assignments; the facts then stay unchanged.
+ */
 export function reassigned(facts: FileFacts, name: string, scope: Scope): boolean {
-  return facts.assignments.some(assignment => {
-    if (assignment.name !== name) return false;
-    for (let inner: Scope | null = assignment.scope; inner; inner = inner.parent) if (inner === scope) return true;
-    return false;
-  });
+  let index = writeIndexes.get(facts);
+  if (!index) { index = buildWriteIndex(facts); writeIndexes.set(facts, index); }
+  const span = index.span.get(scope);
+  const positions = index.writes.get(name);
+  if (!span || !positions) return false;
+  let low = 0, high = positions.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (positions[middle] < span.first) { low = middle + 1; continue; }
+    high = middle;
+  }
+  return low < positions.length && positions[low] <= span.last;
 }
 
 /** The nearest declarations of a name, scope by scope outward. */
