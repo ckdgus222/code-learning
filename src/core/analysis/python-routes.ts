@@ -196,14 +196,18 @@ function readRoute(app: App, args: Node[], method: string, rootPath: boolean, re
 type WrittenPrefix = { kind: 'missing' | 'none' | 'dynamic' } | { kind: 'literal'; text: string };
 type RouteOwner = { id: number; name: string; app: App; end: number; args: Node[]; lastRouteEnd: number; bindingStartUtf16: number };
 type RouteTemplate = { ownerId: number; writtenPath: string | null; base: Route; unsupported: boolean };
-type RegistrationScope = { bodyId: number; entries: ReturnType<typeof walkPython>['nodes']; returnedReadId?: number; templatesCut?: boolean };
+type RegistrationScope = { bodyId: number; entries: ReturnType<typeof walkPython>['nodes']; returnedReadId?: number; templatesCut?: boolean;
+  safeOwners?: Set<number> };
 type RegistrationWork = { left: number; cut: boolean };
 export type PythonRouteImportRoom = { owners: number; drafts: number; work: number; cut: boolean };
 export type PythonImportedTemplate = Omit<RouteTemplate, 'ownerId'>;
 export type PythonRouteOwnerOrigin = { name: string; bindingStartUtf16: number; app: App; safe: boolean; redirectSlashes: boolean;
-  prefix: WrittenPrefix; blueprintName: string | null; templates: PythonImportedTemplate[] };
+  prefix: WrittenPrefix; blueprintName: string | null; templates: PythonImportedTemplate[];
+  factoryReadReview?: { baseSafe: boolean; unsafeReadStarts: number[] } };
 export type PythonImportedDecorator = { callStartUtf16: number; receiverNames: string[]; method: string; handler: Route['handler']; basis: Route['basis'] };
-export type PythonRouteImportFacts = { owners: PythonRouteOwnerOrigin[]; drafts: PythonImportedDecorator[] };
+export type PythonRouteFactoryContext = { functionStartUtf16: number; bodyStartUtf16: number; bodyEndUtf16: number; returnedReadStartUtf16: number;
+  parent: PythonRouteOwnerOrigin; registrationStarts: number[]; localBlueprintRegistrations: { callStartUtf16: number; name: string | null }[] };
+export type PythonRouteImportFacts = { owners: PythonRouteOwnerOrigin[]; drafts: PythonImportedDecorator[]; factories?: PythonRouteFactoryContext[] };
 const writtenPrefix = (node: Node | null | undefined): WrittenPrefix => {
   if (!node) return { kind: 'missing' };
   if (node.type === 'none') return { kind: 'none' };
@@ -220,6 +224,10 @@ function blueprintName(owner: RouteOwner): string | null {
   const name = owner.app.framework === 'flask' && owner.app.router ? plainString(owner.args.find(positional) ?? keyword(owner.args, 'name')) : null;
   return name !== null && name.length <= ROUTE_LIMITS.name ? name : null;
 }
+const routeOrigin = (owner: RouteOwner, safe: boolean, redirectSlashes: boolean): PythonRouteOwnerOrigin => ({
+  name: owner.name, bindingStartUtf16: owner.bindingStartUtf16, app: owner.app, safe, redirectSlashes,
+  prefix: writtenPrefix(keyword(owner.args, frameworks[owner.app.framework].prefix)), blueprintName: blueprintName(owner), templates: [],
+});
 function constructorSafe(owner: RouteOwner, invalid: Set<string>): boolean {
   if (invalid.has(owner.name) || invalid.has(owner.app.factory) || owner.app.spread || owner.app.unsupported) return false;
   const keywords = owner.args.filter(arg => arg.type === 'keyword_argument').map(arg => nameOf(arg.childForFieldName('name')));
@@ -391,11 +399,17 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
   };
   if (importRoom && complete && !root.hasError) {
     const unsafe = new Set<string>();
+    const hardUnsafe = new Set<string>();
+    const readStarts = new Map<string, Set<number>>();
     for (const { node, type } of nodes) {
       if (type === 'call') {
         const names = pythonAttributeNames(node.childForFieldName('function'));
-        if (names?.length === 2 && apps.get(names[0])?.router
-          && ['include_router', 'register_blueprint', 'mount'].includes(names[1])) unsafe.add(names[0]);
+        const app = names?.length === 2 ? apps.get(names[0]) : null;
+        const unsupportedRoute = app?.router && ['get', 'post', 'put', 'patch', 'delete', frameworks[app.framework].route].includes(names![1])
+          && (node.parent?.type !== 'decorator' || node.parent.parent?.parent?.id !== root.id);
+        if (app?.router && (unsupportedRoute || ['include_router', 'register_blueprint', 'mount'].includes(names![1]))) {
+          unsafe.add(names![0]); hardUnsafe.add(names![0]);
+        }
       }
       if (type !== 'identifier' || labelPosition(node) || parameterPosition(node)) continue;
       const name = nameOf(node);
@@ -406,13 +420,22 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
       const constructor = factory && (factory.kind === 'module' ? access.names.length === 2 && !!factoryKind(factory.framework, access.names[1])
         : access.names.length === 1);
       const method = app && access.names.length === 2 && frameworks[app.framework].attributes.has(access.names[1]);
-      if (!called || !constructor && !method) unsafe.add(name);
+      if (!called || !constructor && !method) {
+        unsafe.add(name);
+        if (!app?.router) continue;
+        if (importRoom.work <= 0) { importRoom.cut = true; hardUnsafe.add(name); continue; }
+        importRoom.work--;
+        const starts = readStarts.get(name) ?? new Set<number>();
+        starts.add(access.node.startIndex); readStarts.set(name, starts);
+      }
     }
     for (const owner of owners.values()) {
       if (!importRoomFor('owners', 100 + owner.name.length + owner.app.factory.length)) break;
-      const safe = !star && !odd && constructorSafe(owner, invalid) && !unsafe.has(owner.name) && !unsafe.has(owner.app.factory);
-      const origin: PythonRouteOwnerOrigin = { name: owner.name, bindingStartUtf16: owner.bindingStartUtf16, app: owner.app, safe, redirectSlashes,
-        prefix: writtenPrefix(keyword(owner.args, frameworks[owner.app.framework].prefix)), blueprintName: blueprintName(owner), templates: [] };
+      const baseSafe = !star && !odd && constructorSafe(owner, invalid) && !hardUnsafe.has(owner.name) && !unsafe.has(owner.app.factory);
+      const origin = routeOrigin(owner, baseSafe && !unsafe.has(owner.name), redirectSlashes);
+      if (baseSafe && !origin.safe && owner.app.router) {
+        origin.factoryReadReview = { baseSafe, unsafeReadStarts: [...(readStarts.get(owner.name) ?? [])] };
+      }
       imports.owners.push(origin); ownerOrigins.set(owner.id, origin);
     }
   }
@@ -465,18 +488,21 @@ export function pythonRoutes(file: ProjectFile, walk: ReturnType<typeof walkPyth
   }
   for (const template of templates) {
     const origin = ownerOrigins.get(template.ownerId);
-    if (!origin?.safe || !importRoom) continue;
+    if (!origin || !origin.safe && !origin.factoryReadReview?.baseSafe || !importRoom) continue;
     const cost = 100 + (template.writtenPath?.length ?? 0);
     if (cost > importRoom.work) { importRoom.cut = true; break; }
     importRoom.work -= cost;
     const { ownerId: _ownerId, ...plain } = template;
     origin.templates.push(plain);
   }
-  if (cut) for (const origin of ownerOrigins.values()) origin.safe = false;
+  if (cut) for (const origin of ownerOrigins.values()) {
+    origin.safe = false;
+    if (origin.factoryReadReview) origin.factoryReadReview.baseSafe = false;
+  }
   const work = { left: ROUTE_LIMITS.work, cut: false };
   const registered = registeredRoutes(templates, owners, walk, maxRoutes, invalid, odd, rootPath, redirectSlashes, work,
     { bodyId: root.id, entries: nodes, templatesCut: cut });
-  const local = appFactoryRoutes(file, walk, hash, maxRoutes - registered.routes.length, factories, bindings, invalid, odd, rootPath, redirectSlashes, work);
+  const local = appFactoryRoutes(file, walk, hash, maxRoutes - registered.routes.length, factories, bindings, invalid, odd, rootPath, redirectSlashes, work, imports, importRoom);
   registered.routes.push(...local.routes);
   return { routes: registered.routes, routers: [...new Set([...registered.routers, ...local.routers])], complete,
     cut: cut || registered.cut || local.cut, odd: complete && odd, ...(local.routes.length ? { factoryRoutes: local.routes.length } : {}),
@@ -641,6 +667,9 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
     const called = parent?.type === 'call' && parent.childForFieldName('function')?.id === access.node.id;
     if (called && access.names.length === 2 && frameworks[owner.app.framework].attributes.has(access.names[1])) continue;
     unsafe.add(owner.id);
+  }
+  if (!odd) for (const owner of owners.values()) {
+    if (!unsafe.has(owner.id)) scope.safeOwners?.add(owner.id);
   }
   const namesByParent = new Map<number, Map<string, Registration>>();
   for (const registration of registrations) {
@@ -904,7 +933,8 @@ function registeredRoutes(templates: RouteTemplate[], owners: Map<string, RouteO
 /** Each factory owns its app names. Its existence is evidence of code, not of invocation or deployment. */
 function appFactoryRoutes(file: ProjectFile, walk: ReturnType<typeof walkPython>, hash: string, maxRoutes: number,
   factories: Map<string, Factory>, moduleBindings: Map<string, Set<number>>, moduleInvalid: Set<string>, fileOdd: boolean,
-  rootPath: boolean, redirectSlashes: boolean, work: RegistrationWork): { routes: Route[]; routers: Framework[]; uncertain: boolean; cut: boolean; mounts: number } {
+  rootPath: boolean, redirectSlashes: boolean, work: RegistrationWork, imports: PythonRouteImportFacts, importRoom?: PythonRouteImportRoom):
+  { routes: Route[]; routers: Framework[]; uncertain: boolean; cut: boolean; mounts: number } {
   const routes: Route[] = [];
   const routers = new Set<Framework>();
   let uncertain = false;
@@ -1060,8 +1090,30 @@ function appFactoryRoutes(file: ProjectFile, walk: ReturnType<typeof walkPython>
         templates.push({ ownerId: owner.id, writtenPath, base: route, unsupported: odd || unsupported });
       }
     }
+    const safeOwners = new Set<number>();
     const result = registeredRoutes(templates, owners, walk, room, invalid, odd, rootPath, redirectSlashes, work,
-      { bodyId: body.id, entries, returnedReadId: returned.id, templatesCut: cut });
+      { bodyId: body.id, entries, returnedReadId: returned.id, templatesCut: cut, safeOwners });
+    const parentOwner = owners.get(appName)!;
+    if (importRoom && !cut && !result.cut && safeOwners.has(parentOwner.id)) {
+      const context: PythonRouteFactoryContext = { functionStartUtf16: fn.startIndex, bodyStartUtf16: body.startIndex, bodyEndUtf16: body.endIndex,
+        returnedReadStartUtf16: returned.startIndex, parent: routeOrigin(parentOwner, true, redirectSlashes), registrationStarts: [], localBlueprintRegistrations: [] };
+      for (const { node, type } of own) {
+        if (type !== 'call' || node.parent?.type !== 'expression_statement' || node.parent.parent?.id !== body.id) continue;
+        const names = pythonAttributeNames(node.childForFieldName('function'));
+        if (names?.length !== 2 || names[0] !== appName || !['include_router', 'register_blueprint'].includes(names[1])) continue;
+        if (importRoom.drafts <= 0 || importRoom.work < 100) { importRoom.cut = true; break; }
+        importRoom.drafts--; importRoom.work -= 100;
+        context.registrationStarts.push(node.startIndex);
+        const childNames = pythonAttributeNames(pythonRegistrationChild(node));
+        const localChild = childNames?.length === 1 ? owners.get(childNames[0]) : null;
+        if (names[1] === 'register_blueprint' && localChild) context.localBlueprintRegistrations.push({ callStartUtf16: node.startIndex,
+          name: pythonBlueprintRegistrationName(node, routeOrigin(localChild, false, redirectSlashes)) });
+      }
+      if (context.registrationStarts.length) {
+        if (importRoom.owners <= 0 || importRoom.work < 100) importRoom.cut = true;
+        else { importRoom.owners--; importRoom.work -= 100; (imports.factories ??= []).push(context); }
+      }
+    }
     return { ...result, routes: result.routes.map(route => ({ ...route, prefix: 'unknown' })), cut: cut || result.cut };
   };
   for (const scope of scopes) {
