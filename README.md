@@ -28,9 +28,10 @@ Explore unfamiliar TypeScript, JavaScript and Python projects with evidence from
 |---|---|---|
 | TypeScript·JavaScript | 모든 기능 | 아래 알려진 한계 참고 |
 | Python | 코드 읽기, 프로젝트 지도, 서버 주소의 기능 흐름 | 함수 안 호출·값 따라가기, 파일 안내 |
+| Java | 코드 보기·색상, 메서드·생성자 목록, 구문 단계·복잡도 | 호출·값 찾기, 파일 안내·AI 파일 설명, 프로젝트 지도·서버 주소·기능 흐름·이름 찾기 |
 | 서버 프레임워크 | NestJS, Next API, Express, FastAPI, Flask, Django | Fastify, Hono, Koa 등 |
 | 요청 | fetch, axios | 그 밖의 요청 라이브러리 |
-| 그 밖의 언어(Java, Go, Rust, Kotlin, C#, Ruby, PHP, Swift, C/C++, Vue, Svelte 등) | 원문 보기 | 분석 |
+| 그 밖의 언어(Go, Rust, Kotlin, C#, Ruby, PHP, Swift, C/C++, Vue, Svelte 등) | 원문 보기 | 분석 |
 
 폴더는 UTF-8 텍스트 파일 1,000개, 파일당 256 KiB까지 읽으며, 제외한 파일은 이유를 보여 주고 한도를 넘으면 더 작은 폴더를 열면 됩니다.
 

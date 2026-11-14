@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { tags, highlightTree } from '@lezer/highlight';
 import { javascriptLanguage, jsxLanguage, tsxLanguage } from '@codemirror/lang-javascript';
+import { javaLanguage } from '@codemirror/lang-java';
 import { pythonLanguage } from '@codemirror/lang-python';
 import { EditorState } from '@codemirror/state';
 import { highlightingFor, language, syntaxTree } from '@codemirror/language';
@@ -187,6 +188,20 @@ it('provides the Python parser and shared colours', () => {
     expect(highlightingFor(state, [tag])).toBe(codeHighlightStyle.style([tag]));
   }
   expect(syntaxTree(state).toString()).toContain('FunctionDefinition');
+  const errors: string[] = [];
+  syntaxTree(state).iterate({ enter: node => { if (node.type.isError) errors.push(node.name); } });
+  expect(errors).toEqual([]);
+});
+
+it('provides the Java parser and shared colours', () => {
+  const extensions = codeHighlighting('java');
+  expect(extensions).toHaveLength(2);
+  const state = EditorState.create({ doc: 'class A { String run() { return "hello"; /* comment */ } }', extensions });
+  expect(state.facet(language)).toBe(javaLanguage);
+  for (const tag of [tags.keyword, tags.string, tags.comment]) {
+    expect(highlightingFor(state, [tag])).toBe(codeHighlightStyle.style([tag]));
+  }
+  expect(syntaxTree(state).toString()).toContain('MethodDeclaration');
   const errors: string[] = [];
   syntaxTree(state).iterate({ enter: node => { if (node.type.isError) errors.push(node.name); } });
   expect(errors).toEqual([]);

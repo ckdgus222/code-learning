@@ -2,6 +2,12 @@
   "date": "2026-10-14",
   "dependencies": [
     {
+      "name": "@codemirror/lang-java",
+      "version": "6.0.2",
+      "license": "MIT",
+      "scope": "runtime"
+    },
+    {
       "name": "@codemirror/lang-javascript",
       "version": "6.2.5",
       "license": "MIT",
@@ -52,6 +58,12 @@
     {
       "name": "tree-sitter",
       "version": "0.21.1",
+      "license": "MIT",
+      "scope": "runtime"
+    },
+    {
+      "name": "tree-sitter-java",
+      "version": "0.23.5",
       "license": "MIT",
       "scope": "runtime"
     },

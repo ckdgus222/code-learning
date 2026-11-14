@@ -159,3 +159,28 @@ it('opens over-nested source with a warning and no optional guide', async () => 
   expect(source.analysis.symbols).toEqual([]);
   expect(source.analysis.warnings).toContain(NESTED_NOTE);
 });
+
+it('reads Java methods without sending the file through the TypeScript guide', async () => {
+  root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-java-worker-')));
+  worker.data.root = root;
+  const text = 'class Order { int total(int value) { if (value > 0) return value; return 0; } }';
+  await writeFile(path.join(root, 'Order.java'), text);
+  vi.resetModules();
+  const guide = await import('../src/core/analysis/file-guide');
+  const describe = vi.spyOn(guide, 'describeFile');
+  await import('../src/workers/analysis');
+  await worker.receive!({ id: 101, kind: 'scan' });
+  const scanned = worker.send.mock.lastCall![0].result;
+  if (!scanned.ok) throw new Error(scanned.message);
+  const file = (scanned.value as ProjectView).files.find(file => file.relativePath === 'Order.java')!;
+  await worker.receive!({ id: 102, kind: 'read', target: file.id });
+  const read = worker.send.mock.lastCall![0].result;
+  if (!read.ok) throw new Error(read.message);
+  const source = read.value as SourceView;
+  expect(source.guide).toBeNull();
+  expect(describe).not.toHaveBeenCalled();
+  expect(source.text).toBe(text);
+  expect(source.analysis.language).toBe('java');
+  expect(source.analysis.symbols[0].name).toBe('Order.total');
+  expect(source.analysis.symbols[0].steps[0].kind).toBe('if_statement');
+});

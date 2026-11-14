@@ -37,6 +37,7 @@ import { usePlanCompare } from './use-plan-compare';
 import { PlanCompare, PlanCompareEntry } from './plan-compare';
 import { ResumeCard, restoreSpot, OverviewAi, OverviewReview, ReadingOrderCard, TopicBar, type Place, type Topic } from './overview';
 import type { OverviewFeature, FileExplanationRange } from '../shared/ai';
+import { findsCalls } from '../shared/languages';
 import { Welcome } from './welcome';
 import './styles.css';
 
@@ -864,7 +865,9 @@ function App() {
             else if (symbol) void showEvidence(symbol.evidence, null);
           }}
           onOpenCode={() => setView('code')}
-          calls={callSearch.calls && source && symbol && callSearch.calls.key === callsKey(source, symbol) && <>
+          calls={source && !findsCalls(source.analysis.language)
+            ? <><dt>호출과 값</dt><dd><p className="hint">부르는 것·부르는 곳·값 찾기는 아직 Java를 지원하지 않아요. 위 단계 목록에서 하나씩 볼 수 있어요.</p></dd></>
+            : callSearch.calls && source && symbol && callSearch.calls.key === callsKey(source, symbol) && <>
             <CallsFacts state={callSearch.calls.state} stale={callSearch.calls.revision !== revision.current} locked={busy} pathOf={pathOf}
               onRetry={() => void callSearch.find(source, symbol)} onCancel={() => void callSearch.cancel()}
               onShowSite={site => void showCallSite(site)} onShowFunction={target => void showCallFunction(target)} />
@@ -915,9 +918,11 @@ function App() {
                   <dt>부르는 것</dt><dd>{functionCalls(symbolGuide.calls, symbolGuide.callsOmitted)}</dd>
                 </>}
               </dl>
-              <p className="hint">{source.analysis.language === 'python'
-                ? '‘이 함수 흐름으로 보기’에서 직접·확정 import 호출과 값의 출처를 따라가요.'
-                : '돌려주는 값의 모양과 이 함수를 부르는 곳은 ‘이 함수 흐름으로 보기’에서 찾아요.'}</p>
+              <p className="hint">{!findsCalls(source.analysis.language)
+                ? '부르는 곳·값 찾기는 아직 Java를 지원하지 않아요. 단계는 ‘이 함수 흐름으로 보기’에서 하나씩 볼 수 있어요.'
+                : source.analysis.language === 'python'
+                  ? '‘이 함수 흐름으로 보기’에서 직접·확정 import 호출과 값의 출처를 따라가요.'
+                  : '돌려주는 값의 모양과 이 함수를 부르는 곳은 ‘이 함수 흐름으로 보기’에서 찾아요.'}</p>
               <button className="btn btn--small" onClick={() => setView('function')}>이 함수 흐름으로 보기</button>
             </section>}
             {source.analysis.language === 'python' && <OutlineLists analysis={source.analysis} locked={busy || stale} current={evidence}

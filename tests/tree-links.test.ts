@@ -18,6 +18,8 @@ const { NodeMethods } = bindingRequire('node-gyp-build')(path.dirname(require.re
   NodeMethods: Record<typeof linkNames[number], (tree: Parser.Tree) => unknown>;
 };
 const extras = [
+  { name: 'Java line comments', file: 'Sample.java', line: '// extra\n', tail: 'class Sample {}' },
+  { name: 'Java block comments', file: 'Sample.java', line: '/* extra */\n', tail: 'class Sample {}' },
   { name: 'TypeScript comments', file: 'sample.ts', line: '// extra\n', tail: 'const value = 1;' },
   { name: 'Python comments', file: 'sample.py', line: '# extra\n', tail: 'value = 1\n' },
   { name: 'JavaScript HTML comments', file: 'sample.js', line: '<!-- extra\n', tail: 'const value = 1;' },
@@ -32,7 +34,7 @@ function watchNativeLinks() {
 
 describe('tree link answers from children', () => {
   it.each([
-    ...['ts', 'tsx', 'js', 'py'].map(extension => ({ name: `empty ${extension}`, file: `sample.${extension}`, text: '' })),
+    ...['ts', 'tsx', 'js', 'py', 'java'].map(extension => ({ name: `empty ${extension}`, file: `sample.${extension}`, text: '' })),
     ...extras.flatMap(extra => [64, 65].map(count => ({
       name: `${extra.name}: ${count}`, file: extra.file, text: extra.line.repeat(count) + extra.tail,
     }))),
@@ -167,7 +169,7 @@ describe('tree link threshold (4.1-1)', () => {
 });
 
 describe('native link guards for analysis (4.2)', () => {
-  it.each(extras)('avoids all five native links for $name', async ({ file, line }) => {
+  it.each(extras.filter(extra => !extra.file.endsWith('.java')))('avoids all five native links for $name', async ({ file, line }) => {
     const python = file.endsWith('.py');
     const text = line.repeat(65) + (python
       ? 'from fastapi import FastAPI\nfrom django.urls import path\napp = FastAPI()\n@app.get("/hello")\ndef hello():\n    return "hello"\nurlpatterns = [path("hello/", hello)]\n'
@@ -203,4 +205,14 @@ describe('native link guards for analysis (4.2)', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+});
+
+it.each(['// extra\n', '/* extra */\n'])('avoids native links throughout Java analysis for %s', comment => {
+  const text = `${comment.repeat(65)}class Sample { void run() {
+${comment.repeat(65)}if (ok) {} else if (other) {} next(); } }`;
+  const spies = watchNativeLinks();
+  const result = analyzeSource(text, 'Sample.java', context);
+  expect(result.symbols.map(symbol => symbol.name)).toEqual(['Sample.run']);
+  expect(result.symbols[0].complexity.depth).toBe(1);
+  for (const { name, spy } of spies) expect(spy, name).not.toHaveBeenCalled();
 });

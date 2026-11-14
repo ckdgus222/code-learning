@@ -59,11 +59,29 @@ const pythonDetailLabels: Record<string, string> = {
   catch_clause: '받는 오류', with_statement: '준비하는 것', match_statement: '비교할 값', case_clause: 'case 모양',
   assert_statement: '확인하는 조건',
 };
-// A Python source reads its own sentence first; every other language reads the shared one.
-const doingOf = (kind: string, language: SourceLanguage): string | undefined =>
-  (language === 'python' ? pythonDoing[kind] : undefined) ?? doing[kind];
+const javaDoing: Record<string, string> = {
+  switch_statement: '값·형식 패턴(case String s)·when 조건을 위에서부터 확인해 처음 맞는 case로 가요. 맞는 case가 없으면 default로 가요. 값이 null이면 case null이 없을 때 default로 가지 않고 NullPointerException 오류가 나요.',
+  switch_case: '값·형식 패턴·when 조건이 맞으면 여기서 시작해요. 콜론 case는 break 없이 아래 case로 내려갈 수 있어요.',
+  switch_rule: '이 화살표 case가 골라지면 안쪽을 지나요. 아래 case로 내려가지 않아요.',
+  switch_yield: 'switch 식의 값을 돌려주고 그 switch를 끝내요.',
+  try_statement: '안쪽 코드를 지나요. 오류가 나면 그 오류 종류를 받을 수 있는 첫 catch로 가요. 맞는 catch가 없으면 함수 밖으로 넘어가요. finally가 있으면 마지막에 그 부분을 지나요.',
+  catch_clause: '앞의 try 안에서 난 오류의 종류가 이 catch와 맞아, 이 catch가 골라졌을 때 여기로 와요.',
+  try_with_resources_statement: '자원을 준비하고 안쪽 코드를 지나요. 끝나면 오류가 나도 자원을 자동으로 닫아요.',
+  synchronized_statement: '대상의 잠금을 얻은 뒤 안쪽 코드를 지나요. 다른 스레드는 같은 잠금을 기다리고, 이 구문을 나가면 잠금을 풀어요.',
+  assert_statement: 'assert 검사가 켜져 있을 때 조건을 확인해요. 기본적으로 꺼져 있으며 -ea 같은 설정으로 켤 수 있어요. 맞지 않으면 오류를 던져요.',
+  assignment: '값을 계산해서 왼쪽 대상에 넣어요. += 같은 연산은 원래 있던 값도 함께 써요.',
+};
+const javaDetailLabels: Record<string, string> = {
+  switch_case: 'case 값·형식·조건', switch_rule: 'case 값·형식·조건', switch_yield: '돌려주는 값',
+  try_with_resources_statement: '준비하는 자원', catch_clause: '받는 오류',
+  assert_statement: '확인하는 조건', synchronized_statement: '잠그는 대상',
+};
+// Language-specific sentences override the shared wording.
+const languageDoing: Partial<Record<SourceLanguage, Record<string, string>>> = { python: pythonDoing, java: javaDoing };
+const languageDetailLabels: Partial<Record<SourceLanguage, Record<string, string>>> = { python: pythonDetailLabels, java: javaDetailLabels };
+const doingOf = (kind: string, language: SourceLanguage): string | undefined => languageDoing[language]?.[kind] ?? doing[kind];
 const detailLabelOf = (kind: string, language: SourceLanguage): string | undefined =>
-  (language === 'python' ? pythonDetailLabels[kind] : undefined) ?? detailLabels[kind];
+  languageDetailLabels[language]?.[kind] ?? detailLabels[kind];
 const loops = new Set(['for_statement', 'for_in_statement', 'while_statement', 'do_statement']);
 const exitKinds = new Set(['return_statement', 'throw_statement', 'expression_body']);
 const SNIPPET_LINES = 12;

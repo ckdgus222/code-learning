@@ -77,7 +77,8 @@ export function measureBody(body: Parser.SyntaxNode, text: string, rules: Measur
         // An arrow's body can itself be a function (`() => () => x`); then all of it belongs to that function.
         skipped.push({ start: cursor.startIndex, end: cursor.endIndex, endRow: cursor.endPosition.row });
       } else {
-        const elseIf = type === 'if_statement' && outside.at(-1)?.type === 'else_clause';
+        const elseIf = type === 'if_statement' && (outside.at(-1)?.type === 'else_clause'
+          || (outside.at(-1)?.type === 'if_statement' && cursor.currentFieldName === 'alternative'));
         const inner = rules.nestingTypes.has(type) && !elseIf ? level + 1 : level;
         depth = Math.max(depth, inner);
         if (cursor.gotoFirstChild()) { outside.push({ level, type }); level = inner; continue; }

@@ -13,6 +13,7 @@ import { checkPythonFileExplanation } from './python-file-explanation-smoke.mjs'
 import { checkPythonFeatureFlow } from './python-feature-flow-smoke.mjs';
 import { checkPythonUnresolvedRoutes } from './python-unresolved-routes-smoke.mjs';
 import { checkPropertiesRead } from './properties-read-smoke.mjs';
+import { checkJavaRead } from './java-read-smoke.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const packagedApp = {
@@ -336,6 +337,12 @@ try {
   await screen.getByRole('listitem').filter({ hasText: 'POST /login' }).getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
   await page.getByRole('region', { name: '기능 따라가기', exact: true }).getByText('화면 /login에서 입력 양식을 보내면 시작해요', { exact: true }).waitFor();
   assert.equal(await app.evaluate(() => globalThis.packagedFlowCalls), 0);
+  // Java's prebuilt grammar must also load inside the packaged analysis worker.
+  await checkJavaRead(app, page, path.join(temp, 'Java 읽기'), async file => {
+    await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
+    await page.getByRole('button', { name: file, exact: true }).click();
+  });
+
   // A separate project proves that the Python prebuilt grammar loads in the packaged worker.
   const pythonFixture = path.join(temp, 'Python 읽기');
   await mkdir(pythonFixture);
@@ -506,7 +513,7 @@ try {
   await checkPropertiesRead(app, page, path.join(temp, 'Properties 원문 읽기'));
   await app.close(); app = undefined;
   await testCopy.cleanup(); testCopy = undefined;
-  const report = { passed: true, checks: ['Python native grammar, method outline and conditional step', 'screen groups and cached flow selection without flow IPC', 'system light and dark themes, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', onMac ? 'changes from git inside its sandbox' : 'Windows changes unavailable notice', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel', 'release fuses and plain startup', 'UI uses an inspect-enabled temporary copy', 'entire distributed app unchanged'], state };
+  const report = { passed: true, checks: ['Java native grammar, method outline, conditional step and scope notices', 'Python native grammar, method outline and conditional step', 'screen groups and cached flow selection without flow IPC', 'system light and dark themes, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', onMac ? 'changes from git inside its sandbox' : 'Windows changes unavailable notice', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel', 'release fuses and plain startup', 'UI uses an inspect-enabled temporary copy', 'entire distributed app unchanged'], state };
   report.checks.push('Python same-file calls, reverse callers and source unchanged');
   report.checks.push('Python import alias calls and reverse callers across files');
   report.checks.push('Python parameter value card in the packaged worker');

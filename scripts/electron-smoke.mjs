@@ -1,6 +1,7 @@
 import { _electron as electron } from 'playwright';
 import { checkPythonFileExplanation } from './python-file-explanation-smoke.mjs';
 import { checkPythonFeatureFlow } from './python-feature-flow-smoke.mjs';
+import { checkJavaRead } from './java-read-smoke.mjs';
 import { checkPythonUnresolvedRoutes } from './python-unresolved-routes-smoke.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm, rename, symlink, realpath, readdir, lstat } from 'node:fs/promises';
@@ -3732,6 +3733,9 @@ try {
     await indexRequest.waitFor();
     assert.equal(await indexRequest.getByText('추정', { exact: true }).count(), 0);
     await page.screenshot({ path: path.join(artifacts, 'django-flow.png') });
+  });
+  await check('Java reader: methods, steps, colours and unsupported-feature notices', async () => {
+    await checkJavaRead(app, page, path.join(temporary, 'Java 읽기 프로젝트'), openTreeFile);
   });
   await check('Python reader: methods, steps, colours, limits and function flow; TS keeps its AI card and hint', async () => {
     await dialogTo(pythonFixture);

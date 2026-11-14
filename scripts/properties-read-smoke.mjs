@@ -19,7 +19,7 @@ export async function checkPropertiesRead(app, page, folder) {
     await page.getByRole('button', { name: 'application.properties', exact: true }).click();
     await page.getByRole('heading', { name: 'application.properties', exact: true }).waitFor();
     await page.locator('.cm-content').getByText('server.servlet.context-path=/api', { exact: true }).waitFor();
-    await page.getByText('이 파일은 원문만 표시합니다. 현재 구문 분석은 TypeScript, JavaScript, Python만 지원합니다.', { exact: true }).waitFor();
+    await page.getByText('이 파일은 원문만 표시합니다. 현재 구문 분석은 TypeScript, JavaScript, Python, Java만 지원합니다.', { exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: 'application-secrets.properties', exact: true }).count(), 0);
     assert.equal(await page.getByText('fake-secret-only', { exact: false }).count(), 0);
     assert.equal(await readFile(path.join(folder, 'application.properties'), 'utf8'), source);

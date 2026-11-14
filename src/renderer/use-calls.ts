@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import type { CodeSymbol, FunctionCalls, ProjectView, SourceView } from '../shared/contracts';
+import { findsCalls } from '../shared/languages';
 import type { CallsState } from './calls';
 import type { View } from './selection';
 import { shapeQueries, type ShapeSlot, type ShapesState } from './values';
@@ -38,7 +39,7 @@ export function useCalls({ project, revision, view, source, symbol, setError }: 
   // A search still running is replaced by the next one, so only its result is dropped here.
   function forgetShapes() { shapesRequest.current++; setShapes(null); }
   async function findCalls(from: SourceView, item: CodeSymbol) {
-    if (!project) return;
+    if (!project || !findsCalls(from.analysis.language)) return;
     forgetShapes();
     const current = ++callsRequest.current;
     const atRevision = revision.current;

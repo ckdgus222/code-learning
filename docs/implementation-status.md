@@ -2,6 +2,18 @@
 
 **0단계 일부와 1A의 로컬 탐색·구문 근거 이동·흐름 따라가기 화면을 구현했다.** AI 연결, 초기 이해도 관찰과 나머지 보호 검수는 끝나지 않았으므로 0단계 전체·1A 전체·개인용 시제품·범용 MVP 완료로 표시하지 않는다. 기획서는 v2.2와, 사용자가 2026-10-19 확정한 보완 v2.3(에이전트 작업 검사, v2.2와 다르면 v2.3 우선)이 기준이다. v2.3 2차 개정(사용자 확정)의 순서는 A 프로젝트 지도(완료) → 0 안정성(완료) → C-1 어려운 코드 표시(완료) → F 함수 호출 관계(완료) → V-1 값 따라가기 예시 값(완료) → V-2 값의 모양(완료) → C-2 변경 보기(완료)이고, B 기획 대조는 보류다. 사용자가 2026-10-20 C-2 뒤에 D ‘DB 구조(SQL 기준)’를 더했다(기획 v2.3 3차 개정, plan 리뷰 2차 통과).
 
+## g148: Java 메서드·생성자와 구문 단계 (2026-11-14)
+
+- `.java`·`.JAVA`의 코드 색상, 몸통 있는 메서드·생성자 목록, Java 구문 단계와 복잡도를 추가했다. 중첩 타입은 가까운 타입 이름을 사용하고 익명 클래스 메서드는 자기 이름만 표시한다. record compact constructor는 record 매개변수를 표시하며, 애너테이션·수식어를 포함한 선언 범위를 근거로 쓴다. 클래스·import 목록은 이번 단계에서 비워 둔다.
+- if 사슬의 제목·단계 깊이·가지 연결과 복잡도를 처리했다. 생성자·콜론 case를 포함해 JS의 같은 구조와 가지 대상을 비교했다. 람다·지역 타입·익명 클래스 몸통은 바깥 메서드의 단계·복잡도에서 제외하고, 구문 오류 메서드도 제외한다. 기존 중첩·방문·근거·함수 수 제한과 Java 주석 64/65개 경계의 빠른 탐색을 사용한다.
+- 호출·값 찾기·파일 안내·지도·이름 찾기·서버 주소·기능 흐름·바뀐 파일 사용처의 기존 지원 범위를 유지했다. Java 함수 흐름은 호출 요청을 보내지 않고 ‘부르는 것·부르는 곳·값 찾기는 아직 Java를 지원하지 않아요’ 안내를 표시한다. AI 파일 설명 카드도 표시하지 않는다. Java switch의 형식·when·null, 화살표 case, 자원 정리, catch 선택, assert·잠금 문구를 추가했다.
+- 기존 기대값 변경은 `tests/files.test.ts`의 지원 언어 안내와 `tests/build-hardening.test.ts`의 Java `allowScripts` 항목뿐이다. `tests/languages.test.ts`에는 Java 확장자 사례를 추가했고, 기존 Java 원문 기대값은 없었다. `scripts/properties-read-smoke.mjs`의 같은 안내 기대값도 갱신했다. 새 복잡도 테스트에서 람다·익명 클래스 뒤 세미콜론 줄을 빠뜨려 처음 1건 실패했고, 기존 줄 수 규칙에 맞춰 새 기대값을 수정했다.
+- Codex 실행: `npx tsc --noEmit` **통과**. 최종 집중 명령 `npx vitest run tests/java-syntax.test.ts tests/java-flow-view.test.ts tests/java-boundaries.test.ts tests/analysis-worker.test.ts tests/tree-links.test.ts tests/code-theme.test.ts tests/languages.test.ts tests/build-hardening.test.ts tests/syntax.test.ts tests/syntax-nesting.test.ts tests/python-syntax.test.ts tests/python-flow-view.test.ts tests/files.test.ts`는 **13개 파일·422개 통과, 실패 0개**. 호출·지도·파일 안내의 언어 제한, Java 문법 선택, 중첩 몸통 제외, 구문 오류 제외, else-if 깊이 조건을 각각 제거했을 때 **7건 모두 해당 회귀 테스트가 실패**했고, 원복 후 위 집중 검사가 통과했다.
+- Codex 전체 `npm test`: **6,349개 통과·89개 실패·기존 6개 제외**, 처리하지 못한 오류 **1건**. `git-changes` 33건, `project-session` 48건, `codex-probe` 4건, `ai-fence` 3건, `agy-probe` 1건이 실패했다. 소켓 `listen EPERM`, 중첩 `sandbox-exec`의 `sandbox_apply: Operation not permitted`, Git 실행 불가와 파일 감시 `watch-error`가 나타났다. 처리하지 못한 오류도 세션의 `CHANGED`였다. 기존 테스트·보호 조건을 바꾸지 않았으며, 전체 통과 확인은 이 실행 환경에서 완료하지 못했다. 이후 추가한 복잡도 10개 사례는 위 최종 집중 검사에 포함된다.
+- `git diff --check`와 수정한 smoke 스크립트 3개의 `node --check` **통과**. Java 네이티브 문법의 재빌드 제외·번들 외부 의존성 설정과 의존성 목록을 추가했다. `package.json`·잠금 파일은 Claude의 기존 변경을 유지했다. **패키징·Electron·배포 앱 검사는 미실행**: 요청에 따라 Java smoke 항목만 작성했으며 실제 실행은 Claude가 맡는다. 커밋·패키지 설치도 하지 않았다.
+- 검사 뒤 정리: 호출 찾기 지원 여부를 `findsCalls`(`src/shared/languages.ts`) 하나로 모아 화면의 Java 분기 3곳을 대신했고, 흐름 화면의 언어별 문구를 표로 바꿨다. Java 단계 걷기에서 같은 노드 값을 여러 번 읽지 않게 했고, 화면·배포 앱의 Java 검사는 `scripts/java-read-smoke.mjs` 하나로 합쳤다. 서식에 묶인 소스 글자 비교 테스트는 `findsCalls` 단위 테스트로 바꿨다.
+- 최종 검증(로컬, 정리 뒤): `npx tsc --noEmit` **통과**, `npx vitest run` **6,448개 통과·6개 제외**(158개 파일). `npm run package` 뒤 `npm run test:electron` **167개 PASS**(Java 항목 포함), `npm run test:packaged` **통과**(Java 네이티브 문법 항목 포함). Windows CI는 아직 미실행이다.
+
 ## g147: Properties 원문 읽기와 AI 전송 보호 (2026-11-14)
 
 - .properties 확장자를 기존 텍스트 읽기 경계에 추가했다. 파일 목록에서 UTF-8 원문을 열고 비밀 파일명·제외 폴더·.gitignore·링크·256 KiB·바이너리 제한을 유지한다. 기존 app.properties 제외 기대는 명시적으로 허용으로 바꿨으며 일반 XML·바이너리는 계속 제외한다. Spring Boot 설정 적용·프로필·환경값·context path 분석이나 Java 지원 완료를 뜻하지 않는다.

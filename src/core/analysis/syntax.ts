@@ -3,6 +3,8 @@ import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
 import Python from 'tree-sitter-python';
+import Java from 'tree-sitter-java';
+import { collectJava } from './java-syntax';
 import { collectPython } from './python-syntax';
 import { clip, createBudget, MAX_EVIDENCE, MAX_SYMBOLS, MAX_VISITED_NODES, measureBody, type AnalysisBudget, type MeasureRules } from './syntax-tools';
 import { STRUCTURE_NOTE, type Analysis, type CodeStep } from '../../shared/contracts';
@@ -18,7 +20,7 @@ const linkNames = ['parent', 'nextSibling', 'previousSibling', 'nextNamedSibling
 type NodeLinks = Record<typeof linkNames[number], Parser.SyntaxNode | null>;
 const treeLinks = new WeakMap<Parser.Tree, Map<number, NodeLinks> | null>();
 // Error recovery puts skipped text between extras as extra ERROR nodes, so they must not end a run.
-const extraTypes = new Set(['comment', 'html_comment', 'line_continuation', 'ERROR']);
+const extraTypes = new Set(['comment', 'line_comment', 'block_comment', 'html_comment', 'line_continuation', 'ERROR']);
 // Measured at 128 KiB: runs of 63 extras cost about three times as much as runs of 10.
 const MAX_EXTRA_RUN = 64;
 
@@ -124,7 +126,7 @@ export function parse(text: string, relativePath: string): Parser.SyntaxNode | n
 export function parseTree(text: string, relativePath: string): Parser.SyntaxNode {
   const language = languageOf(relativePath);
   const parser = new Parser();
-  parser.setLanguage(language === 'python' ? Python : language === 'javascript' ? JavaScript
+  parser.setLanguage(language === 'java' ? Java : language === 'python' ? Python : language === 'javascript' ? JavaScript
     : /\.tsx$/i.test(relativePath) ? TypeScript.tsx : TypeScript.typescript);
   // This binding's string callback needs room for the source plus its terminator.
   return parser.parse(text, undefined, { bufferSize: Math.max(32 * 1024, text.length + 1) }).rootNode;
@@ -291,7 +293,7 @@ export function analyzeSource(
   const language = languageOf(relativePath);
   const result: Analysis = { language, symbols: [], imports: [], warnings: [] };
   if (language === 'text') {
-    result.warnings.push('이 파일은 원문만 표시합니다. 현재 구문 분석은 TypeScript, JavaScript, Python만 지원합니다.');
+    result.warnings.push('이 파일은 원문만 표시합니다. 현재 구문 분석은 TypeScript, JavaScript, Python, Java만 지원합니다.');
     return result;
   }
 
@@ -300,6 +302,9 @@ export function analyzeSource(
   if (!root) result.warnings.push(NESTED_NOTE);
   if (language === 'python') {
     result.warnings.push('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도, 직접·확정 import 호출과 값 출처, 클래스 구조·적힌 타입으로 찾는 메서드 후보, 파일 안내, FastAPI·Flask·Django 주소에서 처리 함수 내부 호출까지 이어지는 기능 흐름을 보여 줘요. AI로 파일 설명도 만들 수 있어요.');
+  }
+  if (language === 'java') {
+    result.warnings.push('Java는 메서드·생성자 목록, 구문 단계, 코드 색상만 보여 줘요. 부르는 곳·값 찾기, 파일 안내, AI 파일 설명, 프로젝트 지도, 서버 주소는 아직 지원하지 않아요.');
   }
   if (!root) return result;
   if (root.hasError) {
@@ -310,6 +315,7 @@ export function analyzeSource(
 
   const budget = createBudget(context);
   if (language === 'python') collectPython(root, text, result, budget);
+  else if (language === 'java') collectJava(root, text, result, budget);
   else collectScript(root, text, result, budget);
   if (budget.limited) {
     result.warnings.push(`분석량 제한에 도달하여 일부 결과만 표시합니다. 파일 전체에서 함수 ${MAX_SYMBOLS}개, import·함수·클래스·단계의 근거 합계 ${MAX_EVIDENCE}개, 구문 방문 ${MAX_VISITED_NODES}회까지 처리합니다. 나머지 원문은 코드 보기에서 확인하세요.`);
