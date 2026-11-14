@@ -304,7 +304,8 @@ export function analyzeSource(
     result.warnings.push('Python은 함수·클래스·import 목록, 구문 단계, 프로젝트 지도, 직접·확정 import 호출과 값 출처, 클래스 구조·적힌 타입으로 찾는 메서드 후보, 파일 안내, FastAPI·Flask·Django 주소에서 처리 함수 내부 호출까지 이어지는 기능 흐름을 보여 줘요. AI로 파일 설명도 만들 수 있어요.');
   }
   if (language === 'java') {
-    result.warnings.push('Java는 메서드·생성자 목록, 구문 단계, 코드 색상만 보여 줘요. 부르는 곳·값 찾기, 파일 안내, AI 파일 설명, 프로젝트 지도, 서버 주소는 아직 지원하지 않아요.');
+    result.classes = [];
+    result.warnings.push('Java는 메서드·생성자 목록, 클래스·import 목록, 구문 단계, 코드 색상만 보여 줘요. 부르는 곳·값 찾기, 파일 안내, AI 파일 설명, 프로젝트 지도, 서버 주소는 아직 지원하지 않아요.');
   }
   if (!root) return result;
   if (root.hasError) {

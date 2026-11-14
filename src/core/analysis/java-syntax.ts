@@ -4,6 +4,9 @@ import type { Analysis, CodeStep } from '../../shared/contracts';
 import { clip, MAX_SYMBOLS, measureBody, type AnalysisBudget, type MeasureRules } from './syntax-tools';
 
 const types = new Set(['class_declaration', 'interface_declaration', 'enum_declaration', 'record_declaration', 'annotation_type_declaration']);
+const typeLabels: Record<string, string> = {
+  interface_declaration: 'interface', enum_declaration: 'enum', record_declaration: 'record', annotation_type_declaration: '@interface',
+};
 const methods = new Set(['method_declaration', 'constructor_declaration', 'compact_constructor_declaration']);
 const comments = new Set(['line_comment', 'block_comment']);
 const skipped = (type: string) => comments.has(type) || types.has(type) || type === 'lambda_expression' || type === 'class_body';
@@ -105,23 +108,36 @@ function stepsFor(body: Parser.SyntaxNode, text: string, budget: AnalysisBudget)
   return steps;
 }
 
-/** The nearest named type declaration around a method, or null inside an anonymous class (including an enum constant's body). */
-function ownerOf(method: Parser.SyntaxNode): Parser.SyntaxNode | null {
-  for (let owner = method.parent; owner; owner = owner.parent) {
+/** The nearest named type around a declaration, or null inside an anonymous class (including an enum constant's body). */
+function ownerOf(declaration: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  for (let owner = declaration.parent; owner; owner = owner.parent) {
     if (types.has(owner.type)) return owner;
     if (owner.type === 'object_creation_expression' || owner.type === 'enum_constant') return null;
   }
   return null;
 }
 
-/** Java methods and constructors only; declarations inside their bodies are collected separately. */
+/** Java methods, constructors, named types and imports; declarations inside bodies are collected separately. */
 export function collectJava(root: Parser.SyntaxNode, text: string, result: Analysis, budget: AnalysisBudget): void {
+  result.classes = [];
   const pending = [root];
   while (pending.length && !budget.limited && budget.available()) {
     const node = pending.pop()!;
     if (node.nextNamedSibling) pending.push(node.nextNamedSibling);
     if (node.isError || node.isMissing) continue;
     const type = node.type;
+    if (type === 'import_declaration') result.imports.push({ text: node.text, evidence: budget.evidence(node) });
+    if (types.has(type) && !node.hasError) {
+      const ownerName = ownerOf(node)?.childForFieldName('name')?.text;
+      const name = clip(node.childForFieldName('name')!.text);
+      const superclass = node.childForFieldName('superclass');
+      const interfaces = node.childForFieldName('interfaces') ?? node.namedChildren.find(child => child.type === 'extends_interfaces');
+      const inheritance = [superclass?.text, interfaces?.text].filter(Boolean).join(' ').replace(/\s+/g, ' ');
+      result.classes.push({
+        name: ownerName ? `${clip(ownerName)}.${name}` : name,
+        bases: clip([typeLabels[type], inheritance].filter(Boolean).join(' · ')), evidence: budget.evidence(node),
+      });
+    }
     const body = methods.has(type) && !node.hasError ? node.childForFieldName('body') : null;
     if (body) {
       if (result.symbols.length >= MAX_SYMBOLS) { budget.limited = true; break; }

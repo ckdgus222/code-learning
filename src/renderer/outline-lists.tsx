@@ -2,7 +2,7 @@ import React from 'react';
 import type { Analysis, Evidence } from '../shared/contracts';
 import { firstRows, Omitted } from './project-map';
 
-/** Classes and imports of a Python file, shown under the outline's function list (TS/JS lists imports in the file guide). */
+/** Classes and imports of a Python or Java file, shown under the outline's function list (TS/JS lists imports in the file guide). */
 export function OutlineLists({ analysis, locked, current, onShow }: {
   analysis: Analysis;
   /** A read or an evidence check is running, or the file changed: rows cannot be clicked. */

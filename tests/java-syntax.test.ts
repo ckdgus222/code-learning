@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { analyzeSource, NESTED_NOTE } from '../src/core/analysis/syntax';
-import { MAX_SYMBOLS } from '../src/core/analysis/syntax-tools';
+import { MAX_EVIDENCE, MAX_SYMBOLS } from '../src/core/analysis/syntax-tools';
 import { STRUCTURE_NOTE } from '../src/shared/contracts';
 
 const context = { projectId: 'p', fileId: 'f', fileHash: 'h' };
@@ -27,12 +27,12 @@ describe('Java declarations', () => {
     expect(result.symbols[0]).toMatchObject({ kind: 'constructor_declaration', params: '(int n)' });
     expect(result.symbols[1]).toMatchObject({ kind: 'method_declaration', params: '(int n)' });
     expect(result.symbols.at(-1)).toMatchObject({ kind: 'compact_constructor_declaration', params: '(int value, String name)' });
-    expect(result.imports).toEqual([]);
-    expect(result.classes).toBeUndefined();
+    expect(result.imports.map(item => item.text)).toEqual(['import java.util.List;']);
+    expect(result.classes?.map(item => item.name)).toEqual(['Order', 'Order.Inner', 'Order.Service', 'Order.Kind', 'Order.Item', 'Order.Tag']);
     const evidence = result.symbols[1].evidence;
     expect(text.slice(evidence.startUtf16, evidence.endUtf16)).toBe('@Deprecated public int total(int n) { return n; }');
     expect(result.warnings).toContain(STRUCTURE_NOTE);
-    expect(result.warnings).toContain('Java는 메서드·생성자 목록, 구문 단계, 코드 색상만 보여 줘요. 부르는 곳·값 찾기, 파일 안내, AI 파일 설명, 프로젝트 지도, 서버 주소는 아직 지원하지 않아요.');
+    expect(result.warnings).toContain('Java는 메서드·생성자 목록, 클래스·import 목록, 구문 단계, 코드 색상만 보여 줘요. 부르는 곳·값 찾기, 파일 안내, AI 파일 설명, 프로젝트 지도, 서버 주소는 아직 지원하지 않아요.');
   });
 
   it('keeps nested declarations and lambdas out of outer steps and complexity', () => {
@@ -85,7 +85,105 @@ describe('Java declarations', () => {
   it('uses the existing nesting limit', () => {
     const result = method('if (ready) {'.repeat(1600) + 'return 1;' + '}'.repeat(1600));
     expect(result).toBeUndefined();
-    expect(analyze(`class A { void run() { ${'{'.repeat(2200)}${'}'.repeat(2200)} } }`).warnings).toContain(NESTED_NOTE);
+    const nested = analyze(`class A { void run() { ${'{'.repeat(2200)}${'}'.repeat(2200)} } }`);
+    expect(nested.warnings).toContain(NESTED_NOTE);
+    expect(nested.classes).toEqual([]);
+  });
+});
+
+describe('Java type and import outlines', () => {
+  it('collects all five named type kinds with inheritance and complete declaration ranges', () => {
+    const declarations = [
+      '@Deprecated\npublic class A extends B implements C, D {}',
+      'interface R extends S {}',
+      'enum E { ONE }',
+      'record P(int x) implements Q {}',
+      '@interface Tag { String value(); }',
+    ];
+    const text = '// 앞 😀\n' + declarations.join('\n');
+    const result = analyze(text);
+    expect(result.classes?.map(item => [item.name, item.bases])).toEqual([
+      ['A', 'extends B implements C, D'], ['R', 'interface · extends S'], ['E', 'enum'],
+      ['P', 'record · implements Q'], ['Tag', '@interface'],
+    ]);
+    expect(result.classes?.map(item => text.slice(item.evidence.startUtf16, item.evidence.endUtf16))).toEqual(declarations);
+    expect(result.classes?.[0].evidence).toMatchObject({ ...context, startLine: 2, endLine: 3 });
+  });
+
+  it('uses only the nearest outer type for nested and local types, excluding anonymous bodies', () => {
+    const result = analyze(`class Outer {
+      class Inner { class Deep {} }
+      void run() {
+        class Local {}
+        Object anonymous = new Object() { void work() {} };
+      }
+      enum Kind { ONE { void work() {} }; }
+    }`);
+    expect(result.classes?.map(item => [item.name, item.bases])).toEqual([
+      ['Outer', ''], ['Outer.Inner', ''], ['Inner.Deep', ''], ['Outer.Local', ''], ['Outer.Kind', 'enum'],
+    ]);
+    expect(result.symbols.map(item => item.name)).toEqual(['Outer.run', 'work', 'work']);
+  });
+
+  it.each(['class Broken', 'interface Broken', 'enum Broken', 'record Broken(int n)', '@interface Broken'])(
+    'excludes a type with syntax errors: %s', declaration => {
+      const result = analyze(`${declaration} { int value = ; } class Good {}`);
+      expect(result.classes?.map(item => item.name)).toEqual(['Good']);
+      expect(result.warnings.some(warning => warning.includes('구문 오류가 있습니다'))).toBe(true);
+    },
+  );
+
+  it('keeps sound methods of a broken type but skips types inside a broken method', () => {
+    const result = analyze(`class Broken {
+      void bad() { class Hidden {} int value = ; }
+      void good() {}
+      class Kept {}
+    }`);
+    expect(result.classes?.map(item => item.name)).toEqual(['Broken.Kept']);
+    expect(result.symbols.map(item => item.name)).toEqual(['Broken.good']);
+  });
+
+  it('collapses multiline inheritance whitespace and clips both name parts and bases', () => {
+    const long = 'x'.repeat(350);
+    const result = analyze(`class ${long} extends\n Base\n implements\n First,\t Second {
+      class ${long} implements\n ${long} {}
+    }
+    interface R extends\n First,\t Second {}
+    enum E implements\n First,\t Second { ONE }`);
+    expect(result.classes?.map(item => [item.name, item.bases])).toEqual([
+      [`${'x'.repeat(300)}…`, 'extends Base implements First, Second'],
+      [`${'x'.repeat(300)}….${'x'.repeat(300)}…`, `implements ${'x'.repeat(289)}…`],
+      ['R', 'interface · extends First, Second'], ['E', 'enum · implements First, Second'],
+    ]);
+  });
+
+  it('preserves ordinary, static and wildcard imports in source order and ignores comments', () => {
+    const imports = ['import java.util.List;', 'import static a.B.c;', 'import a.b.*;'];
+    const text = '// import fake.Comment; 😀\n' + imports.join('\n') + '\n/* import fake.Block; */';
+    const result = analyze(text);
+    expect(result.imports.map(item => item.text)).toEqual(imports);
+    expect(result.imports.map(item => text.slice(item.evidence.startUtf16, item.evidence.endUtf16))).toEqual(imports);
+    expect(result.imports.map(item => [item.evidence.startLine, item.evidence.endLine])).toEqual([[2, 2], [3, 3], [4, 4]]);
+    expect(result.classes).toEqual([]);
+  });
+
+  it('preserves multiline import source text', () => {
+    const text = 'import static\n a.B.c;';
+    expect(analyze(text).imports.map(item => item.text)).toEqual([text]);
+  });
+
+  it('keeps an empty classes array for Java without type declarations', () => {
+    expect(analyze('').classes).toEqual([]);
+    expect(analyze('// class Fake {}\n/* import fake.Comment; */').imports).toEqual([]);
+  });
+
+  it('shares the evidence budget across types, imports, methods and steps', () => {
+    const result = analyze('import java.util.List; class A { int run() { return 1; } }\n'
+      + Array.from({ length: MAX_EVIDENCE + 1 }, (_, i) => `class C${i} {}`).join('\n'));
+    expect(result.classes).toHaveLength(MAX_EVIDENCE - 3);
+    expect(result.imports.length + result.classes!.length
+      + result.symbols.reduce((sum, item) => sum + 1 + item.steps.length, 0)).toBe(MAX_EVIDENCE);
+    expect(result.warnings.join(' ')).toContain('근거 합계 1000개');
   });
 });
 

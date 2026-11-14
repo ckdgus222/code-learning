@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it, vi } from 'vitest';
 import { OutlineLists } from '../src/renderer/outline-lists';
 import type { Analysis, Evidence } from '../src/shared/contracts';
+import { analyzeSource } from '../src/core/analysis/syntax';
 
 const evidence = (id: string, startLine = 1, endLine = startLine): Evidence => ({
   id, projectId: 'p', fileId: 'f', fileHash: 'h', startUtf16: 0, endUtf16: 10, startLine, endLine,
@@ -27,6 +28,21 @@ it('shows class names, base lists and ranges with the outline row markup', () =>
   expect(html).toContain('<li class="symbols__row"><button class="symbols__item" aria-pressed="false">Model</button><span class="symbols__meta">(BaseModel) · 3–6행</span></li>');
   expect(html).toContain('<li class="symbols__row"><button class="symbols__item" aria-pressed="false">Item</button><span class="symbols__meta">8–9행</span></li>');
   expect(html).not.toContain('<details');
+});
+
+it('shows Java classes and imports with the selected evidence row pressed', () => {
+  const java = analyzeSource('import java.util.List;\nclass Order {}', 'Order.java', {
+    projectId: 'p', fileId: 'f', fileHash: 'h',
+  });
+  const html = render({ analysis: java, current: java.classes![0].evidence });
+  expect(html).toContain('<h4 class="eyebrow">클래스 1개</h4>');
+  expect(html).toContain('aria-pressed="true">Order</button>');
+  expect(html).toContain('<span class="symbols__meta">2–2행</span>');
+  expect(html).toContain('<summary class="eyebrow">import 1개</summary>');
+  expect(html).toContain('aria-pressed="false" title="import java.util.List;">import java.util.List;</button>');
+  const selectedImport = render({ analysis: java, current: java.imports[0].evidence });
+  expect(selectedImport).toContain('aria-pressed="false">Order</button>');
+  expect(selectedImport).toContain('aria-pressed="true" title="import java.util.List;">import java.util.List;</button>');
 });
 
 it('folds imports and collapses multiline whitespace while showing the starting line', () => {

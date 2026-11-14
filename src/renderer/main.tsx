@@ -925,7 +925,7 @@ function App() {
                   : '돌려주는 값의 모양과 이 함수를 부르는 곳은 ‘이 함수 흐름으로 보기’에서 찾아요.'}</p>
               <button className="btn btn--small" onClick={() => setView('function')}>이 함수 흐름으로 보기</button>
             </section>}
-            {source.analysis.language === 'python' && <OutlineLists analysis={source.analysis} locked={busy || stale} current={evidence}
+            {(source.analysis.language === 'python' || source.analysis.language === 'java') && <OutlineLists analysis={source.analysis} locked={busy || stale} current={evidence}
               onShow={next => { selectSymbol(null); void showEvidence(next, null); }} />}
           </section>
           <div className="reader__main">

@@ -2,6 +2,15 @@
 
 **0단계 일부와 1A의 로컬 탐색·구문 근거 이동·흐름 따라가기 화면을 구현했다.** AI 연결, 초기 이해도 관찰과 나머지 보호 검수는 끝나지 않았으므로 0단계 전체·1A 전체·개인용 시제품·범용 MVP 완료로 표시하지 않는다. 기획서는 v2.2와, 사용자가 2026-10-19 확정한 보완 v2.3(에이전트 작업 검사, v2.2와 다르면 v2.3 우선)이 기준이다. v2.3 2차 개정(사용자 확정)의 순서는 A 프로젝트 지도(완료) → 0 안정성(완료) → C-1 어려운 코드 표시(완료) → F 함수 호출 관계(완료) → V-1 값 따라가기 예시 값(완료) → V-2 값의 모양(완료) → C-2 변경 보기(완료)이고, B 기획 대조는 보류다. 사용자가 2026-10-20 C-2 뒤에 D ‘DB 구조(SQL 기준)’를 더했다(기획 v2.3 3차 개정, plan 리뷰 2차 통과).
 
+## g149: Java 타입·import 목록 (2026-11-14)
+
+- 이름 있는 class·interface·enum·record·annotation 타입과 일반·static·별표 import를 소스 순서로 수집한다. 중첩·지역 타입은 가까운 바깥 타입 이름 한 단계만 붙이고, 타입 종류와 상속·구현 원문은 공백 정리 뒤 길이를 제한한다. 애너테이션·수식어를 포함한 선언 전체를 근거로 쓰며, 익명 클래스와 구문 오류 타입은 목록에서 제외한다. 기존 메서드 제외 규칙과 근거·방문 한도를 유지하고, 중첩 한도의 조기 반환을 포함해 Java `classes`는 항상 배열이다.
+- Java에서도 함수 목록 아래 클래스·import 목록을 표시하고 기존 근거 이동을 연결했다. Java 안내와 README 지원 범위를 갱신했다. `scripts/java-read-smoke.mjs`에 import 소스와 두 목록의 클릭 후 `aria-pressed=true` 확인을 추가했으며, 기존 메서드·조건·원문 보존 검사는 유지했다.
+- 기존 기대값 변경은 `tests/java-syntax.test.ts`의 빈 import·없는 classes를 실제 목록으로 바꾼 것과 Java 지원 안내 문구뿐이다. g149에서 목록 수집을 지원하므로 변경했다. 기존 중첩 한도 검사에는 `classes: []` 확인을 더했다. 타입·import·근거 범위·길이·공유 예산·화면 선택 표시 검사 **14개**를 추가했다.
+- Codex 실행: `npx tsc --noEmit` **통과**. `npx vitest run tests/java-syntax.test.ts tests/outline-lists-view.test.ts tests/java-flow-view.test.ts tests/java-boundaries.test.ts tests/analysis-worker.test.ts tests/tree-links.test.ts tests/syntax.test.ts tests/syntax-nesting.test.ts tests/python-syntax.test.ts`는 **9개 파일·284개 통과, 실패 0개**. Java 타입 제한 조건을 제거했을 때 **1개**, 구문 오류 제외 조건을 제거했을 때 **5개** 테스트가 실패했고, 원복 뒤 위 집중 검사가 통과했다. `node --check scripts/java-read-smoke.mjs` **통과**.
+- **전체 `npm test`·패키징·Electron·배포 앱 검사는 미실행**: 요청된 실행 범위를 따랐다. 이 샌드박스의 소켓·sandbox-exec·Git 제약 때문에 전체 테스트 대신 집중 검사를 실행했으며, 앱 화면 확인은 Claude가 패키징 후 수행한다. 패키지 설치·커밋은 하지 않았다.
+- 최종 검증(로컬): `npx tsc --noEmit` **통과**, `npx vitest run` **6,462개 통과·6개 제외**(158개 파일). `npm run package` 뒤 `npm run test:electron` **167개 PASS**(Java 클래스·import 목록 클릭 포함), `npm run test:packaged` **통과**. Windows CI는 아직 미실행이다.
+
 ## g148: Java 메서드·생성자와 구문 단계 (2026-11-14)
 
 - `.java`·`.JAVA`의 코드 색상, 몸통 있는 메서드·생성자 목록, Java 구문 단계와 복잡도를 추가했다. 중첩 타입은 가까운 타입 이름을 사용하고 익명 클래스 메서드는 자기 이름만 표시한다. record compact constructor는 record 매개변수를 표시하며, 애너테이션·수식어를 포함한 선언 범위를 근거로 쓴다. 클래스·import 목록은 이번 단계에서 비워 둔다.
