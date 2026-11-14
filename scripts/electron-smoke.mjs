@@ -72,6 +72,11 @@ await writeFile(path.join(pythonCallsFixture, 'arguments.py'), pythonArgumentsSo
 const pythonMethodsSource = 'class Worker:\n    def apply(self, value):\n        return value\n    def run(self):\n        return self.apply(7)\ndef typed_run(worker: Worker):\n    return worker.apply(9)\n';
 await writeFile(path.join(pythonCallsFixture, 'methods.py'), pythonMethodsSource);
 const fastapiFixture = path.join(temporary, 'FastAPI 흐름 프로젝트');
+const springFixture = path.join(temporary, 'Spring 흐름 프로젝트');
+await mkdir(path.join(springFixture, 'web'), { recursive: true });
+await writeFile(path.join(springFixture, 'web/api.ts'), "export function loadOrder() { return fetch('/orders/1'); }");
+const springSource = 'import org.springframework.web.bind.annotation.*;\n@RestController\nclass OrderController {\n  @GetMapping("/orders/{id}")\n  String getOrder() {\n    return helper();\n  }\n  String helper() { return "ok"; }\n}\n';
+await writeFile(path.join(springFixture, 'OrderController.java'), springSource);
 await mkdir(path.join(fastapiFixture, 'web'), { recursive: true });
 await mkdir(path.join(fastapiFixture, 'server'), { recursive: true });
 await writeFile(path.join(fastapiFixture, 'web/app.ts'), "export async function loadUser() { return fetch('/users/1'); }");
@@ -3612,6 +3617,35 @@ try {
     assert.equal(await canvas.locator('.map-box--dim, .map-box--focus').count(), 0);
     await page.getByRole('button', { name: '프로젝트 닫기', exact: true }).click();
     await page.getByRole('heading', { name: '처음 보는 프로젝트를 설계도처럼 읽어 보세요', exact: true }).waitFor();
+  });
+  await check('Spring flow: inferred frontend request stops at the Java handler', async () => {
+    await dialogTo(springFixture);
+    await page.getByRole('button', { name: '프로젝트 폴더 열기', exact: true }).click();
+    await page.getByRole('heading', { name: 'Spring 흐름 프로젝트', exact: true }).waitFor();
+    await openServerFeatures();
+    const features = page.getByRole('region', { name: '기능 목록', exact: true });
+    await features.getByRole('listitem').filter({ hasText: '보기 · /orders/{id}' })
+      .getByRole('button', { name: '이 기능 따라가기', exact: true }).click();
+    const disclosure = page.locator('details').filter({ has: page.locator('summary', { hasText: /^전체 그림과 단계 보기$/ }) });
+    await disclosure.waitFor();
+    if (await disclosure.getAttribute('open') === null) await disclosure.locator(':scope > summary').click();
+    const diagram = page.getByTestId('feature-flow-canvas');
+    await diagram.getByRole('group', { name: 'web/api.ts · loadOrder', exact: true }).waitFor();
+    await diagram.getByRole('group', { name: 'web/api.ts · GET /orders/1', exact: true }).waitFor();
+    await diagram.getByRole('group', { name: 'OrderController.java · OrderController.getOrder', exact: true }).waitFor();
+    assert.equal(await diagram.getByRole('group', { name: 'OrderController.java · OrderController.helper', exact: true }).count(), 0);
+    const steps = page.getByRole('region', { name: '기능 흐름 단계', exact: true });
+    const requestStep = steps.getByTestId('feature-step').filter({ has: page.locator('b', { hasText: /^GET \/orders\/1$/ }) });
+    await requestStep.getByText('추정', { exact: true }).waitFor();
+    assert.match(await requestStep.innerText(), /앞부분 모름/);
+    const limits = page.locator('details').filter({ has: page.locator('summary', { hasText: /^이 흐름을 찾은 방법과 한계$/ }) });
+    if (await limits.getAttribute('open') === null) await limits.locator(':scope > summary').click();
+    await limits.getByText('Java 처리 함수 안에서 부르는 함수는 아직 따라가지 않아요.', { exact: true }).waitFor();
+    const handler = steps.getByTestId('feature-step').filter({ has: page.locator('b', { hasText: /^OrderController\.getOrder$/ }) });
+    await handler.getByRole('button', { name: '코드 보기', exact: true }).click();
+    await page.getByRole('heading', { name: 'OrderController.java', exact: true }).waitFor();
+    assert.match(await page.getByTestId('evidence-range').innerText(), /OrderController\.java · 4–7줄/);
+    assert.equal(await readFile(path.join(springFixture, 'OrderController.java'), 'utf8'), springSource);
   });
   await check('FastAPI flow: frontend request, Python handler, function navigation and question preparation', async () => {
     await dialogTo(fastapiFixture);

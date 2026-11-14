@@ -24,7 +24,7 @@ export async function checkJavaRead(app, page, folder, openFile) {
     await page.getByRole('button', { name: 'import java.util.List;', exact: true, pressed: true }).waitFor();
     await page.getByRole('button', { name: 'Order.total', exact: true }).click();
     await page.getByText('부르는 곳·값 찾기는 아직 Java를 지원하지 않아요. 단계는 ‘이 함수 흐름으로 보기’에서 하나씩 볼 수 있어요.', { exact: true }).waitFor();
-    await page.getByRole('region', { name: '구문과 코드', exact: true }).getByText('Java는 메서드·생성자 목록, 클래스·import 목록, 구문 단계, 코드 색상만 보여 줘요. 부르는 곳·값 찾기, 파일 안내, AI 파일 설명, 프로젝트 지도, 서버 주소는 아직 지원하지 않아요.', { exact: true }).waitFor();
+    await page.getByRole('region', { name: '구문과 코드', exact: true }).getByText('Java는 메서드·생성자 목록, 클래스·import 목록, 구문 단계, 코드 색상, Spring 주소를 보여 줘요. 부르는 곳·값 찾기, 파일 안내, AI 파일 설명, 프로젝트 지도는 아직 지원하지 않아요.', { exact: true }).waitFor();
     assert.equal(await page.getByText('AI로 이 파일 설명 만들기', { exact: true }).count(), 0);
     await page.waitForFunction(() => [...document.querySelectorAll('.cm-content .cm-line span')].some(span =>
       getComputedStyle(span).color !== getComputedStyle(span.closest('.cm-content')).color));

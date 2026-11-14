@@ -5,6 +5,10 @@ import { isConfigFile, isTestPath, typeDeclarationFile } from './unused-files';
 export const pythonTestFile = (relativePath: string) => /(?:^|\/)tests?\//.test(relativePath)
   || /(?:^|\/)(?:test_[^/]*|[^/]*_test|conftest)\.py$/.test(relativePath);
 
+// Maven and Gradle keep tests under src/test/; Surefire and Failsafe run *Test, *Tests and *IT classes.
+export const javaTestFile = (relativePath: string) => /(?:^|\/)src\/test\//.test(relativePath)
+  || /(?:Test|Tests|IT)\.[jJ][aA][vV][aA]$/.test(relativePath);
+
 export const READING_STARTS = 3;
 export const READING_STEPS = 30;
 

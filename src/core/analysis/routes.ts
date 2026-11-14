@@ -9,10 +9,12 @@ import { pythonRoutes, walkPython, type PythonRouteImportFacts, type PythonRoute
 import { readPythonFacts, type PythonFileFacts } from './python-names';
 import { importedAppRoutes } from './python-route-imports';
 import { djangoFile, djangoRoutes, type DjangoFile, type DjangoRoom } from './django-routes';
-import { pythonTestFile } from './reading-order';
+import { javaTestFile, pythonTestFile } from './reading-order';
 import { formatNextPath, nextRouteOf } from './next-routes';
 import { firstLine, hasUnsupportedCertainty, lineRange, nearest, readFacts, reassigned, sameRange, simpleProperties, type CallFact, type FileFacts, type Scope } from './names';
 import { functionName, functionTypes, NESTED_NOTE } from './syntax';
+import { languageOf } from '../../shared/languages';
+import { springRoutes } from './spring-routes';
 
 type Node = Parser.SyntaxNode;
 const methods = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'ALL']);
@@ -609,6 +611,41 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
   if (unmatched) result.notes.push('Python 서버 주소 가운데 정확히 맞춰 볼 수 없는 것(특수 글자나 글이 섞인 칸, 읽지 못한 방식, 받는 요청을 바꾸는 설정)은 요청과 잇지 않았어요.');
   if (routers.has('fastapi')) result.notes.push('FastAPI의 APIRouter 주소 중 직접 등록을 확인하지 못한 것은 앞부분을 모르는 것으로 봤어요.');
   if (routers.has('flask')) result.notes.push('Flask의 Blueprint 주소 중 직접 등록이나 앞 경로를 확인하지 못한 것은 앞부분을 모르는 것으로 봤어요.');
+  const shadowedNames = new Set(paths.filter(name => name.endsWith('.java')).map(name => name.split('/').at(-1)!.slice(0, -5)));
+  const javaFiles = files.filter(file => languageOf(file.relativePath) === 'java' && !isTestFile(file.relativePath)
+    && !javaTestFile(file.relativePath))
+    .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  let springSkipped = 0;
+  let springShadowed = false;
+  for (const file of javaFiles) {
+    if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
+    const left = limits.bytes - bytes;
+    if (count >= limits.files || left <= 0) {
+      result.limited = true;
+      result.notes.push('읽기 한도에 닿아 Java 파일 일부는 확인하지 못했어요.');
+      break;
+    }
+    if (!room(result.routes, ROUTE_LIMITS.routes)) break;
+    count++;
+    try {
+      const source = await readAllowed(root, file.relativePath, Math.min(MAX_FILE_BYTES, left));
+      bytes += Buffer.byteLength(source.text);
+      const found = springRoutes(file, source.text, source.hash, limits.nodesPerFile, ROUTE_LIMITS.routes - result.routes.length, shadowedNames);
+      if (!found.complete) { result.limited = true; result.notes.push(`${file.relativePath}: 일부만 확인했어요.`); }
+      omitted ||= found.cut;
+      springSkipped += found.skipped;
+      springShadowed ||= found.shadowed;
+      if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
+      result.routes.push(...found.routes);
+    } catch (error) {
+      if (error instanceof AppError && error.code === 'CANCELLED') throw error;
+      result.limited = true;
+      result.notes.push(`${file.relativePath}: ${error instanceof AppError ? error.message : '파일을 읽지 못했어요.'}`);
+    }
+  }
+  if (result.routes.some(route => route.framework === 'spring')) result.notes.push('Spring 주소는 Spring Boot의 context-path·servlet path를 아직 읽지 않아 앞부분을 모르는 것으로 봤어요. 그래서 연결은 모두 추정이에요.');
+  if (springSkipped) result.notes.push(`Spring 매핑 ${springSkipped}개는 경로를 글자로 읽지 못해(상수·연결식 등) 요청과 잇지 않았어요.`);
+  if (springShadowed) result.notes.push('프로젝트 안에 Spring과 같은 이름의 타입(GetMapping 등)이 있어, 그 이름으로 적은 매핑은 주소로 보지 않았어요.');
   if (result.routes.some(lacksRouteEvidence)) result.notes.push('앞부분을 모르고 글자 칸도 없는 주소(/, /:id 등)는 맞춰 볼 근거가 없어 요청과 잇지 않았어요.');
   result.links = linkRoutes(result.routes, result.requests, shouldStop);
   if (result.links.some(link => link.reasons.includes('목록 밖 주소 가능'))) result.notes.push('값 칸(<slug> 등)이 있는 Django 주소는 목록에 없는 주소(관리자 화면, 제네릭 뷰, 정규식 주소 등)가 요청을 먼저 받을 수 있어, 연결을 추정으로 뒀어요.');

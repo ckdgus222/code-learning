@@ -305,7 +305,7 @@ export function analyzeSource(
   }
   if (language === 'java') {
     result.classes = [];
-    result.warnings.push('Java는 메서드·생성자 목록, 클래스·import 목록, 구문 단계, 코드 색상만 보여 줘요. 부르는 곳·값 찾기, 파일 안내, AI 파일 설명, 프로젝트 지도, 서버 주소는 아직 지원하지 않아요.');
+    result.warnings.push('Java는 메서드·생성자 목록, 클래스·import 목록, 구문 단계, 코드 색상, Spring 주소를 보여 줘요. 부르는 곳·값 찾기, 파일 안내, AI 파일 설명, 프로젝트 지도는 아직 지원하지 않아요.');
   }
   if (!root) return result;
   if (root.hasError) {

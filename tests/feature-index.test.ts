@@ -178,7 +178,7 @@ it('groups Flask routes by the handler file instead of the address', () => {
 });
 
 it.each([
-  ['django', 'polls/views.py', 'polls'], ['django', 'polls/api.py', 'api'], ['django', 'views.py', 'views'],
+  ['spring', 'server/OrderController.java', 'OrderController'], ['django', 'polls/views.py', 'polls'], ['django', 'polls/api.py', 'api'], ['django', 'views.py', 'views'],
   ['fastapi', 'routers/views.py', 'views'], ['flask', 'routers/views.py', 'views'], ['nest', 'api/views.controller.ts', 'views'],
 ] as const)('uses the shared group name for %s handler %s', (framework, path, name) => {
   const result = featureIndex({ ...routes, routes: [{ ...route, framework }] }, [flow], () => path);

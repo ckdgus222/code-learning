@@ -3,12 +3,12 @@ import type Parser from 'tree-sitter';
 import type { Analysis, CodeStep } from '../../shared/contracts';
 import { clip, MAX_SYMBOLS, measureBody, type AnalysisBudget, type MeasureRules } from './syntax-tools';
 
-const types = new Set(['class_declaration', 'interface_declaration', 'enum_declaration', 'record_declaration', 'annotation_type_declaration']);
+export const types = new Set(['class_declaration', 'interface_declaration', 'enum_declaration', 'record_declaration', 'annotation_type_declaration']);
 const typeLabels: Record<string, string> = {
   interface_declaration: 'interface', enum_declaration: 'enum', record_declaration: 'record', annotation_type_declaration: '@interface',
 };
 const methods = new Set(['method_declaration', 'constructor_declaration', 'compact_constructor_declaration']);
-const comments = new Set(['line_comment', 'block_comment']);
+export const comments = new Set(['line_comment', 'block_comment']);
 const skipped = (type: string) => comments.has(type) || types.has(type) || type === 'lambda_expression' || type === 'class_body';
 const javaRules: MeasureRules = {
   nestingTypes: new Set(['if_statement', 'for_statement', 'enhanced_for_statement', 'while_statement', 'do_statement',

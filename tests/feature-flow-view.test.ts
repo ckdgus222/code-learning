@@ -1623,3 +1623,15 @@ it('explains FastAPI scope and renders its handler navigation and question prepa
   expect(story).toMatch(/<button(?![^>]*disabled)[^>]*>이 함수 안 순서<\/button>/);
   expect(story).toMatch(/<button(?![^>]*disabled)[^>]*>AI에게 쉽게 물어보기<\/button>/);
 });
+
+it('explains Spring guesses and renders Java handler evidence navigation', () => {
+  const javaNode = { ...nodes[0], name: 'OrderController.getOrder', relativePath: 'OrderController.java',
+    range: { startUtf16: 30, endUtf16: 140, startLine: 4, endLine: 7 } };
+  const javaFlow = { ...flow, nodes: [javaNode], edges: [], notes: ['Java 처리 함수 안에서 부르는 함수는 아직 따라가지 않아요.'] };
+  const limits = renderToStaticMarkup(React.createElement(FlowLimits, { project, routes, flow: javaFlow, locked: false, onCode() {} }));
+  expect(limits).toContain('Java Spring MVC 주소도 fetch·axios 요청과 이어 줘요. 앞 경로 설정은 아직 읽지 않아 모두 추정이며, Java 처리 메서드 안의 호출은 따라가지 않아요.');
+  expect(limits).toContain('Java 처리 함수 안에서 부르는 함수는 아직 따라가지 않아요.');
+  const steps = renderToStaticMarkup(React.createElement(FlowSteps, { flow: javaFlow, locked: false, onCode() {}, onFunction() {} }));
+  expect(steps).toContain('OrderController.getOrder');
+  expect(steps).toContain('>코드 보기</button>');
+});

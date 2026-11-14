@@ -2,6 +2,8 @@ import type Parser from 'tree-sitter';
 import type { CallTarget, FeatureFlow, FlowEdge, FlowAfter, FlowAsk, FlowControl, FlowNode, FlowStop, FlowStore, FunctionCalls, ProjectFile, ProjectRoutes, ValueSite } from '../../shared/contracts';
 import { readPathAliases, resolveImport, type PathAliases } from './path-aliases';
 import { AppError } from '../../shared/errors';
+import { languageOf } from '../../shared/languages';
+import { MAX_FILE_BYTES, readAllowed } from '../project/files';
 import { findFunctionCalls, type CallsCache } from './calls';
 import { pythonFile, MAP_LIMITS, type MapLimits } from './project-map';
 import type { PythonFileFacts, PythonFunctionFact } from './python-names';
@@ -574,6 +576,18 @@ export async function buildFeatureFlow(root: string, projectId: string, files: P
     const node = backQueue.shift()!;
     if (backSeen.has(node.id)) continue;
     backSeen.add(node.id);
+    if (languageOf(node.relativePath) === 'java') {
+      stop();
+      // A batch builds one flow per route; a controller with many routes is read once.
+      const source = cache.texts.get(node.fileId) ?? await readAllowed(root, node.relativePath, Math.min(MAX_FILE_BYTES, limits.bytes));
+      cache.texts.set(node.fileId, source);
+      stop();
+      if (source.hash !== node.fileHash) throw new AppError('CHANGED', '기능의 함수를 지금 확인할 수 없어요.');
+      node.range.endLine = source.text.slice(0, node.range.endUtf16).split('\n').length;
+      const note = 'Java 처리 함수 안에서 부르는 함수는 아직 따라가지 않아요.';
+      if (!flow.notes.includes(note)) flow.notes.push(note);
+      continue;
+    }
     const inspected = await inspect(node);
     const { found } = inspected;
     const outside = found.calls.filter(call => call.status === 'external' || call.status === 'unknown').map(call => call.text);

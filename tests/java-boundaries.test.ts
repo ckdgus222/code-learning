@@ -16,9 +16,9 @@ import { searchSymbols } from '../src/renderer/symbol-search';
 let root: string;
 afterEach(async () => { if (root) await rm(root, { recursive: true, force: true }); });
 
-it('keeps Java outside calls, values, map, names, routes and feature flows', async () => {
+it('keeps Java outside calls, values, map and names, and ignores Spring annotations without imports', async () => {
   root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'learning-java-boundaries-')));
-  const text = 'class Order { @GetMapping("/orders") int total(int value) { return helper(value); } int helper(int value) { return value; } }';
+  const text = '@RestController class Order { @GetMapping("/orders") int total(int value) { return helper(value); } int helper(int value) { return value; } }';
   await writeFile(path.join(root, 'Order.java'), text);
   const project = await scanProject(root, 'p');
   const file = project.files.find(file => file.relativePath === 'Order.java')!;
