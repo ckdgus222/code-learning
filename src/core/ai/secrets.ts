@@ -33,11 +33,21 @@ const quoted = /((?<![\w.-])["']?([\w.-]+)["']?\s*[:=]\s*)("(?:[^"\\\r\n]|\\(?:\
 // brackets or `;`/`,` is code (`token = getToken();`) and is left alone.
 const configLine = /^([ \t]*["']?([\w.-]+)["']?[ \t]*[:=][ \t]*)([^\s'"`()[\]{};,]+)[ \t]*\r?$/gm;
 
-export function maskSecrets(text: string): { text: string; count: number } {
+export function maskPrivateKeys(text: string): { text: string; count: number } {
   let count = 0;
+  const result = text.replace(privateKey, block => {
+    count++;
+    return PRIVATE_KEY_MASK + '\n'.repeat(block.split('\n').length - 1);
+  });
+  return { text: result, count };
+}
+
+export function maskSecrets(text: string): { text: string; count: number } {
+  const initial = maskPrivateKeys(text);
+  let count = initial.count;
   const mask = (replacement: string) => { count++; return replacement; };
   // Keep the same number of lines so line positions the model sees still match the source.
-  let result = text.replace(privateKey, block => mask(PRIVATE_KEY_MASK + '\n'.repeat(block.split('\n').length - 1)));
+  let result = initial.text;
   for (const pattern of tokens) result = result.replace(pattern, () => mask(SECRET_MASK));
   result = result.replace(connection, (_match, before: string, password: string, at: string) =>
     password === SECRET_MASK ? before + password + at : mask(before + SECRET_MASK + at));

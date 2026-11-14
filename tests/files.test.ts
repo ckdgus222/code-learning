@@ -32,20 +32,20 @@ beforeEach(async () => {
 afterEach(async () => { await rm(sandbox, { recursive: true, force: true }); });
 
 describe('project file boundary', () => {
-  it('opens additional source types as plain text while excluding general XML, properties and binaries', async () => {
+  it('opens additional source types and properties as plain text while excluding general XML and binaries', async () => {
     const names = ['main.go', 'lib.rs', 'App.vue', 'go.mod', 'pom.xml', 'Gemfile', 'Main.kt', 'build.kts', 'Main.cs',
-      'main.rb', 'index.php', 'Main.swift', 'main.c', 'main.h', 'main.cpp', 'main.hpp', 'App.svelte', 'theme.scss', 'run.sh', 'build.gradle'];
-    for (const name of [...names, 'logo.png', 'layout.xml', 'app.properties']) await put(name, 'plain source');
+      'main.rb', 'index.php', 'Main.swift', 'main.c', 'main.h', 'main.cpp', 'main.hpp', 'App.svelte', 'theme.scss', 'run.sh', 'build.gradle', 'app.properties'];
+    for (const name of [...names, 'logo.png', 'layout.xml']) await put(name, 'plain source');
     const project = await scanProject(root, randomUUID());
     expect(project.files.map(file => file.relativePath).sort()).toEqual([...names].sort());
-    expect(project.excluded['미지원·바이너리 파일']).toBe(3);
+    expect(project.excluded['미지원·바이너리 파일']).toBe(2);
     for (const name of names) {
       const read = await readAllowed(root, name);
       const analysis = analyzeSource(read.text, name, { projectId: project.id, fileId: name, fileHash: read.hash });
       expect(analysis.language).toBe('text');
       expect(analysis.warnings).toContain('이 파일은 원문만 표시합니다. 현재 구문 분석은 TypeScript, JavaScript, Python만 지원합니다.');
     }
-    for (const name of ['logo.png', 'layout.xml', 'app.properties']) {
+    for (const name of ['logo.png', 'layout.xml']) {
       await expect(readAllowed(root, name)).rejects.toMatchObject({ code: 'NOT_ALLOWED' });
     }
   });
@@ -62,6 +62,44 @@ describe('project file boundary', () => {
     expect(read.hash).toBe(createHash('sha256').update(source).digest('hex'));
     await readAllowed(root, 'danger.js');
     expect(await snapshot(root)).toEqual(before);
+  });
+
+  it('opens UTF-8 Properties as unchanged plain text without loading configuration', async () => {
+    const source = '\uFEFF# 설정 😀\r\nserver.servlet.context-path=/api\r\ncommand=touch executed.txt\r\n';
+    await put('src/main/resources/application.properties', source);
+    const before = await snapshot(root);
+    const project = await scanProject(root, randomUUID());
+    expect(project.files.map(file => file.relativePath)).toEqual(['src/main/resources/application.properties']);
+    const read = await readAllowed(root, project.files[0].relativePath);
+    expect(read.text).toBe(source);
+    expect(read.hash).toBe(createHash('sha256').update(source).digest('hex'));
+    expect(analyzeSource(read.text, project.files[0].relativePath, { projectId: project.id, fileId: project.files[0].id, fileHash: read.hash }))
+      .toMatchObject({ language: 'text', symbols: [], imports: [] });
+    expect(await snapshot(root)).toEqual(before);
+  });
+
+  it.each(['application-secrets.properties', 'credentials.properties', '.env/application.properties',
+    '.aws/application.properties', 'node_modules/app/application.properties', 'build/application.properties'])('still refuses excluded Properties: %s', async name => {
+    await put(name, 'password=fake-value');
+    await put('.gitignore', `!${name}\n`);
+    expect(await paths()).not.toContain(name);
+    await expect(readAllowed(root, name)).rejects.toMatchObject({ code: 'NOT_ALLOWED' });
+  });
+
+  it('keeps Properties ignore, binary, byte and link boundaries', async () => {
+    await put('.gitignore', 'ignored.properties\n');
+    await put('ignored.properties', 'value=hidden');
+    await put('binary.properties', Buffer.from([0, 1, 2]));
+    await put('large.properties', 'a'.repeat(MAX_FILE_BYTES + 1));
+    await put('normal.properties', 'value=ok');
+    await symlink(path.join(root, 'normal.properties'), path.join(root, 'linked.properties'));
+    expect(await paths()).not.toContain('ignored.properties');
+    expect(await paths()).not.toContain('linked.properties');
+    await expect(readAllowed(root, 'ignored.properties')).rejects.toMatchObject({ code: 'NOT_ALLOWED' });
+    await expect(readAllowed(root, 'linked.properties')).rejects.toMatchObject({ code: 'NOT_ALLOWED' });
+    await expect(readAllowed(root, 'binary.properties')).rejects.toMatchObject({ code: 'UNSUPPORTED' });
+    await expect(readAllowed(root, 'large.properties')).rejects.toMatchObject({ code: 'LIMIT' });
+    expect((await readAllowed(root, 'normal.properties')).text).toBe('value=ok');
   });
 
   it('hard exclusions cannot be reopened by ignore negation', async () => {

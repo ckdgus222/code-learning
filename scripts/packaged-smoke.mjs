@@ -12,6 +12,7 @@ import { checkPlainLaunch, createInspectableCopy } from './fuse-check.mjs';
 import { checkPythonFileExplanation } from './python-file-explanation-smoke.mjs';
 import { checkPythonFeatureFlow } from './python-feature-flow-smoke.mjs';
 import { checkPythonUnresolvedRoutes } from './python-unresolved-routes-smoke.mjs';
+import { checkPropertiesRead } from './properties-read-smoke.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const packagedApp = {
@@ -502,6 +503,7 @@ try {
   await checkPythonFileExplanation(app, page, path.join(temp, 'Python 파일 설명'));
   await checkPythonFeatureFlow(app, page, path.join(temp, 'Python 내부 기능 흐름'));
   await checkPythonUnresolvedRoutes(app, page, path.join(temp, 'Python 미확인 주소'));
+  await checkPropertiesRead(app, page, path.join(temp, 'Properties 원문 읽기'));
   await app.close(); app = undefined;
   await testCopy.cleanup(); testCopy = undefined;
   const report = { passed: true, checks: ['Python native grammar, method outline and conditional step', 'screen groups and cached flow selection without flow IPC', 'system light and dark themes, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', onMac ? 'changes from git inside its sandbox' : 'Windows changes unavailable notice', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel', 'release fuses and plain startup', 'UI uses an inspect-enabled temporary copy', 'entire distributed app unchanged'], state };
@@ -534,6 +536,7 @@ try {
   report.checks.push('DRF DefaultRouter list/detail/extra-action paths with include prefix, uncertain requests and original method evidence');
   report.checks.push('Project-local inherited Django handler, uncertain request link and original parent-file method evidence');
   report.checks.push('Django integer URL accepts ASCII digits, rejects text and keeps outside-route uncertainty with original evidence');
+  report.checks.push('Properties plain-text reading, secret filename exclusion and unchanged UTF-8 source');
   await writeFile(path.join(root, 'test-results/packaged-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {
