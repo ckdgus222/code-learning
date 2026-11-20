@@ -15,6 +15,8 @@ import { firstLine, hasUnsupportedCertainty, lineRange, nearest, readFacts, reas
 import { functionName, functionTypes, NESTED_NOTE } from './syntax';
 import { languageOf } from '../../shared/languages';
 import { springRoutes } from './spring-routes';
+import { applyBootPrefixes } from './spring-boot';
+import { javaModuleRoot } from '../project/spring-paths';
 
 type Node = Parser.SyntaxNode;
 const methods = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'ALL']);
@@ -617,6 +619,7 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
     .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   let springSkipped = 0;
   let springShadowed = false;
+  const bootApplications = new Set<string>();
   for (const file of javaFiles) {
     if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.');
     const left = limits.bytes - bytes;
@@ -631,6 +634,8 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
       const source = await readAllowed(root, file.relativePath, Math.min(MAX_FILE_BYTES, left));
       bytes += Buffer.byteLength(source.text);
       const found = springRoutes(file, source.text, source.hash, limits.nodesPerFile, ROUTE_LIMITS.routes - result.routes.length, shadowedNames);
+      const module = javaModuleRoot(file.relativePath);
+      if (found.bootApplication && module !== null) bootApplications.add(module);
       if (!found.complete) { result.limited = true; result.notes.push(`${file.relativePath}: 일부만 확인했어요.`); }
       omitted ||= found.cut;
       springSkipped += found.skipped;
@@ -643,7 +648,22 @@ export async function findProjectRoutes(root: string, projectId: string, files: 
       result.notes.push(`${file.relativePath}: ${error instanceof AppError ? error.message : '파일을 읽지 못했어요.'}`);
     }
   }
-  if (result.routes.some(route => route.framework === 'spring')) result.notes.push('Spring 주소는 Spring Boot의 context-path·servlet path를 아직 읽지 않아 앞부분을 모르는 것으로 봤어요. 그래서 연결은 모두 추정이에요.');
+  if (result.routes.some(route => route.framework === 'spring')) {
+    const check = () => { if (shouldStop()) throw new AppError('CANCELLED', '주소 찾기를 취소했어요.'); };
+    await applyBootPrefixes(result.routes, files, bootApplications, async file => {
+      check();
+      const left = limits.bytes - bytes;
+      if (count >= limits.files || left <= 0 || file.size > left) {
+        result.limited = true;
+        throw new AppError('LIMIT', '설정 파일 읽기 한도에 닿았어요.');
+      }
+      count++;
+      const source = await readAllowed(root, file.relativePath, Math.min(MAX_FILE_BYTES, left));
+      bytes += Buffer.byteLength(source.text);
+      check();
+      return source.text;
+    }, result.notes, check);
+  }
   if (springSkipped) result.notes.push(`Spring 매핑 ${springSkipped}개는 경로를 글자로 읽지 못해(상수·연결식 등) 요청과 잇지 않았어요.`);
   if (springShadowed) result.notes.push('프로젝트 안에 Spring과 같은 이름의 타입(GetMapping 등)이 있어, 그 이름으로 적은 매핑은 주소로 보지 않았어요.');
   if (result.routes.some(lacksRouteEvidence)) result.notes.push('앞부분을 모르고 글자 칸도 없는 주소(/, /:id 등)는 맞춰 볼 근거가 없어 요청과 잇지 않았어요.');
@@ -724,6 +744,7 @@ export function linkRoutes(routes: Route[], requests: Request[], shouldStop: () 
       }
       if (!matched.matched) return;
       const reasons = [...(unknownPrefix ? ['앞부분 모름'] : []), ...(matched.dynamic ? ['경로 값 모름'] : []), ...(route.typed ? ['값 모양 모름'] : []),
+        ...(route.requestConditions ? ['요청 조건 미확인'] : []),
         ...(route.framework === 'django' && routeParts.some(part => part.startsWith(':') || part === '*') ? ['목록 밖 주소 가능'] : []),
         ...(!request.methods ? ['방식 모름'] : request.methods.length > 1 ? ['방식 후보 둘'] : [])];
       candidates.push({ requestIndex, routeIndex, sure: !reasons.length, reasons });

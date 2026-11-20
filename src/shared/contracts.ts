@@ -141,7 +141,11 @@ export interface Analysis {
   warnings: string[];
 }
 
-export interface ProjectFile { id: string; relativePath: string; size: number }
+export interface ProjectFile {
+  id: string; relativePath: string; size: number;
+  /** The scan could not list all Boot settings for this Java source set. Excluded paths stay private. */
+  bootSettingsIncomplete?: true;
+}
 export interface ProjectFiles {
   id: string;
   name: string;
@@ -380,6 +384,8 @@ export interface Route {
   segments?: import('../core/analysis/next-routes').NextSegment[];
   /** True when a path parameter takes only values of some form (`<int:id>`, `{id:int}`): its links are guesses. */
   typed?: true;
+  /** Additional Spring request conditions are visible but their values are not matched. */
+  requestConditions?: true;
   /** True when the path or method cannot be expressed by request matching. */
   unmatched?: true;
 }

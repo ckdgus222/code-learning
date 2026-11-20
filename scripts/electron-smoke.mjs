@@ -1,7 +1,7 @@
 import { _electron as electron } from 'playwright';
 import { checkPythonFileExplanation } from './python-file-explanation-smoke.mjs';
 import { checkPythonFeatureFlow } from './python-feature-flow-smoke.mjs';
-import { checkJavaRead } from './java-read-smoke.mjs';
+import { checkJavaRead, checkSpringBootFlow } from './java-read-smoke.mjs';
 import { checkPythonUnresolvedRoutes } from './python-unresolved-routes-smoke.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm, rename, symlink, realpath, readdir, lstat } from 'node:fs/promises';
@@ -3770,6 +3770,9 @@ try {
   });
   await check('Java reader: methods, steps, colours and unsupported-feature notices', async () => {
     await checkJavaRead(app, page, path.join(temporary, 'Java 읽기 프로젝트'), openTreeFile);
+  });
+  await check('Spring Boot flow: YAML context and servlet paths, confirmed request and Java evidence', async () => {
+    await checkSpringBootFlow(app, page, path.join(temporary, 'Spring Boot 흐름 프로젝트'));
   });
   await check('Python reader: methods, steps, colours, limits and function flow; TS keeps its AI card and hint', async () => {
     await dialogTo(pythonFixture);

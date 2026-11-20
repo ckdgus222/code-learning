@@ -237,7 +237,7 @@ describe('Spring project requests and feature flows', () => {
     expect(routes.routes).toHaveLength(1);
     expect(routes.links).toHaveLength(2);
     expect(routes.links.every(link => !link.sure && link.reasons.includes('앞부분 모름'))).toBe(true);
-    expect(routes.notes).toContain('Spring 주소는 Spring Boot의 context-path·servlet path를 아직 읽지 않아 앞부분을 모르는 것으로 봤어요. 그래서 연결은 모두 추정이에요.');
+    expect(routes.notes.some(note => note.startsWith('Spring 주소의 앞부분을 확인하지 못해 추정으로 표시했어요.'))).toBe(true);
     const flow = await buildFeatureFlow(root, 'p', files, routes, 0);
     expect(flow.nodes.filter(node => node.side === 'back').map(node => node.name)).toEqual(['OrderController.get']);
     expect(flow.nodes.filter(node => node.side === 'request')).toHaveLength(2);

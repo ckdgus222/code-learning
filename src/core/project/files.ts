@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import ignore, { type Ignore } from 'ignore';
 import { MAX_FILE_BYTES, SCAN_LIMIT_WARNING, type ProjectFiles } from '../../shared/contracts';
 import { AppError } from '../../shared/errors';
+import { bootResource, javaModuleRoot } from './spring-paths';
 
 export { MAX_FILE_BYTES } from '../../shared/contracts';
 const MAX_FILES = 1000;
@@ -270,7 +271,13 @@ export async function scanProject(root: string, projectId: string, shouldStop?: 
   const result: ProjectFiles = { id: projectId, name: path.basename(root), files: [], excluded: {}, warnings: [] };
   let visited = 0;
   let limited = false;
-  const exclude = (why: string) => { result.excluded[why] = (result.excluded[why] ?? 0) + 1; };
+  const missingBootSettings = new Set<string>();
+  const unreadDirectories = new Set<string>();
+  const exclude = (why: string, relative: string) => {
+    result.excluded[why] = (result.excluded[why] ?? 0) + 1;
+    const resource = bootResource(relative);
+    if (resource) missingBootSettings.add(resource.root);
+  };
   async function walk(base: string, inherited: Rules, depth: number): Promise<void> {
     if (shouldStop?.()) throw new AppError('CANCELLED', '탐색을 멈췄습니다.');
     if (depth > MAX_DEPTH) { limited = true; return; }
@@ -281,27 +288,40 @@ export async function scanProject(root: string, projectId: string, shouldStop?: 
       if (shouldStop?.()) throw new AppError('CANCELLED', '탐색을 멈췄습니다.');
       if (++visited > MAX_ENTRIES || result.files.length >= MAX_FILES) { limited = true; break; }
       const relative = base ? `${base}/${entry.name}` : entry.name;
-      if (exceedsPathLimit(relative)) { exclude('경로 길이·깊이 제한'); continue; }
+      if (exceedsPathLimit(relative)) { exclude('경로 길이·깊이 제한', relative); continue; }
       const reason = exclusionReason(relative, entry.isDirectory());
-      if (entry.isSymbolicLink()) { exclude('심볼릭 링크'); continue; }
-      if (reason) { exclude(reason); continue; }
-      if (ignored(relative, entry.isDirectory(), rules)) { exclude('.gitignore'); continue; }
+      if (entry.isSymbolicLink()) { exclude('심볼릭 링크', relative); continue; }
+      if (reason) { exclude(reason, relative); continue; }
+      if (ignored(relative, entry.isDirectory(), rules)) { exclude('.gitignore', relative); continue; }
       try {
         if (entry.isDirectory()) await walk(relative, rules, depth + 1);
         else if (entry.isFile()) {
           const checked = await inspectPath(root, relative);
           const stat = await lstat(checked.absolute);
-          if (stat.nlink !== 1) { exclude('하드 링크'); continue; }
-          if (stat.size > MAX_FILE_BYTES) { exclude('크기 제한'); continue; }
+          if (stat.nlink !== 1) { exclude('하드 링크', relative); continue; }
+          if (stat.size > MAX_FILE_BYTES) { exclude('크기 제한', relative); continue; }
           result.files.push({ id: randomUUID(), relativePath: relative, size: stat.size });
-        } else exclude('특수 파일');
+        } else exclude('특수 파일', relative);
       } catch (error) {
         if (error instanceof AppError && error.code === 'CANCELLED') throw error;
-        exclude(isComplexGitignore(error) ? '복잡한 .gitignore 규칙' : '읽기 권한·경로·제외 규칙 확인 실패');
+        if (entry.isDirectory()) unreadDirectories.add(relative);
+        exclude(isComplexGitignore(error) ? '복잡한 .gitignore 규칙' : '읽기 권한·경로·제외 규칙 확인 실패', relative);
       }
     }
   }
   await walk('', [], 0);
+  for (const file of result.files) {
+    if (!/\.java$/i.test(file.relativePath)) continue;
+    const module = javaModuleRoot(file.relativePath);
+    if (module === null) continue;
+    const resources = module ? module + '/src/main/resources' : 'src/main/resources';
+    if (limited || missingBootSettings.has(module)) file.bootSettingsIncomplete = true;
+    if (unreadDirectories.size) {
+      for (let dir = resources; dir !== '.'; dir = path.posix.dirname(dir)) {
+        if (unreadDirectories.has(dir)) { file.bootSettingsIncomplete = true; break; }
+      }
+    }
+  }
   result.files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   if (limited) result.warnings.push(SCAN_LIMIT_WARNING);
   result.warnings.push('파일별 최대 256 KiB. UTF-8 텍스트만 읽으며 소스·설정·스크립트를 실행하지 않습니다.');

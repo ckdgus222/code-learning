@@ -7,8 +7,11 @@ import { parse } from './syntax';
 
 type Node = Parser.SyntaxNode;
 type Mapping = { paths: string[] | null; methods: Route['method'][] | null; restricted: boolean };
+const hasRequestConditions = (annotation?: Node) => codeChildren(annotation?.childForFieldName('arguments'))
+  .some(arg => ['params', 'headers', 'consumes', 'produces', 'version'].includes(arg.childForFieldName('key')?.text ?? ''));
 const web = 'org.springframework.web.bind.annotation';
 const packages: Record<string, string> = {
+  SpringBootApplication: 'org.springframework.boot.autoconfigure',
   RestController: web, Controller: 'org.springframework.stereotype', RequestMapping: web, RequestMethod: web,
   GetMapping: web, PostMapping: web, PutMapping: web, PatchMapping: web, DeleteMapping: web,
 };
@@ -41,12 +44,12 @@ function pathShape(path: string): Pick<Route, 'segments' | 'typed' | 'unmatched'
 
 /** Direct Spring MVC mappings only. Import and type names are checked before any route is emitted. */
 export function springRoutes(file: ProjectFile, text: string, hash: string, maxNodes: number, maxRoutes: number,
-  shadowedNames: ReadonlySet<string>): { routes: Route[]; complete: boolean; cut: boolean; skipped: number; shadowed: boolean } {
+  shadowedNames: ReadonlySet<string>) {
   const routes: Route[] = [];
-  // Most Java files (entities, services) hold no controller: both annotations contain this word, so skip the parse.
-  if (!text.includes('Controller')) return { routes, complete: true, cut: false, skipped: 0, shadowed: false };
+  const empty = { routes, complete: true, cut: false, skipped: 0, shadowed: false, bootApplication: false };
+  if (!text.includes('Controller') && !text.includes('SpringBootApplication')) return empty;
   const root = parse(text, file.relativePath);
-  if (!root) return { routes, complete: false, cut: false, skipped: 0, shadowed: false };
+  if (!root) return { ...empty, complete: false };
   const singles = new Map<string, Set<string>>();
   const stars = new Set<string>();
   const declared = new Set<string>();
@@ -58,7 +61,7 @@ export function springRoutes(file: ProjectFile, text: string, hash: string, maxN
   // Visit the whole file first: a later nested declaration can shadow an earlier annotation.
   // The node object is built only for the kinds kept; the type comes from the cursor.
   walk: while (true) {
-    if (++visited > maxNodes) return { routes, complete: false, cut: false, skipped: 0, shadowed: false };
+    if (++visited > maxNodes) return { ...empty, complete: false };
     const type = cursor.nodeType;
     if (types.has(type)) declared.add(cursor.currentNode.childForFieldName('name')?.text ?? '');
     if (type === 'class_declaration') classes.push(cursor.currentNode);
@@ -120,16 +123,19 @@ export function springRoutes(file: ProjectFile, text: string, hash: string, maxN
     }
     return { paths, methods: selected, restricted: values.length > 0 };
   };
-  const controllers = new Map<number, { name: string; mapping: Mapping }>();
+  const controllers = new Map<number, { name: string; mapping: Mapping; conditional: boolean }>();
+  let bootApplication = false;
   for (const node of classes) {
     const modifiers = node.namedChildren.find(child => child.type === 'modifiers');
     if (modifiers?.hasError || modifiers?.children.some(child => child.type === 'abstract')) continue;
     const named = springAnnotations(node);
+    if (!root.hasError && named.some(item => item.name === 'SpringBootApplication')) bootApplication = true;
     if (!named.some(item => item.name === 'RestController' || item.name === 'Controller')) continue;
+    const annotation = named.find(item => item.name === 'RequestMapping')?.annotation;
     controllers.set(node.id, { name: node.childForFieldName('name')!.text,
-      mapping: mappingOf(named.find(item => item.name === 'RequestMapping')?.annotation) });
+      mapping: mappingOf(annotation), conditional: hasRequestConditions(annotation) });
   }
-  if (!controllers.size) return { routes, complete: !root.hasError, cut: false, skipped: 0, shadowed };
+  if (!controllers.size) return { ...empty, complete: !root.hasError, shadowed, bootApplication };
 
   let cut = false;
   let skipped = 0;
@@ -153,6 +159,7 @@ export function springRoutes(file: ProjectFile, text: string, hash: string, maxN
     const basisText = firstLine(annotation);
     const route = {
       prefix: 'unknown' as const, framework: 'spring' as const,
+      ...(owner.conditional || hasRequestConditions(annotation) ? { requestConditions: true as const } : {}),
       handler: { fileId: file.id, fileHash: hash, startUtf16: node.startIndex, endUtf16: node.endIndex,
         startLine: node.startPosition.row + 1, name: shortName(`${owner.name}.${node.childForFieldName('name')!.text}`) },
       basis: { text: basisText, range: { fileId: file.id, fileHash: hash, startUtf16: annotation.startIndex,
@@ -178,5 +185,5 @@ export function springRoutes(file: ProjectFile, text: string, hash: string, maxN
     }
     if (unreadable) skipped++;
   }
-  return { routes, complete: !root.hasError, cut, skipped, shadowed };
+  return { routes, complete: !root.hasError, cut, skipped, shadowed, bootApplication };
 }

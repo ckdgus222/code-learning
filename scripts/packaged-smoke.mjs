@@ -13,7 +13,7 @@ import { checkPythonFileExplanation } from './python-file-explanation-smoke.mjs'
 import { checkPythonFeatureFlow } from './python-feature-flow-smoke.mjs';
 import { checkPythonUnresolvedRoutes } from './python-unresolved-routes-smoke.mjs';
 import { checkPropertiesRead } from './properties-read-smoke.mjs';
-import { checkJavaRead } from './java-read-smoke.mjs';
+import { checkJavaRead, checkSpringBootFlow } from './java-read-smoke.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const packagedApp = {
@@ -342,6 +342,7 @@ try {
     await page.getByRole('button', { name: '코드 읽기', exact: true }).click();
     await page.getByRole('button', { name: file, exact: true }).click();
   });
+  await checkSpringBootFlow(app, page, path.join(temp, 'Spring Boot 흐름'));
 
   // A separate project proves that the Python prebuilt grammar loads in the packaged worker.
   const pythonFixture = path.join(temp, 'Python 읽기');
@@ -514,6 +515,7 @@ try {
   await app.close(); app = undefined;
   await testCopy.cleanup(); testCopy = undefined;
   const report = { passed: true, checks: ['Java native grammar, method outline, conditional step and scope notices', 'Python native grammar, method outline and conditional step', 'screen groups and cached flow selection without flow IPC', 'system light and dark themes, navigation rail and factual project status', 'packaged app startup', 'file tree disclosures, search, same-file reread, flow evidence and reopening', 'isolated SQLite write/read', 'native parser in packaged worker', 'code evidence navigation', 'reader colours and keyboard focus', 'reader search panel', 'source unchanged', 'packaged CSP', 'project map under the packaged CSP', 'value shapes from the unpacked TypeScript checker with a package type file', onMac ? 'changes from git inside its sandbox' : 'Windows changes unavailable notice', 'local AI installation inspection inside the fence and execution gate (no AI request)', 'cancel', 'release fuses and plain startup', 'UI uses an inspect-enabled temporary copy', 'entire distributed app unchanged'], state };
+  report.checks.push('Spring Boot YAML context and servlet paths, confirmed request and original Java evidence');
   report.checks.push('Python same-file calls, reverse callers and source unchanged');
   report.checks.push('Python import alias calls and reverse callers across files');
   report.checks.push('Python parameter value card in the packaged worker');

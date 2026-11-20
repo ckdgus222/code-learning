@@ -1629,7 +1629,7 @@ it('explains Spring guesses and renders Java handler evidence navigation', () =>
     range: { startUtf16: 30, endUtf16: 140, startLine: 4, endLine: 7 } };
   const javaFlow = { ...flow, nodes: [javaNode], edges: [], notes: ['Java 처리 함수 안에서 부르는 함수는 아직 따라가지 않아요.'] };
   const limits = renderToStaticMarkup(React.createElement(FlowLimits, { project, routes, flow: javaFlow, locked: false, onCode() {} }));
-  expect(limits).toContain('Java Spring MVC 주소도 fetch·axios 요청과 이어 줘요. 앞 경로 설정은 아직 읽지 않아 모두 추정이며, Java 처리 메서드 안의 호출은 따라가지 않아요.');
+  expect(limits).toContain('Java Spring MVC 주소도 fetch·axios 요청과 이어 줘요. Spring Boot 설정에서 주소 앞부분을 확인할 수 있으면 연결에 반영해요. Java 처리 메서드 안의 호출은 따라가지 않아요.');
   expect(limits).toContain('Java 처리 함수 안에서 부르는 함수는 아직 따라가지 않아요.');
   const steps = renderToStaticMarkup(React.createElement(FlowSteps, { flow: javaFlow, locked: false, onCode() {}, onFunction() {} }));
   expect(steps).toContain('OrderController.getOrder');

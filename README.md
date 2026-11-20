@@ -28,8 +28,8 @@ Explore unfamiliar TypeScript, JavaScript and Python projects with evidence from
 |---|---|---|
 | TypeScript·JavaScript | 모든 기능 | 아래 알려진 한계 참고 |
 | Python | 코드 읽기, 프로젝트 지도, 서버 주소의 기능 흐름 | 함수 안 호출·값 따라가기, 파일 안내 |
-| Java | 코드 보기·색상, 메서드·생성자 목록, 클래스·import 목록, 구문 단계·복잡도, Spring 주소·처리 메서드까지의 기능 흐름(추정) | 처리 메서드 내부 호출·값 찾기, 파일 안내·AI 파일 설명, 프로젝트 지도·이름 찾기 |
-| 서버 프레임워크 | NestJS, Next API, Express, FastAPI, Flask, Django, Spring MVC(추정 연결) | Fastify, Hono, Koa 등 |
+| Java | 코드 보기·색상, 메서드·생성자 목록, 클래스·import 목록, 구문 단계·복잡도, Spring MVC 요청에서 처리 메서드까지 이동, Spring Boot 설정의 주소 앞부분 반영 | 처리 메서드 내부 호출·값 찾기, 파일 안내·AI 파일 설명, 프로젝트 지도·이름 찾기 |
+| 서버 프레임워크 | NestJS, Next API, Express, FastAPI, Flask, Django, Spring MVC·Spring Boot | Fastify, Hono, Koa 등 |
 | 요청 | fetch, axios | 그 밖의 요청 라이브러리 |
 | 그 밖의 언어(Go, Rust, Kotlin, C#, Ruby, PHP, Swift, C/C++, Vue, Svelte 등) | 원문 보기 | 분석 |
 
@@ -215,6 +215,7 @@ $env:CODEX_HOME="$env:APPDATA\Code Learning\codex-home"; codex login
 
 ## 알려진 한계
 
+- Spring Boot는 같은 모듈의 기본 `application.properties` 또는 YAML에서 주소 앞부분을 읽습니다. 프로필별 주소나 환경 변수처럼 값을 결정할 수 없는 경우에는 추정으로 표시합니다. 실행 옵션이나 외부 설정에 따라 실제 주소는 달라질 수 있습니다.
 - 연결은 주소 글자와 코드 모양으로 찾고, 실행해서 확인하지 않습니다. 확실하지 않은 연결은 이유와 함께 '추정'으로 표시합니다.
 - Python의 함수 안 호출·값 따라가기와 파일 안내는 아직 지원하지 않습니다. import는 상대 import와 자기 패키지 import만 확실한 선이고, 나머지는 후보 파일로 가는 추정 선입니다.
 - FastAPI·Flask는 모듈 맨 위에서 만든 앱·라우터만 읽습니다. `create_app()` 같은 함수 안의 앱은 못 찾고, `include_router`·`register_blueprint`의 앞 경로는 추정합니다.
