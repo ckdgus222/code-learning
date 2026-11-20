@@ -1,8 +1,8 @@
 # Code Learning
 
-처음 보는 TypeScript·JavaScript·Python 프로젝트를 코드 근거와 함께 읽어 나가는 데스크톱 앱입니다. 프로젝트 파일은 읽기만 하고 실행하지 않습니다.
+처음 보는 TypeScript·JavaScript·Python·Java 프로젝트를 코드 근거와 함께 읽어 나가는 데스크톱 앱입니다. 프로젝트 파일은 읽기만 하고 실행하지 않습니다.
 
-Explore unfamiliar TypeScript, JavaScript and Python projects with evidence from the code.
+Explore unfamiliar TypeScript, JavaScript, Python and Java projects with evidence from the code.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: macOS (Apple silicon) | Windows (x64)](https://img.shields.io/badge/Platform-macOS%20%28Apple%20silicon%29%20%7C%20Windows%20%28x64%29-555)](#설치)
@@ -27,7 +27,7 @@ Explore unfamiliar TypeScript, JavaScript and Python projects with evidence from
 | 대상 | 되는 것 | 아직 안 되는 것 |
 |---|---|---|
 | TypeScript·JavaScript | 모든 기능 | 아래 알려진 한계 참고 |
-| Python | 코드 읽기, 프로젝트 지도, 서버 주소의 기능 흐름 | 함수 안 호출·값 따라가기, 파일 안내 |
+| Python | 코드 읽기·프로젝트 지도, 서버 처리 함수 안의 호출 따라가기, 인자·값의 출처, 파일 안내·선택형 AI 파일 설명 | 실행 중 값, 동적으로 정해지는 호출, 외부 라이브러리 내부 흐름 |
 | Java | 코드 보기·색상, 메서드·생성자 목록, 클래스·import 목록, 구문 단계·복잡도, Spring MVC 요청에서 처리 메서드까지 이동, Spring Boot 설정의 주소 앞부분 반영 | 처리 메서드 내부 호출·값 찾기, 파일 안내·AI 파일 설명, 프로젝트 지도·이름 찾기 |
 | 서버 프레임워크 | NestJS, Next API, Express, FastAPI, Flask, Django, Spring MVC·Spring Boot | Fastify, Hono, Koa 등 |
 | 요청 | fetch, axios | 그 밖의 요청 라이브러리 |
@@ -59,7 +59,7 @@ taxonomy의 글 수정 기능 5단계로, 권한을 확인하는 함수와 DB �
 
 ### 코드 읽기
 
-파일 트리와 왼쪽 검색 칸에서 파일이나 TS/JS·Python의 함수·클래스 이름을 찾아 해당 코드를 엽니다. 함수를 고르면 구문 단계와 해당 줄을 함께 보고, TS/JS에서는 '이 함수 흐름으로 보기'로 부르는 것과 부르는 곳, 값이 오는 곳, TypeScript 타입까지 살펴봅니다. 모두 코드에 적힌 정보이며 실행 중의 값은 아닙니다.
+파일 트리와 왼쪽 검색 칸에서 파일이나 TS/JS·Python의 함수·클래스 이름을 찾아 해당 코드를 엽니다. TS/JS·Python에서는 '이 함수 흐름으로 보기'로 함수가 어디서 불리고 어떤 인자를 받는지 살펴봅니다. Java에서는 메서드·생성자·클래스·import를 골라 해당 줄로 이동합니다.
 
 ![파일 트리, 함수 목록, 고른 함수의 코드를 함께 보는 모습](docs/images/code-reading.png)
 
@@ -217,11 +217,11 @@ $env:CODEX_HOME="$env:APPDATA\Code Learning\codex-home"; codex login
 
 - Spring Boot는 같은 모듈의 기본 `application.properties` 또는 YAML에서 주소 앞부분을 읽습니다. 프로필별 주소나 환경 변수처럼 값을 결정할 수 없는 경우에는 추정으로 표시합니다. 실행 옵션이나 외부 설정에 따라 실제 주소는 달라질 수 있습니다.
 - 연결은 주소 글자와 코드 모양으로 찾고, 실행해서 확인하지 않습니다. 확실하지 않은 연결은 이유와 함께 '추정'으로 표시합니다.
-- Python의 함수 안 호출·값 따라가기와 파일 안내는 아직 지원하지 않습니다. import는 상대 import와 자기 패키지 import만 확실한 선이고, 나머지는 후보 파일로 가는 추정 선입니다.
-- FastAPI·Flask는 모듈 맨 위에서 만든 앱·라우터만 읽습니다. `create_app()` 같은 함수 안의 앱은 못 찾고, `include_router`·`register_blueprint`의 앞 경로는 추정합니다.
+- Python은 같은 파일과 출처가 분명한 import의 직접 호출을 따라갑니다. 타입으로 찾은 메서드는 후보로 표시하며, 동적 호출이나 실제 실행값은 확인하기 어렵습니다.
+- FastAPI·Flask는 단순한 앱 생성 함수와 라우터·블루프린트 등록도 읽습니다. 실행 시점이나 등록 경로가 달라질 수 있는 연결은 추정으로 표시합니다.
 - Django는 `ROOT_URLCONF`부터 이어진 글자 주소만 다른 추정 이유가 없으면 확실하게 연결하며, 값 칸(`<slug>` 등) 주소는 항상 추정합니다.
-- Django의 처리 메서드를 물려받기만 한 제네릭 클래스 뷰·DRF 라우터·옛 `url()`은 목록에 없고, `re_path`는 정규식을 맞추지 않습니다.
-- 값 모양 주소(`<int:id>`, `{id:int}` 등)는 실제 값이 맞는지 검사하지 않고 추정으로 연결합니다.
+- Django는 프로젝트 내부의 단일 부모에서 상속한 처리 메서드, Django REST Framework의 기본 라우터·추가 액션, 옛 `url()` 선언 일부를 읽습니다. 원본을 확인할 수 없는 처리 함수는 별도 목록에 표시하며 `re_path` 정규식은 실행하지 않습니다.
+- Django의 `<int:id>`는 요청에 적힌 값이 0~9 숫자로만 이뤄졌는지 확인합니다. 다른 주소가 먼저 처리할 수 있어 일치해도 추정으로 표시합니다.
 - 너무 깊게 중첩된 파일은 구조 분석을 건너뛰며 원문은 볼 수 있습니다. 그런 파일이 있으면 주소 연결은 모두 추정합니다.
 - 경로 별칭(`@/…` 등)은 일부만 지원합니다.
 - AI 답과 기획 대조는 틀릴 수 있고 다른 AI가 교차 확인하지 않습니다. 근거 코드가 바뀌면 다시 확인해야 하며 오래된 근거로는 이동하지 않습니다.

@@ -15,7 +15,7 @@ describe('draft release configuration', () => {
     expect(pkg.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(lock.version).toBe(pkg.version);
     expect(lock.packages[''].version).toBe(pkg.version);
-    expect(pkg.description).toBe('Read-only app for exploring unfamiliar TypeScript and JavaScript projects');
+    expect(pkg.description).toBe('Read-only app for exploring TypeScript, JavaScript, Python and Java projects');
     expect(read('forge.config.ts')).toContain(`description: '${pkg.description}'`);
   });
 
